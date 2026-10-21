@@ -2,9 +2,10 @@
 //! admitted yet. No number bounds the attempts in flight: an admitted attempt
 //! holds what the sandbox gave it, and the next one is prepared. The window is
 //! one plus the admissions since the sandbox last refused one, counted over
-//! the last minute, so a wave start ramps up as fast as the sandbox keeps
-//! admitting (it doubles each round) and a full sandbox is asked by one
-//! attempt at a time instead of by every ready one. An attempt preparing for
+//! the last minute. A refusal parks the entire queue for two minutes; a
+//! completed job releases that wait early. Then one job probes admission,
+//! and successes widen the window until the available capacity is filled.
+//! An attempt preparing for
 //! longer than STALE no longer counts, so one that hangs before it asks the
 //! sandbox cannot hold the window shut.
 use std::collections::{HashMap, VecDeque};
@@ -16,6 +17,7 @@ const FRESH: Duration = Duration::from_secs(60);
 /// How long a preparation counts against the window before it is taken to
 /// wait for something other than the sandbox.
 const STALE: Duration = Duration::from_secs(5 * 60);
+pub(super) const RETRY: Duration = Duration::from_secs(2 * 60);
 
 #[derive(Default)]
 struct Window {
@@ -27,6 +29,12 @@ struct Window {
     generation: u64,
     /// When the sandbox admitted attempts since it last refused one.
     admissions: VecDeque<Instant>,
+    /// No new resource probes before this time, across all runs and judges.
+    retry_at: Option<Instant>,
+    /// Jobs actually admitted, whose completion can free resources.
+    running: std::collections::HashSet<String>,
+    /// Durable waits are restored only once, never after completion woke us.
+    restored: bool,
     /// Whether ready attempts wait for the window now, so it is logged once
     /// each time it starts to bind.
     binding: bool,
@@ -55,6 +63,9 @@ impl Window {
     }
 
     fn has_room(&mut self, now: Instant) -> bool {
+        if self.retry_at.is_some_and(|until| until > now) {
+            return false;
+        }
         let size = self.size(now);
         let counted = self.counted(now);
         let stale = self.preparing.len() - counted;
@@ -77,6 +88,9 @@ impl Window {
 
     /// The place's generation, or None while the window is full.
     fn begin(&mut self, id: &str, now: Instant) -> Option<u64> {
+        if self.retry_at.is_some_and(|until| until > now) {
+            return None;
+        }
         if let Some((_, generation)) = self.preparing.get(id) {
             return Some(*generation);
         }
@@ -101,19 +115,34 @@ impl Window {
 
     fn admitted(&mut self, id: &str, now: Instant) {
         if self.preparing.remove(id).is_some() {
+            self.running.insert(id.to_owned());
             self.admissions.push_back(now);
         }
     }
 
-    fn refused(&mut self, id: &str) {
+    fn refused(&mut self, id: &str, now: Instant) {
         self.preparing.remove(id);
-        if !self.admissions.is_empty() {
+        if self.retry_at.is_none_or(|until| until <= now) {
             log::info!(
-                "[benchmarks] preparation window closes to one: the sandbox refused an attempt after {} admissions",
-                self.admissions.len()
+                "[benchmarks] resource queue waits {} s after admission refusal; a completed job may wake it sooner",
+                RETRY.as_secs()
             );
+            self.retry_at = Some(now + RETRY);
         }
         self.admissions.clear();
+    }
+
+    fn finished(&mut self, id: &str) -> bool {
+        if !self.running.remove(id) {
+            return false;
+        }
+        let woke = self.retry_at.take().is_some();
+        if woke {
+            log::info!(
+                "[benchmarks] completed job freed resources; resource queue may probe again"
+            );
+        }
+        woke
     }
 }
 
@@ -130,6 +159,36 @@ fn with<T>(scope: &str, apply: impl FnOnce(&mut Window) -> T) -> T {
 /// Whether one more attempt may start preparing for `scope`.
 pub(super) fn has_room(scope: &str) -> bool {
     with(scope, |window| window.has_room(Instant::now()))
+}
+
+/// Restore a pending resource wait after an app restart, once per store.
+pub(super) fn restore(scope: &str, remaining: Duration) {
+    with(scope, |window| {
+        if !window.restored {
+            window.restored = true;
+            if !remaining.is_zero() {
+                window.retry_at = Some(Instant::now() + remaining.min(RETRY));
+            }
+        }
+    });
+}
+
+/// A shared wait, also used by already generated answers awaiting judges.
+pub(super) fn remaining(scope: &str) -> Duration {
+    with(scope, |window| {
+        window.retry_at.map_or(Duration::ZERO, |until| {
+            until.saturating_duration_since(Instant::now())
+        })
+    })
+}
+
+pub(super) fn finished(scope: &str, id: &str) -> bool {
+    with(scope, |window| window.finished(id))
+}
+
+#[cfg(test)]
+pub(super) fn expire_wait(scope: &str) {
+    with(scope, |window| window.retry_at = Some(Instant::now()));
 }
 
 /// An attempt's place in the window: it ends when dropped, however its
@@ -161,10 +220,9 @@ pub(super) fn admitted(scope: &str, id: &str) {
     with(scope, |window| window.admitted(id, Instant::now()));
 }
 
-/// The sandbox refused `id` before anything started: the window closes to
-/// one attempt until the sandbox admits again.
+/// The sandbox refused `id` before anything started: all new work waits.
 pub(super) fn refused(scope: &str, id: &str) {
-    with(scope, |window| window.refused(id));
+    with(scope, |window| window.refused(id, Instant::now()));
 }
 
 /// `id` stopped preparing without the sandbox's answer.
@@ -220,15 +278,55 @@ mod tests {
         }
         assert!(!window.begin_ok("h", at));
         // The first refusal: back to one attempt at a time.
-        window.refused("d");
+        window.refused("d", at);
         assert!(!window.begin_ok("h", at));
         for id in ["e", "f", "g"] {
-            window.refused(id);
+            window.refused(id, at);
         }
-        assert!(window.begin_ok("h", at));
-        assert!(!window.begin_ok("i", at));
+        assert!(!window.begin_ok("h", at + RETRY - Duration::from_millis(1)));
+        let retry = at + RETRY;
+        assert!(window.begin_ok("h", retry));
+        assert!(!window.begin_ok("i", retry));
         // Asking again for one already preparing is no second place.
-        assert!(window.begin_ok("h", at));
+        assert!(window.begin_ok("h", retry));
+    }
+
+    #[test]
+    fn a_refusal_parks_every_cell_and_only_one_probes_after_two_minutes() {
+        let mut window = Window::default();
+        let at = Instant::now();
+        window.refused("refused", at);
+        for second in 0..120 {
+            assert!(!window.begin_ok("next", at + Duration::from_secs(second)));
+        }
+        assert!(!window.finished("never-started"));
+        assert!(!window.has_room(at + RETRY - Duration::from_millis(1)));
+        assert!(window.begin_ok("probe", at + RETRY));
+        assert!(!window.begin_ok("another", at + RETRY));
+        window.refused("probe", at + RETRY);
+        assert!(!window.has_room(at + RETRY + RETRY - Duration::from_millis(1)));
+        assert!(window.has_room(at + RETRY + RETRY));
+    }
+
+    #[test]
+    fn completion_wakes_a_parked_queue_and_successes_fill_available_capacity() {
+        let mut window = Window::default();
+        let at = Instant::now();
+        assert!(window.begin_ok("running", at));
+        window.admitted("running", at);
+        assert!(window.begin_ok("refused", at));
+        window.refused("refused", at);
+        assert!(!window.has_room(at));
+        assert!(window.finished("running"));
+        assert!(window.begin_ok("probe", at));
+        assert!(!window.begin_ok("second", at));
+        window.admitted("probe", at);
+        assert!(window.begin_ok("second", at));
+        assert!(window.begin_ok("third", at));
+        window.admitted("second", at);
+        assert!(window.begin_ok("fourth", at));
+        window.refused("third", at);
+        assert!(!window.begin_ok("fifth", at));
     }
 
     #[test]

@@ -32,7 +32,22 @@ async fn a_paid_answer_waits_for_its_evaluation_instead_of_failing() {
     let (dir, service, backend) = setup().await;
     backend.evaluation_refusals.store(3, Ordering::SeqCst);
     let run = service.start_run(one_cell(&service).await).await.unwrap();
-    service.tick().await.unwrap();
+    let ticking = tokio::spawn({
+        let service = service.clone();
+        async move { service.tick().await }
+    });
+    let scope = service.store.root.display().to_string();
+    for count in 1..=3 {
+        until("the evaluation never waited", || {
+            backend.evaluations.load(Ordering::SeqCst) >= count
+                && !admission_window::remaining(&scope).is_zero()
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(backend.evaluations.load(Ordering::SeqCst), count);
+        admission_window::expire_wait(&scope);
+    }
+    ticking.await.unwrap().unwrap();
     let settled = service.store.run(&run.id).await.unwrap();
     let attempt = &settled.attempts[0];
     assert_eq!(attempt.phase, "terminal");
@@ -57,7 +72,7 @@ async fn cancelling_the_run_ends_an_evaluation_wait() {
         async move { service.tick().await }
     });
     until("the evaluation never waited", || {
-        backend.evaluations.load(Ordering::SeqCst) >= 2
+        backend.evaluations.load(Ordering::SeqCst) >= 1
     })
     .await;
     service.control(&run.id, "cancel").await.unwrap();
@@ -65,7 +80,7 @@ async fn cancelling_the_run_ends_an_evaluation_wait() {
     let attempt = service.store.run(&run.id).await.unwrap().attempts[0].clone();
     assert_eq!(attempt.phase, "terminal");
     assert_eq!(attempt.outcome.as_deref(), Some("evaluation_error"));
-    assert!(attempt.reason.unwrap().starts_with("resource_busy:"));
+    assert!(attempt.reason.unwrap().starts_with(EVALUATION_WAIT));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     dir.close().await;
 }
@@ -107,7 +122,10 @@ async fn a_recovered_generation_waits_for_its_evaluation() {
         if service.store.attempt(&sealed.id).await.unwrap().phase == "terminal" {
             break;
         }
-        tokio::time::sleep(EVALUATION_RETRY * 2).await;
+        let mut waiting = service.store.attempt(&sealed.id).await.unwrap();
+        waiting.wait_until = Some(now() - 1);
+        service.store.save_attempt(&waiting).await.unwrap();
+        admission_window::expire_wait(&service.store.root.display().to_string());
         service.tick().await.unwrap();
     }
     let settled = service.store.attempt(&sealed.id).await.unwrap();

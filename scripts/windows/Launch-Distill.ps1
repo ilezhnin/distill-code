@@ -489,6 +489,16 @@ try {
         }
         Write-Host "Distill dev session ended (exit code $exitCode)."
     }
+    # The error window may stay open at Read-Host below. It no longer owns a
+    # dev session and must not prevent another shortcut click from starting it.
+    if ($null -ne $launchMutex) {
+        try {
+            $launchMutex.ReleaseMutex()
+        } finally {
+            $launchMutex.Dispose()
+            $launchMutex = $null
+        }
+    }
 }
 
 if ($exitCode -ne 0 -and -not $NoPause) {

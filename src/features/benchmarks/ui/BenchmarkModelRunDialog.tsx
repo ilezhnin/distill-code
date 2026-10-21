@@ -1,8 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  CalendarClock,
+  CalendarDays,
+  CircleCheck,
+  CircleDashed,
+  History,
+  TriangleAlert,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/shared/lib/cn";
 import { Badge } from "@/shared/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
 import {
@@ -32,6 +45,11 @@ import {
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { authoredByCandidate } from "../lib/benchmarkEligibility";
 import { currentVersions, isRankedSplit } from "../lib/benchmarkReleases";
+import { modelKey } from "../lib/benchmarkModels";
+import {
+  judgingFailureLabel,
+  runJudgingIssues,
+} from "../lib/benchmarkRunIssues";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { modelDisplayName, providerVendor } from "../lib/benchmarkLabels";
 import {
@@ -50,7 +68,7 @@ import type {
   LeaderboardRow,
   RunRequest,
 } from "../types";
-import { BenchmarkAlert, StateBadge } from "./BenchmarkPrimitives";
+import { BenchmarkAlert, Metric, StateBadge } from "./BenchmarkPrimitives";
 import {
   ACTIVE_RUN,
   FINISHED_RUN,
@@ -262,6 +280,7 @@ export function BenchmarkModelRunDialog({
   const summaries = useQuery({
     queryKey: [...benchmarkKeys, "run-attempts", runId, attemptIds],
     queryFn: () => listByIds(attemptIds),
+    placeholderData: keepPreviousData,
     enabled: attemptIds.length > 0,
   });
   // The result each test stands at on the leaderboard, own tests included,
@@ -271,8 +290,15 @@ export function BenchmarkModelRunDialog({
     [row.attemptIds, row.ownAttemptIds],
   );
   const standingAttempts = useQuery({
-    queryKey: [...benchmarkKeys, "standing", standingIds],
+    queryKey: [
+      ...benchmarkKeys,
+      "standing",
+      modelKey(configuration),
+      standingIds,
+    ],
     queryFn: () => listByIds(standingIds),
+    placeholderData: (previous, query) =>
+      query?.queryKey[2] === modelKey(configuration) ? previous : undefined,
     enabled: standingIds.length > 0,
   });
   // The standing cell of each test: repetitions passed of those scored.
@@ -310,7 +336,21 @@ export function BenchmarkModelRunDialog({
       ),
     [summaries.data],
   );
+  const judgingIssues = useMemo(
+    () => runJudgingIssues(mine, scores),
+    [mine, scores],
+  );
+  const unscored = judgingIssues.reduce(
+    (total, issue) => total + issue.count,
+    0,
+  );
   const runActive = run.data ? ACTIVE_RUN.has(run.data.state) : false;
+  const issueRecordedAt = Math.max(
+    0,
+    ...mine
+      .filter((entry) => entry.outcome === "pending_review" && entry.reason)
+      .map((entry) => entry.finishedAt ?? 0),
+  );
   const stopping = run.data?.state === "cancelling";
   // The dialog's clock: a running test's timer and the window check.
   const clock = useNow(run.data != null);
@@ -430,10 +470,15 @@ export function BenchmarkModelRunDialog({
     !summaries.isPending &&
     unfinishedInRun;
   const over = expired || outdated;
-  // Until today's inventory answers, whether the run can go on is unknown:
-  // Resume and Finish wait for it rather than risk a refusal.
-  const pinUnknown =
-    run.data != null && inventory.data == null && inventory.error == null;
+  // Saved run pins do not establish today's availability. Every dispatch
+  // action waits for a successful current listing, including after an error.
+  const inventoryUnready = inventory.data == null || inventory.error != null;
+  const inventoryFailure = inventory.error
+    ? benchmarkErrorMessage(inventory.error)
+    : null;
+  const policyCheckMissing = inventoryFailure?.includes(
+    "Linux text policy proof",
+  );
   const stopped =
     !over &&
     windowOpen &&
@@ -497,23 +542,25 @@ export function BenchmarkModelRunDialog({
     );
   }, [mine, scores, run.data]);
   const inRun = statuses.size;
-  const settled = [...statuses.values()].filter(
-    (status) => status?.kind === "scored" || status?.kind === "unscored",
-  ).length;
   // A running test's clock ticks every second; the window check reads it too.
   const now = clock;
   // Keep the test that runs now in view as the run moves down the list.
   const rows = useRef(new Map<string, HTMLLIElement>());
+  const followProgress = useRef(true);
+  useEffect(() => {
+    if (runId != null) followProgress.current = true;
+  }, [runId]);
   const runningId = ordered.find((version) =>
     ["running", "waiting"].includes(statuses.get(version.id)?.kind ?? ""),
   )?.id;
   useEffect(() => {
-    if (runningId)
+    if (runningId && followProgress.current)
       rows.current.get(runningId)?.scrollIntoView?.({ block: "nearest" });
   }, [runningId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const start = async (all = false) => {
+    if (inventoryUnready) return;
     // The checked tests in list order, so the plan order stays the queue.
     const tests = ordered.filter(
       (version) => isChecked(version.id) || (all && eligible.includes(version)),
@@ -561,7 +608,7 @@ export function BenchmarkModelRunDialog({
   // Pause lets the running attempts finish and starts no new one; resume
   // picks the run up where it stopped. The same rules as the run drawer.
   const control = async (act: (id: string) => Promise<unknown>) => {
-    if (!runId) return;
+    if (!runId || (act === benchmarkApi.resumeRun && inventoryUnready)) return;
     setBusy(true);
     setError(null);
     try {
@@ -600,7 +647,7 @@ export function BenchmarkModelRunDialog({
       : null;
   };
   const finish = async (all = false) => {
-    if (!runId) return;
+    if (!runId || inventoryUnready) return;
     const tests = all ? missing : added;
     const joining = joiningFor(tests);
     if (!joining) return;
@@ -620,6 +667,16 @@ export function BenchmarkModelRunDialog({
     }
   };
   const allChecked = eligible.every((version) => isChecked(version.id));
+  const judgingCauses = (
+    <ul className="space-y-1">
+      {judgingIssues.map((issue) => (
+        <li key={issue.reason}>
+          {judgingFailureLabel(t, issue.reason, !runActive)}{" "}
+          <span className="tabular-nums">({issue.count})</span>
+        </li>
+      ))}
+    </ul>
+  );
   return (
     <Dialog
       open
@@ -646,11 +703,42 @@ export function BenchmarkModelRunDialog({
         <DialogBody className="space-y-3">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
           {inventory.error ? (
-            <BenchmarkAlert
-              tone={isRefusal(inventory.error) ? "warning" : "error"}
+            <Alert
+              variant={isRefusal(inventory.error) ? "warning" : "destructive"}
             >
-              {benchmarkErrorMessage(inventory.error)}
-            </BenchmarkAlert>
+              <TriangleAlert aria-hidden />
+              <AlertTitle>{t("modelRun.readinessBlocked")}</AlertTitle>
+              <AlertDescription>
+                <p>
+                  {t(
+                    policyCheckMissing
+                      ? "modelRun.policyCheckMissing"
+                      : "modelRun.availabilityFailed",
+                  )}
+                </p>
+                <details className="w-full">
+                  <summary className="cursor-pointer">
+                    {t("detail.technical")}
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap text-xs">
+                    {inventoryFailure}
+                  </p>
+                </details>
+                <Button
+                  type="button"
+                  variant="alert"
+                  size="xs"
+                  disabled={inventory.isFetching || busy}
+                  onClick={() => void inventory.refetch()}
+                >
+                  {t(
+                    inventory.isFetching
+                      ? "modelRun.readinessChecking"
+                      : "modelRun.readinessRetry",
+                  )}
+                </Button>
+              </AlertDescription>
+            </Alert>
           ) : null}
           {/* Each profile the checked tests need and today's inventory
               cannot run says why; Start waits for it. */}
@@ -674,51 +762,130 @@ export function BenchmarkModelRunDialog({
               </BenchmarkAlert>
             );
           })}
-          {finishing && run.data ? (
-            <p className="text-sm text-muted-foreground">
-              {t("modelRun.finishHint", {
-                at: formatDate(run.data.createdAt),
-                until: formatDate(runWindowCloses(run.data, clock)),
-                left: cells.left + added.length,
-                partial: cells.partial,
-              })}
-            </p>
+          <dl
+            aria-label={t("modelRun.summary")}
+            className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-md border border-border p-4"
+          >
+            <Metric
+              label={t("modelRun.started")}
+              icon={<CalendarDays aria-hidden className="size-3.5" />}
+              value={
+                run.data ? (
+                  <time
+                    className="text-sm"
+                    dateTime={new Date(run.data.createdAt).toISOString()}
+                  >
+                    {formatDate(run.data.createdAt, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                  </time>
+                ) : (
+                  <span className="text-sm">{t("modelRun.notStarted")}</span>
+                )
+              }
+            />
+            <Metric
+              label={t(
+                expired || run.data?.bakedAt != null
+                  ? "modelRun.archived"
+                  : "modelRun.archives",
+              )}
+              icon={<CalendarClock aria-hidden className="size-3.5" />}
+              value={
+                run.data ? (
+                  <time
+                    className="text-sm"
+                    dateTime={new Date(
+                      run.data.bakedAt ?? runWindowCloses(run.data, clock),
+                    ).toISOString()}
+                  >
+                    {formatDate(
+                      run.data.bakedAt ?? runWindowCloses(run.data, clock),
+                      { dateStyle: "medium", timeStyle: "short" },
+                    )}
+                  </time>
+                ) : (
+                  <span className="text-sm">
+                    {t("modelRun.archiveAfterStart")}
+                  </span>
+                )
+              }
+            />
+            <Metric
+              label={t("modelRun.measured")}
+              icon={<CircleCheck aria-hidden className="size-3.5" />}
+              value={
+                run.data
+                  ? cells.measured
+                  : eligible.filter((version) =>
+                      measuredOnBoard.has(version.id),
+                    ).length
+              }
+            />
+            <Metric
+              label={t("modelRun.remaining")}
+              icon={<CircleDashed aria-hidden className="size-3.5" />}
+              value={run.data ? cells.left : owedOnBoard.length}
+            />
+          </dl>
+          {judgingIssues.length > 0 ? (
+            <Alert variant={runActive ? "destructive" : "default"}>
+              {runActive ? (
+                <TriangleAlert aria-hidden />
+              ) : (
+                <History aria-hidden />
+              )}
+              <AlertTitle>
+                {t(runActive ? "runIssues.title" : "runIssues.historyTitle")}
+              </AlertTitle>
+              <AlertDescription>
+                <p>{t("runIssues.unscored", { count: unscored })}</p>
+                {!runActive && issueRecordedAt > 0 ? (
+                  <time dateTime={new Date(issueRecordedAt).toISOString()}>
+                    {t("runIssues.recordedAt", {
+                      time: formatDate(issueRecordedAt, {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      }),
+                    })}
+                  </time>
+                ) : null}
+                {runActive ? (
+                  judgingCauses
+                ) : (
+                  <details className="w-full">
+                    <summary className="cursor-pointer">
+                      {t("runIssues.historyDetails")}
+                    </summary>
+                    <p className="my-1">{t("runIssues.historyHint")}</p>
+                    {judgingCauses}
+                  </details>
+                )}
+              </AlertDescription>
+            </Alert>
           ) : null}
-          {expired && run.data ? (
+          {expired ? (
             <BenchmarkAlert tone="warning">
-              {t("modelRun.expiredHint", {
-                at: formatDate(run.data.createdAt),
-                until: formatDate(runWindowCloses(run.data, clock)),
-                owed: owedOnBoard.length,
-              })}
+              {t("modelRun.archivedNotice")}
             </BenchmarkAlert>
           ) : null}
           {outdated ? (
-            <BenchmarkAlert tone="warning">
-              {t(
-                steering
-                  ? "modelRun.outdatedHint"
-                  : "modelRun.outdatedStoppedHint",
-                { owed: owedOnBoard.length },
-              )}
-            </BenchmarkAlert>
+            <Alert variant="warning">
+              <TriangleAlert aria-hidden />
+              <AlertTitle>{t("modelRun.runtimeUpdated")}</AlertTitle>
+              <AlertDescription>
+                {t(
+                  steering
+                    ? "modelRun.runtimeNotice"
+                    : "modelRun.runtimeStoppedNotice",
+                )}
+              </AlertDescription>
+            </Alert>
           ) : null}
-          {!locked && !steering && !over ? (
-            <p className="text-sm text-muted-foreground">
-              {owedOnBoard.length > 0
-                ? t("modelRun.owedHint", {
-                    owed: owedOnBoard.length,
-                    measured: eligible.length - owedOnBoard.length,
-                  })
-                : t("modelRun.allMeasuredHint")}
-            </p>
-          ) : null}
-          {complete && run.data ? (
+          {complete ? (
             <BenchmarkAlert tone="warning">
-              {t("modelRun.measuredHint", {
-                at: formatDate(run.data.updatedAt),
-                measured: cells.measured,
-              })}
+              {t("modelRun.completeNotice")}
             </BenchmarkAlert>
           ) : null}
           <Label className="flex items-center gap-3 border-b border-border px-2 pb-2 text-sm font-medium">
@@ -740,10 +907,21 @@ export function BenchmarkModelRunDialog({
               }
             />
             <span className="flex-1">{t("modelRun.allTests")}</span>
-            {steering ? <StateBadge state={runState} /> : null}
+            {runState ? (
+              <StateBadge
+                state={
+                  judgingIssues.length > 0 && runState === "completed"
+                    ? "needs_attention"
+                    : runState
+                }
+              />
+            ) : null}
             <span className="text-xs font-normal text-muted-foreground tabular-nums">
               {runActive || steering
-                ? t("modelRun.finished", { settled, total: inRun })
+                ? t("modelRun.finished", {
+                    settled: cells.measured,
+                    total: inRun,
+                  })
                 : t("modelRun.toMeasure", {
                     selected: chosen.length,
                     total: eligible.length,
@@ -751,7 +929,31 @@ export function BenchmarkModelRunDialog({
                   })}
             </span>
           </Label>
-          <ol className="max-h-[55vh] overflow-y-auto overscroll-contain scrollbar-visible [scrollbar-gutter:stable]">
+          <ol
+            onPointerDown={() => {
+              followProgress.current = false;
+            }}
+            onWheel={() => {
+              followProgress.current = false;
+            }}
+            onTouchMove={() => {
+              followProgress.current = false;
+            }}
+            onKeyDown={(event) => {
+              if (
+                [
+                  "ArrowUp",
+                  "ArrowDown",
+                  "PageUp",
+                  "PageDown",
+                  "Home",
+                  "End",
+                ].includes(event.key)
+              )
+                followProgress.current = false;
+            }}
+            className="max-h-[55vh] overflow-y-auto overscroll-contain scrollbar-visible [scrollbar-gutter:stable]"
+          >
             {ordered.map((version) => {
               const status = statuses.get(version.id) ?? null;
               const current =
@@ -821,28 +1023,32 @@ export function BenchmarkModelRunDialog({
             </Button>
           ) : steering ? (
             <>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy || runState !== "running"}
-                onClick={() => void control(benchmarkApi.pauseRun)}
-              >
-                {t("actions.pause")}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  busy ||
-                  pinUnknown ||
-                  !["paused", "needs_attention", "planned"].includes(
-                    runState ?? "",
-                  )
-                }
-                onClick={() => void control(benchmarkApi.resumeRun)}
-              >
-                {t("actions.resume")}
-              </Button>
+              {runState !== "needs_attention" || unscored === 0 ? (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy || runState !== "running"}
+                    onClick={() => void control(benchmarkApi.pauseRun)}
+                  >
+                    {t("actions.pause")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={
+                      busy ||
+                      inventoryUnready ||
+                      !["paused", "needs_attention", "planned"].includes(
+                        runState ?? "",
+                      )
+                    }
+                    onClick={() => void control(benchmarkApi.resumeRun)}
+                  >
+                    {t("actions.resume")}
+                  </Button>
+                </>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
@@ -860,7 +1066,7 @@ export function BenchmarkModelRunDialog({
                   variant="primary"
                   disabled={
                     busy ||
-                    pinUnknown ||
+                    inventoryUnready ||
                     joiningFor(added) == null ||
                     (cells.left === 0 && added.length === 0)
                   }
@@ -880,6 +1086,7 @@ export function BenchmarkModelRunDialog({
                   variant="outline"
                   disabled={
                     busy ||
+                    inventoryUnready ||
                     (finishing
                       ? joiningFor(missing) == null
                       : !configurationsFor(eligible) ||
@@ -897,7 +1104,7 @@ export function BenchmarkModelRunDialog({
                   variant="primary"
                   disabled={
                     busy ||
-                    pinUnknown ||
+                    inventoryUnready ||
                     joiningFor(added) == null ||
                     (cells.left === 0 && added.length === 0)
                   }
@@ -911,6 +1118,7 @@ export function BenchmarkModelRunDialog({
                   variant="primary"
                   disabled={
                     busy ||
+                    inventoryUnready ||
                     !configurationsFor(chosen) ||
                     resolvingStanding ||
                     resolvingRun ||

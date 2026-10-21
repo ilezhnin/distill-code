@@ -384,7 +384,26 @@
     "outdatedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue: resuming or finishing would only be refused. Stop it; then Start measures the {{owed}} tests the board still owes in a new run.",
     "outdatedStoppedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue. The {{owed}} tests the board still owes are checked; Start measures them in a new run.",
     "measureAll": "Measure all again ({{attempts}} attempts)",
-    "repositoryProfile": "{{model}} on repository tasks"
+    "repositoryProfile": "{{model}} on repository tasks",
+    "summary": "Run overview",
+    "started": "Started",
+    "archives": "Archives",
+    "archived": "Archived",
+    "notStarted": "Not started",
+    "archiveAfterStart": "24 h after start",
+    "measured": "Measured",
+    "remaining": "Remaining",
+    "archivedNotice": "This run is archived. Start a new run for the remaining tests.",
+    "runtimeUpdated": "New run required",
+    "runtimeNotice": "This run used an earlier execution environment. Stop it, then start a new run for the remaining tests.",
+    "runtimeStoppedNotice": "This run used an earlier execution environment. Start a new run for the remaining tests.",
+    "completeNotice": "All tests measured. Measuring again starts a new paid run.",
+    "waitingResources": "Waiting for resources",
+    "readinessBlocked": "Cannot start or continue",
+    "policyCheckMissing": "The sandbox check must be renewed for this version of Distill.",
+    "availabilityFailed": "Current availability could not be verified.",
+    "readinessRetry": "Check again",
+    "readinessChecking": "Checking…"
   },
   "runs": {
     "title": "Runs and history",
@@ -1029,5 +1048,23 @@
       "ownModel": "The model itself on the panel",
       "authorModel": "The case author's model on the panel"
     }
+  },
+  "runIssues": {
+    "title": "Judging incomplete",
+    "historyTitle": "Previous judging errors",
+    "historyDetails": "View recorded errors",
+    "historyHint": "Saved from the previous execution, not a check of current availability.",
+    "recordedAt": "Recorded {{time}}",
+    "unscored_one": "{{count}} repetition has no score.",
+    "unscored_other": "{{count}} repetitions have no score.",
+    "noPanel": "Cannot assemble a judge panel: {{available}} available, {{required}} required.",
+    "noPanelRecorded": "Panel at the time: {{available}} eligible, {{required}} required.",
+    "criticalChecks": "A judge could not verify the critical checks.",
+    "judgeChanged": "A judge no longer matches the saved model or runtime.",
+    "judgeChangedRecorded": "A judge did not match the saved model or runtime.",
+    "invalidSheet": "A judge returned an invalid score sheet.",
+    "incompletePanel": "The judge panel did not return all required scores.",
+    "notification": "Judging failed: {{model}}",
+    "stopped": "Run stopped: {{model}}"
   }
 }

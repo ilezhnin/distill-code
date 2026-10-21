@@ -384,7 +384,26 @@
     "outdatedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar: reanudarla o completarla solo sería rechazado. Detenla; después Iniciar mide en una nueva ejecución las {{owed}} pruebas que el tablero aún debe.",
     "outdatedStoppedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar. Las {{owed}} pruebas que el tablero aún debe están marcadas; Iniciar las mide en una nueva ejecución.",
     "measureAll": "Medir todo de nuevo ({{attempts}} intentos)",
-    "repositoryProfile": "{{model}} en tareas de repositorio"
+    "repositoryProfile": "{{model}} en tareas de repositorio",
+    "summary": "Resumen de la ejecución",
+    "started": "Inicio",
+    "archives": "Se archiva",
+    "archived": "Archivada",
+    "notStarted": "Sin iniciar",
+    "archiveAfterStart": "24 h tras el inicio",
+    "measured": "Medidas",
+    "remaining": "Pendientes",
+    "archivedNotice": "Esta ejecución está archivada. Inicia otra para las pruebas pendientes.",
+    "runtimeUpdated": "Hace falta una nueva ejecución",
+    "runtimeNotice": "Esta ejecución usó un entorno anterior. Deténla e inicia otra para las pruebas pendientes.",
+    "runtimeStoppedNotice": "Esta ejecución usó un entorno anterior. Inicia otra para las pruebas pendientes.",
+    "completeNotice": "Todas las pruebas están medidas. Medir de nuevo inicia una ejecución de pago.",
+    "waitingResources": "Esperando recursos locales",
+    "readinessBlocked": "No se puede iniciar ni continuar",
+    "policyCheckMissing": "Hay que renovar la comprobación del entorno aislado para esta versión de Distill.",
+    "availabilityFailed": "No se pudo verificar la disponibilidad actual.",
+    "readinessRetry": "Comprobar de nuevo",
+    "readinessChecking": "Comprobando…"
   },
   "runs": {
     "title": "Ejecuciones e historial",
@@ -1029,5 +1048,23 @@
       "ownModel": "El propio modelo en el panel",
       "authorModel": "El modelo autor del caso en el panel"
     }
+  },
+  "runIssues": {
+    "title": "Evaluación incompleta",
+    "historyTitle": "Errores de evaluación anteriores",
+    "historyDetails": "Ver errores guardados",
+    "historyHint": "Guardados de la ejecución anterior; no indican la disponibilidad actual.",
+    "recordedAt": "Registrados el {{time}}",
+    "unscored_one": "{{count}} repetición sin puntuación.",
+    "unscored_other": "{{count}} repeticiones sin puntuación.",
+    "noPanel": "No se puede formar el panel: {{available}} disponibles, {{required}} necesarios.",
+    "noPanelRecorded": "Panel de entonces: {{available}} aptos, {{required}} necesarios.",
+    "criticalChecks": "Un juez no pudo verificar las comprobaciones críticas.",
+    "judgeChanged": "Un juez ya no coincide con el modelo o entorno guardado.",
+    "judgeChangedRecorded": "Un juez no coincidía con el modelo o entorno guardado.",
+    "invalidSheet": "Un juez devolvió una hoja de puntuación no válida.",
+    "incompletePanel": "El panel no devolvió todas las puntuaciones necesarias.",
+    "notification": "Evaluación fallida: {{model}}",
+    "stopped": "Ejecución detenida: {{model}}"
   }
 }

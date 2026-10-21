@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
 import { type Query, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { benchmarkApi } from "../api/benchmarks";
 import { benchmarkProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
+import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
+import { judgingFailureLabel } from "../lib/benchmarkRunIssues";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/distillStore";
 import type {
@@ -10,6 +14,7 @@ import type {
   Configuration,
   LeaderboardReport,
   PoolRelease,
+  RunSummary,
 } from "../types";
 
 export const benchmarkKeys = ["benchmarks"] as const;
@@ -202,6 +207,7 @@ export const useBenchmarkVersion = (id: string | undefined) =>
 export function useBenchmarkRuntime() {
   const enabled = isDesktopRuntime();
   useBenchmarkInvalidation(enabled);
+  useBenchmarkRunNotifications(enabled);
   const projected = useRef(new Set<string>());
   const query = useQuery({
     queryKey: usageLedgerKey,
@@ -217,6 +223,50 @@ export function useBenchmarkRuntime() {
       projected.current.add(record.attemptId);
     }
   }, [query.data]);
+}
+
+/** Report newly failed judging from every page, once per cause and stop. */
+function useBenchmarkRunNotifications(enabled: boolean) {
+  const { t } = useTranslation("benchmarks");
+  const runs = useQuery({
+    queryKey: [...benchmarkKeys, "runs"],
+    queryFn: benchmarkApi.listRuns,
+    enabled,
+  });
+  const previous = useRef<Map<string, RunSummary> | null>(null);
+  useEffect(() => {
+    if (!runs.data) return;
+    if (previous.current) {
+      for (const run of runs.data) {
+        if (run.request.preview || !run.attention) continue;
+        const before = previous.current.get(run.id);
+        const stopped = ["needs_attention", "completed"].includes(run.state);
+        if (
+          before?.attention?.reason === run.attention.reason &&
+          ["needs_attention", "completed"].includes(before.state) === stopped
+        )
+          continue;
+        const model = run.request.configurations
+          .map((entry) => modelDisplayName(entry))
+          .join(", ");
+        toast.error(
+          t(stopped ? "runIssues.stopped" : "runIssues.notification", {
+            model,
+          }),
+          {
+            id: `benchmark-attention-${run.id}`,
+            description:
+              run.attention.outcome === "pending_review"
+                ? judgingFailureLabel(t, run.attention.reason)
+                : attentionLabel(t, run),
+            duration: 12_000,
+            closeButton: true,
+          },
+        );
+      }
+    }
+    previous.current = new Map(runs.data.map((run) => [run.id, run]));
+  }, [runs.data, t]);
 }
 
 /** Mounted by Stats: completed benchmark work is read in as Stats opens. */

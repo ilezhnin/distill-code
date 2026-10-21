@@ -84,6 +84,9 @@ export default defineConfig(() => {
           "**/test-results/**",
           "**/transcript-playwright-report/**",
           "**/.claude/**",
+          // Shell redirection can leave this locked, short-lived file on
+          // Windows. Watching it can throw EBUSY and stop the whole dev app.
+          "**/$null",
         ],
       },
     },

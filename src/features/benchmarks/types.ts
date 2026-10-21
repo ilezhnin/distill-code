@@ -280,7 +280,7 @@ export interface RunSummary {
   observedSelections: ObservedRunSelection[];
   /** The cells an unfinished run still has a non-terminal attempt in; absent on older summaries. */
   openCells?: OpenRunCell[];
-  /** Why a run waits for the operator: the attempt that stopped it. */
+  /** A judging failure during a run, or why the run waits for the operator. */
   attention?: { outcome: string | null; reason: string } | null;
   /** Recorded result of the sole retained terminal workflow root, independent of run lifecycle. */
   workflowResult?: { outcome: string; reason: string | null } | null;

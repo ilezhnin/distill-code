@@ -1,6 +1,7 @@
 // Every status string the Rust service emits is labelled here. Unknown
 // values fall back to a readable form instead of a raw key.
 import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
+import { judgingFailureLabel } from "./benchmarkRunIssues";
 export type StateTone = "positive" | "negative" | "neutral";
 
 const POSITIVE = new Set(["pass", "completed", "comparable"]);
@@ -324,6 +325,8 @@ function attentionCause(
 ): string {
   const attention = run.attention;
   if (!attention) return t("attention.unknown");
+  if (attention.outcome === "pending_review")
+    return judgingFailureLabel(t, attention.reason);
   if (attention.outcome === "dispatch_uncertain")
     return t("attention.restarted");
   if (/benchmark credits/i.test(attention.reason))

@@ -146,6 +146,16 @@ struct OwnedBridge<'a> {
 /// clean after it.
 const CLEAR_SANDBOX_REFUSAL: i64 = -32001;
 
+/// Preserve the trusted broker's pre-spawn refusal across inventory's string API.
+fn inventory_start_error(error: &Value) -> String {
+    let message = error_text(error);
+    if error["code"] == CLEAR_SANDBOX_REFUSAL && !message.starts_with("resource_busy:") {
+        format!("resource_busy: {message}")
+    } else {
+        message
+    }
+}
+
 /// Where owned bridges of every provider kept their runtime files, under the
 /// Distill root `root`.
 fn owned_runtime_root(root: &std::path::Path) -> PathBuf {
@@ -7560,7 +7570,7 @@ impl Inner {
                         }),
                     )
                     .await
-                    .map_err(|error| error_text(&error))?;
+                    .map_err(|error| inventory_start_error(&error))?;
                 let mut meta = native.session_meta("");
                 if let Some(options) = meta
                     .pointer_mut("/claudeCode/options")
@@ -8394,6 +8404,26 @@ impl app_sign_in::RenewalIo for AppRenewal<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_keeps_only_the_trusted_pre_spawn_refusal_retryable() {
+        let message =
+            "measured CPU load is above the light-job admission line; no provider process started";
+        assert_eq!(
+            inventory_start_error(&json!({"code": CLEAR_SANDBOX_REFUSAL, "message": message})),
+            format!("resource_busy: {message}")
+        );
+        assert_eq!(
+            inventory_start_error(&json!({"code": -32603, "message": message})),
+            message
+        );
+        assert_eq!(
+            inventory_start_error(
+                &json!({"code": CLEAR_SANDBOX_REFUSAL, "message": "resource_busy: queued"})
+            ),
+            "resource_busy: queued"
+        );
+    }
 
     /// A transport or helper hiccup while staging requeues the test; only a
     /// lease the helper refuses is a missing capability.

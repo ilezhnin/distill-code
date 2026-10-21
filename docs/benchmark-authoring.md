@@ -297,7 +297,16 @@ them. A judge's account offers the models of its newest listing (a run's, an
 inventory probe's or an earlier judge's, by the executable serving it now):
 under an hour old it is not listed again, and up to twelve hours old it still
 seats the judge when a refresh is refused, as the sandbox refuses a listing
-under load. A rendering gets one calibrated judge per lab (Anthropic, OpenAI
+under load. If no recent listing is available and local resource admission
+refuses discovery, an otherwise incomplete panel waits with the resource queue.
+A local resource refusal parks new generations, evaluations and judges for
+two minutes. Already admitted jobs continue; a completed job wakes the queue
+early. One candidate probes admission after either event, and successes widen
+preparation until the available capacity is filled. Another refusal parks the
+queue again, without cycling through its cells. The saved answer is kept,
+including in no-replay runs;
+temporary discovery failures do not mean the judge is unavailable. A rendering
+gets one calibrated judge per lab (Anthropic, OpenAI
 and xAI, by provider), the roomiest account first (usage left in the windows
 the model draws on, the last good read when the current one fails), up to three
 (owner, 10-18, after BuseyBench's fixed three-lab ensemble): a judge of a

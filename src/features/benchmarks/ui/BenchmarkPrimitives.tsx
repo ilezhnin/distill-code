@@ -678,10 +678,21 @@ export function BenchmarkClassTabs({
   );
 }
 
-export function Metric({ label, value }: { label: string; value: ReactNode }) {
+export function Metric({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: ReactNode;
+  icon?: ReactNode;
+}) {
   return (
     <div className="space-y-0.5">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {icon}
+        {label}
+      </dt>
       <dd className="font-display text-base tabular-nums">{value}</dd>
     </div>
   );

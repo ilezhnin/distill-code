@@ -38,6 +38,7 @@ pub(super) const JUDGING_STOPPED: &str = "Judging stopped: the run was paused or
 pub(super) const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again later";
 pub(super) const RENDERER_BUSY: &str =
     "Waiting for local resources to render for the judge panel; evaluate again later";
+const JUDGE_DISCOVERY_WAIT: &str = "Waiting for local resources to judge";
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.
 pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
@@ -65,7 +66,35 @@ fn judging_deferred(attempt: &Attempt) -> bool {
     matches!(
         attempt.reason.as_deref(),
         Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY)
-    )
+    ) || judge_discovery_waiting(attempt)
+}
+
+fn judge_discovery_waiting(attempt: &Attempt) -> bool {
+    attempt.reason.as_deref().is_some_and(|reason| {
+        reason.starts_with(JUDGE_DISCOVERY_WAIT)
+            || reason.starts_with("Waiting for local resources to list judge models")
+    })
+}
+
+/// A partial listing is not evidence of too few eligible judges.
+struct JudgeOffers {
+    rows: Vec<(
+        Option<crate::services::provider_account_status::Headroom>,
+        InventoryModel,
+    )>,
+    deferred: Option<BenchmarkError>,
+}
+
+fn resolve_judge_panel(
+    panel: Vec<Configuration>,
+    deferred: Option<BenchmarkError>,
+) -> Result<Vec<Configuration>> {
+    if panel.len() < MIN_JUDGES {
+        if let Some(error) = deferred {
+            return Err(error);
+        }
+    }
+    Ok(panel)
 }
 
 /// Whether `error` refused an evaluation before any evaluator worker started:
@@ -2371,38 +2400,6 @@ fn provider_held(run_id: &str, provider_id: &str) -> bool {
     provider_hold(run_id, provider_id).is_some()
 }
 
-/// The local refusals each attempt met in a row before any provider process,
-/// in this process.
-static UNSTARTED_REFUSALS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, u32>>,
-> = std::sync::LazyLock::new(Default::default);
-
-/// How long a cell the local broker refused `refusals` times in a row waits
-/// before it asks again: 2 s, then 5, 10, 20, 40 and at most 60 s, so a
-/// sandbox that stays full is not polled every few seconds.
-fn unstarted_wait_ms(refusals: u32) -> i64 {
-    [2_000, 5_000, 10_000, 20_000, 40_000, 60_000][refusals.clamp(1, 6) as usize - 1]
-}
-
-/// Counts another local refusal of `attempt_id` and returns its wait.
-fn local_refusal_wait(attempt_id: &str) -> i64 {
-    let mut refusals = UNSTARTED_REFUSALS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let count = refusals.entry(attempt_id.to_owned()).or_default();
-    *count = count.saturating_add(1);
-    unstarted_wait_ms(*count)
-}
-
-/// `attempt_id` got past local admission, or settled: its next refusal
-/// waits the shortest time again.
-fn local_refusals_cleared(attempt_id: &str) {
-    UNSTARTED_REFUSALS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(attempt_id);
-}
-
 /// Whether `seat` (and every worker a v3 root reserves with it) fits beside
 /// the flights in `active`: below its lane's and its account's limits, and
 /// not flying already.
@@ -2838,54 +2835,47 @@ impl PanelJudges for NativePanel<'_, '_> {
         judge: &'s Configuration,
     ) -> BoxFuture<'s, Result<JudgeAnswer>> {
         Box::pin(async move {
-            let admission_started = Instant::now();
-            let evaluation = loop {
-                if self.stop.halted(self.store).await? {
+            if self.stop.halted(self.store).await? {
+                return Ok(JudgeAnswer::Busy);
+            }
+            let scope = self.store.root.display().to_string();
+            let job = format!("judge:{}", self.attempt.id);
+            let _preparing = admission_window::begin(&scope, &job).ok_or_else(|| {
+                BenchmarkError::new(
+                    "resource_busy",
+                    "The resource queue is waiting for admission",
+                )
+            })?;
+            let result = self
+                .backend
+                .ask_judge(
+                    self.store,
+                    self.attempt,
+                    self.version,
+                    judge,
+                    self.batch,
+                    index,
+                    self.prompt,
+                    self.image,
+                    self.response,
+                    self.criteria,
+                    self.stop,
+                    self.evidence,
+                )
+                .await;
+            admission_window::finished(&scope, &job);
+            let evaluation = match result {
+                Ok(evaluation) => evaluation,
+                // A local refusal parks the shared queue immediately. The
+                // batch retains its votes and only its unpaid seats resume.
+                Err(error) if error.code == "resource_busy" => {
+                    admission_window::refused(&scope, &job);
+                    return Err(error);
+                }
+                Err(error) if matches!(error.code.as_str(), ACCOUNT_BUSY | SIGN_IN_WAIT) => {
                     return Ok(JudgeAnswer::Busy);
                 }
-                let result = self
-                    .backend
-                    .ask_judge(
-                        self.store,
-                        self.attempt,
-                        self.version,
-                        judge,
-                        self.batch,
-                        index,
-                        self.prompt,
-                        self.image,
-                        self.response,
-                        self.criteria,
-                        self.stop,
-                        self.evidence,
-                    )
-                    .await;
-                match result {
-                    Ok(evaluation) => break evaluation,
-                    // A busy account is a reason to wait, not an abstention.
-                    Err(error)
-                        if error.code == "resource_busy"
-                            && admission_started.elapsed() < Duration::from_secs(300) =>
-                    {
-                        if self.stop.halted(self.store).await? {
-                            return Ok(JudgeAnswer::Busy);
-                        }
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                    // So is a judge account whose sandbox sign-in renewal
-                    // waits for its running sessions.
-                    Err(error)
-                        if matches!(
-                            error.code.as_str(),
-                            ACCOUNT_BUSY | "resource_busy" | SIGN_IN_WAIT
-                        ) =>
-                    {
-                        return Ok(JudgeAnswer::Busy);
-                    }
-                    Err(error) => {
-                        break judge_abstention(self.version, judge, self.batch, error.message)
-                    }
-                }
+                Err(error) => judge_abstention(self.version, judge, self.batch, error.message),
             };
             let vote = if valid_vote(&evaluation) {
                 JudgeAnswer::Vote
@@ -3086,7 +3076,8 @@ impl NativeBackend {
                 |provider| pool.iter().any(|entry| entry.provider_id == provider),
             )
             .await?;
-        let offered = super::judge_pool::seat_rows(&pool, offered);
+        let deferred = offered.deferred;
+        let offered = super::judge_pool::seat_rows(&pool, offered.rows);
         let seats: Vec<String> = offered
             .iter()
             .map(|(headroom, judge)| {
@@ -3126,7 +3117,7 @@ impl NativeBackend {
                 .join(", "),
             seats.join(", ")
         );
-        Ok(panel)
+        resolve_judge_panel(panel, deferred)
     }
 
     /// Every enabled account's available native text models of the providers
@@ -3138,12 +3129,7 @@ impl NativeBackend {
         run: &str,
         subject: &str,
         admit: impl Fn(&str) -> bool,
-    ) -> Result<
-        Vec<(
-            Option<crate::services::provider_account_status::Headroom>,
-            InventoryModel,
-        )>,
-    > {
+    ) -> Result<JudgeOffers> {
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
         let accounts = judge_accounts(&snapshot.accounts, &admit, |provider| {
@@ -3157,6 +3143,7 @@ impl NativeBackend {
             .await
             .map_err(host_error)?;
         let mut offered = Vec::new();
+        let mut deferred = None;
         for account in &accounts {
             let skipped = if exhausted(run, &account.id) {
                 Some("its usage ran out in this run".to_owned())
@@ -3197,6 +3184,9 @@ impl NativeBackend {
             let models = match models {
                 Ok(models) => models,
                 Err(error) => {
+                    if unstarted_refusal(&error) {
+                        deferred = Some(error.clone());
+                    }
                     log::info!(
                         "[benchmarks] judge panel for {subject} skips account {}: its model list failed: {}",
                         account.id,
@@ -3221,7 +3211,10 @@ impl NativeBackend {
                 }
             }
         }
-        Ok(offered)
+        Ok(JudgeOffers {
+            rows: offered,
+            deferred,
+        })
     }
 
     /// Whether every judge's account is free before a batch starts or
@@ -3390,6 +3383,10 @@ impl NativeBackend {
             )
             .await
             .map_err(host_error)?;
+        admission_window::admitted(
+            &store.root.display().to_string(),
+            &format!("judge:{}", attempt.id),
+        );
         let mut acknowledged = judge.clone();
         acknowledged.model_id = session.selection.model_id.clone().unwrap_or_default();
         acknowledged.effort = session.selection.reasoning_effort.clone();
@@ -4002,7 +3999,7 @@ impl ExecutionBackend for NativeBackend {
                     |provider| provider == entry.provider_id,
                 )
                 .await?;
-            let rows = super::judge_pool::seat_rows(std::slice::from_ref(entry), offered);
+            let rows = super::judge_pool::seat_rows(std::slice::from_ref(entry), offered.rows);
             by_headroom(
                 rows.into_iter()
                     .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
@@ -4011,6 +4008,9 @@ impl ExecutionBackend for NativeBackend {
             .into_iter()
             .next()
             .ok_or_else(|| {
+                if let Some(error) = offered.deferred {
+                    return error;
+                }
                 BenchmarkError::new(
                     "capability_missing",
                     format!(
@@ -7194,11 +7194,15 @@ impl BenchmarkService {
         )
         .fetch_all(&self.store.pool)
         .await?;
+        let scope = self.store.root.display().to_string();
         for data in interrupted {
             let mut a: Attempt = serde_json::from_str(&data)?;
             // A sealed generation whose evaluation the sandbox refused asks
             // again once its short pause is over.
             if a.wait_until.is_some_and(|until| until > now()) {
+                continue;
+            }
+            if !admission_window::has_room(&scope) {
                 continue;
             }
             let request = self.store.run(&a.run_id).await?.request;
@@ -7258,10 +7262,11 @@ impl BenchmarkService {
                                         "cancelling" | "cancelled"
                                     ) =>
                             {
+                                admission_window::refused(&scope, &restored.id);
                                 restored.phase = "interrupted".into();
                                 restored.reason = Some(format!("{EVALUATION_WAIT}: {}", e.message));
                                 restored.wait_until =
-                                    Some(now() + EVALUATION_RETRY.as_millis() as i64);
+                                    Some(now() + admission_window::RETRY.as_millis() as i64);
                                 self.store.save_attempt(&restored).await?;
                                 self.changed().await;
                                 continue;
@@ -7310,7 +7315,24 @@ impl BenchmarkService {
     ) -> Result<()> {
         super::workflow_campaign::refill(self).await?;
         let mut queues = Vec::new();
-        for run in self.store.active_runs().await? {
+        let runs = self.store.active_runs().await?;
+        let scope = self.store.root.display().to_string();
+        let saved_wait = runs
+            .iter()
+            .flat_map(|run| &run.attempts)
+            .filter(|a| {
+                matches!(a.phase.as_str(), "pending" | AWAITING_JUDGES)
+                    && a.reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.starts_with("Waiting for local resources"))
+            })
+            .filter_map(|a| a.wait_until)
+            .max()
+            .unwrap_or_default()
+            .saturating_sub(now())
+            .max(0) as u64;
+        admission_window::restore(&scope, Duration::from_millis(saved_wait));
+        for run in runs {
             let flying = self.flying(&run.id).await;
             if run.state == "pausing" {
                 if flying == 0 {
@@ -7351,7 +7373,23 @@ impl BenchmarkService {
                 .iter()
                 .find(|a| a.phase == AWAITING_JUDGES)
                 .map(|a| a.id.clone());
-            if let Some(id) = waiting.clone().filter(|id| !tried.contains(id)) {
+            let ready_judge = run
+                .attempts
+                .iter()
+                .find(|a| {
+                    a.phase == AWAITING_JUDGES
+                        && admission_window::has_room(&scope)
+                        && (judge_discovery_waiting(a)
+                            || a.wait_until.is_none_or(|until| until <= now()))
+                        // Capacity can return before this tick ends. A panel
+                        // held by the preparation window has no retry deadline
+                        // and must not wait for every other run to drain.
+                        && (!tried.contains(&a.id)
+                            || a.wait_until.is_some()
+                            || judge_discovery_waiting(a))
+                })
+                .map(|a| a.id.clone());
+            if let Some(id) = ready_judge {
                 let lane = format!("judges\u{1f}{}", run.id);
                 let seat = Seat {
                     id: &lane,
@@ -7374,6 +7412,11 @@ impl BenchmarkService {
                     });
                 }
             }
+            if !admission_window::remaining(&scope).is_zero()
+                && run.attempts.iter().any(|a| a.phase == "pending")
+            {
+                continue;
+            }
             let ready = self.dispatchable(&run).await?;
             if ready.is_empty() {
                 // Cells held for their provider still wait for it; the run
@@ -7386,7 +7429,18 @@ impl BenchmarkService {
                         || a.phase == "interrupted"
                 });
                 if flying == 0 && waiting.is_none() && !held {
-                    self.store.set_run_state(&run.id, "completed").await?;
+                    // An unusable panel has stopped judging, not completed the
+                    // measurement. Preserve the paid answers for inspection.
+                    let state = if run.attempts.iter().any(|a| {
+                        a.outcome.as_deref() == Some("pending_review")
+                            && a.reason.is_some()
+                            && super::analysis::score(a).is_none()
+                    }) {
+                        "needs_attention"
+                    } else {
+                        "completed"
+                    };
+                    self.store.set_run_state(&run.id, state).await?;
                     self.changed().await;
                 }
                 continue;
@@ -7400,10 +7454,18 @@ impl BenchmarkService {
             let mut started = false;
             for (run, ready) in &mut queues {
                 for (a, version) in ready.by_ref() {
+                    if !admission_window::remaining(&scope).is_zero() {
+                        return Ok(());
+                    }
                     // A tick lasts while anything of any run flies. A cell put
                     // back with a wait starts again once it has waited it out;
                     // one put straight back waits for the next tick.
-                    if tried.contains(&a.id) && a.wait_until.is_none_or(|until| until > now()) {
+                    let resources_released =
+                        resource_waiting(&a) && admission_window::remaining(&scope).is_zero();
+                    if tried.contains(&a.id)
+                        && !resources_released
+                        && a.wait_until.is_none_or(|until| until > now())
+                    {
                         continue;
                     }
                     if self
@@ -7466,7 +7528,11 @@ impl BenchmarkService {
     }
     async fn release(&self, id: &str) {
         self.active.lock().await.remove(id);
-        admission_window::ended(&self.store.root.display().to_string(), id);
+        let scope = self.store.root.display().to_string();
+        if admission_window::finished(&scope, id) {
+            self.wake.notify_one();
+        }
+        admission_window::ended(&scope, id);
     }
     /// Hands the lane and account of a finished turn to the next attempt of
     /// its configuration while its sealed answer is checked, so the run's
@@ -7640,37 +7706,33 @@ impl BenchmarkService {
             && version.manifest.workflow.is_none()
             && a.configuration.execution_profile != "workflow_policy";
         let scope = self.store.root.display().to_string();
-        if !self.has_room(&seat, &workers).await
-            || (prepares && !admission_window::has_room(&scope))
-        {
+        if !self.has_room(&seat, &workers).await || !admission_window::has_room(&scope) {
             waiting_accounts.extend(accounts);
             return Ok(false);
         }
+        // Reserve before the host probe so a full queue is asked by one
+        // candidate after the shared wait, never by every pending cell.
+        let Some(preparing) = admission_window::begin(&scope, &id) else {
+            waiting_accounts.extend(accounts);
+            return Ok(false);
+        };
         if let Err(error) = self.backend.resource_admission(&a.configuration).await {
             if error.code == "resource_busy" {
+                admission_window::refused(&scope, &id);
                 let reason = format!("Waiting for local resources: {}", error.message);
-                if a.reason.as_deref() != Some(reason.as_str()) {
-                    // The stored cell, without an account handoff that only
-                    // its start makes.
-                    let mut waiting = self.store.attempt(&a.id).await?;
-                    waiting.reason = Some(reason);
-                    self.store.save_attempt(&waiting).await?;
-                }
+                // The stored cell, without an account handoff that only its
+                // start makes. All other cells remain quietly queued.
+                let mut waiting = self.store.attempt(&a.id).await?;
+                waiting.reason = Some(reason);
+                waiting.wait_until = Some(now() + admission_window::RETRY.as_millis() as i64);
+                self.store.save_attempt(&waiting).await?;
+                self.changed().await;
                 return Ok(false);
             }
             return Err(error);
         }
         // Its place in the window ends with the flight that owns it, however
         // that flight ends, or here on any return before the flight starts.
-        let preparing = if prepares {
-            let Some(place) = admission_window::begin(&scope, &id) else {
-                waiting_accounts.extend(accounts);
-                return Ok(false);
-            };
-            Some(place)
-        } else {
-            None
-        };
         let Some(cancel_rx) = self.claim_workers(&run.id, seat, workers).await else {
             waiting_accounts.extend(accounts);
             return Ok(false);
@@ -7708,6 +7770,12 @@ impl BenchmarkService {
         tried.insert(a.id.clone());
         a.phase = "preparing".into();
         a.started_at = Some(now());
+        if a.reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("Waiting for local resources"))
+        {
+            a.reason = None;
+        }
         // A wait ends when its cell starts; only a new one lets it start
         // again within this tick.
         a.wait_until = None;
@@ -7741,6 +7809,9 @@ impl BenchmarkService {
         // runs now and since when, not only which ones finished.
         self.changed().await;
         let (service, run) = (self.clone(), run.clone());
+        if !prepares {
+            admission_window::admitted(&scope, &id);
+        }
         flights.spawn(async move {
             let _preparing = preparing;
             if let Err(error) = service
@@ -8101,6 +8172,11 @@ impl BenchmarkService {
             }
             executed
         };
+        // The generation released its sandbox. A refused queue can now check
+        // again, while this sealed answer proceeds to evaluation and judging.
+        if admission_window::finished(&self.store.root.display().to_string(), &a.id) {
+            self.wake.notify_one();
+        }
         // The cancel signal stays live through judging.
         let result = match result {
             Ok(mut completed) => {
@@ -8117,7 +8193,6 @@ impl BenchmarkService {
         };
         match result {
             Ok(mut completed) => {
-                local_refusals_cleared(&a.id);
                 quota_recovered(&run.id, &quota_scope(&a.configuration));
                 completed.phase = self.settled_phase(run, &completed).await?.into();
                 self.store.save_attempt(&completed).await?;
@@ -8146,7 +8221,8 @@ impl BenchmarkService {
                             &mut failed,
                             format!("Waiting for local resources: {}", error.message),
                         );
-                        failed.wait_until = Some(now() + local_refusal_wait(&a.id));
+                        failed.wait_until =
+                            Some(now() + admission_window::RETRY.as_millis() as i64);
                     }
                     failed.workflow_steps.clear();
                     if version.manifest.workflow.is_none() {
@@ -8156,7 +8232,6 @@ impl BenchmarkService {
                     self.store.save_attempt(&failed).await?;
                     return Ok(());
                 }
-                local_refusals_cleared(&a.id);
                 let retry_allowed = run.request.automatic_retry()
                     && run.request.require_dispatch_admission(now()).is_ok();
                 // A usage limit that stopped the turn before anything of it
@@ -8429,7 +8504,9 @@ impl BenchmarkService {
             a.phase == "pending"
                 && !provider_held(&run.id, &a.configuration.provider_id)
                 && !provider_held(&run.id, &quota_scope(&a.configuration))
-                && !resource_waiting(a)
+                && (!resource_waiting(a)
+                    || admission_window::remaining(&self.store.root.display().to_string())
+                        .is_zero())
         }) {
             if !versions.contains_key(&pending.version_id) {
                 let version = self.store.version_shared(&pending.version_id).await?;
@@ -8467,16 +8544,49 @@ impl BenchmarkService {
         }
         let output = completed.output.clone().unwrap_or_default();
         let mut waited = false;
+        let scope = self.store.root.display().to_string();
+        let job = format!("evaluation:{}", completed.id);
         let evaluation = loop {
+            // Waiting never probes or restarts a worker. Cancellation stays
+            // responsive while the shared two-minute deadline runs down.
+            if stop.cancelled() && (waited || !admission_window::has_room(&scope)) {
+                completed.outcome = Some("evaluation_error".into());
+                completed
+                    .reason
+                    .get_or_insert_with(|| format!("{EVALUATION_WAIT}: cancelled while queued"));
+                return Ok(completed);
+            }
+            let Some(preparing) = admission_window::begin(&scope, &job) else {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            };
+            if !self.backend.paces_preparation() {
+                admission_window::admitted(&scope, &job);
+            }
             match self
                 .backend
                 .evaluate_output(&version.manifest, &output)
                 .await
             {
-                Ok(evaluation) => break evaluation,
+                Ok(evaluation) => {
+                    admission_window::admitted(&scope, &job);
+                    if admission_window::finished(&scope, &job) {
+                        self.wake.notify_one();
+                    }
+                    if completed
+                        .reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
+                    {
+                        completed.reason = None;
+                    }
+                    completed.wait_until = None;
+                    break evaluation;
+                }
                 // Nothing graded the paid answer yet: it waits for the sandbox
                 // as long as its run goes on, and is never generated again.
                 Err(error) if unstarted_refusal(&error) && !stop.cancelled() => {
+                    admission_window::finished(&scope, &job);
                     if !waited {
                         log::info!(
                             "[benchmarks] {EVALUATION_WAIT} attempt {}: {}",
@@ -8485,9 +8595,15 @@ impl BenchmarkService {
                         );
                         waited = true;
                     }
-                    tokio::time::sleep(EVALUATION_RETRY).await;
+                    admission_window::refused(&scope, &job);
+                    completed.reason = Some(format!("{EVALUATION_WAIT}: {}", error.message));
+                    completed.wait_until = Some(now() + admission_window::RETRY.as_millis() as i64);
+                    self.store.save_attempt(&completed).await?;
+                    self.changed().await;
+                    drop(preparing);
                 }
                 Err(error) => {
+                    admission_window::finished(&scope, &job);
                     completed.outcome = Some(evaluation_failure_outcome(&error).into());
                     completed.reason = Some(error.message);
                     return Ok(completed);
@@ -8516,15 +8632,28 @@ impl BenchmarkService {
     ) -> Attempt {
         match judge_budget {
             Some(Ok(true)) => {
+                let scope = self.store.root.display().to_string();
+                let job = format!("judge:{}", attempt.id);
+                let Some(_preparing) = admission_window::begin(&scope, &job) else {
+                    attempt.reason = Some(JUDGE_DISCOVERY_WAIT.into());
+                    let remaining = admission_window::remaining(&scope);
+                    attempt.wait_until =
+                        (!remaining.is_zero()).then(|| now() + remaining.as_millis() as i64);
+                    return attempt;
+                };
                 let lock = super::evaluation_lock(&attempt.id);
                 let _guard = lock.lock().await;
                 let recorded: Vec<String> =
                     attempt.evaluations.iter().map(|e| e.id.clone()).collect();
-                match self
+                if !self.backend.paces_preparation() {
+                    admission_window::admitted(&scope, &job);
+                }
+                let result = self
                     .backend
                     .judge(&self.store, attempt.clone(), version, stop)
-                    .await
-                {
+                    .await;
+                admission_window::finished(&scope, &job);
+                match result {
                     Ok(judged) => attempt = judged,
                     Err(error) => {
                         // Once the panel saved, the store holds this attempt's verdicts
@@ -8537,7 +8666,15 @@ impl BenchmarkService {
                                 attempt = saved;
                             }
                         }
-                        attempt.reason = Some(format!("Judging failed: {}", error.message));
+                        if unstarted_refusal(&error) {
+                            admission_window::refused(&scope, &job);
+                            attempt.reason =
+                                Some(format!("{JUDGE_DISCOVERY_WAIT}: {}", error.message));
+                            attempt.wait_until =
+                                Some(now() + admission_window::RETRY.as_millis() as i64);
+                        } else {
+                            attempt.reason = Some(format!("Judging failed: {}", error.message));
+                        }
                     }
                 }
             }
@@ -8605,6 +8742,7 @@ impl BenchmarkService {
         let judge_budget = self.judge_budget(run, &version).await;
         let mut attempt = waiting.clone();
         attempt.reason = None;
+        attempt.wait_until = None;
         let stop = JudgeStop::run(&run.id, cancel_rx);
         let mut judged = self.ask_judges(attempt, &version, judge_budget, stop).await;
         judged.phase = self.settled_phase(run, &judged).await?.into();
@@ -8634,7 +8772,7 @@ impl BenchmarkService {
     /// else, a cancelled run included, settles the attempt.
     async fn settled_phase(&self, run: &BenchmarkRun, attempt: &Attempt) -> Result<&'static str> {
         Ok(
-            if run.request.automatic_retry()
+            if (run.request.automatic_retry() || judge_discovery_waiting(attempt))
                 && judging_deferred(attempt)
                 && !matches!(
                     self.store.run_state(&run.id).await?.as_str(),
@@ -8701,6 +8839,9 @@ pub struct FakeBackend {
     pub busy_judges: std::sync::atomic::AtomicBool,
     /// The panel fails before it records anything.
     pub fail_judges: std::sync::atomic::AtomicBool,
+    /// Local discovery refusals, before any judge prompt is sent.
+    #[cfg(test)]
+    judge_listing_refusals: std::sync::atomic::AtomicU64,
     /// Turns the host refuses for quota before any provider call.
     pub quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
@@ -8769,6 +8910,9 @@ pub struct FakeBackend {
     pub peak_in_flight: std::sync::atomic::AtomicU64,
     /// Cancellation tests keep every dispatched turn open until cancelled.
     pub hold_turns: std::sync::atomic::AtomicBool,
+    /// A concurrency test may finish one held turn normally.
+    #[cfg(test)]
+    turn_release: tokio::sync::Notify,
     /// When set, no turn finishes before this many have been in flight at
     /// once, so overlap tests do not race a slow machine's clock.
     pub gate_in_flight: std::sync::atomic::AtomicU64,
@@ -8850,6 +8994,16 @@ impl ExecutionBackend for FakeBackend {
     ) -> BoxFuture<'a, Result<Attempt>> {
         use std::sync::atomic::Ordering;
         Box::pin(async move {
+            #[cfg(test)]
+            if self
+                .judge_listing_refusals
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(BenchmarkError::new("resource_busy", "measured CPU load is above the light-job admission line; no provider process started"));
+            }
             self.judges.fetch_add(1, Ordering::SeqCst);
             if self.fail_judges.load(Ordering::SeqCst) {
                 return Err(BenchmarkError::new("infrastructure_failure", "host down"));
@@ -9062,6 +9216,12 @@ impl ExecutionBackend for FakeBackend {
             }
             if self.hold_turns.load(Ordering::SeqCst) {
                 while !*cancel.borrow() {
+                    #[cfg(test)]
+                    tokio::select! {
+                        changed = cancel.changed() => if changed.is_err() { break; },
+                        _ = self.turn_release.notified() => break,
+                    }
+                    #[cfg(not(test))]
                     if cancel.changed().await.is_err() {
                         break;
                     }
@@ -10050,6 +10210,30 @@ mod tests {
             inventory_revision: Some("runtime".into()),
             model_name: None,
         }
+    }
+    #[test]
+    fn a_partial_judge_inventory_is_not_a_missing_panel() {
+        let busy = || BenchmarkError::new("resource_busy", "local CPU admission refused");
+        assert_eq!(
+            resolve_judge_panel(vec![judge_row("opus")], Some(busy()))
+                .unwrap_err()
+                .code,
+            "resource_busy"
+        );
+        // An unused account's refusal does not hold a complete panel back.
+        assert_eq!(
+            resolve_judge_panel(vec![judge_row("opus"), judge_row("sonnet")], Some(busy()))
+                .unwrap()
+                .len(),
+            2
+        );
+        // A complete discovery with too few judges keeps the real panel error.
+        assert_eq!(
+            resolve_judge_panel(vec![judge_row("opus")], None)
+                .unwrap()
+                .len(),
+            1
+        );
     }
     #[test]
     fn a_rubric_may_ask_each_seat_three_times_and_never_by_default() {
@@ -11318,17 +11502,118 @@ mod tests {
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
         backend.resource_busy.store(false, Ordering::SeqCst);
         backend.resource_refusals.store(1, Ordering::SeqCst);
+        admission_window::expire_wait(&service.store.root.display().to_string());
         service.tick().await.unwrap();
         let waiting = service.store.run(&run.id).await.unwrap();
         assert_eq!(waiting.attempts[0].phase, "pending");
         assert!(waiting.attempts[0].wait_until.is_some());
         assert!(waiting.attempts[0].started_at.is_none());
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
-        tokio::time::sleep(Duration::from_millis(2100)).await;
+        admission_window::expire_wait(&service.store.root.display().to_string());
         service.tick().await.unwrap();
         service.tick().await.unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(service.store.run(&run.id).await.unwrap().attempts.len(), 1);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn resource_refusal_parks_the_whole_queue_and_checks_once_when_due() {
+        let (dir, service, backend) = setup().await;
+        let mut request = request(&service).await;
+        request.repetitions = 20;
+        request.max_executions = 20;
+        backend.resource_busy.store(true, Ordering::SeqCst);
+        let run = service.start_run(request).await.unwrap();
+        let scope = service.store.root.display().to_string();
+        for _ in 0..20 {
+            service.tick().await.unwrap();
+        }
+        assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        let queued = service.store.run(&run.id).await.unwrap();
+        assert_eq!(queued.state, "running");
+        assert!(queued
+            .attempts
+            .iter()
+            .all(|a| a.phase == "pending" && a.started_at.is_none()));
+        assert_eq!(
+            queued
+                .attempts
+                .iter()
+                .filter(|a| a.wait_until.is_some())
+                .count(),
+            1
+        );
+        assert!(admission_window::remaining(&scope) > Duration::from_secs(110));
+        admission_window::expire_wait(&scope);
+        service.tick().await.unwrap();
+        assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 2);
+        for _ in 0..5 {
+            service.tick().await.unwrap();
+        }
+        assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 2);
+        backend.resource_busy.store(false, Ordering::SeqCst);
+        admission_window::expire_wait(&scope);
+        for _ in 0..3 {
+            service.tick().await.unwrap();
+        }
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 20);
+        assert_eq!(service.store.run(&run.id).await.unwrap().state, "completed");
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn completed_turn_wakes_the_resource_queue_and_fills_available_slots() {
+        let (dir, service, backend) = setup().await;
+        let mut request = serial_request(&service).await;
+        request.repetitions = 6;
+        request.max_executions = 6;
+        backend.hold_turns.store(true, Ordering::SeqCst);
+        let run = service.start_run(request).await.unwrap();
+        let scope = service.store.root.display().to_string();
+        let mut flights = tokio::task::JoinSet::new();
+        let mut tried = std::collections::HashSet::new();
+        service.fill(&mut flights, &mut tried).await.unwrap();
+        assert_eq!(flights.len(), 1);
+        service.set_parallelism(&run.id, 3).await.unwrap();
+        backend.resource_busy.store(true, Ordering::SeqCst);
+        service.fill(&mut flights, &mut tried).await.unwrap();
+        assert!(!admission_window::remaining(&scope).is_zero());
+        assert_eq!(flights.len(), 1);
+        backend.resource_busy.store(false, Ordering::SeqCst);
+        backend.turn_release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), flights.join_next())
+            .await
+            .unwrap();
+        assert!(admission_window::remaining(&scope).is_zero());
+        assert_eq!(
+            service
+                .store
+                .run(&run.id)
+                .await
+                .unwrap()
+                .attempts
+                .iter()
+                .filter(|a| a.outcome.as_deref() == Some("pass"))
+                .count(),
+            1
+        );
+        service.fill(&mut flights, &mut tried).await.unwrap();
+        assert_eq!(
+            flights.len(),
+            3,
+            "completion fills capacity beyond a single replacement"
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while backend.in_flight.load(Ordering::SeqCst) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(backend.peak_in_flight.load(Ordering::SeqCst) >= 3);
+        service.control(&run.id, "cancel").await.unwrap();
+        while flights.join_next().await.is_some() {}
+        service.tick().await.unwrap();
         dir.close().await;
     }
     #[tokio::test]
@@ -14946,6 +15231,126 @@ mod tests {
         let rendering = s.store.attempt(&run.attempts[0].id).await.unwrap();
         assert!(rendering.output.is_some());
         assert_ne!(rendering.outcome.as_deref(), Some("excluded"));
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn judge_discovery_waits_without_repeating_the_paid_answer() {
+        let (dir, s, backend) = setup().await;
+        let mut request = creative_request(&s).await;
+        request.execution_limits = Some(RunExecutionLimits {
+            retry_policy: RunRetryPolicy::None,
+            dispatch_not_after_ms: None,
+        });
+        backend.judge_listing_refusals.store(1, Ordering::SeqCst);
+        let run = s.start_run(request).await.unwrap();
+        s.tick().await.unwrap();
+        let mut waiting = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(waiting.phase, AWAITING_JUDGES);
+        assert!(judge_discovery_waiting(&waiting));
+        assert!(waiting.wait_until.is_some());
+        assert!(waiting.output.is_some());
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "running");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 0);
+        let output = waiting.output.clone();
+        let session = waiting.session_id.clone();
+        // Ticking before the retry time neither probes nor sends a judge prompt.
+        waiting.wait_until = Some(now() + 60_000);
+        s.store.save_attempt(&waiting).await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            s.store.attempt(&waiting.id).await.unwrap().wait_until,
+            waiting.wait_until
+        );
+        waiting.wait_until = Some(now() - 1);
+        s.store.save_attempt(&waiting).await.unwrap();
+        admission_window::expire_wait(&s.store.root.display().to_string());
+        s.tick().await.unwrap();
+        let judged = s.store.attempt(&waiting.id).await.unwrap();
+        assert_eq!(judged.phase, "terminal");
+        assert!(judged.reason.is_none());
+        assert!(judged.wait_until.is_none());
+        assert_eq!(judged.output, output);
+        assert_eq!(judged.session_id, session);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn a_waiting_judge_retries_within_the_tick_when_preparation_capacity_returns() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        let mut waiting = run.attempts[0].clone();
+        waiting.phase = AWAITING_JUDGES.into();
+        waiting.outcome = Some("pending_review".into());
+        waiting.output = Some(creative().evaluator.known_good);
+        waiting.reason = Some(JUDGE_DISCOVERY_WAIT.into());
+        waiting.wait_until = None;
+        s.store.save_attempt(&waiting).await.unwrap();
+        // This same tick already tried the panel while another preparation
+        // occupied the window. Other runs can keep that tick open indefinitely.
+        let mut tried = std::collections::HashSet::from([waiting.id.clone()]);
+        let mut flights = tokio::task::JoinSet::new();
+        let scope = s.store.root.display().to_string();
+        let preparing = admission_window::begin(&scope, "other-preparation").unwrap();
+        s.fill(&mut flights, &mut tried).await.unwrap();
+        assert!(
+            flights.is_empty(),
+            "a full preparation window must not be polled"
+        );
+        drop(preparing);
+        // Reuse the tick's tried set: a new tick must not be needed to judge.
+        s.fill(&mut flights, &mut tried).await.unwrap();
+        assert_eq!(
+            flights.len(),
+            1,
+            "the waiting panel must resume in this tick"
+        );
+        while let Some(result) = flights.join_next().await {
+            result.unwrap();
+        }
+        let settled = s.store.attempt(&waiting.id).await.unwrap();
+        assert_eq!(settled.phase, "terminal");
+        assert_eq!(settled.output, waiting.output);
+        assert!(settled.reason.is_none());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn failed_judging_requires_attention_and_preserves_the_paid_answer() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        let mut a = run.attempts[0].clone();
+        a.phase = "terminal".into();
+        a.outcome = Some("pending_review".into());
+        a.reason = Some("No judge panel: 1 eligible judge(s), at least 2 are required".into());
+        a.output = Some("Preserved answer".into());
+        a.finished_at = Some(now());
+        s.store.save_attempt(&a).await.unwrap();
+        // The reason is visible immediately, while other work could still run.
+        assert_eq!(
+            s.store.runs().await.unwrap()[0]
+                .attention
+                .as_ref()
+                .unwrap()
+                .reason,
+            a.reason.clone().unwrap()
+        );
+        s.tick().await.unwrap();
+        let stopped = s.store.run(&run.id).await.unwrap();
+        assert_eq!(stopped.state, "needs_attention");
+        assert_eq!(s.store.attempt(&a.id).await.unwrap().output, a.output);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 0);
+        // Historical runs also expose the problem instead of a silent success.
+        s.store.set_run_state(&run.id, "completed").await.unwrap();
+        let summary = s.store.runs().await.unwrap().remove(0);
+        assert_eq!(
+            summary.attention.unwrap().outcome.as_deref(),
+            Some("pending_review")
+        );
         dir.close().await;
     }
     #[tokio::test]

@@ -158,7 +158,7 @@ async fn a_workflow_refused_before_any_provider_waits_and_starts_afresh() {
             .starts_with("Waiting for local resources"));
         assert_eq!(prepared(&service, &root.id).await, (0, 0));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
-        tokio::time::sleep(Duration::from_millis(2100)).await;
+        admission_window::expire_wait(&service.store.root.display().to_string());
         for _ in 0..3 {
             service.tick().await.unwrap();
         }

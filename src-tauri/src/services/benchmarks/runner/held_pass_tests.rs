@@ -123,6 +123,8 @@ async fn a_waited_out_cell_starts_again_while_another_run_flies() {
         assert_eq!(still.phase, "pending", "a wait still ahead holds the cell");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         pause_and_resume(&service, &run.id, now() + wait_left_at_resume_ms).await;
+        admission_window::expire_wait(&service.store.root.display().to_string());
+        service.wake.notify_one();
         let started =
             attempt_when(&service, &run.id, "started again", |a| a.phase == "running").await;
         assert!(started.started_at.is_some(), "{wait_left_at_resume_ms}");
@@ -138,6 +140,7 @@ async fn a_waited_out_cell_starts_again_while_another_run_flies() {
 #[tokio::test]
 async fn a_refused_evaluation_is_asked_again_while_another_run_flies() {
     let (dir, service, backend) = setup().await;
+    let held = HeldPass::open(&service, &backend).await;
     let run = service
         .start_run(one_cell(&service, "held-pass-evaluation-run").await)
         .await
@@ -162,7 +165,18 @@ async fn a_refused_evaluation_is_asked_again_while_another_run_flies() {
     // The tick's first recovery meets the refusal; only a later one in the
     // same tick can evaluate.
     backend.evaluation_refusals.store(1, Ordering::SeqCst);
-    let held = HeldPass::open(&service, &backend).await;
+    service.wake.notify_one();
+    let waiting = attempt_when(&service, &run.id, "evaluation waited", |a| {
+        a.reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
+    })
+    .await;
+    let mut waiting = service.store.attempt(&waiting.id).await.unwrap();
+    waiting.wait_until = Some(now() - 1);
+    service.store.save_attempt(&waiting).await.unwrap();
+    admission_window::expire_wait(&service.store.root.display().to_string());
+    service.wake.notify_one();
     let settled = attempt_when(&service, &run.id, "evaluated", |a| a.phase == "terminal").await;
     assert_eq!(settled.outcome.as_deref(), Some("pass"));
     assert_eq!(backend.evaluations.load(Ordering::SeqCst), 2);
@@ -241,25 +255,9 @@ async fn a_due_schedule_starts_its_run_while_another_run_flies() {
     dir.close().await;
 }
 
-#[test]
-fn repeated_local_refusals_wait_longer_up_to_a_minute() {
-    let waits: Vec<i64> = (1..=8).map(unstarted_wait_ms).collect();
-    assert_eq!(
-        waits,
-        [2_000, 5_000, 10_000, 20_000, 40_000, 60_000, 60_000, 60_000]
-    );
-    let id = "invented-refused-attempt";
-    assert_eq!(local_refusal_wait(id), 2_000);
-    assert_eq!(local_refusal_wait(id), 5_000);
-    local_refusals_cleared(id);
-    assert_eq!(local_refusal_wait(id), 2_000);
-    local_refusals_cleared(id);
-}
-
 /// The broker refuses a cell's turn before any provider process, so the
 /// runner puts the cell back itself (and, for a workflow root, discards the
-/// refused try's steps and clocks); it starts again within the tick by its
-/// own wait, which grows when the refusal repeats.
+/// refused try's steps and clocks). Each retry waits for the shared deadline.
 #[tokio::test]
 async fn a_cell_the_broker_refused_starts_again_within_the_tick() {
     for workflow in [false, true] {
@@ -306,12 +304,18 @@ async fn a_cell_the_broker_refused_starts_again_within_the_tick() {
             .await
             .wait_until
             .unwrap();
+        let scope = service.store.root.display().to_string();
+        assert!(first >= now() + 110_000);
+        admission_window::expire_wait(&scope);
+        service.wake.notify_one();
         if !workflow {
             let again = attempt_when(&service, &run.id, "waited again", |a| {
                 waiting(a) && a.wait_until != Some(first)
             })
             .await;
-            assert!(again.wait_until.unwrap() >= first + 5_000);
+            assert!(again.wait_until.unwrap() >= now() + 110_000);
+            admission_window::expire_wait(&scope);
+            service.wake.notify_one();
         }
         let started = attempt_when(&service, &run.id, "started again", |a| {
             a.started_at.is_some() && matches!(a.phase.as_str(), "preparing" | "running")

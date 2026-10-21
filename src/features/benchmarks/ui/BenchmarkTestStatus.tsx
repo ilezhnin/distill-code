@@ -167,14 +167,30 @@ export function testStatus(
   const judging = runFinished
     ? undefined
     : attempts.find(
-        (a) => a.phase === "awaiting_judges" || a.outcome === "pending_review",
+        (a) =>
+          a.phase === "awaiting_judges" ||
+          (a.outcome === "pending_review" && a.phase !== "terminal"),
       );
   // A paused run neither works nor judges: its cells wait for it to
   // resume. A stopping or cancelling run may still land a flight, so its
   // cells keep their clock.
   if ((working || judging) && runState === "paused")
     return { kind: "paused", runState };
+  if (working?.reason?.startsWith("Waiting for local resources"))
+    return {
+      kind: "waiting",
+      reason: working.reason,
+      stopped: runState == null || !ACTIVE_RUN.has(runState),
+      until: working.waitUntil ?? null,
+    };
   if (working) return { kind: "running", startedAt: working.startedAt ?? null };
+  if (judging?.reason?.startsWith("Waiting for local resources"))
+    return {
+      kind: "waiting",
+      reason: judging.reason,
+      stopped: runState == null || !ACTIVE_RUN.has(runState),
+      until: judging.waitUntil ?? null,
+    };
   if (judging) return { kind: "judging", startedAt: judging.startedAt ?? null };
   // A test the runner put back in the queue with a reason waits on its
   // provider: a usage limit, a sign-in renewal or the operator.
@@ -235,6 +251,8 @@ function waitingLabel(
   stopped: boolean,
   timed: boolean,
 ): string {
+  if (reason.startsWith("Waiting for local resources"))
+    return "modelRun.waitingResources";
   // Plan usage ran out and benchmark tests may not go on with credits.
   if (/benchmark credits/i.test(reason)) {
     if (stopped) return "modelRun.stoppedCredits";

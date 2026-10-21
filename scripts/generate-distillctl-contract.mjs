@@ -47,7 +47,8 @@ async function loadContracts() {
     define: {
       "import.meta.env.VITE_APP_VERSION": JSON.stringify(packageJson.version),
     },
-    server: { middlewareMode: true, hmr: false },
+    // A one-shot import needs no watcher over the native build cache.
+    server: { middlewareMode: true, hmr: false, watch: null },
     optimizeDeps: { noDiscovery: true },
   });
 

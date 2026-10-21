@@ -5,6 +5,7 @@ import {
   QueryObserver,
 } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { benchmarkApi } from "../api/benchmarks";
 import {
   COALESCED_REFRESH_MS,
@@ -15,10 +16,14 @@ import {
 } from "../hooks/useBenchmarks";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
 import type { BenchmarkChange, UsageLedgerEntry } from "../types";
+import { runSummary } from "./fixtures";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkApi: {
     getUsageLedger: vi.fn(),
+    listRuns: vi.fn(),
     eventsSince: vi.fn(),
     listen: vi.fn(),
   },
@@ -51,6 +56,7 @@ function Shell() {
 describe("persistent benchmark runtime", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
     vi.mocked(benchmarkApi.eventsSince).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listen).mockResolvedValue(() => {});
   });
@@ -129,6 +135,87 @@ describe("persistent benchmark runtime", () => {
       </QueryClientProvider>,
     );
     await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledTimes(2));
+    client.clear();
+  });
+
+  it("reports failed judging from another page and reports its stop without notification spam", async () => {
+    const active = { ...runSummary, state: "running", attention: null };
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([active]);
+    vi.mocked(benchmarkApi.getUsageLedger).mockResolvedValue([]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <Shell />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(["benchmarks", "runs"])).toEqual([active]),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+    const failed = {
+      ...active,
+      attention: {
+        outcome: "pending_review",
+        reason: "No judge panel: 1 eligible judge(s), at least 2 are required",
+      },
+    };
+    act(() => client.setQueryData(["benchmarks", "runs"], [failed]));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("Judging failed"),
+      expect.objectContaining({
+        description: "Cannot assemble a judge panel: 1 available, 2 required.",
+        id: `benchmark-attention-${active.id}`,
+      }),
+    );
+    act(() =>
+      client.setQueryData(
+        ["benchmarks", "runs"],
+        [{ ...failed, revision: 20 }],
+      ),
+    );
+    expect(toast.error).toHaveBeenCalledOnce();
+    act(() =>
+      client.setQueryData(
+        ["benchmarks", "runs"],
+        [{ ...failed, state: "needs_attention" }],
+      ),
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2));
+    expect(toast.error).toHaveBeenLastCalledWith(
+      expect.stringContaining("Run stopped"),
+      expect.objectContaining({ id: `benchmark-attention-${active.id}` }),
+    );
+    client.clear();
+  });
+
+  it("does not announce historical failures on startup", async () => {
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([
+      {
+        ...runSummary,
+        state: "completed",
+        attention: {
+          outcome: "pending_review",
+          reason:
+            "The judge panel is incomplete; every judge must return a valid score sheet",
+        },
+      },
+    ]);
+    vi.mocked(benchmarkApi.getUsageLedger).mockResolvedValue([]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <Shell />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(["benchmarks", "runs"])).toBeDefined(),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
     client.clear();
   });
 
@@ -221,26 +308,27 @@ describe("persistent benchmark runtime", () => {
   }
 
   it("coalesces a burst of change notices into one refresh per interval", async () => {
-    const { client, stale, notice } = await mounted();
+    const { client, notice } = await mounted();
     const runs = ["benchmarks", "runs"];
     client.setQueryData(runs, []);
+    const initialReads = vi.mocked(benchmarkApi.listRuns).mock.calls.length;
     vi.useFakeTimers();
     try {
       // The first notice refreshes at once.
       notice({ sequence: 1 });
-      expect(stale(runs)).toBe(true);
+      expect(benchmarkApi.listRuns).toHaveBeenCalledTimes(initialReads + 1);
       client.setQueryData(runs, []);
       // Those that follow within the interval wait for its end, together.
       for (const sequence of [2, 3, 4]) {
         await act(() => vi.advanceTimersByTimeAsync(200));
         notice({ sequence });
       }
-      expect(stale(runs)).toBe(false);
+      expect(benchmarkApi.listRuns).toHaveBeenCalledTimes(initialReads + 1);
       await act(() => vi.advanceTimersByTimeAsync(COALESCED_REFRESH_MS));
-      expect(stale(runs)).toBe(true);
+      expect(benchmarkApi.listRuns).toHaveBeenCalledTimes(initialReads + 2);
       client.setQueryData(runs, []);
       await act(() => vi.advanceTimersByTimeAsync(COALESCED_REFRESH_MS * 2));
-      expect(stale(runs)).toBe(false);
+      expect(benchmarkApi.listRuns).toHaveBeenCalledTimes(initialReads + 2);
     } finally {
       vi.useRealTimers();
     }

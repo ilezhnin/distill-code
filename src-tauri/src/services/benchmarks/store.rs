@@ -497,56 +497,77 @@ impl Store {
     /// Recent history needs plans and counts, never serialized attempt evidence.
     pub async fn runs(&self) -> Result<Vec<RunSummary>> {
         let rows = sqlx::query(
-            "SELECT r.id,r.state,r.revision,r.created_at,r.updated_at,r.request_json,
-                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id
-                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'),
-                (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal'
-                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'),
+            "WITH recent_runs AS MATERIALIZED (
+                SELECT * FROM run_plans ORDER BY created_at DESC,id LIMIT 100
+             ), recent_attempts AS MATERIALIZED (
+                SELECT a.run_id,a.configuration_id,a.version_id,a.phase,a.rowid,
+                    json_extract(a.data_json,'$.outcome') AS outcome,
+                    json_extract(a.data_json,'$.reason') AS reason,
+                    json_extract(a.data_json,'$.observed.effort') AS observed_effort,
+                    json_extract(a.data_json,'$.observed.fastMode') AS observed_fast,
+                    json_extract(a.data_json,'$.observed.modelId') AS observed_model,
+                    json_extract(a.data_json,'$.configuration.modelId') AS configured_model,
+                    json_extract(a.data_json,'$.finishedAt') AS finished_at,
+                    EXISTS(SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
+                        WHERE e.type='object' AND json_extract(e.value,'$.provenance')='human'
+                            AND json_extract(e.value,'$.score') IS NOT NULL) AS has_human_score,
+                    EXISTS(SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
+                        WHERE e.type='object' AND json_extract(e.value,'$.score') IS NOT NULL) AS has_score
+                FROM attempts a JOIN recent_runs r ON r.id=a.run_id
+             ) SELECT r.id,r.state,r.revision,r.created_at,r.updated_at,r.request_json,
+                (SELECT COUNT(*) FROM recent_attempts a WHERE a.run_id=r.id
+                    AND COALESCE(a.outcome,'')<>'superseded'),
+                (SELECT COUNT(*) FROM recent_attempts a WHERE a.run_id=r.id AND a.phase='terminal'
+                    AND COALESCE(a.outcome,'')<>'superseded'),
                 CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
-                (SELECT json_group_array(json_array(a.configuration_id,
-                        json_extract(a.data_json,'$.observed.effort'),
-                        json_extract(a.data_json,'$.observed.fastMode')))
-                    FROM attempts a WHERE a.run_id=r.id AND a.phase<>'pending'
-                        AND json_extract(a.data_json,'$.observed.modelId')=json_extract(a.data_json,'$.configuration.modelId')
-                        AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'selection_changed')
+                (SELECT json_group_array(json_array(o.configuration_id,
+                        o.observed_effort,o.observed_fast))
+                    FROM (SELECT a.configuration_id,a.observed_effort,a.observed_fast
+                        FROM recent_attempts a WHERE a.run_id=r.id AND a.phase<>'pending'
+                            AND a.observed_model=a.configured_model
+                            AND COALESCE(a.outcome,'')<>'selection_changed'
+                        ORDER BY a.phase,a.rowid) o)
                 END,
                 CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
                 (SELECT json_group_array(json_array(o.configuration_id,o.version_id,o.running))
-                    FROM (SELECT a.configuration_id,a.version_id,MAX(a.phase<>'pending') AS running FROM attempts a
+                    FROM (SELECT a.configuration_id,a.version_id,MAX(a.phase<>'pending') AS running FROM recent_attempts a
                         WHERE a.run_id=r.id AND a.phase<>'terminal'
                         GROUP BY a.configuration_id,a.version_id ORDER BY MIN(a.rowid)) o)
                 END,
-                CASE WHEN r.state='needs_attention' THEN
-                (SELECT json_array(json_extract(a.data_json,'$.outcome'),json_extract(a.data_json,'$.reason'))
-                    FROM attempts a WHERE a.run_id=r.id
-                        AND COALESCE(json_extract(a.data_json,'$.reason'),'')<>''
-                        AND COALESCE(json_extract(a.data_json,'$.outcome'),'') NOT IN
+                CASE WHEN r.state IN ('running','pausing','needs_attention','completed') THEN
+                (SELECT json_array(a.outcome,a.reason)
+                    FROM recent_attempts a WHERE a.run_id=r.id
+                        AND COALESCE(a.reason,'')<>''
+                        AND ((a.phase='terminal' AND a.outcome='pending_review'
+                            AND a.has_human_score=0)
+                        OR (r.state='needs_attention' AND COALESCE(a.outcome,'') NOT IN
                             ('pass','fail','judged','pending_review','completed','budget_reached','budget_timeout',
-                             'excluded','selection_changed','unsupported','cancelled','superseded')
-                    ORDER BY (a.phase='pending') DESC, COALESCE(json_extract(a.data_json,'$.finishedAt'),0) DESC, a.rowid DESC
+                             'excluded','selection_changed','unsupported','cancelled','superseded')))
+                    ORDER BY (a.phase='pending') DESC,
+                        (a.reason LIKE 'No judge panel:%') DESC,
+                        COALESCE(a.finished_at,0) DESC, a.rowid DESC
                     LIMIT 1)
                 END,
                 r.baked_at,
                 CASE WHEN json_extract(r.request_json,'$.workflowPolicy') IS NOT NULL
-                    AND (SELECT COUNT(*) FROM attempts a WHERE a.run_id=r.id
-                        AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded')=1
-                THEN (SELECT json_object('outcome',json_extract(a.data_json,'$.outcome'),
-                        'reason',json_extract(a.data_json,'$.reason'))
-                    FROM attempts a WHERE a.run_id=r.id AND a.phase='terminal'
-                        AND json_extract(a.data_json,'$.outcome') IS NOT NULL
-                        AND json_extract(a.data_json,'$.outcome')<>'superseded')
+                    AND (SELECT COUNT(*) FROM recent_attempts a WHERE a.run_id=r.id
+                        AND COALESCE(a.outcome,'')<>'superseded')=1
+                THEN (SELECT json_object('outcome',a.outcome,
+                        'reason',a.reason)
+                    FROM recent_attempts a WHERE a.run_id=r.id AND a.phase='terminal'
+                        AND a.outcome IS NOT NULL
+                        AND a.outcome<>'superseded')
                 END,
                 r.paused_ms,r.paused_since,
-                (SELECT COUNT(*) FROM (SELECT 1 FROM attempts a WHERE a.run_id=r.id
-                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'
+                (SELECT COUNT(*) FROM (SELECT 1 FROM recent_attempts a WHERE a.run_id=r.id
+                    AND COALESCE(a.outcome,'')<>'superseded'
                     GROUP BY a.configuration_id,a.version_id)),
-                (SELECT COUNT(*) FROM (SELECT 1 FROM attempts a WHERE a.run_id=r.id
-                    AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'
+                (SELECT COUNT(*) FROM (SELECT 1 FROM recent_attempts a WHERE a.run_id=r.id
+                    AND COALESCE(a.outcome,'')<>'superseded'
                     GROUP BY a.configuration_id,a.version_id
-                    HAVING SUM(a.phase<>'terminal' OR (json_extract(a.data_json,'$.outcome')='pending_review'
-                        AND NOT EXISTS (SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
-                            WHERE e.type='object' AND json_extract(e.value,'$.score') IS NOT NULL)))=0))
-             FROM run_plans r ORDER BY r.created_at DESC,r.id LIMIT 100",
+                    HAVING SUM(a.phase<>'terminal' OR (a.outcome='pending_review'
+                        AND a.has_score=0))=0))
+             FROM recent_runs r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
         .fetch_all(&self.pool)
         .await?;

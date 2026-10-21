@@ -1,5 +1,7 @@
 import {
+  act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -25,8 +27,10 @@ import {
   run,
 } from "./fixtures";
 
-vi.mock("../api/benchmarks", () => ({
-  benchmarkErrorMessage: String,
+vi.mock("../api/benchmarks", async () => ({
+  ...(await vi.importActual<typeof import("../api/benchmarks")>(
+    "../api/benchmarks",
+  )),
   benchmarkApi: {
     getInventory: vi.fn(),
     previewRun: vi.fn(),
@@ -42,6 +46,217 @@ vi.mock("../api/benchmarks", () => ({
 }));
 
 const version = definition.versions[0];
+
+it("keeps the user's scroll position when another test starts", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <BenchmarkModelRunDialog
+        row={leaderboardRow({})}
+        definitions={definitions}
+        runId="run-2"
+        onClose={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await screen.findByText("0 of 5 finished");
+  expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  fireEvent.wheel(screen.getByRole("list"));
+  vi.mocked(Element.prototype.scrollIntoView).mockClear();
+  const next = liveRun("running");
+  next.attempts = next.attempts.map((entry) =>
+    entry.versionId === "version-5"
+      ? { ...entry, phase: "terminal", outcome: "pass" }
+      : entry.versionId === "version-8"
+        ? { ...entry, phase: "running" }
+        : entry,
+  );
+  act(() => client.setQueryData(["benchmarks", "run", "run-2"], next));
+  await waitFor(() =>
+    expect(
+      within(
+        screen.getByText("Hotel").closest("label") as HTMLElement,
+      ).getByLabelText("Running"),
+    ).toBeInTheDocument(),
+  );
+  expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  client.clear();
+});
+
+it("shows why an older run finished without judging and counts scored tests only", async () => {
+  const unfinished = stoppedRun("completed", [
+    { versionId: "version-1", outcome: "pending_review", score: null },
+    { versionId: "version-3", outcome: "fail", score: 0 },
+  ]);
+  for (const entry of unfinished.run.attempts.filter(
+    (a) => a.versionId === "version-1",
+  ))
+    entry.reason =
+      "No judge panel: 1 eligible judge(s), at least 2 are required";
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(unfinished.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(unfinished.summaries);
+  show({ runId: "run-2" });
+  expect(
+    await screen.findByText("Previous judging errors"),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText(/Panel at the time: 1 eligible, 2 required/),
+  ).toBeInTheDocument();
+  const overview = screen.getByLabelText("Run overview");
+  expect(overview?.querySelectorAll("time")).toHaveLength(2);
+  await waitFor(() =>
+    expect(screen.getByText("Measured").nextElementSibling).toHaveTextContent(
+      "1",
+    ),
+  );
+  expect(screen.getByText("Remaining").nextElementSibling).toHaveTextContent(
+    "1",
+  );
+  expect(screen.getByText("Needs attention")).toBeInTheDocument();
+});
+
+it("keeps existing result dots while a changed standing loads", async () => {
+  const old = {
+    ...summary("version-1", "terminal", "pass", 1),
+    id: "standing-old",
+  };
+  let resolveStanding: ((value: AttemptSummary[]) => void) | undefined;
+  const delayed = new Promise<AttemptSummary[]>((resolve) => {
+    resolveStanding = resolve;
+  });
+  vi.mocked(benchmarkApi.listAttempts).mockImplementation((query) =>
+    query.attemptIds?.includes("standing-new")
+      ? delayed
+      : Promise.resolve([old]),
+  );
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = (ids: string[]) => (
+    <QueryClientProvider client={client}>
+      <BenchmarkModelRunDialog
+        row={leaderboardRow({ attemptIds: ids })}
+        definitions={definitions}
+        runId={null}
+        onClose={vi.fn()}
+      />
+    </QueryClientProvider>
+  );
+  const rendered = render(view(["standing-old"]));
+  expect(
+    await screen.findByRole("img", { name: "1 of 1 passed, 1 repetitions" }),
+  ).toBeInTheDocument();
+  rendered.rerender(view(["standing-old", "standing-new"]));
+  await waitFor(() =>
+    expect(benchmarkApi.listAttempts).toHaveBeenCalledWith({
+      attemptIds: ["standing-old", "standing-new"],
+      limit: 100,
+    }),
+  );
+  expect(
+    screen.getByRole("img", { name: "1 of 1 passed, 1 repetitions" }),
+  ).toBeInTheDocument();
+  await act(async () =>
+    resolveStanding?.([old, { ...old, id: "standing-new" }]),
+  );
+  expect(
+    await screen.findByRole("img", { name: "2 of 2 passed, 2 repetitions" }),
+  ).toBeInTheDocument();
+  client.clear();
+});
+
+it("separates a current sandbox blocker from saved judging errors and rechecks without starting work", async () => {
+  const user = userEvent.setup();
+  const previous = stoppedRun("completed", [
+    { versionId: "version-1", outcome: "pending_review", score: null },
+    { versionId: "version-3", outcome: "fail", score: 0 },
+  ]);
+  for (const entry of previous.run.attempts.filter(
+    (a) => a.versionId === "version-1",
+  )) {
+    entry.reason =
+      "No judge panel: 1 eligible judge(s), at least 2 are required";
+    entry.finishedAt = Date.now() - 60_000;
+  }
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(previous.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(previous.summaries);
+  const failure =
+    "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe";
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(failure);
+  show({
+    runId: "run-2",
+    measured: {
+      versionIds: ["version-3"],
+      attemptIds: previous.summaries
+        .filter((entry) => entry.versionId === "version-3")
+        .map((entry) => entry.id),
+    },
+  });
+  await screen.findByText("Cannot start or continue");
+  expect(
+    screen.getByText(
+      "The sandbox check must be renewed for this version of Distill.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByText("Previous judging errors"),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/^Recorded /)).toBeInTheDocument();
+  const recordedCause = screen.getByText(/Panel at the time/);
+  expect(recordedCause).not.toBeVisible();
+  await user.click(screen.getByText("View recorded errors"));
+  expect(recordedCause).toBeVisible();
+  expect(
+    screen.getByText(/Panel at the time/).closest('[role="alert"]'),
+  ).not.toHaveClass("text-destructive");
+  expect(screen.getByText(failure).closest("details")).not.toHaveAttribute(
+    "open",
+  );
+  expect(screen.getByRole("button", { name: "Finish run" })).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: /Measure all again/ }),
+  ).toBeDisabled();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration: { ...configuration, inventoryRevision: "runtime-now" },
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: true,
+      available: true,
+      reason: null,
+    },
+  ]);
+  await user.click(screen.getByRole("button", { name: "Check again" }));
+  await waitFor(() =>
+    expect(screen.queryByText("Cannot start or continue")).toBeNull(),
+  );
+  expect(screen.getByRole("button", { name: "Finish run" })).toBeEnabled();
+  expect(screen.getByText("Previous judging errors")).toBeInTheDocument();
+  expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
+it("blocks new starts and resumes when the current inventory check failed", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(
+    "Inventory check failed",
+  );
+  show();
+  await screen.findByText("Cannot start or continue");
+  expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+  cleanup();
+  const paused = stoppedRun("paused", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-5", outcome: null, score: null },
+  ]);
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(paused.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(paused.summaries);
+  show({ runId: "run-2" });
+  await screen.findByText("Cannot start or continue");
+  expect(await screen.findByRole("button", { name: "Resume" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+});
 
 /** A live test; `kind` is its evaluator, `authoredBy` who wrote it. */
 function test(
@@ -395,7 +610,7 @@ it("checks every current test, tags the model's own, and runs them on today's ru
   expect(row("Charlie").queryByText("0/1")).not.toBeInTheDocument();
   expect(row("Echo").getByLabelText("Running")).toBeInTheDocument();
   expect(row("Hotel").getByText("Queued")).toBeInTheDocument();
-  expect(screen.getByText("3 of 5 finished")).toBeInTheDocument();
+  expect(screen.getByText("0 of 5 finished")).toBeInTheDocument();
   expect(row("Alpha").getByRole("checkbox")).toBeDisabled();
   await user.click(stop);
   expect(benchmarkApi.cancelRun).toHaveBeenCalledWith("run-2");
@@ -406,7 +621,7 @@ it("follows the run that measures the model now", async () => {
   expect(await screen.findByRole("button", { name: "Stop" })).toBeEnabled();
   expect(benchmarkApi.getRun).toHaveBeenCalledWith("run-2");
   expect(
-    await screen.findByText("3 of 5 finished", undefined),
+    await screen.findByText("0 of 5 finished", undefined),
   ).toBeInTheDocument();
   // The checks show the run's tests: Delta is not in it.
   expect(
@@ -647,11 +862,7 @@ it("checks only the tests the board owes, a failure measured in full included, a
   expect(
     await screen.findByText("4 of 6 tests, 12 attempts"),
   ).toBeInTheDocument();
-  expect(
-    screen.getByText(
-      "4 tests owed: the board holds no complete measurement of them, and they start checked. 2 tests measured in full, passed or failed, stand and start unchecked.",
-    ),
-  ).toBeInTheDocument();
+  expect(screen.getByText("Remaining")).toBeInTheDocument();
   for (const name of ["Alpha", "Charlie"])
     expect(row(name).getByRole("checkbox")).not.toBeChecked();
   for (const name of ["Bravo", "Delta", "Echo", "Hotel"])
@@ -749,10 +960,8 @@ it("finishes a stopped run inside its window, adding the tests it lacks, instead
   const finish = await screen.findByRole("button", { name: "Finish run" });
   // The hint counts the queued tests with the added ones, those that keep
   // repetitions already scored, and names the deadline.
-  expect(
-    screen.getByText(/4 tests to measure, 0 of them keep/),
-  ).toBeInTheDocument();
-  expect(screen.getByText(/open until/)).toBeInTheDocument();
+  expect(screen.getByText("Remaining")).toBeInTheDocument();
+  expect(screen.getByText("Archives")).toBeInTheDocument();
   // The run's tests are fixed; the ones it lacks join it unless unchecked.
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
@@ -761,9 +970,7 @@ it("finishes a stopped run inside its window, adding the tests it lacks, instead
   expect(row("Delta").getByRole("checkbox")).toBeChecked();
   expect(row("Delta").getByRole("checkbox")).toBeEnabled();
   await user.click(row("Bravo").getByRole("checkbox"));
-  expect(
-    screen.getByText(/3 tests to measure, 0 of them keep/),
-  ).toBeInTheDocument();
+  expect(screen.getByText("Remaining")).toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Start" }),
   ).not.toBeInTheDocument();
@@ -799,9 +1006,7 @@ it("says a run's window closed and offers a new run for the tests it still owed"
   });
   const start = await screen.findByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());
-  expect(screen.getByRole("alert")).toHaveTextContent(
-    /its 24-hour window, pauses left out, is over, so it can no longer resume or finish\. The 4 tests the board still owes are checked; Start measures them in a new run/,
-  );
+  expect(screen.getByRole("alert")).toHaveTextContent(/This run is archived/);
   // Nothing offers to go on with the closed run.
   for (const name of ["Resume", "Pause", "Finish run"])
     expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
@@ -840,10 +1045,8 @@ it("says a paused run made for an older runtime cannot go on and offers only Sto
   });
   show({ runId: "run-2" });
   expect(
-    await screen.findByText(/made for an older sandbox or CLI version/),
-  ).toHaveTextContent(
-    /so it cannot continue: resuming or finishing would only be refused\. Stop it; then Start measures/,
-  );
+    await screen.findByText(/This run used an earlier execution environment/),
+  ).toHaveTextContent(/Stop it, then start a new run for the remaining tests/);
   for (const name of ["Resume", "Pause", "Finish run", "Start"])
     expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Stop" }));
@@ -872,8 +1075,10 @@ it("offers a new run for the owed tests once a run made for an older runtime is 
   const start = await screen.findByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());
   expect(
-    screen.getByText(/The 5 tests the board still owes are checked/),
+    screen.getByText(/This run used an earlier execution environment/),
   ).toBeInTheDocument();
+  expect(screen.getByText("New run required")).toBeInTheDocument();
+  expect(screen.queryByText(/Stop it/)).toBeNull();
   expect(
     screen.queryByRole("button", { name: "Finish run" }),
   ).not.toBeInTheDocument();
@@ -1137,7 +1342,7 @@ it("stops a run whose repository configuration went stale", async () => {
     definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
   });
   expect(
-    await screen.findByText(/made for an older sandbox or CLI version/),
+    await screen.findByText(/This run used an earlier execution environment/),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
   expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
@@ -1226,16 +1431,14 @@ it("warns before measuring a model again whose run inside its window is complete
   });
   await waitFor(() => expect(again).toBeEnabled());
   expect(screen.getByRole("alert")).toHaveTextContent(
-    /Measured in full .*: 6 tests, every repetition\. Repeating this measurement is unnecessary spending/,
+    /All tests measured. Measuring again starts a new paid run/,
   );
   expect(
     screen.queryByRole("button", { name: "Finish run" }),
   ).not.toBeInTheDocument();
   // Nothing is owed, so nothing starts checked and Start says why it waits.
   expect(screen.getByText("0 of 6 tests, 0 attempts")).toBeInTheDocument();
-  expect(
-    screen.getByText(/Every current test has a complete measurement/),
-  ).toBeInTheDocument();
+  expect(screen.getByText("Measured")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   await user.click(again);
