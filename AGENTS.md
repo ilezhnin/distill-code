@@ -86,8 +86,10 @@ Before every commit, the complete `just ci` gate must pass for the final tree.
 It includes dependency audits, frontend checks and tests, the build, transcript
 Playwright tests, native Windows Rust checks and tests, and Windows script tests.
 Install hooks with `lefthook install`; the pre-commit hook runs this gate and
-rejects unstaged/untracked source or changes made during validation. Use an
-isolated worktree when unrelated work prevents checking the intended tree.
+rejects unstaged/untracked source or changes made during validation. It records
+each validated tree, and the pre-push hook reruns the gate only for a pushed
+tree without such a record, which must then be the clean checked-out tree. Use
+an isolated worktree when unrelated work prevents checking the intended tree.
 Fix formatting explicitly before staging; hooks do not rewrite or stage files.
 
 Do not use `--no-verify`, `LEFTHOOK=0`, skip overrides, or substitute focused

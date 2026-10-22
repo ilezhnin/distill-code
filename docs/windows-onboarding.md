@@ -116,8 +116,9 @@ Node runtime pinned by `node-runtime.lock.json`.
 
 ## Before committing
 
-Run `just ci` on the final changes. The commit, merge-commit, and pre-push hooks
-enforce the full gate: frozen-lockfile installation, dependency audits,
+Run `just ci` on the final changes. The commit and merge-commit hooks enforce
+the full gate, and the pre-push hook reruns it only for a pushed tree that no
+commit hook on this machine validated: frozen-lockfile installation, dependency audits,
 frontend checks and unit tests, the
 production build, transcript Playwright tests, native Rust checks and tests,
 and Windows script tests. Missing tools or failed checks block the operation.
@@ -137,8 +138,9 @@ security advisories published later.
 
 Format before staging (`just fmt`). The commit hook checks that tracked files
 match the staged tree and that no non-ignored untracked files can influence the
-tests. It checks the tree again after validation. It never stashes, rewrites,
-or stages files. Use a separate worktree if unrelated changes are present.
+tests. It checks the tree again after validation and lists the validated tree
+in `.git/distill-validated-trees`. It never stashes, rewrites, or stages files.
+Use a separate worktree if unrelated changes are present.
 Remove obsolete skip entries from `lefthook-local.yml` or `lefthook.local.yml`;
 agents must not bypass validation with local overrides or `--no-verify`.
 

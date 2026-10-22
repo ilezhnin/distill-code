@@ -34,4 +34,7 @@ pre-push:
       run: sh scripts/hooks/private-history-guard.sh "{2}"
       use_stdin: true
     validate-push:
-      run: sh scripts/hooks/dev-tool.sh just ci
+      # The full gate, unless every pushed tree already passed it at commit:
+      # validate-tree.sh records those in the common Git directory.
+      run: sh scripts/hooks/validate-push.sh
+      use_stdin: true
