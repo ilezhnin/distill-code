@@ -16,7 +16,7 @@ import type { ProjectInfo } from "@/features/projects/api/projects";
 import type { BenchmarkSection } from "@/features/benchmarks/lib/benchmarkNavigation";
 import type { BenchmarkProgress } from "@/features/benchmarks/lib/benchmarkActivity";
 import { PrimaryNavigationSurface } from "@/features/navigation/ui/PrimaryNavigationSurface";
-import type { CommandOutcome } from "@/features/distillctl/navigation";
+import type { CommandOutcome } from "@/features/flockctl/navigation";
 import { SessionListCapability } from "@/features/sessions/capabilities/SessionListCapability";
 import {
   DEFAULT_SETTINGS_SECTION,

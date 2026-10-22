@@ -55,5 +55,5 @@ body:
         - Benchmarks and routing
         - Memory and projects
         - Windows setup, build or installer
-        - distillctl or distill-monitor
+        - flockctl or flock-monitor
         - Other

@@ -2,7 +2,7 @@
 //! waits for it.
 //!
 //! Every benchmark session in the sandbox starts on a lease of its account's
-//! Distill sign-in, and admission keeps each one inside the lifetime of that
+//! Flock sign-in, and admission keeps each one inside the lifetime of that
 //! lease. A renewal replaces the account's grant and its refresh token,
 //! so it runs only while no session of the account is alive, and no session
 //! of the account starts while it runs. While running sessions keep a renewal

@@ -35,7 +35,7 @@ Set `APP_TEST_DRIVER_TOKEN` to a fresh 32-128 character alphanumeric token, then
 start the app with `just dev-windows`. Without a valid token the driver stays
 disabled; every request in both normal and isolated modes requires it.
 The desktop-shortcut launcher
-(`scripts/windows/Launch-Distill.ps1`) and the installer builds leave
+(`scripts/windows/Launch-Flock.ps1`) and the installer builds leave
 `app-test-driver` out on purpose, so `driver`
 envelopes against an app started that way answer with a connection failure.
 `exec` envelopes do not need the app at all.

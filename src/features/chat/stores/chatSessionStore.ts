@@ -47,8 +47,8 @@ import {
   type SessionRunSettingsNotice,
 } from "@/features/chat/lib/sessionRunSettings";
 
-const RIGHT_RAIL_OPEN_STORAGE_KEY = "distill:right-rail-open";
-const LEGACY_CONTEXT_PANEL_OPEN_STORAGE_KEY = "distill:context-panel-open";
+const RIGHT_RAIL_OPEN_STORAGE_KEY = "flock:right-rail-open";
+const LEGACY_CONTEXT_PANEL_OPEN_STORAGE_KEY = "flock:context-panel-open";
 
 let sessionLoadEpoch = 0;
 let archiveMutationOperationId = 0;
@@ -956,7 +956,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         // With the whole list in hand, an unread flag for an id the host does
         // not list belongs to a session that was archived away or deleted (in
         // this window or another one): nothing can ever open it to mark it
-        // read, so it would sit in `distill:unread-sessions` forever. Only done
+        // read, so it would sit in `flock:unread-sessions` forever. Only done
         // when there is no further page — a partial list would clear flags of
         // sessions that simply have not been loaded yet.
         useChatStore

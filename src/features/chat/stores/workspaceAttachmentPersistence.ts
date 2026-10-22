@@ -11,9 +11,9 @@ import {
 } from "@/features/chat/lib/workspaceAttachments";
 
 export const CHAT_WORKSPACE_METADATA_STORAGE_KEY =
-  "distill:chat-workspace-metadata";
+  "flock:chat-workspace-metadata";
 export const CHAT_WORKSPACE_METADATA_CHANGED_EVENT =
-  "distill:chat-workspace-metadata-changed";
+  "flock:chat-workspace-metadata-changed";
 
 export interface PersistedChatWorkspaceMetadata {
   workspaceAttachments: WorkspaceAttachment[];

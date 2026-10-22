@@ -1,4 +1,4 @@
-//! Distill-managed Node.js runtime.
+//! Flock-managed Node.js runtime.
 //!
 //! Downloads the Node.js version pinned in `node-runtime.lock.json` (repo
 //! root, embedded at compile time; refresh with `just bump-node-runtime`),
@@ -224,10 +224,10 @@ pub fn node_runtime_lock() -> &'static NodeRuntimeLock {
     })
 }
 
-/// Every target triple Distill manages a Node runtime for — the artifact keys of
+/// Every target triple Flock manages a Node runtime for — the artifact keys of
 /// the embedded `node-runtime.lock.json`, which is the one place that set is
 /// written down. [`current_target_triple`] returns a member of this set on any
-/// host Distill ships to, so downstream per-target data (npm target selectors,
+/// host Flock ships to, so downstream per-target data (npm target selectors,
 /// `acp-tools.lock.json`'s `nativeExecutables`) must cover exactly these.
 /// Exists so those tests read one list instead of keeping hand copies.
 #[cfg(test)]
@@ -298,7 +298,7 @@ impl std::fmt::Display for ManagedNodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnsupportedTarget { os, arch } => {
-                write!(f, "Distill does not provide a managed Node.js runtime for {os}-{arch}")
+                write!(f, "Flock does not provide a managed Node.js runtime for {os}-{arch}")
             }
             Self::AppData(message) => {
                 write!(f, "failed to resolve the managed Node.js runtime directory: {message}")
@@ -388,7 +388,7 @@ where
 
 /// `<app-data>/packages/node` — every managed runtime version lives under here.
 pub fn managed_node_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
-    let root = crate::services::distill_root::app_root(app).ok()?;
+    let root = crate::services::flock_root::app_root(app).ok()?;
     Some(root.join("cache").join("packages").join("node"))
 }
 
@@ -1511,7 +1511,7 @@ mod tests {
     //
     // These tests download and execute the real pinned Node runtime. They
     // compile on every host (so the mac/Linux CI lanes type-check them) but
-    // only execute on native Windows when opted in via `DISTILL_WS2_NATIVE_GATE=1`
+    // only execute on native Windows when opted in via `FLOCK_WS2_NATIVE_GATE=1`
     // — the native Windows CI gate sets that variable. Off Windows, or
     // without the variable, they skip immediately. They cover the audit's
     // minimum native matrix items 2-3: exact `node.exe --version`, npm
@@ -1521,20 +1521,19 @@ mod tests {
     /// Whether the opt-in native gate should execute on this run: native
     /// Windows plus the explicit opt-in variable.
     fn native_gate_enabled() -> bool {
-        cfg!(windows)
-            && std::env::var_os("DISTILL_WS2_NATIVE_GATE").is_some_and(|value| value == "1")
+        cfg!(windows) && std::env::var_os("FLOCK_WS2_NATIVE_GATE").is_some_and(|value| value == "1")
     }
 
     #[tokio::test]
     async fn native_gate_installs_and_probes_the_real_pinned_runtime() {
         if !native_gate_enabled() {
             eprintln!(
-                "skipping: native Windows gate runs only on Windows with DISTILL_WS2_NATIVE_GATE=1"
+                "skipping: native Windows gate runs only on Windows with FLOCK_WS2_NATIVE_GATE=1"
             );
             return;
         }
         // A root under a directory whose name contains a space, matching a real
-        // `%LOCALAPPDATA%\Distill\App Data` install path.
+        // `%LOCALAPPDATA%\Flock\App Data` install path.
         let base = tempfile::tempdir().unwrap();
         let root = base.path().join("App Data").join("packages node");
         std::fs::create_dir_all(&root).unwrap();

@@ -31,7 +31,7 @@ vi.mock("../api/benchmarks", () => ({
 vi.mock("@/features/stats/lib/usageLedger", () => ({
   projectBenchmarkUsage: vi.fn(),
 }));
-vi.mock("@/shared/api/distillStore", () => ({
+vi.mock("@/shared/api/flockStore", () => ({
   isDesktopRuntime: () => true,
 }));
 

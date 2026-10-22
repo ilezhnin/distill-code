@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use super::{now_ms, timestamp, ResetCredit, ResetOutcome, ResetResult, ResetTokens};
-use crate::services::{distill_root, provider_accounts};
+use crate::services::{flock_root, provider_accounts};
 use provider_accounts::ProviderAccount;
 
 const ORIGIN: &str = "https://api.anthropic.com";
@@ -124,11 +124,11 @@ impl Client {
         account: &ProviderAccount,
         version: Option<&str>,
     ) -> Result<Self, String> {
-        let root = distill_root::app_root(app)?;
+        let root = flock_root::app_root(app)?;
         let home = provider_accounts::account_home(app, account)?;
         let read = |name: &str| -> Result<Value, String> {
             let path = home.join(name);
-            distill_root::reject_document_links(&root, &path)?;
+            flock_root::reject_document_links(&root, &path)?;
             let bytes = std::fs::read(path)
                 .map_err(|_| "Cannot read Claude reset authorization".to_string())?;
             serde_json::from_slice(&bytes)

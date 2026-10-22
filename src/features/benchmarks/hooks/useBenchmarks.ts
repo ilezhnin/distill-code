@@ -8,7 +8,7 @@ import { configurationKey } from "../lib/benchmarkBoards";
 import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { judgingFailureLabel } from "../lib/benchmarkRunIssues";
 import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
-import { isDesktopRuntime } from "@/shared/api/distillStore";
+import { isDesktopRuntime } from "@/shared/api/flockStore";
 import type {
   CatalogEntry,
   Configuration,

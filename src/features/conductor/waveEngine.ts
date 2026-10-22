@@ -13,14 +13,14 @@
 import type { ModelPreferenceClassId } from "@/features/agents/lib/modelRanking";
 
 import type {
-  DistillWaveParse,
+  FlockWaveParse,
   WaveInvalid,
   WaveInvalidReason,
   WavePlan,
   WaveStep,
   WaveStepAccess,
   WaveStepBudget,
-} from "./distillWave";
+} from "./flockWave";
 import { roleStage, workerRoleIdsForStage } from "./roleLayers";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import type { CompletedWaveStepReport } from "./wavePrompts";
@@ -635,7 +635,7 @@ export interface WaveAdmissionOptions {
  * so the conductor can replan while nothing is half-started.
  */
 export function admitWavePlan(
-  parse: WavePlan | WaveInvalid | DistillWaveParse,
+  parse: WavePlan | WaveInvalid | FlockWaveParse,
   options?: WaveAdmissionOptions,
 ): WaveAdmission {
   if (parse.kind === "invalid") {

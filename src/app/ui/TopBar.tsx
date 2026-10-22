@@ -58,10 +58,11 @@ export function TopBar({
 }: TopBarProps) {
   const { t } = useTranslation("sidebar");
   const viewActions = useTopBarActions();
+  // The product name fills the title slot when no view names the page.
   const topBarTitle =
     breadcrumbs.find((breadcrumb) => breadcrumb.id === "chat-session")?.label ??
     breadcrumbs[breadcrumbs.length - 1]?.label ??
-    null;
+    t("appName");
   const sidebarLabel = sidebarCollapsed
     ? t("actions.expand")
     : t("actions.collapse");
@@ -127,7 +128,7 @@ export function TopBar({
           data-testid="app-top-bar-title"
           className="block min-w-0 flex-1 truncate pl-2 text-[length:var(--text-app-top-bar-title)] font-normal text-foreground"
         >
-          {topBarTitle ?? "\u00a0"}
+          {topBarTitle}
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-3 text-app-top-bar-control-fg [&_svg]:size-[length:var(--text-app-top-bar-icon)]">

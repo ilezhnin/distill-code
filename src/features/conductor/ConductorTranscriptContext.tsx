@@ -5,7 +5,7 @@ import type { Message } from "@/shared/types/messages";
 // Type-only: `brigadeAnchors` imports `latestConductorFooterHostId` from here,
 // so the value graph must stay one-directional.
 import type { BrigadeNodesByMessageId } from "./brigadeAnchors";
-import type { WaveStep } from "./distillWave";
+import type { WaveStep } from "./flockWave";
 import type { SessionNode, StructuredReport } from "./types";
 
 /**

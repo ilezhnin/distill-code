@@ -551,7 +551,7 @@ fn native_text_reason(provider: NativeProvider) -> &'static str {
         NativeProvider::Codex => "Fresh owned sessions with Codex tools, code mode, subagents, skills, AGENTS.md, apps and web search disabled; exact selection required; 'ultra' effort excluded",
         NativeProvider::Grok => "Fresh owned sessions on a private Grok home with tools, rules, hooks, skills and web search disabled; uses the Grok CLI sign-in",
         NativeProvider::Kimi => "Fresh owned sessions with Kimi tools, SYSTEM.md, AGENTS.md, hooks, reminders, MCP and search disabled in process; uses the Kimi Code sign-in",
-        NativeProvider::Zai => "Fresh owned OpenCode sessions with tools, instructions, skills, plugins, MCP and titles disabled; GLM Coding Plan subscription endpoint only, no metered fallback; uses the account key Distill copies into distill-bench",
+        NativeProvider::Zai => "Fresh owned OpenCode sessions with tools, instructions, skills, plugins, MCP and titles disabled; GLM Coding Plan subscription endpoint only, no metered fallback; uses the account key Flock copies into distill-bench",
     }
 }
 
@@ -677,7 +677,7 @@ pub async fn benchmark_get_home_advantage(
 pub async fn benchmark_get_credit_spend(
     app: AppHandle,
 ) -> Result<benchmarks::credits::CreditSpend> {
-    let root = crate::services::distill_root::app_root(&app)
+    let root = crate::services::flock_root::app_root(&app)
         .map_err(|error| BenchmarkError::new("storage_unavailable", error))?
         .join("benchmarks");
     benchmarks::credits::spend(&root).await
@@ -689,7 +689,7 @@ pub async fn benchmark_get_credit_spend(
 pub async fn benchmark_get_provider_data_use(
     app: AppHandle,
 ) -> Result<Vec<benchmarks::data_use::ProviderDataUse>> {
-    let root = crate::services::distill_root::app_root(&app)
+    let root = crate::services::flock_root::app_root(&app)
         .map_err(|error| BenchmarkError::new("storage_unavailable", error))?
         .join("benchmarks");
     Ok(benchmarks::data_use::DataUse::load(&root).await.providers())
@@ -950,7 +950,7 @@ pub async fn benchmark_get_history(
 }
 #[tauri::command]
 pub async fn benchmark_get_usage_ledger(app: AppHandle) -> Result<Vec<UsageLedgerEntry>> {
-    let root = crate::services::distill_root::app_root(&app)
+    let root = crate::services::flock_root::app_root(&app)
         .map_err(|e| BenchmarkError::new("storage_unavailable", e))?;
     if !root.join("benchmarks/benchmarks.db").is_file() {
         return Ok(Vec::new());

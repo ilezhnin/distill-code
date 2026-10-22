@@ -34,7 +34,7 @@ afterEach(() => {
 it("an authoritative empty native queue must not revive a stale cache", async () => {
   window.__TAURI_INTERNALS__ = {};
   window.localStorage.setItem(
-    "distill:chat-message-queues:v1",
+    "flock:chat-message-queues:v1",
     JSON.stringify({
       s1: [
         {

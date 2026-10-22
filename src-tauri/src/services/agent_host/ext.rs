@@ -1,4 +1,4 @@
-//! Host extension methods (`_distill/...`): everything the renderer needs
+//! Host extension methods (`_flock/...`): everything the renderer needs
 //! beyond core ACP — session metadata, defaults and preferences, MCP server
 //! configuration, the harness inventory, and skill/agent/project sources.
 
@@ -499,7 +499,7 @@ const MODELS_KV_SCOPE: &str = "harness_models_v2";
 const INVENTORY_SCHEMA_VERSION: u32 = 3;
 
 /// Generation of the *content* the host serves, within one schema. Bumped
-/// whenever the models Distill itself contributes change -- those are merged
+/// whenever the models Flock itself contributes change -- those are merged
 /// in at request time and never touch the probe's `updatedAt`, so without this
 /// a renderer holding a cached list has no way to notice them.
 const SHAPE_REVISION: u32 = 6;
@@ -509,7 +509,7 @@ const SHAPE_REVISION: u32 = 6;
 /// The stamp is what makes a renderer-side cache self-correcting: a build's
 /// rows are only read back by a build that shapes them the same way, and a
 /// changed `revision` says the list was rebuilt without anyone having to time
-/// it. What Distill declares about a harness's models is merged in here
+/// it. What Flock declares about a harness's models is merged in here
 /// rather than at each call site, because `providers/inventory/refresh` used
 /// to answer without it -- the same list, one endpoint short.
 fn inventory_response(harness_id: &str, models: Vec<Value>, updated_at: Option<&str>) -> Value {
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn every_endpoint_lists_the_models_distill_adds_to_the_harness() {
+    fn every_endpoint_lists_the_models_flock_adds_to_the_harness() {
         // `providers/inventory/refresh` answered without them until the merge
         // moved into the shared response builder.
         let answer = inventory_response(

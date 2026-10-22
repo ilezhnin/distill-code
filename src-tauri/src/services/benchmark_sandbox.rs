@@ -2088,7 +2088,7 @@ fn stage_arguments<'a>(id: &'a str, provider: &'a str) -> [&'a str; 3] {
     ["stage", id, provider]
 }
 
-/// Stages `lease`, built from the Distill app's own sign-in, into attempt
+/// Stages `lease`, built from the Flock app's own sign-in, into attempt
 /// `id`'s private home, before its session starts (`bench-auth stage`). The
 /// lease travels on the helper's standard input only: never as an argument,
 /// a variable or in a diagnostic, which carries the helper's own short

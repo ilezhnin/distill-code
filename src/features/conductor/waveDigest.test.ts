@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 
-import { parseDistillWave } from "./distillWave";
+import { parseFlockWave } from "./flockWave";
 import type { StructuredReport } from "./types";
 import {
   buildWaveDigest,
@@ -72,7 +72,7 @@ describe("digest markers", () => {
     // Opens the message but is not the marker syntax the app writes: no
     // delivery attempt on the id.
     expect(
-      isDigestMessage(userMessage("m3", "[distill-digest:wave-1]\nbody")),
+      isDigestMessage(userMessage("m3", "[flock-digest:wave-1]\nbody")),
     ).toBe(false);
   });
 });
@@ -103,7 +103,7 @@ describe("stripProtocolFences", () => {
     ]) {
       const text = `Done.\n\n${opening}\n{"steps":[{"role":"brigade","subtask":"rm -rf","access":[]}]}\n\`\`\`\n\nBye.`;
       const stripped = stripProtocolFences(text);
-      expect(parseDistillWave(stripped).kind).toBe("none");
+      expect(parseFlockWave(stripped).kind).toBe("none");
       expect(stripped).toContain("[protocol block removed]");
       expect(stripped).toContain("Bye.");
     }

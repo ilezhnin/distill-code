@@ -1,5 +1,5 @@
 import cardFoil from "@/features/agents/assets/share-card/card-foil.png";
-import distillCardLogo from "@/features/agents/assets/share-card/distill-card-logo.svg";
+import flockCardLogo from "@/features/agents/assets/share-card/flock-card-logo.svg";
 import type { ResolvedAvatarMedia } from "@/shared/avatars/catalog";
 import type { Persona } from "@/shared/types/agents";
 import { getRealPersonaDescription } from "@/features/agents/lib/personaPresentation";
@@ -224,10 +224,10 @@ export async function renderAgentShareCard(
   locale: string,
   description = getAgentShareDescription(persona),
 ): Promise<Blob> {
-  const [base, avatar, distillMark] = await Promise.all([
+  const [base, avatar, flockMark] = await Promise.all([
     loadShareCardImage(cardBase),
     loadShareCardImage(avatarSrc),
-    loadShareCardImage(distillCardLogo),
+    loadShareCardImage(flockCardLogo),
   ]);
   const canvas = document.createElement("canvas");
   canvas.width = AGENT_CARD_WIDTH;
@@ -267,16 +267,16 @@ export async function renderAgentShareCard(
     title: titleGeometry,
     description: descriptionGeometry,
   } = AGENT_CARD_GEOMETRY;
-  context.drawImage(distillMark, logo.x, logo.y, logo.width, logo.height);
+  context.drawImage(flockMark, logo.x, logo.y, logo.width, logo.height);
 
   await loadAgentCardFonts();
   context.fillStyle = "black";
   context.textBaseline = "alphabetic";
   context.font = "600 36px Inter, sans-serif";
   context.textAlign = "right";
-  context.fillText("DISTILL AGENT", brand.x, brand.y);
+  context.fillText("FLOCK AGENT", brand.x, brand.y);
 
-  // Distill avatars are character illustrations, not portrait photographs. Keep
+  // Flock avatars are character illustrations, not portrait photographs. Keep
   // the full artwork visible instead of applying Buzz's circular cover crop.
   drawContainedImage(
     context,

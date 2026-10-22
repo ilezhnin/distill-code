@@ -9,7 +9,7 @@ import {
   sanitizeSessionModelPreference,
 } from "../sessionModelPreference";
 
-const STORAGE_KEY = "distill:preferredModelsByAgent";
+const STORAGE_KEY = "flock:preferredModelsByAgent";
 
 function seedStoredPreferences(value: unknown): void {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));

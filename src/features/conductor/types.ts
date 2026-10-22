@@ -10,7 +10,7 @@ export type SessionRole =
  * - `ui` — spawned/registered by the current UI heuristics (also the migration
  *   default for graphs persisted before this field existed).
  * - `wave` — owned by the wave engine; only these nodes are driven by it.
- * - `agent-cli` — registered from outside the UI (distillctl).
+ * - `agent-cli` — registered from outside the UI (flockctl).
  */
 export type SessionManagedBy = "ui" | "wave" | "agent-cli";
 

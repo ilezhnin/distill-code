@@ -65,7 +65,7 @@ const sampleFileAttachment: ChatAttachmentDraft = {
   id: "draft-file",
   kind: "file",
   name: "ConversationAnatomyPage.tsx",
-  path: "/Users/dev/distill/src/features/chat/ui/ConversationAnatomyPage.tsx",
+  path: "/Users/dev/flock/src/features/chat/ui/ConversationAnatomyPage.tsx",
   mimeType: "text/typescript",
 };
 
@@ -73,7 +73,7 @@ const sampleDirectoryAttachment: ChatAttachmentDraft = {
   id: "draft-directory",
   kind: "directory",
   name: "src/features/chat",
-  path: "/Users/dev/distill/src/features/chat",
+  path: "/Users/dev/flock/src/features/chat",
 };
 
 const sampleImageAttachment: ChatAttachmentDraft = {
@@ -171,12 +171,12 @@ const userRichMessage = message(
       {
         type: "file",
         name: "ConversationAnatomyPage.tsx",
-        path: "/Users/dev/distill/src/features/chat/ui/ConversationAnatomyPage.tsx",
+        path: "/Users/dev/flock/src/features/chat/ui/ConversationAnatomyPage.tsx",
       },
       {
         type: "directory",
         name: "src/features/chat",
-        path: "/Users/dev/distill/src/features/chat",
+        path: "/Users/dev/flock/src/features/chat",
       },
     ],
   },

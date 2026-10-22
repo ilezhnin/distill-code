@@ -58,7 +58,7 @@ export const DEFAULT_ROUTING_POLICY: RoutingPolicy = {
   classOverrides: {},
 };
 
-/** Where the policy lives under the Distill root. */
+/** Where the policy lives under the Flock root. */
 export const ROUTING_POLICY_DOCUMENT = "routing.json";
 
 function clampPercent(value: unknown, fallback: number): number {

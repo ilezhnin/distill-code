@@ -3,7 +3,7 @@ $global:LASTEXITCODE = 0
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-DistillRepoRoot)
+Set-Location (Get-FlockRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Initialize-FnmEnvironment | Out-Null
@@ -27,19 +27,18 @@ Write-WindowsDevInfo "Using Tauri Cargo target dir: $env:CARGO_TARGET_DIR"
 $version = Resolve-AppVersion
 $env:VITE_APP_VERSION = $version.RichVersion
 
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "distillctl", "-p", "distill-monitor") -WorkingDirectory (Join-Path (Get-DistillRepoRoot) "src-tauri") -Label "cargo build distillctl distill-monitor"
-$env:DISTILLCTL_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "distillctl.exe"
-$env:DISTILL_MONITOR_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "distill-monitor.exe"
-foreach ($cliBin in @($env:DISTILLCTL_BIN, $env:DISTILL_MONITOR_BIN)) {
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "flockctl", "-p", "flock-monitor") -WorkingDirectory (Join-Path (Get-FlockRepoRoot) "src-tauri") -Label "cargo build flockctl flock-monitor"
+$flockctlBin = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "flockctl.exe"
+$monitorBin = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "flock-monitor.exe"
+foreach ($cliBin in @($flockctlBin, $monitorBin)) {
     if (-not (Test-Path -LiteralPath $cliBin -PathType Leaf)) {
         throw "Expected $(Split-Path -Leaf $cliBin) at $cliBin after cargo build."
     }
 }
+# FLOCKCTL_BIN / FLOCK_MONITOR_BIN, plus the pre-rename spellings for one release.
+Set-FlockCliBinEnvironment -FlockctlBin $flockctlBin -MonitorBin $monitorBin
 
-$distroDir = Join-Path (Get-DistillRepoRoot) "distro"
-if ([string]::IsNullOrWhiteSpace($env:DISTILL_DISTRO_DIR) -and (Test-Path $distroDir -PathType Container)) {
-    $env:DISTILL_DISTRO_DIR = $distroDir
-}
+Initialize-FlockDistroDirEnvironment | Out-Null
 
 if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
     $portListener = Get-NetTCPConnection -LocalPort ([int]$env:VITE_PORT) -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -60,7 +59,7 @@ $devConfig = @{
         }
     }
 }
-$devConfigPath = Join-Path (Get-DistillDevRoot) "tauri-dev-windows.config.json"
+$devConfigPath = Join-Path (Get-FlockDevRoot) "tauri-dev-windows.config.json"
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $devConfigPath) | Out-Null
 $devConfigJson = $devConfig | ConvertTo-Json -Depth 8
 [System.IO.File]::WriteAllText($devConfigPath, $devConfigJson, [System.Text.UTF8Encoding]::new($false))
@@ -68,7 +67,7 @@ Write-WindowsDevInfo "Using Tauri dev config: $devConfigPath"
 
 $tauriArguments = @(
     "exec", "tauri", "dev",
-    "--features", (Get-DistillAppFeatures),
+    "--features", (Get-FlockAppFeatures),
     "--config", "src-tauri/tauri.dev.conf.json",
     "--config", $devConfigPath,
     "--no-watch"

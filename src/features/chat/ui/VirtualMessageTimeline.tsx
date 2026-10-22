@@ -114,7 +114,7 @@ const RESPONSE_START_HINT_VIEWPORT_SLOP_PX = 16;
 const GUTTER_RESPONSE_START_THRESHOLD_PX = 16;
 
 export const VIRTUAL_MESSAGE_TIMELINE_DIAGNOSTICS_EVENT =
-  "distill:virtual-message-timeline-diagnostics";
+  "flock:virtual-message-timeline-diagnostics";
 
 const REMAINING_DEFAULT_ON_BLOCKERS = [
   "updated-tanstack-session-history-regression",
@@ -224,10 +224,10 @@ export interface VirtualMessageTimelineDiagnostics {
 
 declare global {
   interface Window {
-    __DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?:
+    __FLOCK_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?:
       | VirtualMessageTimelineDiagnostics
       | undefined;
-    __DISTILL_TRANSCRIPT_DIAGNOSTICS__?: TranscriptDiagnostics | undefined;
+    __FLOCK_TRANSCRIPT_DIAGNOSTICS__?: TranscriptDiagnostics | undefined;
   }
 }
 
@@ -1660,9 +1660,9 @@ function VirtualMessageTimelineSession({
 
     onDiagnostics?.(publishedDiagnostics);
     onTranscriptDiagnostics?.(sharedDiagnostics);
-    window.__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ =
+    window.__FLOCK_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ =
       publishedDiagnostics;
-    window.__DISTILL_TRANSCRIPT_DIAGNOSTICS__ = sharedDiagnostics;
+    window.__FLOCK_TRANSCRIPT_DIAGNOSTICS__ = sharedDiagnostics;
     window.dispatchEvent(
       new CustomEvent(VIRTUAL_MESSAGE_TIMELINE_DIAGNOSTICS_EVENT, {
         detail: publishedDiagnostics,

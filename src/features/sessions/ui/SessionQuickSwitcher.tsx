@@ -16,7 +16,7 @@ import {
   buildQuickSwitchResults,
   type QuickSwitchResult,
 } from "@/features/sessions/lib/sessionQuickSwitch";
-import { ActiveChatDistillIndicator } from "@/shared/ui/SessionActivityIndicator";
+import { ActiveChatFlockIndicator } from "@/shared/ui/SessionActivityIndicator";
 import {
   CommandDialog,
   CommandEmpty,
@@ -165,7 +165,7 @@ export function SessionQuickSwitcher({
           >
             <HighlightedTitle title={session.title} positions={positions} />
             {session.isRunning ? (
-              <ActiveChatDistillIndicator className="ml-auto" />
+              <ActiveChatFlockIndicator className="ml-auto" />
             ) : null}
           </CommandItem>
         ))}

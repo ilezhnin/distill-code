@@ -1,4 +1,4 @@
-# Build a native Windows Distill bundle with real sidecars staged.
+# Build a native Windows Flock bundle with real sidecars staged.
 #
 # This is what `just bundle` / `bundle-debug` run; bundling exists only on
 # Windows. The driver stages through Stage-Sidecar-Windows.ps1 (real *-<triple>.exe files,
@@ -32,7 +32,7 @@ if ([string]::IsNullOrWhiteSpace($pnpm)) {
 }
 Assert-PnpmReady
 
-$repoRoot = Get-DistillRepoRoot
+$repoRoot = Get-FlockRepoRoot
 Set-Location $repoRoot
 $targetTriple = "x86_64-pc-windows-msvc"
 $targetDir = Get-TauriCargoTargetDir
@@ -43,28 +43,28 @@ if (-not $SkipDependencyInstall) {
     Invoke-CheckedCommand -FilePath $pnpm -ArgumentList @("install", "--frozen-lockfile") -Label "pnpm install --frozen-lockfile"
 }
 
-# Stage distillctl/distill-monitor as validated *-<triple>.exe.
+# Stage flockctl/flock-monitor as validated *-<triple>.exe.
 Invoke-WindowsChildScript -ScriptPath (Join-Path $PSScriptRoot "Stage-Sidecar-Windows.ps1") `
     -ArgumentList @("-Triple", $targetTriple) -Label "Stage Windows sidecars"
 
 Write-WindowsDevInfo "Resolving application version from Git metadata."
 $resolvedVersion = Resolve-AppVersion $Version
-Write-WindowsDevInfo "Building Distill $($resolvedVersion.Version) ($($resolvedVersion.RichVersion))."
+Write-WindowsDevInfo "Building Flock $($resolvedVersion.Version) ($($resolvedVersion.RichVersion))."
 
 $env:CARGO_TARGET_DIR = $targetDir
-$env:DISTILL_APP_VERSION = $resolvedVersion.RichVersion
+$env:FLOCK_APP_VERSION = $resolvedVersion.RichVersion
 $env:VITE_APP_VERSION = $resolvedVersion.RichVersion
 
-$baseFeatures = @("distillctl")
+$baseFeatures = @("flockctl")
 if ($Debug) {
     $baseFeatures += "devtools"
 }
-$features = Get-DistillAppFeatures -BaseFeatures $baseFeatures
+$features = Get-FlockAppFeatures -BaseFeatures $baseFeatures
 
 # Build the config overlay: the version and bundle target; debug bundles also
 # fold in the base config with devtools enabled. Write without a BOM: Tauri's
 # serde --config parsing rejects BOM-prefixed JSON.
-$configPath = Join-Path ([System.IO.Path]::GetTempPath()) ("distill-tauri-{0}.{1}.json" -f ($(if ($Debug) { "debug" } else { "version" }), [System.IO.Path]::GetRandomFileName()))
+$configPath = Join-Path ([System.IO.Path]::GetTempPath()) ("flock-tauri-{0}.{1}.json" -f ($(if ($Debug) { "debug" } else { "version" }), [System.IO.Path]::GetRandomFileName()))
 if ($Debug) {
     if ($Bundle -ne "nsis") {
         throw "Debug Windows bundles currently support only NSIS."
@@ -75,10 +75,10 @@ if ($Debug) {
     # dropped. Carrying the full base config also carries its
     # bundle.externalBin, so pin that to the Windows contract in the same
     # overlay.
-    $baseConfig = Read-JsonFile (Join-Path (Join-Path (Get-DistillRepoRoot) "src-tauri") "tauri.conf.json")
+    $baseConfig = Read-JsonFile (Join-Path (Join-Path (Get-FlockRepoRoot) "src-tauri") "tauri.conf.json")
     $baseConfig.version = $resolvedVersion.RichVersion
     $baseConfig.app.windows[0] | Add-Member -NotePropertyName devtools -NotePropertyValue $true -Force
-    $windowsConf = Read-JsonFile (Join-Path (Join-Path (Get-DistillRepoRoot) "src-tauri") "tauri.windows.conf.json")
+    $windowsConf = Read-JsonFile (Join-Path (Join-Path (Get-FlockRepoRoot) "src-tauri") "tauri.windows.conf.json")
     $baseConfig.bundle.externalBin = (Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "externalBin")
     $configJson = $baseConfig | ConvertTo-Json -Depth 32
 } else {
@@ -90,7 +90,7 @@ if ($Debug) {
 [System.IO.File]::WriteAllText($configPath, $configJson, [System.Text.UTF8Encoding]::new($false))
 
 $schemaPath = Join-Path $repoRoot "src-tauri\gen\schemas\windows-schema.json"
-$schemaBackup = Join-Path ([System.IO.Path]::GetTempPath()) ("distill-windows-schema-" + [Guid]::NewGuid().ToString("N") + ".json")
+$schemaBackup = Join-Path ([System.IO.Path]::GetTempPath()) ("flock-windows-schema-" + [Guid]::NewGuid().ToString("N") + ".json")
 $schemaExisted = Test-Path -LiteralPath $schemaPath
 if ($schemaExisted) {
     Copy-Item -LiteralPath $schemaPath -Destination $schemaBackup
@@ -120,10 +120,13 @@ function Assert-WindowsBundleVersion {
         [Parameter(Mandatory = $true)][string]$TargetTriple,
         [Parameter(Mandatory = $true)][string]$ExpectedVersion,
         [Parameter(Mandatory = $true)][string]$BundleType,
-        [Parameter(Mandatory = $true)][string]$ProductName
+        [Parameter(Mandatory = $true)][string]$ProductName,
+        [Parameter(Mandatory = $true)][string]$MainBinaryName
     )
 
-    $appPath = Join-Path $TargetDir "$TargetTriple\release\Distill.exe"
+    # The application executable is named after mainBinaryName in
+    # tauri.conf.json (the Cargo package name), not after productName.
+    $appPath = Join-Path $TargetDir "$TargetTriple\release\$(Get-WindowsExeName $MainBinaryName)"
     if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
         throw "Built application executable not found: $appPath"
     }
@@ -132,8 +135,9 @@ function Assert-WindowsBundleVersion {
         throw "Built application version mismatch: expected '$ExpectedVersion', got '$actualVersion' at $appPath."
     }
 
-    # The bundler names installers after productName, not the Cargo binary
-    # (which stays Distill.exe above): Distill_<version>_x64-setup.exe.
+    # The bundler names installers after productName, not the executable:
+    # "<productName>_<version>_x64-setup.exe", e.g.
+    # "Levocat Flock_0.6.2_x64-setup.exe".
     $bundlePattern = if ($BundleType -eq "nsis") {
         "${ProductName}_${ExpectedVersion}_x64-setup.exe"
     } else {
@@ -148,9 +152,16 @@ function Assert-WindowsBundleVersion {
 }
 
 $bundleDir = Join-Path $targetDir "$targetTriple\release\bundle\$Bundle"
-$productName = Get-ObjectValue (Read-JsonFile (Join-Path $repoRoot "src-tauri\tauri.conf.json")) "productName"
+# Both names come from the same config Tauri built from: productName names
+# the installer, mainBinaryName names the executable inside it.
+$tauriConf = Read-JsonFile (Join-Path $repoRoot "src-tauri\tauri.conf.json")
+$productName = Get-ObjectValue $tauriConf "productName"
 if ([string]::IsNullOrWhiteSpace($productName)) {
     throw "src-tauri\tauri.conf.json has no productName; cannot locate the installer."
+}
+$mainBinaryName = Get-ObjectValue $tauriConf "mainBinaryName"
+if ([string]::IsNullOrWhiteSpace($mainBinaryName)) {
+    throw "src-tauri\tauri.conf.json has no mainBinaryName; cannot locate the built executable."
 }
 $bundlePath = Assert-WindowsBundleVersion `
     -BundleDir $bundleDir `
@@ -158,6 +169,7 @@ $bundlePath = Assert-WindowsBundleVersion `
     -TargetTriple $targetTriple `
     -ExpectedVersion $resolvedVersion.RichVersion `
     -BundleType $Bundle `
-    -ProductName $productName
+    -ProductName $productName `
+    -MainBinaryName $mainBinaryName
 Write-Host ""
 Write-Host "Windows bundle ready: $bundlePath" -ForegroundColor Green

@@ -172,7 +172,7 @@ pub(crate) fn read_native_agent_source(
 ) -> Result<ImportFileReadResult, String> {
     let roots = match app.try_state::<crate::services::e2e_mode::E2eMode>() {
         Some(mode) => vec![mode.agents_dir()],
-        None => agent_source_roots(&crate::services::distill_root::app_root(app)?, source_path),
+        None => agent_source_roots(&crate::services::flock_root::app_root(app)?, source_path),
     };
     read_native_agent_source_with_roots(source_path, &roots)
 }
@@ -200,11 +200,11 @@ pub(crate) fn read_native_agent_source_with_roots(
     })
 }
 
-/// Where an agent file may be read from: the Distill root's `agents`, and the
+/// Where an agent file may be read from: the Flock root's `agents`, and the
 /// `.distill/agents` of the project the file is in. Folders other tools keep
 /// (`~/.agents/agents`, a project's `.agents`) are not trusted.
-fn agent_source_roots(distill_root: &Path, source_path: &str) -> Vec<PathBuf> {
-    let mut roots = vec![distill_root.join("agents")];
+fn agent_source_roots(flock_root: &Path, source_path: &str) -> Vec<PathBuf> {
+    let mut roots = vec![flock_root.join("agents")];
     if let Some(parent) = Path::new(source_path).parent().filter(|parent| {
         parent.file_name().and_then(|name| name.to_str()) == Some("agents")
             && parent
@@ -291,7 +291,7 @@ mod tests {
 
     /// An agent file left in the folder older builds shared with other tools
     /// (`~/.agents/agents`) or in a project's `.agents` is not read; the
-    /// Distill root's and a project's `.distill` agents are.
+    /// Flock root's and a project's `.distill` agents are.
     #[test]
     fn legacy_agent_folders_are_not_trusted() {
         let home = tempdir().unwrap();

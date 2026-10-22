@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Distill",
+  "productName": "Levocat Flock",
+  "mainBinaryName": "levocat-flock",
   "version": "0.6.2",
-  "identifier": "com.levocat.distill",
+  "identifier": "com.levocat.flock",
   "build": {
     "beforeDevCommand": {
       "script": "exec ./node_modules/.bin/vite",
@@ -16,7 +17,7 @@
   "app": {
     "windows": [
       {
-        "title": "Distill",
+        "title": "Levocat Flock",
         "width": 800,
         "height": 600,
         "minWidth": 608,
@@ -50,7 +51,7 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["distill"]
+        "schemes": ["flock", "distill"]
       }
     }
   },
@@ -67,14 +68,14 @@
       "../node_modules/playwright-core/": "benchmark-worker/node_modules/playwright-core/",
       "../distro": "distro",
       "resources/runtime-config.json": "runtime-config.json",
-      "../resources/distill-sounds-0.mp3": "distill-sounds-0.mp3",
-      "../resources/distill-sounds-1.mp3": "distill-sounds-1.mp3",
-      "../resources/distill-sounds-2.mp3": "distill-sounds-2.mp3",
-      "../resources/distill-sounds-3.mp3": "distill-sounds-3.mp3",
-      "../resources/distill-sounds-4.mp3": "distill-sounds-4.mp3",
-      "../resources/distill-sounds-5.mp3": "distill-sounds-5.mp3",
-      "../resources/distill-sounds-6.mp3": "distill-sounds-6.mp3"
+      "../resources/flock-sounds-0.mp3": "flock-sounds-0.mp3",
+      "../resources/flock-sounds-1.mp3": "flock-sounds-1.mp3",
+      "../resources/flock-sounds-2.mp3": "flock-sounds-2.mp3",
+      "../resources/flock-sounds-3.mp3": "flock-sounds-3.mp3",
+      "../resources/flock-sounds-4.mp3": "flock-sounds-4.mp3",
+      "../resources/flock-sounds-5.mp3": "flock-sounds-5.mp3",
+      "../resources/flock-sounds-6.mp3": "flock-sounds-6.mp3"
     },
-    "externalBin": ["binaries/distillctl", "binaries/distill-monitor"]
+    "externalBin": ["binaries/flockctl", "binaries/flock-monitor"]
   }
 }

@@ -157,7 +157,7 @@ fn inventory_start_error(error: &Value) -> String {
 }
 
 /// Where owned bridges of every provider kept their runtime files, under the
-/// Distill root `root`.
+/// Flock root `root`.
 fn owned_runtime_root(root: &std::path::Path) -> PathBuf {
     root.join("benchmarks").join("runtime")
 }
@@ -229,7 +229,7 @@ const EVENT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// costs one transaction instead of one per chunk, and nothing waits longer than
 /// the burst.
 const APPEND_BATCH_LIMIT: usize = 64;
-pub const EXT_PREFIX: &str = "_distill/";
+pub const EXT_PREFIX: &str = "_flock/";
 
 /// The kv row that governs the lazy split of folded model ids
 /// (`gpt-5.6-sol[xhigh]` into a model and an effort). See
@@ -402,7 +402,7 @@ struct QueuedPrompt {
 ///
 /// LEGACY, INBOUND ONLY. The host itself never writes such an id any more;
 /// this exists because one can still arrive from an old renderer, an old
-/// distillctl client or a stored `sessions.model_id` the lazy split has not
+/// flockctl client or a stored `sessions.model_id` the lazy split has not
 /// reached, and a send must not fail on it. See `split_effort_model` for the
 /// condition under which it can go.
 #[derive(Debug, PartialEq, Eq)]
@@ -457,8 +457,7 @@ struct Selection {
 }
 
 /// Why a close waits for ordinary chats.
-pub const CHATS_ACTIVE: &str =
-    "Wait for active chats to finish or stop them before closing Distill.";
+pub const CHATS_ACTIVE: &str = "Wait for active chats to finish or stop them before closing Flock.";
 
 /// Turns a close would cut among `sessions`: ordinary chats loading, running
 /// or with prompts queued, and owned (benchmark) sessions likewise.
@@ -801,7 +800,7 @@ pub struct Inner {
     /// with the generation of that bridge, for a provider whose sign-in the
     /// bridge cannot refresh (Grok).
     owned_sign_in_expiry: StdMutex<HashMap<String, (u64, i64)>>,
-    /// Renewals of the Distill sign-ins benchmark sessions lease, by account.
+    /// Renewals of the Flock sign-ins benchmark sessions lease, by account.
     sign_in_renewals: SignInRenewals,
 }
 
@@ -858,7 +857,7 @@ impl AgentHost {
                 }
                 if tests > 0 {
                     return Err(format!(
-                        "Benchmark runs are pausing: {tests} benchmark or task turn(s) still finish. Close Distill again once they settle."
+                        "Benchmark runs are pausing: {tests} benchmark or task turn(s) still finish. Close Flock again once they settle."
                     ));
                 }
             }
@@ -949,26 +948,30 @@ impl Inner {
             .path()
             .app_data_dir()
             .map_err(|error| format!("failed to resolve app data dir: {error}"))?;
-        let distill_root = crate::services::distill_root::app_root(&app)?;
-        if app
-            .try_state::<crate::services::e2e_mode::E2eMode>()
-            .is_none()
-            && std::env::var_os("DISTILL_ROOT").is_none()
-        {
-            crate::services::root_migration::adopt_sessions(&distill_root, &app_data_dir).await?;
+        let flock_root = crate::services::flock_root::app_root(&app)?;
+        // An isolated E2E run starts from nothing, and a root the environment
+        // forced is not the operator's: neither adopts older data.
+        let isolated = !crate::services::flock_root::adoption_enabled(
+            app.try_state::<crate::services::e2e_mode::E2eMode>()
+                .is_some(),
+            crate::services::flock_root::root_override().as_deref(),
+        );
+        if !isolated {
+            crate::services::root_migration::adopt_sessions(
+                &flock_root,
+                &app_data_dir,
+                &app.config().identifier,
+            )
+            .await?;
         }
-        // A sign-in an owned bridge was starting with when Distill stopped
+        // A sign-in an owned bridge was starting with when Flock stopped
         // goes now, not with the next Grok benchmark.
-        if let Err(error) = execution::discard_left_sign_ins(&owned_runtime_root(&distill_root)) {
+        if let Err(error) = execution::discard_left_sign_ins(&owned_runtime_root(&flock_root)) {
             log::warn!("[agent-host] benchmark sign-in copies were not removed: {error}");
         }
-        let host_dir = distill_root.join("sessions");
+        let host_dir = flock_root.join("sessions");
         let store = SessionStore::open(&host_dir.join("agent-host.db")).await?;
         store.reconcile_execution_dispatches().await?;
-        let isolated = app
-            .try_state::<crate::services::e2e_mode::E2eMode>()
-            .is_some()
-            || std::env::var_os("DISTILL_ROOT").is_some();
         if !isolated {
             match legacy_import::import_goose_sessions_once(&store).await {
                 Ok(0) => {}
@@ -977,7 +980,7 @@ impl Inner {
             }
         }
         let roots = SourceRoots::new(
-            distill_root,
+            flock_root,
             if isolated {
                 None
             } else {
@@ -1049,7 +1052,7 @@ impl Inner {
                 self.forget_owned_bridge(route, bridge.generation());
             }
         }
-        if let Err(error) = crate::services::distill_root::app_root(&self.app).and_then(|root| {
+        if let Err(error) = crate::services::flock_root::app_root(&self.app).and_then(|root| {
             execution::discard_left_sign_ins(&owned_runtime_root(&root))
                 .map_err(|error| error.to_string())
         }) {
@@ -1303,10 +1306,10 @@ impl Inner {
                     method,
                     "session/load"
                         | "session/fork"
-                        | "_distill/session/info"
-                        | "_distill/session/history"
-                        | "_distill/session/history/result"
-                        | "_distill/session/messages"
+                        | "_flock/session/info"
+                        | "_flock/session/history"
+                        | "_flock/session/history/result"
+                        | "_flock/session/messages"
                 )
             {
                 return Err(invalid_params(
@@ -1326,7 +1329,7 @@ impl Inner {
                     "mcpCapabilities": { "http": true, "sse": true },
                     "sessionCapabilities": { "list": {}, "fork": {} }
                 },
-                "agentInfo": { "name": "distill-host", "version": env!("CARGO_PKG_VERSION") },
+                "agentInfo": { "name": "flock-host", "version": env!("CARGO_PKG_VERSION") },
                 "authMethods": []
             })),
             "authenticate" => Ok(json!({})),
@@ -1439,7 +1442,7 @@ impl Inner {
                 bridge.touch();
                 return Ok(bridge);
             }
-            // A benchmark session starts on a lease of its account's Distill
+            // A benchmark session starts on a lease of its account's Flock
             // sign-in: never while that sign-in is being renewed, and a
             // renewal waits until this start has its lease. Taken before the
             // spawn lock, in the order a renewal takes both.
@@ -1732,7 +1735,7 @@ impl Inner {
                 expiries.remove(route_key);
             }
         }
-        if let Err(error) = crate::services::distill_root::app_root(&self.app).and_then(|root| {
+        if let Err(error) = crate::services::flock_root::app_root(&self.app).and_then(|root| {
             discard_route_sign_in(&owned_runtime_root(&root), route_key)
                 .map_err(|error| error.to_string())
         }) {
@@ -3004,15 +3007,15 @@ impl Inner {
     /// separate options instead; `None` when its model option offers the id
     /// itself, or does not offer both halves.
     ///
-    /// LEGACY TOLERANCE, READ ONLY. Distill no longer names a model this way:
+    /// LEGACY TOLERANCE, READ ONLY. Flock no longer names a model this way:
     /// the four selections travel separately and the renderer, the store and
     /// every answer carry the bridge's own base id. What still arrives folded
     /// is history — a chat stored before the split whose lazy conversion has
-    /// not run, a renderer or a distillctl client older than protocolVersion 6 —
+    /// not run, a renderer or a flockctl client older than protocolVersion 6 —
     /// and it reaches `apply_model` inside a send, where failing is not an
     /// option. SUNSET: this and `SplitModel` may go once no
     /// `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6
-    /// distillctl client is in use. Not a date: removing it earlier loses the
+    /// flockctl client is in use. Not a date: removing it earlier loses the
     /// operator's own history.
     fn split_effort_model(snapshot: &Value, model_id: &str) -> Option<SplitModel> {
         if Self::option_lists(snapshot, Self::is_model_option, model_id) {
@@ -3348,7 +3351,7 @@ impl Inner {
 
     async fn new_session(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
         if self.shutdown_prepared.load(Ordering::SeqCst) {
-            return Err(protocol::internal("Distill is closing"));
+            return Err(protocol::internal("Flock is closing"));
         }
         let harness_id = Self::meta_string(&params, "provider").ok_or_else(|| {
             invalid_params("session/new requires _meta.provider (the agent harness id)")
@@ -3431,7 +3434,7 @@ impl Inner {
         if self.shutdown_prepared.load(Ordering::SeqCst) {
             drop(sessions);
             bridge.close_session(&bridge_session_id).await;
-            return Err(protocol::internal("Distill is closing"));
+            return Err(protocol::internal("Flock is closing"));
         }
         if let Err(error) = self.store.insert_session(&record).await {
             // There is no chat to reach it through, so the session the bridge
@@ -3517,7 +3520,7 @@ impl Inner {
         let _attaching = lock.lock().await;
         let current = self.session_record(&record.id).await?;
         if self.shutdown_prepared.load(Ordering::SeqCst) || current.archived_at.is_some() {
-            return Err(invalid_params("Session is archived or Distill is closing"));
+            return Err(invalid_params("Session is archived or Flock is closing"));
         }
         if let Some(attached) = self.attached_route(&record.id).await {
             // Every caller is about to use the session. Marked under the
@@ -3583,7 +3586,7 @@ impl Inner {
         // swallowed rather than duplicated in the renderer.
         let mut sessions = self.sessions.lock().await;
         if self.shutdown_prepared.load(Ordering::SeqCst) {
-            return Err(protocol::internal("Distill is closing"));
+            return Err(protocol::internal("Flock is closing"));
         }
         sessions.insert(
             record.id.clone(),
@@ -4186,7 +4189,7 @@ impl Inner {
     /// bridge's own model option id, carrying the bridge's own model id.
     ///
     /// The other two arms are for what the ACP bridges are, not for what
-    /// Distill sends. A bridge with no model option takes the older
+    /// Flock sends. A bridge with no model option takes the older
     /// `session/set_model` — and only such a bridge may: codex's
     /// `unstable_setSessionModel` insists on `model[effort]` and throws on a
     /// base id, which is why that arm is behind `has_model_option` rather than
@@ -4875,7 +4878,7 @@ impl Inner {
             provider_accounts::resolve_account(&self.app, &record.harness, Some(account_id))
                 .map_err(invalid_params)?;
         if record.archived_at.is_some() || self.shutdown_prepared.load(Ordering::SeqCst) {
-            return Err(invalid_params("Session is archived or Distill is closing"));
+            return Err(invalid_params("Session is archived or Flock is closing"));
         }
         if account_route_key(&record.harness, record.account_id.as_deref())
             == account_route_key(&record.harness, Some(&selected.id))
@@ -5715,7 +5718,7 @@ impl Inner {
                 .get_mut(&session_id)
                 .ok_or_else(|| protocol::internal("session vanished"))?;
             if self.shutdown_prepared.load(Ordering::SeqCst) {
-                return Err(invalid_params("Distill is closing"));
+                return Err(invalid_params("Flock is closing"));
             }
             match Self::claim_turn(runtime, &ids) {
                 Ok(bridge_session_id) => {
@@ -6198,7 +6201,7 @@ impl Inner {
         let queued = {
             let mut sessions = self.sessions.lock().await;
             if self.shutdown_prepared.load(Ordering::SeqCst) {
-                return Err(invalid_params("Distill is closing"));
+                return Err(invalid_params("Flock is closing"));
             }
             match sessions.get_mut(&session_id).and_then(|runtime| {
                 runtime
@@ -6208,8 +6211,7 @@ impl Inner {
                     .map(|active| (runtime, active))
             }) {
                 Some((runtime, active_run)) => {
-                    if expected_run != active_run
-                        && expected_run != "__distill_unknown_active_run__"
+                    if expected_run != active_run && expected_run != "__flock_unknown_active_run__"
                     {
                         return Err(protocol::error_with_data(
                             protocol::INVALID_PARAMS,
@@ -6349,7 +6351,7 @@ impl Inner {
                 }
             }
             if self.shutdown_prepared.load(Ordering::SeqCst) {
-                return Err("Distill is closing".into());
+                return Err("Flock is closing".into());
             }
             let account = provider_accounts::resolve_account(
                 &self.app,
@@ -7460,7 +7462,7 @@ impl Inner {
         let route = format!("{}\u{1f}renewal:{}", spec.id, uuid::Uuid::new_v4());
         let bridge = Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route, None).await?;
         let result = async {
-            let cwd = crate::services::distill_root::app_root(&self.app)?;
+            let cwd = crate::services::flock_root::app_root(&self.app)?;
             let opened = bridge
                 .request("session/new", json!({"cwd": cwd, "mcpServers": []}))
                 .await
@@ -7481,7 +7483,7 @@ impl Inner {
     }
 
     /// How many benchmark bridges of the account `account_key` names are
-    /// alive: each runs on a lease of the account's Distill sign-in.
+    /// alive: each runs on a lease of the account's Flock sign-in.
     async fn live_benchmark_bridges(&self, account_key: &str) -> usize {
         let prefix = format!("{account_key}{BENCHMARK_ROUTE}");
         self.bridges
@@ -7503,7 +7505,7 @@ impl Inner {
         Box::pin(async move {
             let native = NativeProvider::for_harness(provider)
                 .ok_or("capability_missing: provider has no isolated benchmark runtime")?;
-            // The listing runs on a lease of the account's Distill sign-in:
+            // The listing runs on a lease of the account's Flock sign-in:
             // one too short for its session below, or whose renewal waits,
             // is renewed first.
             let until = crate::services::benchmark_sandbox::admission_deadline(
@@ -7977,7 +7979,7 @@ impl Inner {
     /// `cwd`, and the probe has no business appearing in the history of the
     /// directory the user actually works in.
     fn probe_cwd(&self) -> String {
-        crate::services::distill_root::app_root(&self.app)
+        crate::services::flock_root::app_root(&self.app)
             .ok()
             .map(|dir| dir.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".to_string())
@@ -8013,7 +8015,7 @@ impl Inner {
     /// bridge's own names. `models.availableModels` is not the list — codex
     /// builds that array as a display-only cross product of every model with
     /// every effort (`gpt-6-astra[low]` and 30 more), and reading the
-    /// inventory from there is where Distill learned to treat an effort as
+    /// inventory from there is where Flock learned to treat an effort as
     /// part of a model id. Each model is then selected in turn so the effort
     /// values and fast toggle recorded against it are its own. No prompt is
     /// ever sent, so nothing runs and nothing is billed.

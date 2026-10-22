@@ -135,10 +135,10 @@ function createDeferredPromise<T>() {
 
 describe("chatSessionStore", () => {
   beforeEach(() => {
-    window.localStorage.removeItem("distill:right-rail-open");
-    window.localStorage.removeItem("distill:context-panel-open");
+    window.localStorage.removeItem("flock:right-rail-open");
+    window.localStorage.removeItem("flock:context-panel-open");
     window.localStorage.removeItem(CHAT_WORKSPACE_METADATA_STORAGE_KEY);
-    window.localStorage.removeItem("distill:unread-sessions");
+    window.localStorage.removeItem("flock:unread-sessions");
     useChatStore.setState({ sessionStateById: {} });
     resetStore();
     vi.clearAllMocks();

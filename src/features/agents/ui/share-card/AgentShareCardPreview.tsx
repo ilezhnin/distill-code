@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { resolveAgentIcon } from "@/features/agents/lib/resolveAgentIcon";
 import cardFoil from "@/features/agents/assets/share-card/card-foil.png";
-import distillCardLogo from "@/features/agents/assets/share-card/distill-card-logo.svg";
+import flockCardLogo from "@/features/agents/assets/share-card/flock-card-logo.svg";
 import { HolographicAgentCard } from "./HolographicAgentCard";
 import {
   fallbackAgentCardColor,
@@ -44,7 +44,7 @@ export function AgentShareCardPreview({
   locale,
 }: AgentShareCardPreviewProps) {
   const resolvedAvatarSrc = avatarSrc ?? resolveAgentIcon(identity);
-  const markFilterId = `distill-card-mark-${useId().replaceAll(":", "")}`;
+  const markFilterId = `flock-card-mark-${useId().replaceAll(":", "")}`;
   const [fontGeneration, setFontGeneration] = useState(0);
   useEffect(() => {
     let active = true;
@@ -175,7 +175,7 @@ export function AgentShareCardPreview({
         viewBox="0 0 1227 1839"
       >
         <image
-          href={distillCardLogo}
+          href={flockCardLogo}
           x={geometry.logo.x}
           y={geometry.logo.y}
           width={geometry.logo.width}
@@ -191,7 +191,7 @@ export function AgentShareCardPreview({
           textAnchor="end"
         >
           {/* i18n-check-ignore: fixed brand text embedded in shareable card artwork */}
-          DISTILL AGENT
+          FLOCK AGENT
         </text>
 
         <image

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { parseDistillVerdict } from "./distillVerdict";
+import { parseFlockVerdict } from "./flockVerdict";
 import { MAX_WAVE_REVISIONS, decideWaveVerdict } from "./waveVerdict";
 import { createWaveState, type WaveState } from "./waveEngine";
 import type { StructuredReport } from "./types";
 
 function parse(text: string) {
-  return parseDistillVerdict(text);
+  return parseFlockVerdict(text);
 }
 
 function stepReport(over: Partial<StructuredReport> = {}): StructuredReport {
@@ -41,7 +41,7 @@ function uncheckableWave(): WaveState {
 
 /** `decideWaveVerdict` over a wave the evidence gate has no opinion about. */
 function decide(input: {
-  parse: ReturnType<typeof parseDistillVerdict>;
+  parse: ReturnType<typeof parseFlockVerdict>;
   revisionCount: number;
   maxRevisions?: number;
   wave?: WaveState;

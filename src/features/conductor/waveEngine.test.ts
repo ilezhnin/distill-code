@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { i18n } from "@/shared/i18n";
 
-import type { WaveStep } from "./distillWave";
+import type { WaveStep } from "./flockWave";
 import { waveRejectionNoticeText } from "./waveNotices";
 import { parseWaveEngineState } from "./waveStore";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";

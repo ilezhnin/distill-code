@@ -198,16 +198,16 @@ fn decode_imported_poster_data_url(data_url: &str) -> Result<Vec<u8>, String> {
 /// Where the agent an avatar belongs to may be.
 #[derive(Debug, Default)]
 struct AgentAvatarRoots {
-    /// The Distill root's `agents` (an E2E run's own in isolation). Folders
+    /// The Flock root's `agents` (an E2E run's own in isolation). Folders
     /// other tools keep, such as `~/.agents/agents`, are never trusted.
     trusted: Vec<PathBuf>,
-    /// `(home, Distill root)`, for records made before the agents moved into
+    /// `(home, Flock root)`, for records made before the agents moved into
     /// the root.
     moved_from_home: Option<(PathBuf, PathBuf)>,
 }
 
 impl AgentAvatarRoots {
-    /// An avatar imported before the agents moved into the Distill root
+    /// An avatar imported before the agents moved into the Flock root
     /// recorded its agent as `~/.agents/agents/<file>`. That agent and its
     /// `.avatars` folder now live in `<root>/agents`, so the record is read
     /// there; the old folder is never opened.
@@ -230,11 +230,11 @@ fn trusted_agent_roots(app: &AppHandle) -> Result<AgentAvatarRoots, String> {
     }
     Ok(agent_avatar_roots(
         dirs::home_dir(),
-        crate::services::distill_root::app_root(app)?,
+        crate::services::flock_root::app_root(app)?,
     ))
 }
 
-/// The roots outside an E2E run: only the Distill root's `agents` is trusted,
+/// The roots outside an E2E run: only the Flock root's `agents` is trusted,
 /// whatever `home` still holds; `home` serves only to read an old record's
 /// path as the root's copy.
 fn agent_avatar_roots(home: Option<PathBuf>, root: PathBuf) -> AgentAvatarRoots {
@@ -439,11 +439,11 @@ fn cached_agent_avatar_for_id(
     app: &AppHandle,
     avatar_id: &str,
 ) -> Result<Option<CachedAvatar>, String> {
-    // Prefer the installed agents directory in the Distill root. Those files
+    // Prefer the installed agents directory in the Flock root. Those files
     // live under $HOME, which the webview asset protocol can actually load.
     // Distro copies on E:\ or in Program Files are outside that scope, so
     // looking there first would resolve a path the UI cannot display.
-    let installed = crate::services::distill_root::app_root(app)?.join("agents/.avatars");
+    let installed = crate::services::flock_root::app_root(app)?.join("agents/.avatars");
     if let Some(avatar) = cached_agent_avatar_for_id_at(&installed, avatar_id)? {
         return Ok(Some(avatar));
     }
@@ -549,7 +549,7 @@ fn unique_part_path(target: &Path) -> PathBuf {
 }
 
 fn user_avatar_paths(app: &AppHandle) -> Result<UserAvatarPaths, String> {
-    let app_data_dir = crate::services::distill_root::app_root(app)?;
+    let app_data_dir = crate::services::flock_root::app_root(app)?;
     let root = app_data_dir.join("user-avatars");
     Ok(UserAvatarPaths {
         meta: root.join("meta"),
@@ -1048,7 +1048,7 @@ mod tests {
     }
 
     /// An avatar recorded against the folder older builds shared with other
-    /// tools (`~/.agents/agents`) resolves to the agent's copy in the Distill
+    /// tools (`~/.agents/agents`) resolves to the agent's copy in the Flock
     /// root, never to the old folder, even while that folder still exists.
     #[test]
     fn an_agent_avatar_recorded_in_the_legacy_home_folder_is_read_from_the_root() {
@@ -1081,7 +1081,7 @@ mod tests {
         assert!(legacy_media.exists(), "the legacy folder is never touched");
     }
 
-    /// Without its copy in the Distill root the recorded legacy agent is not
+    /// Without its copy in the Flock root the recorded legacy agent is not
     /// trusted: the old folder is not a fallback.
     #[test]
     fn an_agent_avatar_whose_agent_is_only_in_the_legacy_home_folder_does_not_resolve() {

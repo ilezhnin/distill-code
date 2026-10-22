@@ -18,7 +18,7 @@ model IDs stay on the main page. This grouping never removes a model or changes
 the current selection.
 
 Each is chosen on its own, stored on its own, and applied in a fixed order.
-Distill used to fold the effort into the model id (`gpt-5.6-sol[low]`); that
+Flock used to fold the effort into the model id (`gpt-5.6-sol[low]`); that
 shape survives only as legacy input that is read, never written (see
 [Legacy folded ids](#legacy-folded-ids)).
 
@@ -54,20 +54,20 @@ shape survives only as legacy input that is read, never written (see
   (`sessionExecutionTarget.ts`).
 - **Intent: `ChatSession.desiredRunSettings`** — `{ effort?, fast? }`
   (`sessionRunSettings.ts`). What the operator (or an agent, a ranking, a wave
-  step, distillctl) asked for. It survives model switches.
+  step, flockctl) asked for. It survives model switches.
 - **Observed menus: `ChatSession.reasoningEffort` / `ChatSession.fastMode`** —
   the live options for the **current** model, as the bridge last reported
   them. Cleared on a model change; intent is not.
 - **`ChatSession.runSettingsNotice`** — shown when the current model cannot
   honour the intent.
-- **Preferences** — `distill:preferredModelsByAgent` (localStorage) keeps
+- **Preferences** — `flock:preferredModelsByAgent` (localStorage) keeps
   `reasoningEffort`, `fastMode` and a per-model `byModel` map beside the
   model, because effort menus differ per model on every harness.
 - **Queued messages** — `payload.runSettings` records the values in force when
   the message was queued. Dispatch still reads the chat's intent at send time;
   the record is not an instruction.
 
-### Agents, rankings, waves, distillctl
+### Agents, rankings, waves, flockctl
 
 - **Personas** — frontmatter `effort` and `fast_mode` beside `model`.
 - **Model rankings** — each entry stores a base `modelId` plus `effort` and
@@ -77,7 +77,7 @@ shape survives only as legacy input that is read, never written (see
   step naming an effort or fast mode its model does not offer refuses the
   whole plan. Run journals, telemetry and the conductor graph record `effort`
   and `fast` beside the model; old records stay as written.
-- **distillctl** (protocolVersion 6) — `session create --effort/--fast-mode`,
+- **flockctl** (protocolVersion 6) — `session create --effort/--fast-mode`,
   `agent create --effort/--fast-mode`; `info models` lists `efforts`,
   `default_effort`, `supports_fast` and `group`; `session get`, `session list`
   and `session fork` report `effort` and `fast_mode`. Refusals are
@@ -97,7 +97,7 @@ or list that value, and nothing in the sequence fails an attach: a refused
 value becomes a substitution (below) and the stored intent stays, so the next
 model that offers it gets it back.
 
-Distill re-applies effort and fast after **every** model change instead of
+Flock re-applies effort and fast after **every** model change instead of
 trusting the bridge to keep them, because the three bridges disagree: Claude
 loses the effort after a session passes through Haiku (it reports `default`),
 codex clamps to the new model's default effort, and grok keeps an effort per
@@ -172,9 +172,9 @@ the split was built.
 - **Fast mode on codex** exists on every model except GPT-5.3-Codex-Spark.
   codex offers `ultra` on some models (not all), and Luna tops out at `max`.
 - **grok** has a real `reasoning_effort` option and no fast toggle;
-  Grok 4.7 Fast is a separate model (`grok-4.7-build-fast`). distillctl answers
+  Grok 4.7 Fast is a separate model (`grok-4.7-build-fast`). flockctl answers
   `fast_not_supported` for a toggle. grok accepts an effort a model
-  does not advertise, so Distill validates against the advertised menu.
+  does not advertise, so Flock validates against the advertised menu.
 - **Claude's unlisted extra models** (Opus 4.8, 4.7, 4.6, Sonnet 4.6, or a
   Fable version absent from the bridge's menu) open a
   bridge session on the model and are then asserted with
@@ -215,7 +215,7 @@ menu independently. Explicit inventory refresh bypasses the cache. A missing
 harness retains its last known inventory. Codex's recommended effort metadata
 is retained only when that value is actually offered.
 
-Distill advertises and handles ACP notices, compaction updates/summary chunks,
+Flock advertises and handles ACP notices, compaction updates/summary chunks,
 and terminal output deltas. Notices are live toasts and never enter history.
 Compaction entities patch in place and replay from SQLite; their completion
 does not complete a prompt or drain its queue. Terminal bytes remain visible
@@ -224,7 +224,7 @@ precedence over legacy metadata names. Usage and session history continue
 through the existing ACP paths, including the updated bridge's pagination.
 
 Native CLI voice/TUI/daemon controls are not ACP session options. These bridge
-releases expose no new memory transfer contract: Distill's operator-controlled
+releases expose no new memory transfer contract: Flock's operator-controlled
 memory scopes and `distill-memory` write protocol remain authoritative.
 
 Upstream changes: [Claude ACP 0.81.0](https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.81.0),
@@ -239,13 +239,13 @@ Folded ids are still read, never written:
   (`splitLegacyFoldedModelId`, `baseModelId`, `sameModelIdentity`). It has no
   compose function on purpose.
 - `split_effort_model` in `router.rs` — the host's inbound path inside
-  `apply_model`, for a folded id from an old renderer, an old distillctl client or
+  `apply_model`, for a folded id from an old renderer, an old `distillctl` client or
   a stored value the lazy split skipped.
 - The host's lazy per-session split (kv flag `migrations/selection_split`):
   on first load, a stored `model_id` whose suffix the harness advertises as an
   effort becomes base id plus `reasoning_effort`, with the original kept in
   `legacy_model_id`.
-- `resolveRequestedModelSelection` in `src/features/distillctl/commands/runtime/providers.ts`
+- `resolveRequestedModelSelection` in `src/features/flockctl/commands/runtime/providers.ts`
   — serves both `session create` and `agent create`: an exact listed id wins,
   otherwise a folded id is split and answered with a `deprecated` note.
 - Preferences, persona files, ranking entries, wave plans, journals,
@@ -254,9 +254,9 @@ Folded ids are still read, never written:
 
 **Sunset condition, not a date.** All of these readers — including both
 callers of `resolveRequestedModelSelection` — may be removed once **no
-`sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 distillctl
-clients are in use**. Removing them earlier breaks operator history, imported
-personas and external agents.
+`sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 `distillctl`
+clients are in use** (every client of that age carried the old name). Removing
+them earlier breaks operator history, imported personas and external agents.
 
 Behavioral tests cover legacy folded-id reads, separate model and effort
 updates, authoritative model selection, and queued-message intent. Target
@@ -268,5 +268,5 @@ model choice came from.
 codex's `options.settings.availableModels` looks like a cheaper alternative to
 Claude's reopen-on-model seam. It is not. Inside such a session an alias the
 list does not contain is fuzzy-resolved to a sibling model without an error —
-a silent model substitution happening below Distill, where no notice can
+a silent model substitution happening below Flock, where no notice can
 report it. Keep codex on its own model option.

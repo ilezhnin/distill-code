@@ -120,7 +120,7 @@ export function formatDebugReport(report: DoctorReport): string {
   };
 
   const lines: string[] = [
-    "Distill Doctor Report",
+    "Flock Doctor Report",
     `Date: ${new Date().toISOString()}`,
     "=".repeat(60),
   ];

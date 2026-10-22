@@ -1,5 +1,5 @@
 //! Skills, agents (personas), and projects as files on disk, read and written
-//! only under the Distill root (`<root>/skills/<name>/SKILL.md`,
+//! only under the Flock root (`<root>/skills/<name>/SKILL.md`,
 //! `<root>/agents/<slug>.md`, `<root>/projects/<slug>.md`) and a project's own
 //! `.distill` folder (`<project>/.distill/skills`, `<project>/.distill/agents`).
 //! Folders other tools keep — `~/.agents`, a project's `.agents`, `.claude`,
@@ -27,10 +27,10 @@ fn write_source_file(path: &Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let sequence = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(
-        ".distill-source-write-{}-{sequence}.tmp",
+        ".flock-source-write-{}-{sequence}.tmp",
         std::process::id()
     ));
-    let result = crate::commands::distill_store::write_file_synced(&temp, contents.as_bytes())
+    let result = crate::commands::flock_store::write_file_synced(&temp, contents.as_bytes())
         .and_then(|()| fs::rename(&temp, path));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
@@ -75,7 +75,7 @@ struct Root {
 }
 
 pub struct SourceRoots {
-    /// The Distill root: global `skills/` and `agents/` live here.
+    /// The Flock root: global `skills/` and `agents/` live here.
     pub root: PathBuf,
     /// `<root>/projects` — where projects live.
     pub projects_dir: PathBuf,
@@ -86,7 +86,7 @@ pub struct SourceRoots {
 }
 
 impl SourceRoots {
-    /// Every source folder under the Distill `root`, the way the agent host
+    /// Every source folder under the Flock `root`, the way the agent host
     /// opens them; `legacy_projects_dir` is goose's projects folder, imported
     /// once when present.
     pub fn new(root: PathBuf, legacy_projects_dir: Option<PathBuf>) -> Self {
@@ -99,7 +99,7 @@ impl SourceRoots {
     }
 }
 
-/// The project's `.distill/<kind>` (when a project is named), then the Distill
+/// The project's `.distill/<kind>` (when a project is named), then the Flock
 /// root's `<kind>`. Nothing else is ever scanned or written.
 fn source_roots(kind: &str, project_dir: Option<&Path>, roots: &SourceRoots) -> Vec<Root> {
     let mut result = Vec::new();
@@ -341,6 +341,15 @@ fn scan_skill_dir(dir: &Path, root: &Root, depth: usize, out: &mut Vec<Value>) {
     }
 }
 
+/// Whether a skill's `properties` (its frontmatter `metadata`) carry the
+/// app's bundled marker, under its current name or one an earlier build
+/// wrote.
+fn properties_mark_bundled(properties: &Value) -> bool {
+    properties
+        .as_object()
+        .is_some_and(crate::services::upstream_names::metadata_marks_bundled)
+}
+
 fn builtin_skills(roots: &SourceRoots) -> Vec<Value> {
     let mut out = Vec::new();
     let root = Root {
@@ -359,7 +368,7 @@ fn builtin_skills(roots: &SourceRoots) -> Vec<Value> {
     dirs.sort();
     for dir in dirs {
         if let Some(mut skill) = skill_entry(&dir, &root) {
-            if skill["properties"]["distillBundled"].as_bool() != Some(true) {
+            if !properties_mark_bundled(&skill["properties"]) {
                 continue;
             }
             let name = skill["name"].as_str().unwrap_or_default().to_string();
@@ -531,7 +540,7 @@ fn initialize_project_folders(project: &Value) {
             .map(Path::new)
             .filter(|path| path.is_dir())
         {
-            if let Err(error) = crate::services::distill_root::ensure_project_layout(dir) {
+            if let Err(error) = crate::services::flock_root::ensure_project_layout(dir) {
                 log::warn!(
                     "Cannot initialize project context at {}: {error}",
                     dir.display()
@@ -714,7 +723,7 @@ pub fn list(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         let kind = source["type"].as_str().unwrap_or_default();
         if kind == "skill"
             && source["global"].as_bool() == Some(true)
-            && source["properties"]["distillBundled"].as_bool() == Some(true)
+            && properties_mark_bundled(&source["properties"])
         {
             return false;
         }
@@ -1199,8 +1208,8 @@ mod tests {
         assert_eq!(leftovers, vec!["SKILL.md".to_string()]);
     }
 
-    /// Only the project's `.distill` and the Distill root are roots: the
-    /// project's `.agents` and every vendor folder are never Distill
+    /// Only the project's `.distill` and the Flock root are roots: the
+    /// project's `.agents` and every vendor folder are never Flock
     /// configuration.
     #[test]
     fn a_vendor_folder_is_never_a_root() {
@@ -1251,7 +1260,7 @@ mod tests {
     }
 
     /// A home that still has the folder older builds shared with other tools
-    /// (`~/.agents`) next to the Distill root: only the root is listed. The
+    /// (`~/.agents`) next to the Flock root: only the root is listed. The
     /// roots are built the way the agent host builds them.
     #[test]
     fn the_legacy_home_agents_folder_is_ignored() {
@@ -1275,6 +1284,67 @@ mod tests {
             .map(|source| source["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names, vec!["own-skill".to_string(), "own".to_string()]);
+    }
+
+    /// A skill the app installed under an earlier name's marker is still a
+    /// built-in skill: listed once, as such, and not again as one of the
+    /// user's global skills.
+    #[test]
+    fn a_skill_marked_by_an_earlier_build_is_still_built_in() {
+        use crate::services::upstream_names::{BUNDLED_KEY, OLD_BUNDLED_KEYS};
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(".distill");
+        let mut marked: Vec<(String, &str)> = vec![("flock-help".to_string(), BUNDLED_KEY)];
+        for key in OLD_BUNDLED_KEYS {
+            assert_ne!(*key, BUNDLED_KEY);
+            marked.push((format!("old-{}", key.to_lowercase()), *key));
+        }
+        for (name, key) in &marked {
+            let skill = root.join("skills").join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(
+                skill.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: Example\nmetadata:\n  {key}: true\n---\nbody"
+                ),
+            )
+            .unwrap();
+        }
+        write_skill(&root.join("skills"), "own");
+        let roots = SourceRoots::new(root, None);
+
+        let listed = list(&json!({}), &roots).unwrap();
+        let mut found: Vec<_> = listed["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|source| source["type"] != "project")
+            .map(|source| {
+                (
+                    source["name"].as_str().unwrap().to_string(),
+                    source["type"].as_str().unwrap().to_string(),
+                    source["path"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        found.sort();
+        let mut expected: Vec<_> = marked
+            .iter()
+            .map(|(name, _)| {
+                (
+                    name.clone(),
+                    "builtinSkill".to_string(),
+                    format!("builtin://skills/{name}"),
+                )
+            })
+            .collect();
+        expected.push((
+            "own".to_string(),
+            "skill".to_string(),
+            display(&roots.root.join("skills").join("own")),
+        ));
+        expected.sort();
+        assert_eq!(found, expected);
     }
 
     /// A project's `.agents` folder is not a project source: it is neither

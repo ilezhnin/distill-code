@@ -391,7 +391,7 @@ describe("BenchmarkSettings provider data use", () => {
     });
     // Outside the desktop the document lands in browser storage.
     const written = JSON.parse(
-      window.localStorage.getItem("distill:benchmark-settings") ?? "null",
+      window.localStorage.getItem("flock:benchmark-settings") ?? "null",
     );
     expect(written).toMatchObject({
       providerDataUse: {
@@ -450,14 +450,14 @@ describe("BenchmarkSettings provider data use", () => {
   it("says when the service could not be read", async () => {
     mocks.providerDataUse.mockRejectedValue({
       code: "storage_unavailable",
-      message: "The Distill folder is not ready",
+      message: "The Flock folder is not ready",
     });
     showAccounts([]);
     show();
 
     expect(
       await screen.findByText(
-        "Provider data use could not be read: The Distill folder is not ready",
+        "Provider data use could not be read: The Flock folder is not ready",
       ),
     ).toBeInTheDocument();
     expect(

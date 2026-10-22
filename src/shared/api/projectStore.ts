@@ -1,7 +1,7 @@
 /**
  * A project's own documents, inside the project folder.
  *
- * The sibling of `distillStore`, and the split between them is the point. The
+ * The sibling of `flockStore`, and the split between them is the point. The
  * global root holds what belongs to the operator — their agents, their skills,
  * their memory, the conductor's state — which is the right home for almost all
  * of it and the wrong home for the part that is about one piece of work. An
@@ -21,7 +21,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-import { isDesktopRuntime } from "./distillStore";
+import { isDesktopRuntime } from "./flockStore";
 import { invokeWithStartupRetry } from "./invokeWithStartupRetry";
 
 export async function initializeProjectContext(

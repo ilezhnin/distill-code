@@ -25,7 +25,7 @@ import { RendererErrorBoundary } from "@/app/ui/RendererErrorBoundary";
 import "@xterm/xterm/css/xterm.css";
 import "@/shared/styles/globals.css";
 
-document.title = "Distill";
+document.title = "Levocat Flock";
 
 // React Query's default focus detection relies on `visibilitychange`, which
 // the Tauri webview does not fire when the app window merely loses or regains
@@ -59,20 +59,20 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
 const reactRoot = ReactDOM.createRoot(root);
 
-function OptionalDistillctlBridge() {
+function OptionalFlockctlBridge() {
   const [Bridge, setBridge] = React.useState<React.ComponentType | null>(null);
 
   React.useEffect(() => {
     let mounted = true;
-    import("@/features/distillctl/bridge/DistillctlBridge")
-      .then(({ DistillctlBridge }) => {
+    import("@/features/flockctl/bridge/FlockctlBridge")
+      .then(({ FlockctlBridge }) => {
         if (mounted) {
-          setBridge(() => DistillctlBridge);
+          setBridge(() => FlockctlBridge);
         }
       })
       .catch((error) => {
-        console.error("Failed to load distillctl bridge:", error);
-        reportRendererError("distillctl_bridge_load_failed", error);
+        console.error("Failed to load flockctl bridge:", error);
+        reportRendererError("flockctl_bridge_load_failed", error);
       });
     return () => {
       mounted = false;
@@ -83,7 +83,7 @@ function OptionalDistillctlBridge() {
 }
 
 installRendererDiagnostics({ windowKind: "main" });
-window.addEventListener("distill-settings-error", (event) => {
+window.addEventListener("flock-settings-error", (event) => {
   toast.error(String((event as CustomEvent<string>).detail));
 });
 
@@ -98,7 +98,7 @@ export function renderApp() {
             <BackgroundQueuedMessageDrain />
             <ConductorGraphSync />
             <MemoryAgentSync />
-            <OptionalDistillctlBridge />
+            <OptionalFlockctlBridge />
             <RendererBootLog />
             <I18nProvider>
               <ThemeProvider>

@@ -1,6 +1,6 @@
 /**
  * Benchmark settings: edited in Settings, persisted as a document in the
- * Distill folder beside the benchmark database.
+ * Flock folder beside the benchmark database.
  *
  * Like every document store here, it starts on the defaults and refuses to
  * write until its read has landed, so a default written during startup never
@@ -9,7 +9,7 @@
 
 import { create } from "zustand";
 
-import { distillDocument } from "@/shared/lib/distillDocument";
+import { flockDocument } from "@/shared/lib/flockDocument";
 
 import type {
   JudgeInput,
@@ -256,9 +256,9 @@ export function serializeBenchmarkSettings(settings: BenchmarkSettings) {
   };
 }
 
-const document = distillDocument<BenchmarkSettings>({
+const document = flockDocument<BenchmarkSettings>({
   path: BENCHMARK_SETTINGS_DOCUMENT,
-  legacyStorageKey: "distill:benchmark-settings",
+  legacyStorageKey: "flock:benchmark-settings",
   parse: parseBenchmarkSettings,
   serialize: serializeBenchmarkSettings,
 });

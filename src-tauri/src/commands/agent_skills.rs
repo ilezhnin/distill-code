@@ -151,12 +151,13 @@ fn read_skill(skill_dir: &Path, root: &SkillRoot) -> Option<AgentSkillEntry> {
         source_kind: match root.scope {
             SkillRootScope::App => "app",
             SkillRootScope::User => {
+                // The app's own install, under the marker's current name or
+                // one an earlier build wrote.
                 if parsed
                     .metadata
                     .as_ref()
-                    .and_then(|m| m.get("distillBundled"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(crate::services::upstream_names::metadata_marks_bundled)
                 {
                     "app"
                 } else {
@@ -208,7 +209,7 @@ fn add_skill_root(
     });
 }
 
-/// The Distill root's `skills` (Personal), then each workspace's
+/// The Flock root's `skills` (Personal), then each workspace's
 /// `.distill/skills` from the repository root down. Folders other tools keep
 /// (`~/.agents/skills`, a workspace's `.agents`, `.claude`, `.codex` or
 /// `.gemini` skills) are never scanned.
@@ -228,7 +229,7 @@ fn collect_skill_roots(
         "Personal".to_string(),
         None,
     );
-    // Keep Personal roots ahead of Distill-owned app skills so any bare-name
+    // Keep Personal roots ahead of Flock-owned app skills so any bare-name
     // activation chooses the user's skill while exact selection remains
     // path-based and can still target either entry.
     if let Some(app_skills_root) = app_skills_root {
@@ -237,7 +238,7 @@ fn collect_skill_roots(
             &mut seen_roots,
             app_skills_root.to_path_buf(),
             SkillRootScope::App,
-            "Distill app".to_string(),
+            "Flock app".to_string(),
             None,
         );
     }
@@ -367,12 +368,12 @@ fn collect_skills_from_roots(
 }
 
 #[tauri::command]
-pub async fn list_distill_app_skills(
+pub async fn list_flock_app_skills(
     app: AppHandle,
     bundled_skills_state: State<'_, crate::services::bundled_skills::BundledSkillsState>,
 ) -> Result<ListAgentSkillsResponse, String> {
     bundled_skills_state.wait_until_ready().await;
-    let app_data_dir = crate::services::distill_root::app_root(&app)?;
+    let app_data_dir = crate::services::flock_root::app_root(&app)?;
     let app_skills_root = app_data_dir.join("skills");
     let skills = tokio::task::spawn_blocking(move || {
         let mut roots = Vec::new();
@@ -382,7 +383,7 @@ pub async fn list_distill_app_skills(
             &mut seen_roots,
             app_skills_root,
             SkillRootScope::User,
-            "Distill app".to_string(),
+            "Flock app".to_string(),
             None,
         );
         collect_skills_from_roots(roots, None)
@@ -391,7 +392,7 @@ pub async fn list_distill_app_skills(
             .collect()
     })
     .await
-    .map_err(|err| format!("Failed to list Distill app skills: {err}"))?;
+    .map_err(|err| format!("Failed to list Flock app skills: {err}"))?;
     Ok(ListAgentSkillsResponse { skills })
 }
 
@@ -402,7 +403,7 @@ pub async fn list_agent_skills(
     request: ListAgentSkillsRequest,
 ) -> Result<ListAgentSkillsResponse, String> {
     bundled_skills_state.wait_until_ready().await;
-    let app_data_dir = crate::services::distill_root::app_root(&app)?;
+    let app_data_dir = crate::services::flock_root::app_root(&app)?;
     let personal_skills_root = app
         .try_state::<crate::services::e2e_mode::E2eMode>()
         .map(|mode| mode.skills_dir())
@@ -419,7 +420,7 @@ pub async fn list_agent_skills(
     Ok(ListAgentSkillsResponse { skills })
 }
 
-/// Every skill a session can use: the Distill root's and the workspaces'
+/// Every skill a session can use: the Flock root's and the workspaces'
 /// `.distill/skills`, one per name, a project's own copy first.
 fn list_skills_at(
     workspace_paths: Vec<String>,
@@ -478,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_scan_reads_only_distill_skills() {
+    fn workspace_scan_reads_only_flock_skills() {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("repo");
         for (rel, name) in [
@@ -503,7 +504,7 @@ mod tests {
     }
 
     /// The folder older builds shared with other tools (`~/.agents/skills`)
-    /// sits next to the Distill root in the same home: its skills are not
+    /// sits next to the Flock root in the same home: its skills are not
     /// offered, not even the ones whose names the root lacks.
     #[test]
     fn the_legacy_home_skills_folder_is_ignored() {
@@ -525,5 +526,51 @@ mod tests {
         assert_eq!(found, vec![("own", "global")]);
         assert!(skills.iter().all(|skill| std::path::Path::new(&skill.path)
             .starts_with(dunce::canonicalize(&root_skills).unwrap())));
+    }
+
+    /// A skill the app installed is listed as the app's whichever name the
+    /// installing build wrote the marker under; one without a marker is the
+    /// user's.
+    #[test]
+    fn a_skill_marked_by_an_earlier_build_is_still_the_apps() {
+        use crate::services::upstream_names::{BUNDLED_KEY, OLD_BUNDLED_KEYS};
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("skills");
+        assert!(OLD_BUNDLED_KEYS.iter().all(|old| *old != BUNDLED_KEY));
+        let keys: Vec<&str> = std::iter::once(BUNDLED_KEY)
+            .chain(OLD_BUNDLED_KEYS.iter().copied())
+            .collect();
+        for key in &keys {
+            let dir = root.join(format!("marked-{}", key.to_lowercase()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: marked-{key}\ndescription: x\nmetadata:\n  {key}: true\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        write_skill(&root.join("own"), "own");
+
+        let skills = collect_skills_from_roots(
+            vec![SkillRoot {
+                path: root,
+                source_label: "Personal".to_string(),
+                scope: SkillRootScope::User,
+            }],
+            None,
+        );
+
+        let mut found: Vec<_> = skills
+            .iter()
+            .map(|skill| (skill.name.clone(), skill.source_kind.clone()))
+            .collect();
+        found.sort();
+        let mut expected: Vec<_> = keys
+            .iter()
+            .map(|key| (format!("marked-{key}"), "app".to_string()))
+            .collect();
+        expected.push(("own".to_string(), "global".to_string()));
+        expected.sort();
+        assert_eq!(found, expected);
     }
 }

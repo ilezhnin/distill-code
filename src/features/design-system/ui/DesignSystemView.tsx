@@ -30,12 +30,12 @@ import {
 import { AspectRatio } from "@/shared/ui/aspect-ratio";
 import { Avatar, AvatarFallback } from "@/shared/ui/avatar";
 import { Badge } from "@/shared/ui/badge";
-import { DistillLoader } from "@/shared/ui/distill-loader";
-import { DistillLoaderInline } from "@/shared/ui/distill-loader-inline";
+import { FlockLoader } from "@/shared/ui/flock-loader";
+import { FlockLoaderInline } from "@/shared/ui/flock-loader-inline";
 import {
-  DISTILL_LOADER_INLINE_LOOP_MS,
-  DISTILL_LOADER_LOOP_MS,
-} from "@/shared/ui/distill-loader-timing";
+  FLOCK_LOADER_INLINE_LOOP_MS,
+  FLOCK_LOADER_LOOP_MS,
+} from "@/shared/ui/flock-loader-timing";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -107,7 +107,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import { DistillLogo } from "@/shared/ui/DistillLogo";
+import { FlockLogo } from "@/shared/ui/FlockLogo";
 import { FormItem } from "@/shared/ui/form";
 import {
   HoverCard,
@@ -255,8 +255,8 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
     "A layout primitive for fixed-ratio media and previews that should resize predictably across containers.",
   Avatar:
     "Compact identity marks for people, agents, and entities, including fallback behavior.",
-  "Distill Loader":
-    "Branded Distill activity mark for startup, active sessions, and agent work states.",
+  "Flock Loader":
+    "Branded Flock activity mark for startup, active sessions, and agent work states.",
   Breadcrumb:
     "Hierarchy trails for wayfinding through nested pages and object detail surfaces.",
   Calendar:
@@ -281,8 +281,8 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
   "File Context Menu":
     "File-specific action menu composition for copying paths and related file operations.",
   Form: "Form composition primitives that connect fields, labels, descriptions, and validation messages.",
-  "Distill Logo":
-    "Animated Distill brand mark wrapper around the shared icon asset. The sidebar uses the icon directly, so this wrapper currently has no product imports.",
+  "Flock Logo":
+    "Animated Flock brand mark wrapper around the shared icon asset. The sidebar uses the icon directly, so this wrapper currently has no product imports.",
   "Hover Card":
     "Hover-triggered supporting information with popover surface and motion tokens.",
   "Image Lightbox":
@@ -2113,9 +2113,9 @@ function ThemeControls() {
           <SelectValue placeholder="Theme" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="system">System · Distill Default</SelectItem>
-          <SelectItem value="light">Light · Distill Light</SelectItem>
-          <SelectItem value="dark">Dark · Distill Dark</SelectItem>
+          <SelectItem value="system">System · Flock Default</SelectItem>
+          <SelectItem value="light">Light · Flock Light</SelectItem>
+          <SelectItem value="dark">Dark · Flock Dark</SelectItem>
         </SelectContent>
       </Select>
 
@@ -2318,8 +2318,8 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
       <AvatarFallback>MG</AvatarFallback>
     </Avatar>
   ),
-  "Distill Loader": () => <DistillLoader size={70} />,
-  "Distill Loader Inline": () => <DistillLoaderInline size={70} />,
+  "Flock Loader": () => <FlockLoader size={70} />,
+  "Flock Loader Inline": () => <FlockLoaderInline size={70} />,
   Breadcrumb: () => (
     <Breadcrumb>
       <BreadcrumbList>
@@ -2328,7 +2328,7 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
         </BreadcrumbItem>
         <BreadcrumbSeparator />
         <BreadcrumbItem>
-          <BreadcrumbCurrentPage>Distill</BreadcrumbCurrentPage>
+          <BreadcrumbCurrentPage>Flock</BreadcrumbCurrentPage>
         </BreadcrumbItem>
       </BreadcrumbList>
     </Breadcrumb>
@@ -2465,13 +2465,13 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
   Form: () => (
     <FormItem className="w-72">
       <Label htmlFor="design-system-form-preview">Workspace name</Label>
-      <Input id="design-system-form-preview" defaultValue="Distill" />
+      <Input id="design-system-form-preview" defaultValue="Flock" />
       <p className="text-sm text-muted-foreground">
         Helper text and validation share form slots.
       </p>
     </FormItem>
   ),
-  "Distill Logo": () => <DistillLogo />,
+  "Flock Logo": () => <FlockLogo />,
   "Hover Card": () => (
     <HoverCard>
       <HoverCardTrigger asChild>
@@ -2495,7 +2495,7 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
   "Input Group": () => (
     <InputGroup className="w-80">
       <InputGroupAddon>@</InputGroupAddon>
-      <InputGroupInput defaultValue="Distill" />
+      <InputGroupInput defaultValue="Flock" />
     </InputGroup>
   ),
   "Input OTP": () => (
@@ -2963,7 +2963,7 @@ function OverviewPage() {
   return (
     <>
       <PageIntro
-        title="Distill design system inventory"
+        title="Flock design system inventory"
         description="A small internal map of components, theme behavior, token values, and style drift. Component facts now come from a generated manifest."
       />
       <div className="grid gap-4 md:grid-cols-4">
@@ -3215,7 +3215,7 @@ function ButtonPage() {
     <>
       <PageIntro
         title="Button"
-        description="Button variants and sizes running inside the real Distill app shell, with the active theme and primary color applied."
+        description="Button variants and sizes running inside the real Flock app shell, with the active theme and primary color applied."
       />
       <ComponentSpec name="Button" />
 
@@ -3392,7 +3392,7 @@ function ButtonGroupPage() {
       <ComponentSpec name="Button Group" />
 
       <ComponentPlayground
-        description="This is the shadcn-studio Button Group component using Distill Button children."
+        description="This is the shadcn-studio Button Group component using Flock Button children."
         preview={
           <ButtonGroup
             orientation={playgroundOrientation}
@@ -3469,7 +3469,7 @@ function ButtonGroupPage() {
   );
 }
 
-function DistillLoaderPage() {
+function FlockLoaderPage() {
   const [playgroundAnimated, setPlaygroundAnimated] = useState(true);
   const [playgroundDecorative, setPlaygroundDecorative] = useState(true);
   const [playgroundSize, setPlaygroundSize] = useState("70");
@@ -3488,7 +3488,7 @@ function DistillLoaderPage() {
         anatomy: "Loop",
         state: playgroundAnimated ? "Looping" : "Settled first frame",
         background: "none",
-        textIcon: "five distillation frames",
+        textIcon: "five flock frames",
         border: "none",
       },
       {
@@ -3503,7 +3503,7 @@ function DistillLoaderPage() {
       {
         anatomy: "Loader",
         size: `${loaderSize}px`,
-        weight: `loop ${DISTILL_LOADER_LOOP_MS}ms`,
+        weight: `loop ${FLOCK_LOADER_LOOP_MS}ms`,
       },
     ],
   };
@@ -3511,13 +3511,13 @@ function DistillLoaderPage() {
   return (
     <>
       <PageIntro
-        title="Distill Loader"
-        description="Branded Distill activity mark for startup, active sessions, and agent work states. Five-frame distillation sprite."
+        title="Flock Loader"
+        description="Branded Flock activity mark for startup, active sessions, and agent work states. Five-frame flock sprite, the lead bird pulsing."
       />
-      <ComponentSpec name="Distill Loader" />
+      <ComponentSpec name="Flock Loader" />
 
       <ComponentPlayground
-        description="Inspect the Distill loader in its animated, reduced-motion, decorative, and labeled states. The mark is a pixel sprite, not a currentColor SVG."
+        description="Inspect the Flock loader in its animated, reduced-motion, decorative, and labeled states. The mark is a pixel sprite, not a currentColor SVG."
         preview={
           <div
             className={cn(
@@ -3528,7 +3528,7 @@ function DistillLoaderPage() {
                 "bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg",
             )}
           >
-            <DistillLoader
+            <FlockLoader
               animated={playgroundAnimated}
               decorative={playgroundDecorative}
               size={loaderSize}
@@ -3537,21 +3537,21 @@ function DistillLoaderPage() {
         }
         controls={[
           {
-            id: "distill-loader-animated",
+            id: "flock-loader-animated",
             label: "Animated",
             type: "switch",
             checked: playgroundAnimated,
             onChange: setPlaygroundAnimated,
           },
           {
-            id: "distill-loader-decorative",
+            id: "flock-loader-decorative",
             label: "Decorative",
             type: "switch",
             checked: playgroundDecorative,
             onChange: setPlaygroundDecorative,
           },
           {
-            id: "distill-loader-size",
+            id: "flock-loader-size",
             label: "Size",
             type: "select",
             value: playgroundSize,
@@ -3563,7 +3563,7 @@ function DistillLoaderPage() {
             onChange: setPlaygroundSize,
           },
           {
-            id: "distill-loader-tone",
+            id: "flock-loader-tone",
             label: "Color context",
             type: "select",
             value: playgroundTone,
@@ -3587,7 +3587,7 @@ function DistillLoaderPage() {
   );
 }
 
-function DistillLoaderInlinePage() {
+function FlockLoaderInlinePage() {
   const [playgroundAnimated, setPlaygroundAnimated] = useState(true);
   const [playgroundDecorative, setPlaygroundDecorative] = useState(true);
   const [playgroundSize, setPlaygroundSize] = useState("14");
@@ -3606,7 +3606,7 @@ function DistillLoaderInlinePage() {
         anatomy: "Loop",
         state: playgroundAnimated ? "Looping" : "Settled first frame",
         background: "none",
-        textIcon: "five distillation frames",
+        textIcon: "five flock frames",
         border: "none",
       },
       {
@@ -3621,7 +3621,7 @@ function DistillLoaderInlinePage() {
       {
         anatomy: "Loader",
         size: `${loaderSize}px`,
-        weight: `loop ${DISTILL_LOADER_INLINE_LOOP_MS}ms`,
+        weight: `loop ${FLOCK_LOADER_INLINE_LOOP_MS}ms`,
       },
     ],
   };
@@ -3629,10 +3629,10 @@ function DistillLoaderInlinePage() {
   return (
     <>
       <PageIntro
-        title="Distill Loader Inline"
-        description="In-app activity mark for running sessions — left nav rows, the quick switcher, and the responding pill. Same Distill distillation sprite as the startup loader, with a separate loop duration for small placements."
+        title="Flock Loader Inline"
+        description="In-app activity mark for running sessions — left nav rows, the quick switcher, and the responding pill. Same Flock bird sprite as the startup loader, with a separate loop duration for small placements."
       />
-      <ComponentSpec name="Distill Loader Inline" />
+      <ComponentSpec name="Flock Loader Inline" />
 
       <ComponentPlayground
         description="Inspect the in-app inline loader at the small sizes it actually renders in product. The mark is a pixel sprite, not a currentColor SVG."
@@ -3646,7 +3646,7 @@ function DistillLoaderInlinePage() {
                 "bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg",
             )}
           >
-            <DistillLoaderInline
+            <FlockLoaderInline
               animated={playgroundAnimated}
               decorative={playgroundDecorative}
               size={loaderSize}
@@ -3655,21 +3655,21 @@ function DistillLoaderInlinePage() {
         }
         controls={[
           {
-            id: "distill-loader-inline-animated",
+            id: "flock-loader-inline-animated",
             label: "Animated",
             type: "switch",
             checked: playgroundAnimated,
             onChange: setPlaygroundAnimated,
           },
           {
-            id: "distill-loader-inline-decorative",
+            id: "flock-loader-inline-decorative",
             label: "Decorative",
             type: "switch",
             checked: playgroundDecorative,
             onChange: setPlaygroundDecorative,
           },
           {
-            id: "distill-loader-inline-size",
+            id: "flock-loader-inline-size",
             label: "Size",
             type: "select",
             value: playgroundSize,
@@ -3681,7 +3681,7 @@ function DistillLoaderInlinePage() {
             onChange: setPlaygroundSize,
           },
           {
-            id: "distill-loader-inline-tone",
+            id: "flock-loader-inline-tone",
             label: "Color context",
             type: "select",
             value: playgroundTone,
@@ -3929,7 +3929,7 @@ function ToggleGroupPage() {
     <>
       <PageIntro
         title="Toggle Group"
-        description="Adjacent choice controls for short options with Radix keyboard behavior and Distill tokens."
+        description="Adjacent choice controls for short options with Radix keyboard behavior and Flock tokens."
       />
       <ComponentSpec name="Toggle Group" />
 
@@ -4070,7 +4070,7 @@ function SelectPage() {
     <>
       <PageIntro
         title="Select"
-        description="Single-value choice controls backed by Radix state and Distill overlay tokens."
+        description="Single-value choice controls backed by Radix state and Flock overlay tokens."
       />
       <ComponentSpec name="Select" />
 
@@ -4629,8 +4629,8 @@ function FormPage() {
   return <GenericComponentPage name="Form" />;
 }
 
-function DistillLogoPage() {
-  return <GenericComponentPage name="Distill Logo" />;
+function FlockLogoPage() {
+  return <GenericComponentPage name="Flock Logo" />;
 }
 
 function HoverCardPage() {
@@ -5526,10 +5526,10 @@ function renderSection(section: DesignSystemSection) {
       return <ButtonGroupPage />;
     case "component-badge":
       return <BadgePage />;
-    case "component-distill-loader":
-      return <DistillLoaderPage />;
-    case "component-distill-loader-inline":
-      return <DistillLoaderInlinePage />;
+    case "component-flock-loader":
+      return <FlockLoaderPage />;
+    case "component-flock-loader-inline":
+      return <FlockLoaderInlinePage />;
     case "component-breadcrumb":
       return <BreadcrumbPage />;
     case "component-alert":
@@ -5566,8 +5566,8 @@ function renderSection(section: DesignSystemSection) {
       return <FileContextMenuPage />;
     case "component-form":
       return <FormPage />;
-    case "component-distill-logo":
-      return <DistillLogoPage />;
+    case "component-flock-logo":
+      return <FlockLogoPage />;
     case "component-hover-card":
       return <HoverCardPage />;
     case "component-image-lightbox":

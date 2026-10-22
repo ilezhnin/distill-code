@@ -1,4 +1,4 @@
-export const OPEN_SETTINGS_EVENT = "distill:open-settings";
+export const OPEN_SETTINGS_EVENT = "flock:open-settings";
 
 export interface AgentBuilderProviderSetupReturnTarget {
   type: "agent-builder-provider-setup";

@@ -1,23 +1,23 @@
 [package]
-name = "Distill"
+name = "levocat-flock"
 version = "0.6.2"
-description = "Distill desktop app"
-authors = ["Distill"]
+description = "Levocat Flock desktop app"
+authors = ["Ivan Lezhnin"]
 edition = "2021"
-default-run = "Distill"
+default-run = "levocat-flock"
 
 [lib]
-name = "distill_lib"
+name = "levocat_flock_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# Explicit workspace so the distillctl plugin is a member: `cargo test -p
+# Explicit workspace so the flockctl plugin is a member: `cargo test -p
 # <plugin> --features ...` only works for workspace members. Include the UI
 # driver so its authentication and protocol tests run in the same CI gate.
 [workspace]
 members = [
-  "crates/distill-monitor",
-  "crates/distillctl",
-  "plugins/distillctl",
+  "crates/flock-monitor",
+  "crates/flockctl",
+  "plugins/flockctl",
   "plugins/app-test-driver",
 ]
 
@@ -53,7 +53,7 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 tauri = { version = "2", features = ["protocol-asset"] }
 toml = "1.1.4"
 toml_edit = "0.25.13"
-tauri-plugin-distillctl = { path = "plugins/distillctl" }
+tauri-plugin-flockctl = { path = "plugins/flockctl" }
 tauri-plugin-app-test-driver = { path = "plugins/app-test-driver" }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-deep-link = "2"
@@ -61,7 +61,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
-# `deep-link`: a `distill://` link clicked while the app is running launches a
+# `deep-link`: a `flock://` link clicked while the app is running launches a
 # second process whose argv this plugin forwards to the primary; the feature
 # makes it hand that argv to the deep-link plugin before our callback runs.
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
@@ -90,7 +90,7 @@ windows-sys = { version = "0.59", features = [
 
 [features]
 default = []
-distillctl = ["tauri-plugin-distillctl/server"]
+flockctl = ["tauri-plugin-flockctl/server"]
 app-test-driver = []
 devtools = ["tauri/devtools"]
 

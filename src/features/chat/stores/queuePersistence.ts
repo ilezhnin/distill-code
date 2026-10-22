@@ -13,7 +13,7 @@ import {
 } from "../lib/sessionRunSettings";
 import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
-const QUEUES_STORAGE_KEY = "distill:chat-message-queues:v1";
+const QUEUES_STORAGE_KEY = "flock:chat-message-queues:v1";
 let nativeWriteChain = Promise.resolve();
 const pendingNativeUpdates = new Map<string, QueuedMessageRecord[] | null>();
 

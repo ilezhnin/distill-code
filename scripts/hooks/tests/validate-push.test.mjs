@@ -39,7 +39,7 @@ function shellPath(path) {
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "distill-push-gate-"));
+  const root = await mkdtemp(join(tmpdir(), "flock-push-gate-"));
   temporary.push(root);
   const repo = join(root, "repo with spaces");
   const remote = join(root, "remote.git");
@@ -83,7 +83,7 @@ async function fixture() {
     commit: (...extra) => run(["commit", "-m", "Checked fixture", ...extra]),
     push: (...refs) => run(["push", "origin", ...refs]),
     output: (result) => result.stdout + result.stderr,
-    record: () => readFile(join(repo, ".git/distill-validated-trees"), "utf8"),
+    record: () => readFile(join(repo, ".git/flock-validated-trees"), "utf8"),
   };
 }
 

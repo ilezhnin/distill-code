@@ -172,7 +172,7 @@ export function AgentImageImportDialog({
         try {
           animation = decodeAvatarAnimation(imageBytes);
         } catch {
-          // Animation is an optional Distill extension; legacy test fixtures and
+          // Animation is an optional Flock extension; legacy test fixtures and
           // otherwise valid portable snapshots can import without it.
         }
       }

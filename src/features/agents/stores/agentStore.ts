@@ -5,7 +5,7 @@ import { canEditPersona } from "@/features/agents/lib/personaPresentation";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 
-const PROVIDER_STORAGE_KEY = "distill:defaultProvider";
+const PROVIDER_STORAGE_KEY = "flock:defaultProvider";
 const FALLBACK_PROVIDER = DEFAULT_HARNESS_ID;
 
 export function getStoredProvider(providers: AcpProvider[] = []): string {

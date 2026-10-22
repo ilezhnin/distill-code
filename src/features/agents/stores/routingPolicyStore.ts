@@ -1,6 +1,6 @@
 /**
  * The live routing policy: read everywhere a model is chosen, edited in one
- * settings pane, persisted as a document in the Distill folder.
+ * settings pane, persisted as a document in the Flock folder.
  *
  * Hydration follows the same rule as every other document store here — the
  * store starts on the defaults and refuses to write until its read has landed,
@@ -10,7 +10,7 @@
 
 import { create } from "zustand";
 
-import { distillDocument } from "@/shared/lib/distillDocument";
+import { flockDocument } from "@/shared/lib/flockDocument";
 
 import type { ModelPreferenceClassId } from "../lib/modelRanking";
 import {
@@ -21,9 +21,9 @@ import {
 } from "../lib/routingPolicy";
 
 /** Where the policy lived before it was a document. Read once, then removed. */
-const ROUTING_POLICY_STORAGE_KEY = "distill:routing-policy";
+const ROUTING_POLICY_STORAGE_KEY = "flock:routing-policy";
 
-const document = distillDocument<RoutingPolicy>({
+const document = flockDocument<RoutingPolicy>({
   path: ROUTING_POLICY_DOCUMENT,
   legacyStorageKey: ROUTING_POLICY_STORAGE_KEY,
   parse: parseRoutingPolicy,

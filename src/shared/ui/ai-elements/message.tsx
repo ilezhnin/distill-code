@@ -142,7 +142,7 @@ const LinkSafetyContext = createContext<OpenExternalUrl | null>(null);
 /**
  * Custom link component that splits behavior by link type:
  * - External links → <a> with preventDefault that opens a LinkSafetyModal via context
- * - Distill session deep links → <a> that routes in-app
+ * - Flock session deep links → <a> that routes in-app
  * - Everything else is a local filesystem destination → <a> whose click is
  *   cancelled and routed through `LocalMarkdownLinkProvider`
  *
@@ -212,7 +212,7 @@ const MarkdownLink = memo(
       );
     }
 
-    if (isReservedDistillSessionLinkPrefix(href)) {
+    if (isReservedFlockSessionLinkPrefix(href)) {
       return (
         <>
           {children}
@@ -322,22 +322,22 @@ function buildStreamdownComponents(imageRenderer?: MarkdownImageRenderer) {
 /**
  * `rehype-harden` treats only `/`, `./`, and `../` as relative URLs. Bare
  * filesystem paths such as `wiki/report.md` are therefore replaced with a
- * `[blocked]` indicator before Distill's artifact click handler can resolve them
+ * `[blocked]` indicator before Flock's artifact click handler can resolve them
  * against the session working directory, and the dot-relative forms it does
  * accept are normalised as *web* paths — `./report.md` and `../report.md`
  * both come out as the root-relative `/report.md`, which the artifact policy
- * would then read as an absolute filesystem path. It also blocks Distill's
+ * would then read as an absolute filesystem path. It also blocks Flock's
  * custom deep-link scheme. Prefix every relative path-like destination and
- * parseable Distill session link for the sanitizer, then remove the prefixes
+ * parseable Flock session link for the sanitizer, then remove the prefixes
  * afterwards so the renderer and click-routing policy receive the original
- * href. Other custom schemes and malformed `distill:` links remain blocked.
+ * href. Other custom schemes and malformed `flock:` links remain blocked.
  */
-const DISTILL_LOCAL_PATH_PREFIX = "/__distill_local_path__/";
-const DISTILL_SESSION_LINK_PREFIX_ROOT = "/__distill_session_link__/";
-const DISTILL_SESSION_LINK_PREFIX = `${DISTILL_SESSION_LINK_PREFIX_ROOT}${createDistillSessionLinkNonce()}/`;
+const FLOCK_LOCAL_PATH_PREFIX = "/__flock_local_path__/";
+const FLOCK_SESSION_LINK_PREFIX_ROOT = "/__flock_session_link__/";
+const FLOCK_SESSION_LINK_PREFIX = `${FLOCK_SESSION_LINK_PREFIX_ROOT}${createFlockSessionLinkNonce()}/`;
 const MARKDOWN_DESTINATION_PROPERTY = new Set(["href", "src"]);
 
-function createDistillSessionLinkNonce(): string {
+function createFlockSessionLinkNonce(): string {
   const crypto = globalThis.crypto;
   if (typeof crypto?.randomUUID === "function") {
     return crypto.randomUUID();
@@ -352,8 +352,8 @@ function createDistillSessionLinkNonce(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-function isReservedDistillSessionLinkPrefix(href: string | undefined): boolean {
-  return href?.startsWith(DISTILL_SESSION_LINK_PREFIX_ROOT) ?? false;
+function isReservedFlockSessionLinkPrefix(href: string | undefined): boolean {
+  return href?.startsWith(FLOCK_SESSION_LINK_PREFIX_ROOT) ?? false;
 }
 
 type MarkdownHastNode = {
@@ -405,7 +405,7 @@ function isLocalMarkdownPath(value: string): boolean {
   return isBareLocalMarkdownPath(value) || isWindowsAbsoluteMarkdownPath(value);
 }
 
-function isValidDistillSessionDeepLink(value: string): boolean {
+function isValidFlockSessionDeepLink(value: string): boolean {
   return parseSessionDeepLink(value) !== null;
 }
 
@@ -430,22 +430,22 @@ function visitMarkdownDestinations(
   }
 }
 
-function prefixDistillMarkdownDestinations() {
+function prefixFlockMarkdownDestinations() {
   return (tree: MarkdownHastNode) => {
     visitMarkdownDestinations(tree, (value, property) => {
       if (isLocalMarkdownPath(value)) {
-        return `${DISTILL_LOCAL_PATH_PREFIX}${encodeURIComponent(value)}`;
+        return `${FLOCK_LOCAL_PATH_PREFIX}${encodeURIComponent(value)}`;
       }
-      if (property === "href" && isValidDistillSessionDeepLink(value)) {
-        return `${DISTILL_SESSION_LINK_PREFIX}${encodeURIComponent(value)}`;
+      if (property === "href" && isValidFlockSessionDeepLink(value)) {
+        return `${FLOCK_SESSION_LINK_PREFIX}${encodeURIComponent(value)}`;
       }
       return value;
     });
   };
 }
 
-function restoreDistillLocalPath(value: string): string {
-  const encodedPath = value.slice(DISTILL_LOCAL_PATH_PREFIX.length);
+function restoreFlockLocalPath(value: string): string {
+  const encodedPath = value.slice(FLOCK_LOCAL_PATH_PREFIX.length);
   try {
     const decodedPath = decodeURIComponent(encodedPath);
     return isLocalMarkdownPath(decodedPath) ? decodedPath : value;
@@ -454,27 +454,27 @@ function restoreDistillLocalPath(value: string): string {
   }
 }
 
-function restoreDistillSessionLink(value: string): string {
-  const encodedHref = value.slice(DISTILL_SESSION_LINK_PREFIX.length);
+function restoreFlockSessionLink(value: string): string {
+  const encodedHref = value.slice(FLOCK_SESSION_LINK_PREFIX.length);
   try {
     const decodedHref = decodeURIComponent(encodedHref);
-    return isValidDistillSessionDeepLink(decodedHref) ? decodedHref : value;
+    return isValidFlockSessionDeepLink(decodedHref) ? decodedHref : value;
   } catch {
     return value;
   }
 }
 
-function restoreDistillMarkdownDestinations() {
+function restoreFlockMarkdownDestinations() {
   return (tree: MarkdownHastNode) => {
     visitMarkdownDestinations(tree, (value, property, node) => {
       let restored = value;
-      if (value.startsWith(DISTILL_LOCAL_PATH_PREFIX)) {
-        restored = restoreDistillLocalPath(value);
+      if (value.startsWith(FLOCK_LOCAL_PATH_PREFIX)) {
+        restored = restoreFlockLocalPath(value);
       } else if (
         property === "href" &&
-        value.startsWith(DISTILL_SESSION_LINK_PREFIX)
+        value.startsWith(FLOCK_SESSION_LINK_PREFIX)
       ) {
-        restored = restoreDistillSessionLink(value);
+        restored = restoreFlockSessionLink(value);
       }
 
       // `rehype-harden` stamps `target="_blank" rel="noopener noreferrer"` on
@@ -495,14 +495,14 @@ function restoreDistillMarkdownDestinations() {
   };
 }
 
-const distillRehypePlugins: NonNullable<
+const flockRehypePlugins: NonNullable<
   ComponentProps<typeof Streamdown>["rehypePlugins"]
 > = [
   defaultRehypePlugins.raw,
-  prefixDistillMarkdownDestinations,
+  prefixFlockMarkdownDestinations,
   defaultRehypePlugins.sanitize,
   defaultRehypePlugins.harden,
-  restoreDistillMarkdownDestinations,
+  restoreFlockMarkdownDestinations,
 ];
 
 const linkSafetyConfig: ComponentProps<typeof Streamdown>["linkSafety"] = {
@@ -620,7 +620,7 @@ const MessageResponseContent = ({
           mode={mode}
           onAnimationEnd={streamdownLayoutPending.onAnimationEnd}
           onAnimationStart={streamdownLayoutPending.onAnimationStart}
-          rehypePlugins={distillRehypePlugins}
+          rehypePlugins={flockRehypePlugins}
           plugins={
             codeRenderers
               ? { ...streamdownPlugins, renderers: codeRenderers }

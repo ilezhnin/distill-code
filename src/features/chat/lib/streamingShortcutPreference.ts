@@ -5,7 +5,7 @@ export type StreamingShortcutMode = "cmd-enter-steers" | "enter-steers";
 export type StreamingShortcutAction = "queue" | "steer";
 
 export const STREAMING_SHORTCUT_MODE_STORAGE_KEY =
-  "distill:streaming-shortcut-mode";
+  "flock:streaming-shortcut-mode";
 // Enter steers by default. Typing into a running turn is the moment a
 // correction is worth the most, and every other agent surface people use
 // treats the primary key as "say this now". Queueing is still one modifier
@@ -14,7 +14,7 @@ export const DEFAULT_STREAMING_SHORTCUT_MODE: StreamingShortcutMode =
   "enter-steers";
 
 const STREAMING_SHORTCUT_MODE_CHANGED_EVENT =
-  "distill:streaming-shortcut-mode-changed";
+  "flock:streaming-shortcut-mode-changed";
 
 function normalizeStreamingShortcutMode(value: unknown): StreamingShortcutMode {
   return value === "enter-steers" || value === "cmd-enter-steers"

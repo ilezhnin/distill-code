@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use crate::services::distro_bundle::DistroBundle;
 use crate::services::managed_acp_tools::retry_transient_io;
+use crate::services::upstream_names;
 
 const DISTRO_SKILLS_DIR_NAME: &str = "skills";
 const SKILLS_DIR_NAME: &str = "skills";
@@ -19,10 +20,13 @@ const SKILL_FILE_NAME: &str = "SKILL.md";
 /// Staged and superseded copies live one level below the skills root, so the
 /// skill scanner — which treats every direct child holding a `SKILL.md` as a
 /// skill, dot-prefixed or not — never sees a half-installed or retired copy.
-const TRANSACTIONS_DIR_NAME: &str = ".distill-skill-transactions";
+pub(crate) const TRANSACTIONS_DIR_NAME: &str = ".flock-skill-transactions";
+/// The staging folder the previous build used. What a run of that build
+/// left behind when it was killed mid-swap is swept the same way.
+const OLD_TRANSACTIONS_DIR_NAMES: &[&str] = &[".distill-skill-transactions"];
 /// Suffix a directory is kept under when a bundled skill had to be installed
 /// over something we could not recognise as ours — see [`keep_replaced_copy`].
-const REPLACED_SUFFIX: &str = ".distill-replaced";
+const REPLACED_SUFFIX: &str = ".flock-replaced";
 static INSTALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Default)]
@@ -71,8 +75,13 @@ fn seed_bundled_skills_from_dir(source_root: &Path, target_root: &Path) -> Resul
     })?;
     // A previous run that was killed mid-swap can leave stage/retired copies
     // behind. They are invisible to the scanner, but sweeping them keeps the
-    // directory from growing one pair per crash.
-    let _ = fs::remove_dir_all(target_root.join(TRANSACTIONS_DIR_NAME));
+    // directory from growing one pair per crash. The previous build's
+    // staging folder is swept the same way.
+    for name in
+        std::iter::once(TRANSACTIONS_DIR_NAME).chain(OLD_TRANSACTIONS_DIR_NAMES.iter().copied())
+    {
+        let _ = fs::remove_dir_all(target_root.join(name));
+    }
 
     let mut seeded = 0usize;
     for entry in fs::read_dir(source_root).map_err(|err| {
@@ -117,7 +126,8 @@ fn seed_bundled_skills_from_dir(source_root: &Path, target_root: &Path) -> Resul
 #[derive(Debug, PartialEq, Eq)]
 enum InstalledSkillState {
     Nothing,
-    /// A directory carrying our own `distillBundled` marker.
+    /// A directory carrying our own `flockBundled` marker — or the marker a
+    /// build under an earlier name wrote, which is the same claim.
     Bundled,
     /// A directory with no readable `SKILL.md`. It is not a skill at all — it is
     /// what an interrupted install leaves behind — so it is ours to repair.
@@ -164,8 +174,7 @@ fn installed_skill_state(skill_dir: &Path) -> Result<InstalledSkillState, String
     if skill_frontmatter(&contents)
         .and_then(|frontmatter| yaml_serde::from_str::<SkillFrontmatter>(frontmatter).ok())
         .and_then(|frontmatter| frontmatter.metadata)
-        .map(|metadata| metadata.distill_bundled.unwrap_or(false))
-        .unwrap_or(false)
+        .is_some_and(|metadata| upstream_names::metadata_marks_bundled(&metadata))
     {
         Ok(InstalledSkillState::Bundled)
     } else {
@@ -318,15 +327,12 @@ fn skill_frontmatter(contents: &str) -> Option<&str> {
     Some(contents[..end].trim_end_matches('\r'))
 }
 
+/// Only the `metadata` block matters, read as a map so the ownership marker
+/// is recognised under every name the app has written it by
+/// (`upstream_names::metadata_marks_bundled`).
 #[derive(Deserialize)]
 struct SkillFrontmatter {
-    metadata: Option<SkillMetadata>,
-}
-
-#[derive(Deserialize)]
-struct SkillMetadata {
-    #[serde(rename = "distillBundled")]
-    distill_bundled: Option<bool>,
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Install `source` at `target` without ever leaving `target` incomplete.
@@ -487,7 +493,7 @@ mod tests {
         );
     }
 
-    const BUNDLED: &str = "---\nname: agent-builder\nmetadata:\n  distillBundled: true\n---\nbody";
+    const BUNDLED: &str = "---\nname: agent-builder\nmetadata:\n  flockBundled: true\n---\nbody";
 
     fn transactions_dir(target: &Path) -> std::path::PathBuf {
         target.join(TRANSACTIONS_DIR_NAME)
@@ -554,25 +560,21 @@ mod tests {
     fn a_skill_directory_left_without_a_skill_file_is_repaired() {
         let source = tempdir().unwrap();
         let target = tempdir().unwrap();
-        write_skill(source.path(), "distill-help", BUNDLED);
+        write_skill(source.path(), "flock-help", BUNDLED);
         // What a failed `remove_dir_all` used to leave behind: the directory
         // survives, `SKILL.md` is gone. It must not be mistaken for a user skill.
-        fs::create_dir_all(target.path().join("distill-help").join("references")).unwrap();
+        fs::create_dir_all(target.path().join("flock-help").join("references")).unwrap();
 
         assert_eq!(
             seed_bundled_skills_from_dir(source.path(), target.path()).unwrap(),
             1
         );
         assert_eq!(
-            fs::read_to_string(target.path().join("distill-help").join(SKILL_FILE_NAME)).unwrap(),
+            fs::read_to_string(target.path().join("flock-help").join(SKILL_FILE_NAME)).unwrap(),
             BUNDLED
         );
         assert!(
-            !target
-                .path()
-                .join("distill-help")
-                .join("references")
-                .exists(),
+            !target.path().join("flock-help").join("references").exists(),
             "the repaired skill is the bundled tree, not a merge"
         );
     }
@@ -581,12 +583,12 @@ mod tests {
     fn what_a_repaired_skill_replaced_is_kept_beside_it() {
         let source = tempdir().unwrap();
         let target = tempdir().unwrap();
-        write_skill(source.path(), "distill-help", BUNDLED);
+        write_skill(source.path(), "flock-help", BUNDLED);
         // A directory with no readable SKILL.md is repaired — but it can just as
         // well be a skill the user is still writing under a name we also use, or
         // a bundled one whose SKILL.md they renamed while working on it. Their
         // work must survive the repair.
-        let drafted = target.path().join("distill-help");
+        let drafted = target.path().join("flock-help");
         fs::create_dir_all(drafted.join("references")).unwrap();
         fs::write(drafted.join("references").join("notes.md"), "my notes").unwrap();
         fs::write(drafted.join("SKILL.md.bak"), "my draft").unwrap();
@@ -596,7 +598,7 @@ mod tests {
             1
         );
 
-        let kept = target.path().join("distill-help.distill-replaced");
+        let kept = target.path().join("flock-help.flock-replaced");
         assert_eq!(
             fs::read_to_string(kept.join("references").join("notes.md")).unwrap(),
             "my notes"
@@ -610,12 +612,8 @@ mod tests {
         assert!(!kept.join(SKILL_FILE_NAME).is_file());
 
         // A second repair does not overwrite the copy the first one kept.
-        fs::remove_file(target.path().join("distill-help").join(SKILL_FILE_NAME)).unwrap();
-        fs::write(
-            target.path().join("distill-help").join("second.md"),
-            "later",
-        )
-        .unwrap();
+        fs::remove_file(target.path().join("flock-help").join(SKILL_FILE_NAME)).unwrap();
+        fs::write(target.path().join("flock-help").join("second.md"), "later").unwrap();
         assert_eq!(
             seed_bundled_skills_from_dir(source.path(), target.path()).unwrap(),
             1
@@ -628,7 +626,7 @@ mod tests {
             fs::read_to_string(
                 target
                     .path()
-                    .join("distill-help.distill-replaced-1")
+                    .join("flock-help.flock-replaced-1")
                     .join("second.md")
             )
             .unwrap(),
@@ -640,11 +638,11 @@ mod tests {
     fn an_out_of_date_bundled_skill_leaves_nothing_behind_when_it_is_replaced() {
         let source = tempdir().unwrap();
         let target = tempdir().unwrap();
-        write_skill(source.path(), "distill-help", BUNDLED);
+        write_skill(source.path(), "flock-help", BUNDLED);
         write_skill(
             target.path(),
-            "distill-help",
-            "---\nmetadata:\n  distillBundled: true\n---\nold",
+            "flock-help",
+            "---\nmetadata:\n  flockBundled: true\n---\nold",
         );
 
         assert_eq!(
@@ -654,7 +652,7 @@ mod tests {
 
         // Our own out-of-date copy is not the user's work: keeping it would grow
         // one directory per update.
-        assert!(!target.path().join("distill-help.distill-replaced").exists());
+        assert!(!target.path().join("flock-help.flock-replaced").exists());
     }
 
     #[test]
@@ -665,7 +663,7 @@ mod tests {
         write_skill(
             target.path(),
             "agent-builder",
-            "---\nmetadata:\n  distillBundled: true\n---\nold",
+            "---\nmetadata:\n  flockBundled: true\n---\nold",
         );
 
         seed_bundled_skills_from_dir(source.path(), target.path()).unwrap();
@@ -718,16 +716,16 @@ mod tests {
     fn a_failed_reinstall_leaves_the_installed_skill_intact() {
         let source = tempdir().unwrap();
         let target = tempdir().unwrap();
-        write_skill(source.path(), "distill-help", BUNDLED);
+        write_skill(source.path(), "flock-help", BUNDLED);
         std::os::unix::fs::symlink(
             "/etc/hosts",
-            source.path().join("distill-help").join("linked"),
+            source.path().join("flock-help").join("linked"),
         )
         .unwrap();
         write_skill(
             target.path(),
-            "distill-help",
-            "---\nmetadata:\n  distillBundled: true\n---\nstill here",
+            "flock-help",
+            "---\nmetadata:\n  flockBundled: true\n---\nstill here",
         );
 
         assert_eq!(
@@ -735,8 +733,8 @@ mod tests {
             0
         );
         assert_eq!(
-            fs::read_to_string(target.path().join("distill-help").join(SKILL_FILE_NAME)).unwrap(),
-            "---\nmetadata:\n  distillBundled: true\n---\nstill here",
+            fs::read_to_string(target.path().join("flock-help").join(SKILL_FILE_NAME)).unwrap(),
+            "---\nmetadata:\n  flockBundled: true\n---\nstill here",
             "the live skill must survive an install that cannot complete"
         );
     }
@@ -765,12 +763,12 @@ mod tests {
         write_skill(
             source.path(),
             "agent-builder",
-            "---\nname: agent-builder\nmetadata:\n  distillBundled: true\n---\nupdated",
+            "---\nname: agent-builder\nmetadata:\n  flockBundled: true\n---\nupdated",
         );
         write_skill(
             target.path(),
             "agent-builder",
-            "---\nname: agent-builder\nmetadata:\n  distillBundled: true\n---\nold",
+            "---\nname: agent-builder\nmetadata:\n  flockBundled: true\n---\nold",
         );
 
         let seeded = seed_bundled_skills_from_dir(source.path(), target.path()).unwrap();
@@ -778,8 +776,66 @@ mod tests {
         assert_eq!(seeded, 1);
         assert_eq!(
             fs::read_to_string(target.path().join("agent-builder").join(SKILL_FILE_NAME)).unwrap(),
-            "---\nname: agent-builder\nmetadata:\n  distillBundled: true\n---\nupdated"
+            "---\nname: agent-builder\nmetadata:\n  flockBundled: true\n---\nupdated"
         );
+    }
+
+    /// A copy a build under an earlier name installed carries that name's
+    /// marker. `upstream_names::adopt` rewrites it at startup, but a copy it
+    /// has not reached (the rewrite failed, or the seeder ran first) is still
+    /// the app's own: updated in place, not kept beside the skill as the
+    /// user's work and not left to send agents to folders the app no longer
+    /// reads.
+    #[test]
+    fn a_copy_marked_by_an_earlier_build_is_still_ours() {
+        for key in upstream_names::OLD_BUNDLED_KEYS {
+            assert_ne!(*key, upstream_names::BUNDLED_KEY);
+            let source = tempdir().unwrap();
+            let target = tempdir().unwrap();
+            write_skill(source.path(), "agent-builder", BUNDLED);
+            write_skill(
+                target.path(),
+                "agent-builder",
+                &format!("---\nname: agent-builder\nmetadata:\n  {key}: true\n---\nold"),
+            );
+
+            let seeded = seed_bundled_skills_from_dir(source.path(), target.path()).unwrap();
+
+            assert_eq!(seeded, 1, "{key}");
+            assert_eq!(
+                fs::read_to_string(target.path().join("agent-builder").join(SKILL_FILE_NAME))
+                    .unwrap(),
+                BUNDLED
+            );
+            assert!(
+                !target.path().join("agent-builder.flock-replaced").exists(),
+                "{key}: an earlier install of ours is not the user's work"
+            );
+        }
+    }
+
+    /// The staging folder the previous build used is swept like the current
+    /// one, so a crash under the old name does not leave its pair behind.
+    #[test]
+    fn the_previous_builds_staging_folder_is_swept() {
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        write_skill(source.path(), "agent-builder", BUNDLED);
+        for old in OLD_TRANSACTIONS_DIR_NAMES {
+            assert_ne!(*old, TRANSACTIONS_DIR_NAME);
+            write_skill(&target.path().join(old), "stage-1-2", "half-installed");
+        }
+
+        seed_bundled_skills_from_dir(source.path(), target.path()).unwrap();
+
+        for old in OLD_TRANSACTIONS_DIR_NAMES {
+            assert!(!target.path().join(old).exists(), "{old}");
+        }
+        assert!(target
+            .path()
+            .join("agent-builder")
+            .join(SKILL_FILE_NAME)
+            .is_file());
     }
 
     /// A bundled skill installed from a Windows checkout carries CRLF line
@@ -795,7 +851,7 @@ mod tests {
         write_skill(
             target.path(),
             "agent-builder",
-            "---\r\nname: agent-builder\r\nmetadata:\r\n  distillBundled: true\r\n---\r\nAgents live at ~/.agents/agents.\r\n",
+            "---\r\nname: agent-builder\r\nmetadata:\r\n  flockBundled: true\r\n---\r\nAgents live at ~/.agents/agents.\r\n",
         );
         let own = "---\r\nname: skill-builder\r\n---\r\nmine\r\n";
         write_skill(target.path(), "skill-builder", own);
@@ -813,10 +869,10 @@ mod tests {
         );
     }
 
-    /// Bundled skills land in the Distill root's `skills`, and nothing is
+    /// Bundled skills land in the Flock root's `skills`, and nothing is
     /// created in the home folder the root sits in.
     #[test]
-    fn bundled_skills_install_under_the_distill_root() {
+    fn bundled_skills_install_under_the_flock_root() {
         let distro = tempdir().unwrap();
         let home = tempdir().unwrap();
         write_skill(

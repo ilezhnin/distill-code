@@ -17,6 +17,7 @@ vi.mock("@/shared/api/acpConnection", () => ({
 }));
 
 import {
+  BUNDLED_AGENT_MARKER_KEYS,
   agentSourceToPersona,
   promotePersonaSource,
   updatePersonaSource,
@@ -43,7 +44,7 @@ describe("persona source helpers", () => {
 
   it("a saved edit to a seeded bundled agent survives the next launch", async () => {
     // Full circle of the operator's lost-ranking bug: the installed bundled
-    // file carries `metadata.distillBundled: true`; the startup reseeder
+    // file carries `metadata.flockBundled: true`; the startup reseeder
     // overwrites any marked file whose bytes differ from the shipped copy
     // (src-tauri bundled_agents.rs, should_install_agent). Saving an edit
     // must therefore (1) keep the edit and (2) drop the ownership marker so
@@ -56,7 +57,7 @@ describe("persona source helpers", () => {
       properties: {
         avatar: "app-avatar:gloopies-1",
         good_for: "proving the claim yourself",
-        metadata: { distillBundled: true, distillBundledSource: "acceptor" },
+        metadata: { flockBundled: true, flockBundledSource: "acceptor" },
       },
     };
     const ranking = JSON.stringify({
@@ -82,7 +83,7 @@ describe("persona source helpers", () => {
           good_for: "proving the claim yourself",
           // The ownership flag is gone; the role attribution survives — the
           // conductor still resolves this file as the acceptor role.
-          metadata: { distillBundledSource: "acceptor" },
+          metadata: { flockBundledSource: "acceptor" },
           model_ranking: ranking,
         },
       }),
@@ -91,6 +92,56 @@ describe("persona source helpers", () => {
     // Hydration after "restart": the persona built from the stored source
     // still carries the ranking.
     expect(agentSourceToPersona(saved).modelRanking).toBe(ranking);
+  });
+
+  it("keeps the previous builds' marker names beside the current one", () => {
+    // The app wrote the ownership marker under two earlier names. A mechanical
+    // rename that touched them would collapse the list into one repeated key
+    // and silently stop releasing files marked by an earlier build.
+    expect(BUNDLED_AGENT_MARKER_KEYS[0]).toBe("flockBundled");
+    expect(BUNDLED_AGENT_MARKER_KEYS).toHaveLength(3);
+    expect(new Set(BUNDLED_AGENT_MARKER_KEYS).size).toBe(
+      BUNDLED_AGENT_MARKER_KEYS.length,
+    );
+  });
+
+  it("a saved edit to a file still marked by an earlier build also takes ownership", async () => {
+    // A copy the startup rewrite has not reached (a project-local one, or a
+    // root whose rewrite failed) carries the marker under an earlier name.
+    // The reseeder recognises that marker too, so the edit has to strip it
+    // the same way — while the source attribution survives, under whatever
+    // name it was written.
+    for (const key of BUNDLED_AGENT_MARKER_KEYS.slice(1)) {
+      mockGooseSourcesList.mockReset();
+      mockGooseSourcesUpdate.mockReset();
+      const bundledEntry = {
+        ...draftEntry,
+        path: "/Users/x/.agents/agents/acceptor.md",
+        name: "Acceptor",
+        description: "Verifies everything personally.",
+        properties: {
+          metadata: { [key]: true, [`${key}Source`]: "acceptor" },
+        },
+      };
+      mockGooseSourcesList.mockResolvedValueOnce({ sources: [bundledEntry] });
+      mockGooseSourcesUpdate.mockImplementationOnce(
+        (request: { properties?: Record<string, unknown> }) =>
+          Promise.resolve({ source: { ...bundledEntry, ...request } }),
+      );
+
+      await updatePersonaSource(bundledEntry.path, {
+        properties: { good_for: "proving the claim yourself" },
+      });
+
+      expect(mockGooseSourcesUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          properties: {
+            metadata: { [`${key}Source`]: "acceptor" },
+            good_for: "proving the claim yourself",
+          },
+        }),
+      );
+    }
   });
 
   it("promotePersonaSource does not delete the draft when final source creation fails", async () => {

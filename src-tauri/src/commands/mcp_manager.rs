@@ -118,7 +118,7 @@ pub async fn update_local_mcp_configuration(
     workspace_paths: Option<Vec<String>>,
 ) -> Result<(), String> {
     let _guard = CONFIGURATION_WRITE.lock().await;
-    let root = crate::services::distill_root::app_root(&app)?;
+    let root = crate::services::flock_root::app_root(&app)?;
     let workspace_paths = effective_workspace_paths(&app, workspace_paths)?;
     tauri::async_runtime::spawn_blocking(move || {
         let located = locate_server(&id, &workspace_paths)?;
@@ -370,7 +370,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 pub async fn list_mcp_diagnostics(
     app: tauri::AppHandle,
 ) -> Result<HashMap<String, McpCheckResult>, String> {
-    let path = crate::services::distill_root::app_root(&app)?.join("state/mcp-diagnostics.json");
+    let path = crate::services::flock_root::app_root(&app)?.join("state/mcp-diagnostics.json");
     match fs::read(&path) {
         Ok(bytes) => {
             serde_json::from_slice(&bytes).map_err(|_| "Cannot read MCP diagnostics".into())
@@ -438,7 +438,7 @@ pub async fn check_mcp_connection(
         }
     }
     let _guard = CONFIGURATION_WRITE.lock().await;
-    let root = crate::services::distill_root::app_root(&app)?;
+    let root = crate::services::flock_root::app_root(&app)?;
     let path = root.join("state/mcp-diagnostics.json");
     let mut records: HashMap<String, McpCheckResult> = fs::read(&path)
         .ok()

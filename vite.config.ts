@@ -28,7 +28,7 @@ function resolveAppVersion(): string {
 function reloadOnNonComponentChange(): Plugin {
   const srcDir = `${normalizePath(resolve(rootDir, "src"))}/`;
   return {
-    name: "distill:reload-on-non-component-change",
+    name: "flock:reload-on-non-component-change",
     apply: "serve",
     hotUpdate({ file, modules }) {
       if (this.environment.name !== "client") return;

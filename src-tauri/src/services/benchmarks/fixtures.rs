@@ -71,7 +71,7 @@ pub async fn publish_blob(root: &Path, draft: &BenchmarkDraft) -> Result<String>
     let versions = root.join("versions");
     tokio::fs::create_dir_all(&versions).await?;
     let final_dir = versions.join(&digest);
-    crate::services::distill_root::reject_document_links(root, &final_dir)
+    crate::services::flock_root::reject_document_links(root, &final_dir)
         .map_err(|e| BenchmarkError::new("validation", e))?;
     if tokio::fs::try_exists(&final_dir).await? {
         verify_blob(root, &digest, draft).await?;
@@ -114,7 +114,7 @@ pub async fn verify_blob(root: &Path, digest: &str, draft: &BenchmarkDraft) -> R
         return Err(BenchmarkError::new("validation", "Invalid version hash"));
     }
     let base = root.join("versions").join(digest);
-    crate::services::distill_root::reject_document_links(root, &base.join("manifest.json"))
+    crate::services::flock_root::reject_document_links(root, &base.join("manifest.json"))
         .map_err(|e| BenchmarkError::new("validation", e))?;
     let manifest = tokio::fs::read(base.join("manifest.json")).await?;
     if hash(&manifest) != digest || manifest != serde_json::to_vec(draft)? {
@@ -125,7 +125,7 @@ pub async fn verify_blob(root: &Path, digest: &str, draft: &BenchmarkDraft) -> R
     }
     for f in &draft.fixtures {
         let path = base.join("fixtures").join(&f.path);
-        crate::services::distill_root::reject_document_links(root, &path)
+        crate::services::flock_root::reject_document_links(root, &path)
             .map_err(|e| BenchmarkError::new("validation", e))?;
         let meta = tokio::fs::symlink_metadata(&path).await?;
         if meta.file_type().is_symlink() || tokio::fs::read(&path).await? != f.content.as_bytes() {
@@ -183,7 +183,7 @@ pub(super) async fn restore_sealed_output(root: &Path, attempt: &mut Attempt) ->
         .join(&attempt.id)
         .join("evidence")
         .join(format!("{digest}.json"));
-    crate::services::distill_root::reject_document_links(root, &path).map_err(|e| missing(&e))?;
+    crate::services::flock_root::reject_document_links(root, &path).map_err(|e| missing(&e))?;
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| missing(&e.to_string()))?;

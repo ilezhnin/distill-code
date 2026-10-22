@@ -1,5 +1,5 @@
 //! Browser login through Codex's native account protocol. OAuth and credential
-//! storage stay in the selected CLI home; no tokens enter Distill's renderer.
+//! storage stay in the selected CLI home; no tokens enter Flock's renderer.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -129,7 +129,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> LoginClient<W, R> {
     }
 
     async fn start(&mut self) -> Result<(String, String), String> {
-        self.send(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"distill_accounts","title":"Distill","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}})).await?;
+        self.send(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"distill_accounts","title":"Levocat Flock","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}})).await?;
         self.response(1).await?;
         self.send(json!({"method":"initialized","params":{}}))
             .await?;

@@ -2,10 +2,10 @@ import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { createBooleanLocalStoragePreference } from "@/shared/preferences/createBooleanLocalStoragePreference";
 
 export const SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY =
-  "distill:sidebar:group-chats-by-project";
+  "flock:sidebar:group-chats-by-project";
 
 const SIDEBAR_GROUP_CHATS_BY_PROJECT_CHANGED_EVENT =
-  "distill:sidebar:group-chats-by-project-changed";
+  "flock:sidebar:group-chats-by-project-changed";
 
 /**
  * One-time migration from the retired sidebar-flat-chat-list experiment.
@@ -23,7 +23,7 @@ function migrateFromRetiredFlatChatListExperiment() {
       return;
     }
     const stored = getPreferenceStorage()?.getItem(
-      "distill:experimental-features",
+      "flock:experimental-features",
     );
     if (!stored) {
       return;

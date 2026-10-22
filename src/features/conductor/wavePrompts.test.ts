@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WaveStep } from "./distillWave";
+import type { WaveStep } from "./flockWave";
 import type { StructuredReport } from "./types";
 import {
   MAX_PREVIOUS_REPORTS_CHARS,

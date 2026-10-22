@@ -1,6 +1,6 @@
 //! Credential leases: what a benchmark session in the sandbox signs in with.
 //!
-//! The Distill app owns every provider sign-in a benchmark uses, and it is
+//! The Flock app owns every provider sign-in a benchmark uses, and it is
 //! the only process that refreshes one. A sandbox session gets a lease: a
 //! copy of the app's current sign-in reduced to what a session runs on, with
 //! no refresh token, so nothing in the sandbox can rotate the grant the app
@@ -15,7 +15,7 @@
 //! guide); it is never leased.
 use crate::services::agent_host::execution::NativeProvider;
 use crate::services::provider_rate_limits::grok;
-use crate::services::{distill_root, provider_accounts};
+use crate::services::{flock_root, provider_accounts};
 use base64::Engine;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -203,7 +203,7 @@ impl Lease {
 }
 
 fn invalid(provider: &str) -> String {
-    format!("The Distill {provider} sign-in is unreadable; sign in again in Settings")
+    format!("The Flock {provider} sign-in is unreadable; sign in again in Settings")
 }
 
 fn parse_document(provider: &str, bytes: &[u8]) -> Result<Value, String> {
@@ -343,7 +343,7 @@ pub(crate) fn codex(auth: &[u8], now_ms: i64) -> Result<Lease, String> {
         .get("tokens")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            "The Distill Codex account has no ChatGPT sign-in to lease; API-key accounts do not run in the sandbox".to_string()
+            "The Flock Codex account has no ChatGPT sign-in to lease; API-key accounts do not run in the sandbox".to_string()
         })?;
     let text = |field: &str| {
         tokens
@@ -439,12 +439,12 @@ pub(crate) fn grok(raw: &[u8]) -> Result<Lease, String> {
     let session = match grok::parse_grok_auth_session(text) {
         grok::GrokAuthReadResult::Ok(session) => session,
         grok::GrokAuthReadResult::Missing => {
-            return Err("Sign in to Grok in Distill before running Grok benchmarks".into())
+            return Err("Sign in to Grok in Flock before running Grok benchmarks".into())
         }
         grok::GrokAuthReadResult::Error(_) => return Err(invalid("Grok")),
     };
     let expires_at_ms = session.expires_at_ms.ok_or_else(|| {
-        "The Distill Grok sign-in has no expiry; only a Grok CLI sign-in is leased to the sandbox"
+        "The Flock Grok sign-in has no expiry; only a Grok CLI sign-in is leased to the sandbox"
             .to_string()
     })?;
     let mut files = BTreeMap::new();
@@ -462,9 +462,7 @@ pub(crate) fn zai(key: &str) -> Result<Lease, String> {
     let key = key.trim();
     if key.is_empty() || key.len() > 4096 || !key.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
     {
-        return Err(
-            "The saved Z.ai key is not one printable line; save it again in Distill".into(),
-        );
+        return Err("The saved Z.ai key is not one printable line; save it again in Flock".into());
     }
     let mut files = BTreeMap::new();
     files.insert("api-key", format!("{key}\n").into_bytes());
@@ -499,7 +497,7 @@ pub(crate) fn read(
                     lease
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Err("Sign in to Grok in Distill before running Grok benchmarks".into())
+                    Err("Sign in to Grok in Flock before running Grok benchmarks".into())
                 }
                 Err(_) => Err(invalid("Grok")),
             }
@@ -526,11 +524,11 @@ pub(crate) fn read(
                     account.id
                 ));
             }
-            let root = distill_root::app_root(app)?;
+            let root = flock_root::app_root(app)?;
             let home = provider_accounts::account_home(app, &account)?;
             let read_file = |name: &str| -> Result<Option<Vec<u8>>, String> {
                 let path = home.join(name);
-                distill_root::reject_document_links(&root, &path)?;
+                flock_root::reject_document_links(&root, &path)?;
                 match std::fs::read(path) {
                     Ok(bytes) => Ok(Some(bytes)),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -539,7 +537,7 @@ pub(crate) fn read(
             };
             let signed_out = || {
                 format!(
-                    "The {} account {} is not signed in to Distill; sign in in Settings > AI providers",
+                    "The {} account {} is not signed in to Flock; sign in in Settings > AI providers",
                     provider.key(),
                     account.id
                 )

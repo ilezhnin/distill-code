@@ -377,7 +377,7 @@ describe("ContextPanel", () => {
     mockUseWorkspaceChangedFilesRuntimes.mockReturnValue([]);
   });
 
-  it("cleans up a last-use Distill-created worktree before removing it from the chat", async () => {
+  it("cleans up a last-use Flock-created worktree before removing it from the chat", async () => {
     const user = userEvent.setup();
     const worktreePath = "/Users/test/goose2-feature";
     useChatSessionStore.setState({
@@ -579,7 +579,7 @@ describe("ContextPanel", () => {
 
     expect(
       await screen.findByText(
-        /another active chat uses the same Distill-created worktree/i,
+        /another active chat uses the same Flock-created worktree/i,
       ),
     ).toBeInTheDocument();
     expect(
@@ -587,7 +587,7 @@ describe("ContextPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("keeps a Distill-created worktree attached when cleanup fails", async () => {
+  it("keeps a Flock-created worktree attached when cleanup fails", async () => {
     const user = userEvent.setup();
     const worktreePath = "/Users/test/goose2-feature";
     const attachment = createManagedWorktreeAttachment(

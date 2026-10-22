@@ -8,8 +8,8 @@ import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 import type { ConductorOpenChildIntent } from "../ConductorTranscriptContext";
 import { summarizeBrigadeActivity } from "../brigadeActivity";
 import { pendingStepName, waveFooterRow } from "../waveFooterChips";
-import { waveStepAccessKey } from "../distillConductorTranscript";
-import type { WaveStep } from "../distillWave";
+import { waveStepAccessKey } from "../flockConductorTranscript";
+import type { WaveStep } from "../flockWave";
 import type { SessionNode, StructuredReport } from "../types";
 import { BrigadeChip, type BrigadeChipViewModel } from "./BrigadeChip";
 

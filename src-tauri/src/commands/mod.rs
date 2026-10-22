@@ -6,10 +6,10 @@ pub mod avatars;
 pub mod benchmarks;
 pub mod cache;
 pub mod diagnostics;
-pub mod distill_store;
 pub mod distro;
 #[allow(dead_code)]
 pub mod doctor;
+pub mod flock_store;
 pub mod git;
 pub mod git_changes;
 pub mod local_mcp_inventory;

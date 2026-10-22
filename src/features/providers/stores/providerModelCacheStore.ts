@@ -12,10 +12,10 @@ import { orderEffortOptions } from "@/shared/lib/effortOrder";
 import { getClient } from "@/shared/api/acpConnection";
 import { notifyProviderModelInventoryInvalidated } from "../lib/providerModelInventoryEvents";
 
-const MODEL_CACHE_STORAGE_KEY = "distill:providerModelCache:v2";
+const MODEL_CACHE_STORAGE_KEY = "flock:providerModelCache:v2";
 /** Caches under keys this build no longer reads, cleared on the first write. */
 const LEGACY_MODEL_CACHE_STORAGE_KEYS = [
-  "distill:providerModelCache:v1",
+  "flock:providerModelCache:v1",
   "goose:providerModelCache:v1",
 ];
 /**
@@ -24,7 +24,7 @@ const LEGACY_MODEL_CACHE_STORAGE_KEYS = [
  *
  * A persisted entry that does not carry it -- written by a build whose rows
  * meant something else -- is dropped on load instead of shown. That is the
- * half of the fix a TTL cannot do: a host-side inventory change (Distill's own
+ * half of the fix a TTL cannot do: a host-side inventory change (Flock's own
  * extra models, a new probe shape) used to be invisible to a renderer holding
  * a persisted list, for as long as that renderer kept refreshing it in time.
  *

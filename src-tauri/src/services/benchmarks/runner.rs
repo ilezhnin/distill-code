@@ -1138,7 +1138,7 @@ async fn text_runtime_snapshot(
     let status = text_execution::readiness(provider, c.account_id.as_deref().unwrap_or_default())
         .await
         .map_err(host_error)?;
-    // A leased provider's credentials are the Distill grant `with_app_sign_in`
+    // A leased provider's credentials are the Flock grant `with_app_sign_in`
     // checked; only a sandbox sign-in (Kimi) is checked here.
     if let Some(timeout) = budget.filter(|_| !credential_lease::leased(provider)) {
         status
@@ -1171,7 +1171,7 @@ async fn repository_runtime_snapshot(
         repository_execution::readiness(provider, c.account_id.as_deref().unwrap_or_default())
             .await
             .map_err(host_error)?;
-    // A leased provider's credentials are the Distill grant `with_app_sign_in`
+    // A leased provider's credentials are the Flock grant `with_app_sign_in`
     // checked; only a sandbox sign-in (Kimi) is checked here.
     if let Some(timeout) = budget.filter(|_| !credential_lease::leased(provider)) {
         status
@@ -1186,7 +1186,7 @@ async fn repository_runtime_snapshot(
     Ok((repository_execution::revision(provider, &status), status))
 }
 
-/// How much longer than an attempt and its cleanup margin the Distill grant
+/// How much longer than an attempt and its cleanup margin the Flock grant
 /// its lease is staged from must last: the session's own start margin (its
 /// lease must cover the turn and 480 s, see `Inner::ensure_execution_bridge`,
 /// 180 s more than the cleanup margin) and a minute for the checks between
@@ -1201,12 +1201,12 @@ fn lease_seconds(provider: NativeProvider, timeout_seconds: u32) -> u32 {
     u32::try_from(span / 1000).unwrap_or(timeout_seconds)
 }
 
-/// The Distill sign-in an admitted attempt's lease is staged from: its
+/// The Flock sign-in an admitted attempt's lease is staged from: its
 /// provider, and when its grant expires (none: it does not). None for a
 /// provider that keeps its own sandbox sign-in (Kimi).
 type AppGrant = Option<(NativeProvider, Option<i64>)>;
 
-/// What the credentials of an admitted attempt last until: the Distill grant
+/// What the credentials of an admitted attempt last until: the Flock grant
 /// its lease is staged from, or the sandbox's own sign-in (Kimi).
 enum CredentialWindow {
     Lease(NativeProvider, Option<i64>),
@@ -1243,7 +1243,7 @@ impl CredentialWindow {
                     Ok(())
                 } else {
                     Err(missing(
-                        "The Distill sign-in this test's lease comes from does not cover its time limit and cleanup margin; it is renewed before the next try".into(),
+                        "The Flock sign-in this test's lease comes from does not cover its time limit and cleanup margin; it is renewed before the next try".into(),
                     ))
                 }
             }
@@ -1252,7 +1252,7 @@ impl CredentialWindow {
 }
 
 /// Runs `admit`, an attempt's sandbox runtime checks, which start no
-/// provider turn, once the Distill sign-in of `c`'s account lasts for the
+/// provider turn, once the Flock sign-in of `c`'s account lasts for the
 /// attempt: `budget` seconds (none for planning) and the cleanup margin,
 /// renewed first on Windows when it does not (see
 /// `Inner::renew_app_sign_in`). With `drain`, an attempt whose own limit the
@@ -3776,7 +3776,7 @@ impl NativeBackend {
 
 impl NativeBackend {
     /// Whether the sandbox can run `c`, for an attempt of `budget` seconds
-    /// (planning: none), once the Distill sign-in its lease comes from lasts
+    /// (planning: none), once the Flock sign-in its lease comes from lasts
     /// for it (see [`with_app_sign_in`]).
     fn sandbox_readiness<'a>(
         &'a self,

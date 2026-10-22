@@ -34,7 +34,7 @@ export function ownedTaskIntentPromptLimit(
 export function ownedTaskPromptBytes(prompt: string): number {
   return new TextEncoder().encode(prompt).length;
 }
-const KEY = "distill.pendingOwnedTaskIntent.v1";
+const KEY = "flock.pendingOwnedTaskIntent.v1";
 const identifier = z.string().min(1).max(512);
 const repository = z
   .object({ path: identifier, commit: identifier, tree: identifier })

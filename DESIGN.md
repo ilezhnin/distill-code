@@ -1,6 +1,6 @@
 ---
-name: Distill
-description: A desktop agent workspace documented from the actual Distill design-system tokens.
+name: Flock
+description: A desktop agent workspace documented from the actual Flock design-system tokens.
 colors:
   bg-primary: "#1a1a1a"
   text-primary-foreground: "#ffffff"
@@ -114,13 +114,13 @@ components:
     padding: "0.125rem 0.5rem"
 ---
 
-# Design System: Distill
+# Design System: Flock
 
 ## 1. Overview
 
 **Creative North Star: "The Grounded Workbench"**
 
-This file documents the actual Distill design-system source in [globals.css](src/shared/styles/globals.css), especially the `:root` semantic tokens and the Tailwind `@theme inline` aliases. The frontmatter lists the Tailwind-facing tokens agents should use in component code, such as `text-foreground`, `bg-card`, `border-border`, and `text-muted-foreground`. The prose explains the lower-level CSS variable chain behind them.
+This file documents the actual Flock design-system source in [globals.css](src/shared/styles/globals.css), especially the `:root` semantic tokens and the Tailwind `@theme inline` aliases. The frontmatter lists the Tailwind-facing tokens agents should use in component code, such as `text-foreground`, `bg-card`, `border-border`, and `text-muted-foreground`. The prose explains the lower-level CSS variable chain behind them.
 
 The current implementation provides useful product bones: semantic color tokens, shared UI primitives, a persistent sidebar, compact top bar, and a strong chat composer pattern. This document is not a blanket endorsement of every current surface.
 
@@ -205,7 +205,7 @@ The app font is **Inter**, self-hosted as variable fonts (optical size + weight 
 
 ## 4. Elevation
 
-Distill uses semantic shadow tokens plus borders and tonal layering. Most surfaces are flat at rest. Shadows appear on hover, popovers, dialogs, and overlays where depth clarifies stacking.
+Flock uses semantic shadow tokens plus borders and tonal layering. Most surfaces are flat at rest. Shadows appear on hover, popovers, dialogs, and overlays where depth clarifies stacking.
 
 ### Shadow Vocabulary
 
@@ -342,7 +342,7 @@ Use Radix-backed shared primitives for dialogs, sheets, drawers, dropdowns, popo
 ### Don't:
 
 - **Don't** invent friendly alias tokens like "ink" or "paper" in docs, components, or feature code.
-- **Don't** make Distill feel like a generic chatbot wrapper.
+- **Don't** make Flock feel like a generic chatbot wrapper.
 - **Don't** make it feel like a dark terminal skin.
 - **Don't** create a dashboard stuffed with metrics.
 - **Don't** create a marketing site wearing product chrome.

@@ -1,6 +1,6 @@
-export const STATUS_BAR_USAGE_MODE_KEY = "distill:status-bar-usage-mode";
+export const STATUS_BAR_USAGE_MODE_KEY = "flock:status-bar-usage-mode";
 export const STATUS_BAR_EMPTY_CTA_DISMISSED_KEY =
-  "distill:status-bar-empty-cta-dismissed";
+  "flock:status-bar-empty-cta-dismissed";
 
 // Provider membership belongs to the shared catalog, not to quota adapters.
 export type AgentPlatformId = string;

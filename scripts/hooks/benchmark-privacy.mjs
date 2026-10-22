@@ -39,7 +39,7 @@ for (const path of paths) {
     ) ||
     /^(?:\.agents\/(?:skills|plans)|distro\/agents)\//i.test(path) ||
     (/^distro\/skills\//i.test(path) &&
-      !/^distro\/skills\/(?:distill-help|distill-monitor)\//i.test(path)) ||
+      !/^distro\/skills\/(?:flock-help|flock-monitor)\//i.test(path)) ||
     /(^|\/)(?:prompt|user|lore|security-posture)\.md$/i.test(path) ||
     /(^|\/)(?:memory\.json|IMPLEMENTATION_PLAN\.md)$/i.test(path) ||
     /^(?:research\/|handoff[^/]*\.md$)/i.test(path) ||

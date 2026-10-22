@@ -1,7 +1,7 @@
 //! A project's own `.distill` folder: overrides and additions that travel with
 //! the project rather than with the machine.
 //!
-//! The global root (`distill_store`) holds what belongs to the operator: their
+//! The global root (`flock_store`) holds what belongs to the operator: their
 //! agents, their skills, their memory, the conductor's state. That is the
 //! right home for almost all of it and the wrong home for the part that is
 //! about one piece of work. An agent written for a repository, an instruction
@@ -27,7 +27,7 @@ pub const PROJECT_STORE_DIR: &str = ".distill";
 pub async fn initialize_project_context(project_root: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let root = PathBuf::from(project_root);
-        crate::services::distill_root::ensure_project_layout(&root)?;
+        crate::services::flock_root::ensure_project_layout(&root)?;
         let _ = exclude_agent_folders(&root);
         Ok(())
     })
@@ -67,7 +67,7 @@ pub fn resolve_project_document_path(
     }
     match resolved.extension().and_then(|ext| ext.to_str()) {
         Some("json") | Some("md") => {
-            crate::services::distill_root::reject_document_links(project_root, &resolved)?;
+            crate::services::flock_root::reject_document_links(project_root, &resolved)?;
             Ok(resolved)
         }
         _ => Err("Only .json and .md documents are stored here".into()),
@@ -77,8 +77,8 @@ pub fn resolve_project_document_path(
 /// Reads one of a project's documents. A document never written is `None`.
 ///
 /// `async` + `spawn_blocking` and the shared size cap, for the reasons given on
-/// `distill_store::read_distill_document` and
-/// `distill_store::MAX_DOCUMENT_BYTES` — a project `.md` in particular can be
+/// `flock_store::read_flock_document` and
+/// `flock_store::MAX_DOCUMENT_BYTES` — a project `.md` in particular can be
 /// replaced out-of-band by something arbitrarily large.
 #[tauri::command]
 pub async fn read_project_document(
@@ -86,7 +86,7 @@ pub async fn read_project_document(
     path: String,
 ) -> Result<Option<String>, String> {
     let target = resolve_project_document_path(Path::new(project_root.trim()), &path)?;
-    tokio::task::spawn_blocking(move || super::distill_store::read_document_capped(&target))
+    tokio::task::spawn_blocking(move || super::flock_store::read_document_capped(&target))
         .await
         .map_err(|error| format!("Cannot read '{path}': {error}"))?
 }
@@ -99,10 +99,10 @@ pub async fn read_project_document(
 /// `exclude_agent_folders`.
 ///
 /// `async` + `spawn_blocking`: the write ends in an `fsync`, which must not run
-/// on the UI thread. See `distill_store::write_distill_document`.
+/// on the UI thread. See `flock_store::write_flock_document`.
 ///
 /// CONTRACT: **the caller must serialise its writes per path**, for the reason
-/// spelled out on `distill_store::write_distill_document` — an `async` command is
+/// spelled out on `flock_store::write_flock_document` — an `async` command is
 /// spawned rather than run in IPC message order, so two writes of one document in
 /// flight at once can land older-last.
 #[tauri::command]
@@ -137,7 +137,7 @@ fn write_project_document_blocking(
         let _ = exclude_agent_folders(&root);
     }
     let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    super::distill_store::write_file_synced(&temporary, contents.as_bytes())
+    super::flock_store::write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
     match fs::rename(&temporary, &target) {
         Ok(()) => Ok(()),
@@ -182,7 +182,7 @@ fn list_project_documents_blocking(
             _ => return Err("Document path must not leave the project store".into()),
         }
     }
-    crate::services::distill_root::reject_document_links(&root, &target)?;
+    crate::services::flock_root::reject_document_links(&root, &target)?;
     let entries = match fs::read_dir(&target) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -218,7 +218,7 @@ pub const PROJECT_RUNS_DIR: &str = "docs/runs";
 /// tool should have for the sake of one feature.
 ///
 /// `async` + `spawn_blocking`: the write ends in an `fsync`, which must not run
-/// on the UI thread. See `distill_store::write_distill_document`.
+/// on the UI thread. See `flock_store::write_flock_document`.
 #[tauri::command]
 pub async fn write_project_run_closeout(
     project_root: String,
@@ -257,11 +257,11 @@ fn write_project_run_closeout_blocking(
         .split('/')
         .fold(root.clone(), |path, part| path.join(part));
     let target = dir.join(file);
-    crate::services::distill_root::reject_document_links(&root, &target)?;
+    crate::services::flock_root::reject_document_links(&root, &target)?;
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Cannot create '{}': {error}", dir.display()))?;
     let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    super::distill_store::write_file_synced(&temporary, contents.as_bytes())
+    super::flock_store::write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
     match fs::rename(&temporary, &target) {
         Ok(()) => Ok(target.to_string_lossy().to_string()),
@@ -307,7 +307,7 @@ pub fn exclude_agent_folders(project_root: &Path) -> Result<bool, String> {
     if !next.is_empty() && !next.ends_with('\n') {
         next.push('\n');
     }
-    next.push_str("\n# Added by Distill: folders agent tools keep their own state in.\n");
+    next.push_str("\n# Added by Flock: folders agent tools keep their own state in.\n");
     for folder in missing {
         next.push_str(folder);
         next.push('\n');
@@ -370,7 +370,7 @@ mod tests {
         )
         .unwrap();
         let target = resolve_project_document_path(root, "memory/facts.json").unwrap();
-        let read = super::super::distill_store::read_document_capped(&target).unwrap();
+        let read = super::super::flock_store::read_document_capped(&target).unwrap();
         assert_eq!(read.as_deref(), Some("{\"a\":1}"));
         assert_eq!(
             list_project_documents_blocking(root.to_string_lossy().to_string(), "memory".into())
@@ -417,7 +417,7 @@ mod tests {
         let dir = temp();
         let root = dir.path();
         let target = resolve_project_document_path(root, "nope.json").unwrap();
-        assert!(super::super::distill_store::read_document_capped(&target)
+        assert!(super::super::flock_store::read_document_capped(&target)
             .unwrap()
             .is_none());
     }

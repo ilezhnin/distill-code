@@ -6,15 +6,15 @@ import {
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
 const sendPromptToExistingSessionInBackground = vi.hoisted(() => vi.fn());
-const distillctlCrossSessionSendOptions = vi.hoisted(() =>
+const flockctlCrossSessionSendOptions = vi.hoisted(() =>
   vi.fn(() => ({
     userMessageMetadata: { origin: "distillctl_cross_session" as const },
   })),
 );
 
-vi.mock("@/features/distillctl/commands/runtime/sessionSend", () => ({
+vi.mock("@/features/flockctl/commands/runtime/sessionSend", () => ({
   sendPromptToExistingSessionInBackground,
-  distillctlCrossSessionSendOptions,
+  flockctlCrossSessionSendOptions,
 }));
 
 const { classifyDigestDispatchError, deliverEnvelope } = await import(

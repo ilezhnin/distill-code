@@ -12,7 +12,7 @@ import {
   type OpenArtifact,
 } from "../stores/artifactViewerStore";
 
-const VIEWER_WIDTH_STORAGE_KEY = "distill:artifact-viewer-width";
+const VIEWER_WIDTH_STORAGE_KEY = "flock:artifact-viewer-width";
 
 interface ArtifactViewerPanelProps {
   sessionId: string;

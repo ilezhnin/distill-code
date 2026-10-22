@@ -23,7 +23,7 @@ import {
   usePersistHealth,
   type PersistScope,
 } from "@/features/conductor/persistHealth";
-import { retryConductorDocumentHydration } from "@/features/settings/lib/distillStoreHydration";
+import { retryConductorDocumentHydration } from "@/features/settings/lib/flockStoreHydration";
 import {
   MAX_WAVE_TELEMETRY_RECORDS,
   type WaveTelemetryState,

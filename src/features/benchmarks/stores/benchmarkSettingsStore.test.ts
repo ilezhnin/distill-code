@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   isDesktopRuntime: vi.fn(() => true),
-  readDistillDocument: vi.fn(async (_path: string) => null as string | null),
-  writeDistillDocument: vi.fn(async (_path: string, _contents: string) => {}),
+  readFlockDocument: vi.fn(async (_path: string) => null as string | null),
+  writeFlockDocument: vi.fn(async (_path: string, _contents: string) => {}),
 }));
 
-vi.mock("@/shared/api/distillStore", () => ({
+vi.mock("@/shared/api/flockStore", () => ({
   isDesktopRuntime: mocks.isDesktopRuntime,
-  readDistillDocument: mocks.readDistillDocument,
-  writeDistillDocument: mocks.writeDistillDocument,
+  readFlockDocument: mocks.readFlockDocument,
+  writeFlockDocument: mocks.writeFlockDocument,
 }));
 
 import type { JudgePoolEntry } from "../types";
@@ -57,7 +57,7 @@ function dataUse(providerDataUse: unknown) {
 
 /** The last document written, parsed. */
 function lastWrite(): unknown {
-  const call = mocks.writeDistillDocument.mock.calls.at(-1);
+  const call = mocks.writeFlockDocument.mock.calls.at(-1);
   if (!call) throw new Error("Nothing was written");
   expect(call[0]).toBe(BENCHMARK_SETTINGS_DOCUMENT);
   return JSON.parse(call[1]);
@@ -68,8 +68,8 @@ beforeEach(async () => {
   await flushBenchmarkSettings();
   vi.clearAllMocks();
   mocks.isDesktopRuntime.mockReturnValue(true);
-  mocks.readDistillDocument.mockResolvedValue(null);
-  mocks.writeDistillDocument.mockResolvedValue(undefined);
+  mocks.readFlockDocument.mockResolvedValue(null);
+  mocks.writeFlockDocument.mockResolvedValue(undefined);
   useBenchmarkSettingsStore.setState({
     settings: { ...DEFAULT_BENCHMARK_SETTINGS },
     hydrated: false,
@@ -271,7 +271,7 @@ describe("benchmark judge pool", () => {
   });
 
   it("keeps the pool when the time limit or credits are written", async () => {
-    mocks.readDistillDocument.mockResolvedValue(
+    mocks.readFlockDocument.mockResolvedValue(
       JSON.stringify({
         timeLimitMinutes: 240,
         creditLimit: null,
@@ -358,7 +358,7 @@ describe("benchmark judge pool", () => {
       judgePool: [alpha],
       providerDataUse: { "zai-acp": { trainsOnSubmissions: false } },
     });
-    expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
+    expect(mocks.writeFlockDocument).not.toHaveBeenCalled();
   });
 });
 
@@ -432,7 +432,7 @@ describe("benchmark provider data use", () => {
   });
 
   it("keeps the word when the time limit or the pool is written", async () => {
-    mocks.readDistillDocument.mockResolvedValue(
+    mocks.readFlockDocument.mockResolvedValue(
       JSON.stringify({
         timeLimitMinutes: 240,
         creditLimit: null,
@@ -513,13 +513,13 @@ describe("benchmark provider data use", () => {
     ).not.toHaveProperty("grok-acp");
 
     // Ids the document would not keep change nothing.
-    const writes = mocks.writeDistillDocument.mock.calls.length;
+    const writes = mocks.writeFlockDocument.mock.calls.length;
     store.setProviderTrainsOnSubmissions("  ", true);
     store.setProviderTrainsOnSubmissions("p".repeat(129), true);
     store.clearProviderDataUse("kimi-acp");
     await flushBenchmarkSettings();
 
     expect(stated()).toEqual({ "zai-acp": { trainsOnSubmissions: true } });
-    expect(mocks.writeDistillDocument).toHaveBeenCalledTimes(writes);
+    expect(mocks.writeFlockDocument).toHaveBeenCalledTimes(writes);
   });
 });

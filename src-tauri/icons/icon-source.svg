@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Levocat Flock">
+  <rect width="1024" height="1024" rx="225" ry="225" fill="#3BB0E9"/>
+  <g transform="translate(43.153 37.912) scale(20.212)">
+    <path fill="#D63A0C" d="M8 0L-5 4.6L-2 0L-5-4.6Z" transform="translate(34 13) rotate(-30)"/>
+    <path fill="#FFFFFF" d="M8 0L-5 4.6L-2 0L-5-4.6Z" transform="translate(22.5 12) rotate(-30) scale(0.85)"/>
+    <path fill="#FFFFFF" d="M8 0L-5 4.6L-2 0L-5-4.6Z" transform="translate(11.1 11) rotate(-30) scale(0.85)"/>
+    <path fill="#FFFFFF" d="M8 0L-5 4.6L-2 0L-5-4.6Z" transform="translate(29.1 23.4) rotate(-30) scale(0.85)"/>
+    <path fill="#FFFFFF" d="M8 0L-5 4.6L-2 0L-5-4.6Z" transform="translate(24.3 33.8) rotate(-30) scale(0.85)"/>
+  </g>
+</svg>

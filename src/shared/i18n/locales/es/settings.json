@@ -25,7 +25,7 @@
     },
     "theme": {
       "darkLabel": "Oscuro",
-      "description": "Elige cómo se ve Distill: claro, oscuro o según tu sistema.",
+      "description": "Elige cómo se ve Flock: claro, oscuro o según tu sistema.",
       "label": "Tema",
       "lightLabel": "Claro",
       "systemDescription": "Coincide con tu dispositivo.",
@@ -44,7 +44,7 @@
       "label": "Archivar chats inactivos",
       "description": "Archiva automáticamente los chats después de este tiempo sin mensajes. Los chats fijados en Inicio nunca se archivan automáticamente.",
       "confirmTitle": "¿Activar el archivado automático?",
-      "confirmDescription": "Distill archivará los chats no fijados {{duration}} sin volver a preguntar. Puedes restaurarlos desde Archivo o desactivar esta opción cuando quieras.",
+      "confirmDescription": "Flock archivará los chats no fijados {{duration}} sin volver a preguntar. Puedes restaurarlos desde Archivo o desactivar esta opción cuando quieras.",
       "confirmAction": "Activar",
       "options": {
         "never": "Nunca",
@@ -67,14 +67,14 @@
   "connections": {
     "askAgent": "Agregar conexión",
     "empty": {
-      "description": "Agrega un servidor MCP para conectar Distill a las apps y servicios que usas.",
+      "description": "Agrega un servidor MCP para conectar Flock a las apps y servicios que usas.",
       "title": "Aún no hay conexiones"
     },
     "localError": {
       "title": "No se pudieron cargar tus MCP locales",
       "description": "Inténtalo de nuevo en unos instantes.",
       "partialTitle": "Es posible que falten algunos MCP locales",
-      "partialDescription": "Distill no pudo leer todas las fuentes de configuración local.",
+      "partialDescription": "Flock no pudo leer todas las fuentes de configuración local.",
       "retry": "Intentar de nuevo",
       "retrying": "Intentando…"
     },
@@ -94,14 +94,14 @@
   },
   "doctor": {
     "agents": "Agentes",
-    "bundledPath": "Gestionado por Distill",
+    "bundledPath": "Gestionado por Flock",
     "copied": "Copiado",
     "copyDetails": "Copiar detalles",
     "empty": "Todavía no hay comprobaciones disponibles.",
     "longRunning": "Sigue ejecutándose después de {{seconds}} s. Dejaremos de esperar después de {{timeoutSeconds}} s si una comprobación se bloquea.",
     "open": "Abrir",
     "rerun": "Volver a intentar",
-    "rowDescription": "Ejecuta verificaciones de estado de Distill, agentes y herramientas.",
+    "rowDescription": "Ejecuta verificaciones de estado de Flock, agentes y herramientas.",
     "rowStatus_one": "{{count}} comprobación necesita atención",
     "rowStatus_other": "{{count}} comprobaciones necesitan atención",
     "runFix": "¿Ejecutar corrección?",
@@ -122,7 +122,7 @@
       "source": {
         "asdf": "asdf",
         "brew": "Homebrew",
-        "bundled": "Distill",
+        "bundled": "Flock",
         "cargo": "Cargo",
         "curlPipe": "instalador nativo",
         "mise": "mise",
@@ -135,7 +135,7 @@
     }
   },
   "extensions": {
-    "description": "Conecta Distill con apps, servicios y capacidades integradas."
+    "description": "Conecta Flock con apps, servicios y capacidades integradas."
   },
   "general": {
     "artifactAutoOpen": {
@@ -160,13 +160,13 @@
       "label": "Predeterminado de menciones @"
     },
     "followUpBehavior": {
-      "description": "Pon seguimientos en cola mientras Distill responde o guía la ejecucion actual. Pulsa Ctrl+Enter para hacer lo opuesto en un mensaje.",
+      "description": "Pon seguimientos en cola mientras Flock responde o guía la ejecucion actual. Pulsa Ctrl+Enter para hacer lo opuesto en un mensaje.",
       "label": "Comportamiento de seguimiento",
       "queue": "Cola",
       "steer": "Guiar"
     },
     "language": {
-      "description": "Elige cómo Distill formatea y muestra la interfaz.",
+      "description": "Define el idioma que Flock usa en menús, botones y mensajes.",
       "english": "Inglés",
       "label": "Idioma",
       "spanish": "Español",
@@ -205,16 +205,16 @@
       "saveSuccess": "Carpeta de reserva del terminal actualizada."
     },
     "title": "General",
-    "distillFolder": {
-      "label": "Carpeta de Distill",
-      "description": "Aquí viven los ajustes, el historial, la memoria, los agentes, las habilidades y los artefactos. La carpeta .distill de cada proyecto contiene sus propios datos y ajustes.",
-      "chooseDialogTitle": "Elegir la carpeta de Distill",
+    "flockFolder": {
+      "label": "Carpeta de Flock",
+      "description": "Aquí viven los ajustes, el historial, la memoria, los agentes, las habilidades y los artefactos. Las instalaciones nuevas usan ~/.flock; una instalación actualizada desde Distill conserva su carpeta ~/.distill. La carpeta .distill de cada proyecto contiene sus propios datos y ajustes.",
+      "chooseDialogTitle": "Elegir la carpeta de Flock",
       "choose": "Cambiar carpeta",
       "saved": "Nueva carpeta guardada",
-      "savedDescription": "No se movió nada. Copia el contenido de la carpeta anterior y reinicia Distill.",
+      "savedDescription": "No se movió nada. Copia el contenido de la carpeta anterior y reinicia Flock.",
       "saveError": "No se pudo usar esa carpeta",
       "restartRequired": "Se aplica tras reiniciar.",
-      "forcedByEnvironment": "Definida por DISTILL_ROOT en esta ejecución, así que este ajuste no manda."
+      "forcedByEnvironment": "Definida por FLOCK_ROOT (o su nombre anterior, DISTILL_ROOT) en esta ejecución, así que este ajuste no manda."
     }
   },
   "memory": {
@@ -281,7 +281,7 @@
       "badNewsBird": "Very Excited",
       "beakYeah": "Excited",
       "paidInBread": "A Bit of Everything",
-      "politeHonk": "Distill",
+      "politeHonk": "Flock",
       "quickPeep": "Chime",
       "silent": "Silencio",
       "twinkle": "Twinkle",
@@ -300,7 +300,7 @@
     "agents": {
       "applyUpdates": "Actualizar",
       "collapseLabel": "Contraer detalles de {{name}}",
-      "description": "Harnesses de agente en los que Distill puede ejecutar chats. Instala o inicia sesión en los que uses.",
+      "description": "Harnesses de agente en los que Flock puede ejecutar chats. Instala o inicia sesión en los que uses.",
       "errors": {
         "genericSetupFailure": "La configuración tuvo un tropiezo.",
         "installStart": "No se pudo iniciar la instalación",
@@ -321,7 +321,7 @@
       "progress": {
         "installedProvider": "{{name}} se instaló correctamente.",
         "installing": "Instalando {{name}}...",
-        "installingForDistill": "Instalando {{name}} para Distill…",
+        "installingForFlock": "Instalando {{name}} para Flock…",
         "preparingProvider": "Preparando la instalación de {{name}}…",
         "preparingRuntime": "Preparando el entorno de Node.js...",
         "step": "Paso {{step}} de {{total}}",
@@ -387,7 +387,7 @@
     "costUnavailable": "n/d",
     "dailyIntensity": "Intensidad diaria",
     "dailyIntensityDescription": "Actividad reciente de chats y tokens de tus agentes.",
-    "description": "Estadísticas de Distill y analítica de tokens de tus agentes y proveedores.",
+    "description": "Estadísticas de Flock y analítica de tokens de tus agentes y proveedores.",
     "duration": {
       "daysHours": "{{days}}d {{hours}}h",
       "hoursMinutes": "{{hours}}h {{minutes}}m",
@@ -476,7 +476,7 @@
       "factsDescription": "Recuentos de olas ejecutadas aquí, mostrados cuando un modelo tiene al menos {{count}} observaciones. Estas mismas líneas se le dan al conductor como hechos, nunca como consejo.",
       "factStep": "{{model}} en pasos «{{role}}»: {{completed}} de {{runs}} completados",
       "factConductor": "Olas planificadas en {{model}}: {{accepted}} de {{waves}} aceptadas",
-      "readOutage": "El conductor está desactivado en esta sesión: no se pudo leer {{documents}} de la carpeta de Distill. Mientras eso siga así no se inicia ninguna ola, así que un plan en un chat de conductor se ignora. Lo más probable es que algo estuviera bloqueando el archivo al arrancar, como un análisis antivirus o un cliente de sincronización.",
+      "readOutage": "El conductor está desactivado en esta sesión: no se pudo leer {{documents}} de la carpeta de Flock. Mientras eso siga así no se inicia ninguna ola, así que un plan en un chat de conductor se ignora. Lo más probable es que algo estuviera bloqueando el archivo al arrancar, como un análisis antivirus o un cliente de sincronización.",
       "readOutageRetry": "Reintentar",
       "readOutageRetrying": "Leyendo…",
       "readOutageRetryFailed": "Todavía no se pudo leer. Cierra lo que esté bloqueando el archivo o reinicia la app."
@@ -513,8 +513,8 @@
   "title": "Configuración",
   "routing": {
     "title": "Selección automática por tarea",
-    "pageDescription": "Elige cómo selecciona Distill los modelos para tus chats y pasos de olas.",
-    "selectionDescription": "Los selectores certificados eligen proveedor, modelo y esfuerzo por tarea. Si no aplica ninguna política, Distill usa el orden de respaldo de la categoría. Se respetan los modelos fijados.",
+    "pageDescription": "Elige cómo selecciona Flock los modelos para tus chats y pasos de olas.",
+    "selectionDescription": "Los selectores certificados eligen proveedor, modelo y esfuerzo por tarea. Si no aplica ninguna política, Flock usa el orden de respaldo de la categoría. Se respetan los modelos fijados.",
     "fallbackSummary": "Usando preferencias de respaldo",
     "certifiedSummary": "Políticas certificadas disponibles para {{count}} de {{total}} categorías",
     "categories": "Categorías de tareas",
@@ -535,7 +535,7 @@
     "waveThresholdDescription": "Preferir otra plataforma disponible al gastar esta proporción de su cuota. Si todas están cerca del límite, se puede usar una alternativa disponible.",
     "chatThreshold": "Sacar tus chats de una plataforma al",
     "chatThresholdDescription": "Estás delante de un chat y puedes reaccionar, así que puede acercarse más al límite que un paso de una ola.",
-    "classesDescription": "Distill selecciona proveedor, modelo y esfuerzo para cada tarea nueva. Las políticas certificadas aplicables tienen prioridad; en caso contrario se usan las preferencias de respaldo. Se respetan los modelos fijados explícitamente.",
+    "classesDescription": "Flock selecciona proveedor, modelo y esfuerzo para cada tarea nueva. Las políticas certificadas aplicables tienen prioridad; en caso contrario se usan las preferencias de respaldo. Se respetan los modelos fijados explícitamente.",
     "classOverridden": "Preferencias de respaldo personalizadas guardadas.",
     "classes": {
       "code-implement": "Implementación",
@@ -801,7 +801,7 @@
     "checking": "Comprobando…",
     "configurations": "Configuraciones",
     "connectionDetails": "Detalles de conexión",
-    "managedSource": "Guardado en Distill y disponible para proveedores compatibles.",
+    "managedSource": "Guardado en Flock y disponible para proveedores compatibles.",
     "changesApply": "Los cambios se aplican al iniciar una nueva sesión de agente. Los chats en curso conservan sus conexiones actuales.",
     "notCheckedDescription": "Esta conexión no se ha comprobado. La comprobación inicia el servidor local o contacta con su dirección remota.",
     "checkedAt": "Última comprobación: {{date}}",
@@ -814,11 +814,11 @@
     "emptyDescription": "Añade un servidor con su URL, comando local o configuración MCP.",
     "actionFailed": "Falló la acción MCP",
     "restartTitle": "Es necesario reiniciar",
-    "restartDescription": "La interfaz se ha actualizado, pero la aplicación sigue usando una versión anterior del backend. Reinicia Distill después de compilar para gestionar los MCP.",
+    "restartDescription": "La interfaz se ha actualizado, pero la aplicación sigue usando una versión anterior del backend. Reinicia Flock después de compilar para gestionar los MCP.",
     "addTitle": "Añadir un servidor MCP",
     "configureTitle": "Configurar servidor MCP",
-    "addDescription": "Guarda una conexión en Distill. Su servidor se inicia al comprobar la conexión o usarlo en un chat.",
-    "nativeEditDescription": "Guarda los ajustes en la configuración de este proveedor. Distill conserva una copia de seguridad y las demás entradas.",
+    "addDescription": "Guarda una conexión en Flock. Su servidor se inicia al comprobar la conexión o usarlo en un chat.",
+    "nativeEditDescription": "Guarda los ajustes en la configuración de este proveedor. Flock conserva una copia de seguridad y las demás entradas.",
     "name": "Nombre",
     "namePlaceholder": "mi-servidor",
     "description": "Descripción",
@@ -842,9 +842,9 @@
     "install": "Añadir servidor",
     "removing": "Eliminando…",
     "removeTitle": "¿Eliminar {{name}}?",
-    "removeDescription": "Elimina esta conexión de Distill. El paquete del servidor y la cuenta externa no se eliminan.",
+    "removeDescription": "Elimina esta conexión de Flock. El paquete del servidor y la cuenta externa no se eliminan.",
     "removeNativeDescription": "Elimina la definición de este servidor de {{source}}. Se conservan los demás servidores y una copia de seguridad.",
-    "duplicateName": "Ya existe un MCP con este nombre en Distill. Elige otro nombre.",
+    "duplicateName": "Ya existe un MCP con este nombre en Flock. Elige otro nombre.",
     "invalidName": "Usa entre 1 y 128 letras, números, puntos, guiones bajos o guiones.",
     "commandRequired": "Introduce un comando para el servidor MCP local.",
     "invalidUrl": "Introduce una URL HTTP o HTTPS válida.",

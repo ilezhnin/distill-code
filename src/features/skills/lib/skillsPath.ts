@@ -1,6 +1,6 @@
 /**
  * A project's skills live only in its own `.distill/skills`. Folders other
- * tools keep (`.agents`, `.claude`, `.codex`, `.gemini`) are not Distill's and
+ * tools keep (`.agents`, `.claude`, `.codex`, `.gemini`) are not Flock's and
  * never mark a project skill.
  */
 const PROJECT_SKILLS_MARKERS = ["/.distill/skills/"];

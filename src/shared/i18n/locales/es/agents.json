@@ -172,8 +172,8 @@
     "previewAlt": "Vista previa del agente importado",
     "name": "Nombre del agente",
     "default": "Predeterminado",
-    "unsupportedConfiguration": "El proveedor o modelo de origen no está disponible. Elige una configuración compatible o deja ambos sin seleccionar para usar los valores predeterminados de Distill.",
-    "memoryIgnored": "Esta tarjeta contiene memoria. Distill no la importará.",
+    "unsupportedConfiguration": "El proveedor o modelo de origen no está disponible. Elige una configuración compatible o deja ambos sin seleccionar para usar los valores predeterminados de Flock.",
+    "memoryIgnored": "Esta tarjeta contiene memoria. Flock no la importará.",
     "noInstructions": "No se proporcionaron instrucciones.",
     "cancel": "Cancelar",
     "adding": "Agregando…",
@@ -183,7 +183,7 @@
     "added": "Agente agregado desde una imagen.",
     "invalid": "La imagen del agente no es válida o está dañada.",
     "missing": "Esta imagen no contiene un agente compatible.",
-    "unsupportedVersion": "Esta imagen usa un formato más reciente que esta versión de Distill no admite.",
+    "unsupportedVersion": "Esta imagen usa un formato más reciente que esta versión de Flock no admite.",
     "tooLarge": "La imagen del agente debe ser de 10 MB o menos.",
     "pngOnly": "La imagen del agente debe ser un archivo PNG."
   },
@@ -211,7 +211,7 @@
   },
   "ranking": {
     "label": "Selección de modelo",
-    "empty": "Sin lista de respaldo personalizada. Distill usa las preferencias del rol y luego el modelo guardado o predeterminado.",
+    "empty": "Sin lista de respaldo personalizada. Flock usa las preferencias del rol y luego el modelo guardado o predeterminado.",
     "add": "Añadir modelo",
     "remove": "Quitar",
     "moveUp": "Subir",

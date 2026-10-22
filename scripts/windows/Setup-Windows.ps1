@@ -7,7 +7,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-DistillRepoRoot)
+Set-Location (Get-FlockRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Initialize-FnmEnvironment | Out-Null

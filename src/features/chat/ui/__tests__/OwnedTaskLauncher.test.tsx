@@ -356,7 +356,7 @@ it("recovers a legacy oversized saved prompt through explicit editing without re
     },
   };
   const raw = JSON.stringify(saved);
-  localStorage.setItem("distill.pendingOwnedTaskIntent.v1", raw);
+  localStorage.setItem("flock.pendingOwnedTaskIntent.v1", raw);
   const user = userEvent.setup();
   render(
     <OwnedTaskLauncher draft="Unrelated new draft." isConductor={false} />,
@@ -369,7 +369,7 @@ it("recovers a legacy oversized saved prompt through explicit editing without re
   fireEvent.click(recovery());
   await user.keyboard("{Escape}");
   expect(screen.getByRole("dialog")).toBeVisible();
-  expect(localStorage.getItem("distill.pendingOwnedTaskIntent.v1")).toBe(raw);
+  expect(localStorage.getItem("flock.pendingOwnedTaskIntent.v1")).toBe(raw);
   expect(io.prepare).not.toHaveBeenCalled();
   expect(
     screen.queryByText(/saved task intent is invalid/),
@@ -769,7 +769,7 @@ it("recovers a mode's lost acknowledgement for its frozen conductor after remoun
 
 it("fails closed on corrupt durable intent without erasing it or crashing the launcher", async () => {
   localStorage.setItem(
-    "distill.pendingOwnedTaskIntent.v1",
+    "flock.pendingOwnedTaskIntent.v1",
     '{"kind":"chat","request":{"contextId":"fixture"}}',
   );
   const user = userEvent.setup();
@@ -780,7 +780,7 @@ it("fails closed on corrupt durable intent without erasing it or crashing the la
   expect(await screen.findByText(/saved task intent is invalid/)).toBeVisible();
   expect(start()).toBeDisabled();
   expect(io.prepare).not.toHaveBeenCalled();
-  expect(localStorage.getItem("distill.pendingOwnedTaskIntent.v1")).toContain(
+  expect(localStorage.getItem("flock.pendingOwnedTaskIntent.v1")).toContain(
     '"contextId":"fixture"',
   );
 });

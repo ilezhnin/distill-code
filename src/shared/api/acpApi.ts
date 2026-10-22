@@ -623,7 +623,7 @@ export async function prompt(
   return promptPromise;
 }
 
-const UNKNOWN_EXPECTED_RUN_ID = "__distill_unknown_active_run__";
+const UNKNOWN_EXPECTED_RUN_ID = "__flock_unknown_active_run__";
 
 function extractActualRunId(error: unknown): string | null {
   if (!isRecord(error) || !("data" in error)) {

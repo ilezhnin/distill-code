@@ -6,7 +6,7 @@ import { trustDomain } from "@/shared/lib/trustedDomains";
 import { LinkifiedText } from "./LinkifiedText";
 
 // A "user" bubble is not necessarily written by the local operator: another
-// agent's `distillctl session send` and a conductor wave prompt both render here.
+// agent's `flockctl session send` and a conductor wave prompt both render here.
 // So a bare URL in one gets the same confirmation an agent's Markdown link gets.
 describe("LinkifiedText link safety", () => {
   beforeEach(() => {
@@ -61,13 +61,13 @@ describe("LinkifiedText link safety", () => {
   it("opens a trusted domain without asking", async () => {
     const user = userEvent.setup();
     trustDomain("github.com");
-    render(<LinkifiedText text="See https://github.com/distill/distill" />);
+    render(<LinkifiedText text="See https://github.com/flock/flock" />);
 
     await user.click(
-      screen.getByRole("link", { name: "https://github.com/distill/distill" }),
+      screen.getByRole("link", { name: "https://github.com/flock/flock" }),
     );
 
-    expect(openUrl).toHaveBeenCalledWith("https://github.com/distill/distill");
+    expect(openUrl).toHaveBeenCalledWith("https://github.com/flock/flock");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

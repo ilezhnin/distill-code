@@ -166,7 +166,7 @@ export function isWithinBase(
  *
  * There is more than one such place. Project-backed sessions work in the
  * session cwd, but a projectless "general" chat has no project root and writes
- * to the artifact root instead (`<Distill folder>/artifacts` by default, or whatever
+ * to the artifact root instead (`<Flock folder>/artifacts` by default, or whatever
  * Settings points at) — `sessionActivation` falls back to it and even tells the
  * agent to treat it as the working directory. Checking the cwd alone meant a
  * projectless "write me a blog post" could never auto-open, which was a bug

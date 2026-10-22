@@ -416,32 +416,32 @@ describe("useMessageQueue", () => {
     ).toBeUndefined();
   });
 
-  it("drains exactly once when a direct Distillctl lease releases without another state change", async () => {
+  it("drains exactly once when a direct Flockctl lease releases without another state change", async () => {
     const sendMessage = vi.fn().mockReturnValue(true);
-    const distillctlLease = acquireSessionDispatchTarget("s1");
-    expect(distillctlLease).not.toBeNull();
+    const flockctlLease = acquireSessionDispatchTarget("s1");
+    expect(flockctlLease).not.toBeNull();
     expect(acquireSessionDispatchTarget("s1")).toMatchObject({
       status: "contended",
     });
 
     useChatStore.getState().enqueueTransportReadyMessage("s1", {
       persona: { kind: "inherit" },
-      text: "dispatch after Distillctl settles",
+      text: "dispatch after Flockctl settles",
     });
     const { result } = renderHook(() =>
       useMessageQueue("s1", "idle", sendMessage),
     );
 
     expect(result.current.queuedMessage?.text).toBe(
-      "dispatch after Distillctl settles",
+      "dispatch after Flockctl settles",
     );
     expect(sendMessage).not.toHaveBeenCalled();
 
-    act(() => distillctlLease.release?.());
+    act(() => flockctlLease.release?.());
 
     await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
     expect(sendMessage).toHaveBeenCalledWith(
-      "dispatch after Distillctl settles",
+      "dispatch after Flockctl settles",
       undefined,
       undefined,
       expect.objectContaining({

@@ -1,5 +1,5 @@
 /**
- * Wire types for the host extension methods (`_distill/...`) served by the
+ * Wire types for the host extension methods (`_flock/...`) served by the
  * Tauri agent host. Core ACP types come from `@agentclientprotocol/sdk`.
  */
 

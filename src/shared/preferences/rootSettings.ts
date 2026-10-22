@@ -4,8 +4,8 @@ function isDesktopRuntime(): boolean {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
 async function readGlobalSettings(): Promise<Record<string, unknown>> {
-  const { readDistillDocument } = await import("@/shared/api/distillStore");
-  return parseSettings(await readDistillDocument("settings.json"));
+  const { readFlockDocument } = await import("@/shared/api/flockStore");
+  return parseSettings(await readFlockDocument("settings.json"));
 }
 async function updateSettings(
   patch: Record<string, unknown>,
@@ -14,7 +14,7 @@ async function updateSettings(
   const { invokeWithStartupRetry } = await import(
     "@/shared/api/invokeWithStartupRetry"
   );
-  await invokeWithStartupRetry("update_distill_settings", {
+  await invokeWithStartupRetry("update_flock_settings", {
     patch,
     onlyMissing,
   });
@@ -57,7 +57,7 @@ function legacyKey(name: string): string {
   if (name === "theme-mode") return "goose-theme-mode";
   if (name === "primary-color") return "goose-primary-color";
   if (name === "zoom-level") return "goose-zoom-level";
-  return `distill:${name}`;
+  return `flock:${name}`;
 }
 
 /**
@@ -141,7 +141,7 @@ export async function initializeRootSettings(): Promise<void> {
       void refreshRootSettings().catch(console.error);
     });
     const { listen } = await import("@tauri-apps/api/event");
-    await listen("distill-settings-changed", () => {
+    await listen("flock-settings-changed", () => {
       void refreshRootSettings().catch(console.error);
     });
   })().catch((error: unknown) => {
@@ -174,15 +174,15 @@ export async function refreshRootSettings(): Promise<void> {
 }
 
 function writeSetting(name: string, value: unknown): void {
-  if (!ready) throw new Error("Distill settings have not loaded yet");
+  if (!ready) throw new Error("Flock settings have not loaded yet");
   revision += 1;
   if (value === null) delete settings[name];
   else settings[name] = value;
   pending.set(name, value);
   void flushRootSettings().catch((error: unknown) => {
-    console.error("Cannot save Distill settings", error);
+    console.error("Cannot save Flock settings", error);
     window.dispatchEvent(
-      new CustomEvent("distill-settings-error", { detail: String(error) }),
+      new CustomEvent("flock-settings-error", { detail: String(error) }),
     );
   });
 }

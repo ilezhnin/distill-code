@@ -197,7 +197,7 @@ it("separates a current sandbox blocker from saved judging errors and rechecks w
   await screen.findByText("Cannot start or continue");
   expect(
     screen.getByText(
-      "The sandbox check must be renewed for this version of Distill.",
+      "The sandbox check must be renewed for this version of Flock.",
     ),
   ).toBeInTheDocument();
   expect(

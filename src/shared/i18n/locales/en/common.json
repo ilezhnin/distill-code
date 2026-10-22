@@ -124,19 +124,19 @@
     "searchFailed": "Search failed"
   },
   "rendererError": {
-    "description": "Distill hit a renderer error. Reload the window to try again.",
+    "description": "Flock hit a renderer error. Reload the window to try again.",
     "reload": "Reload",
     "title": "Something went wrong"
   },
   "startup": {
-    "loadingLabel": "Starting Distill",
+    "loadingLabel": "Starting Flock",
     "error": {
       "agentHost": {
-        "title": "Distill couldn't start",
+        "title": "Levocat Flock couldn't start",
         "description": "The local agent host didn't start. Try again, or copy the startup details and open the logs folder to share them with support."
       },
       "networkWarp": {
-        "title": "Distill can't reach required internal services",
+        "title": "Levocat Flock can't reach required internal services",
         "description": "It looks like you aren't connected to Cloudflare WARP.",
         "steps": {
           "connect": "Connect to WARP",
@@ -145,11 +145,11 @@
       },
       "runtimeConfig": {
         "title": "Configuration unavailable",
-        "description": "Distill couldn't load its runtime configuration. Try again, or copy the startup details and share them with support."
+        "description": "Flock couldn't load its runtime configuration. Try again, or copy the startup details and share them with support."
       },
       "unknown": {
-        "title": "Distill couldn't start",
-        "description": "Distill couldn't finish starting. Try again, or copy the startup details and open the logs folder to share them with support."
+        "title": "Levocat Flock couldn't start",
+        "description": "Flock couldn't finish starting. Try again, or copy the startup details and open the logs folder to share them with support."
       },
       "copyDetails": "Copy details",
       "openLogsFolder": "Open logs folder",

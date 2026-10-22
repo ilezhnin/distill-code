@@ -18,7 +18,7 @@ export const TRANSLATION_NAMESPACES = [
   "sessions",
   "status",
 ] as const;
-export const LOCALE_STORAGE_KEY = "distill:locale";
+export const LOCALE_STORAGE_KEY = "flock:locale";
 export const SYSTEM_LOCALE = "system";
 
 export type AppLocale = (typeof SUPPORTED_LOCALES)[number];

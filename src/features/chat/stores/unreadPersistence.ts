@@ -1,4 +1,4 @@
-const UNREAD_SESSIONS_STORAGE_KEY = "distill:unread-sessions";
+const UNREAD_SESSIONS_STORAGE_KEY = "flock:unread-sessions";
 
 export function loadCachedUnreadSessionIds(): string[] {
   if (typeof window === "undefined") return [];

@@ -282,7 +282,7 @@ it("says when a waiting test is tried again, where the runner knows", async () =
   const until = Date.now() + 10 * 60_000;
   const time = new Date(until).toLocaleTimeString("en", { timeStyle: "short" });
   const busy =
-    "the Distill sign-in this test needs is renewed once the chats and CLIs running on that account stop; this test starts then";
+    "the Flock sign-in this test needs is renewed once the chats and CLIs running on that account stop; this test starts then";
   show({
     ...run,
     state: "running",

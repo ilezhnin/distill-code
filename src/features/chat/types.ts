@@ -24,7 +24,7 @@ export type ModelPickerGroup = "main" | "more";
 
 /**
  * How a model's capabilities were learned: by selecting it on the bridge
- * ("probed"), from what Distill declares for a model the bridge refuses to
+ * ("probed"), from what Flock declares for a model the bridge refuses to
  * select ("declared"), or not at all ("unknown").
  */
 export type ModelCapabilitySource = "probed" | "declared" | "unknown";

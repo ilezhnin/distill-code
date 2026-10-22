@@ -291,7 +291,7 @@ impl Converter {
                                 continue;
                             }
                             self.start_turn(&message_id);
-                            let mut distill = self.distill_meta(&message_id, &created);
+                            let mut distill = self.flock_meta(&message_id, &created);
                             if steer {
                                 distill["steer"] = json!(true);
                             }
@@ -323,7 +323,7 @@ impl Converter {
                                 continue;
                             };
                             self.start_turn(&message_id);
-                            let distill = self.distill_meta(&message_id, &created);
+                            let distill = self.flock_meta(&message_id, &created);
                             self.emit(
                                 &created,
                                 json!({
@@ -357,7 +357,7 @@ impl Converter {
                                 continue;
                             }
                             has_text = true;
-                            let distill = self.distill_meta(&owner, &created);
+                            let distill = self.flock_meta(&owner, &created);
                             self.emit(
                                 &created,
                                 json!({
@@ -373,7 +373,7 @@ impl Converter {
                             if text.trim().is_empty() {
                                 continue;
                             }
-                            let distill = self.distill_meta(&owner, &created);
+                            let distill = self.flock_meta(&owner, &created);
                             self.emit(
                                 &created,
                                 json!({
@@ -419,7 +419,7 @@ impl Converter {
             "title": name,
             "kind": kind,
             "status": if failed { "failed" } else { "in_progress" },
-            "_meta": { "distill": self.distill_meta(owner, created) },
+            "_meta": { "distill": self.flock_meta(owner, created) },
         });
         if let Some(arguments) = value.get("arguments") {
             update["rawInput"] = arguments.clone();
@@ -475,7 +475,7 @@ impl Converter {
             "toolCallId": call_id,
             "status": if errored { "failed" } else { "completed" },
             "content": content,
-            "_meta": { "distill": self.distill_meta(&owner, created) },
+            "_meta": { "distill": self.flock_meta(&owner, created) },
         });
         self.emit(created, update);
     }
@@ -491,7 +491,7 @@ impl Converter {
         self.last_snippet = Some(snippet(text));
     }
 
-    fn distill_meta(&self, message_id: &str, created: &str) -> Value {
+    fn flock_meta(&self, message_id: &str, created: &str) -> Value {
         let mut meta = json!({
             "messageId": message_id,
             "created": created,

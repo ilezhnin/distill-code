@@ -4,17 +4,17 @@ const files = vi.hoisted(() => new Map<string, string>());
 /** Paths whose read rejects, as a held or unreadable file does. */
 const unreadable = vi.hoisted(() => new Set<string>());
 
-vi.mock("@/shared/api/distillStore", () => ({
+vi.mock("@/shared/api/flockStore", () => ({
   isDesktopRuntime: () => true,
-  readDistillDocument: vi.fn(async (path: string) => {
+  readFlockDocument: vi.fn(async (path: string) => {
     if (unreadable.has(path)) throw new Error("EBUSY");
     return files.get(path) ?? null;
   }),
-  writeDistillDocument: vi.fn(async (path: string, contents: string) => {
+  writeFlockDocument: vi.fn(async (path: string, contents: string) => {
     files.set(path, contents);
   }),
-  getDistillRoot: async () => null,
-  setDistillRoot: async () => undefined,
+  getFlockRoot: async () => null,
+  setFlockRoot: async () => undefined,
 }));
 
 import {
@@ -29,9 +29,9 @@ import {
 import type { WaveState } from "./waveEngine";
 import type { SessionNode } from "./types";
 import {
-  flushDistillDocuments,
-  openDistillDocumentCountForTests,
-} from "@/shared/lib/distillDocument";
+  flushFlockDocuments,
+  openFlockDocumentCountForTests,
+} from "@/shared/lib/flockDocument";
 
 function wave(over: Partial<WaveState> = {}): WaveState {
   return {
@@ -264,8 +264,8 @@ describe("the journal in the folder", () => {
     // for its flush on window close. Eviction used to only flush, so a long
     // session kept one document per wave it had ever journaled.
     resetRunJournalsForTests();
-    await flushDistillDocuments();
-    const before = openDistillDocumentCountForTests();
+    await flushFlockDocuments();
+    const before = openFlockDocumentCountForTests();
     for (let index = 0; index < 30; index += 1) {
       appendRunEvent({
         at: index,
@@ -278,7 +278,7 @@ describe("the journal in the folder", () => {
 
     // Only the journals still in memory (24 of them) hold a document open.
     await vi.waitFor(() =>
-      expect(openDistillDocumentCountForTests() - before).toBe(24),
+      expect(openFlockDocumentCountForTests() - before).toBe(24),
     );
     expect(runEventsFor("w-evict-0")).toEqual([]);
     expect(runEventsFor("w-evict-29")).toHaveLength(1);
@@ -290,7 +290,7 @@ describe("the journal in the folder", () => {
     });
 
     resetRunJournalsForTests();
-    await flushDistillDocuments();
-    expect(openDistillDocumentCountForTests()).toBe(before);
+    await flushFlockDocuments();
+    expect(openFlockDocumentCountForTests()).toBe(before);
   });
 });

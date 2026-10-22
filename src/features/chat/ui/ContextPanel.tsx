@@ -102,8 +102,7 @@ const TAB_CONTENT_CLASS =
   "scrollbar-none w-full min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-4";
 type ContextPanelSectionVisibility = Record<ContextPanelSection, boolean>;
 
-const SECTION_VISIBILITY_STORAGE_KEY =
-  "distill:context-panel:section-visibility";
+const SECTION_VISIBILITY_STORAGE_KEY = "flock:context-panel:section-visibility";
 const DEFAULT_SECTION_VISIBILITY: ContextPanelSectionVisibility = {
   workspace: true,
   changes: true,

@@ -9,7 +9,7 @@ import {
   useProviderModelCacheStore,
 } from "./providerModelCacheStore";
 
-const CACHE_KEY = "distill:providerModelCache:v2";
+const CACHE_KEY = "flock:providerModelCache:v2";
 const CACHE_SCHEMA_VERSION = 3;
 
 const mocks = vi.hoisted(() => ({

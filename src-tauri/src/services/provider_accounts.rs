@@ -1,5 +1,5 @@
 //! Persistent provider connections. The official CLIs own OAuth refresh;
-//! Distill owns stable identities and selects a private CLI home per connection.
+//! Flock owns stable identities and selects a private CLI home per connection.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tauri::AppHandle;
 
-use super::{distill_root, env_key};
+use super::{env_key, flock_root};
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 static ACCOUNT_CHANGES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -174,7 +174,7 @@ pub fn supports_managed_accounts(provider_id: &str) -> bool {
 
 /// How use of `account` is billed, as benchmark configurations record it:
 /// "subscription" or metered "api". A Z.ai key is a Coding Plan key: the
-/// only endpoint Distill gives it is the plan's (`zai::CODING_ENDPOINT`),
+/// only endpoint Flock gives it is the plan's (`zai::CODING_ENDPOINT`),
 /// with no fallback to the separately billed API.
 pub fn billing_mode(account: &ProviderAccount) -> &'static str {
     if account.auth_method == AuthMethod::ApiKey && account.provider_id != "zai-acp" {
@@ -184,7 +184,7 @@ pub fn billing_mode(account: &ProviderAccount) -> &'static str {
     }
 }
 
-/// Providers whose own CLI keeps the sign-in (Grok, Kimi). Distill names that
+/// Providers whose own CLI keeps the sign-in (Grok, Kimi). Flock names that
 /// sign-in with a fixed identity so benchmark configurations, routes and
 /// activity can refer to it; it is never stored, and chats keep using the CLI
 /// without an account.
@@ -265,20 +265,20 @@ fn validate_identity(account: &ProviderAccount) -> Result<(), String> {
 
 fn store_dir(root: &Path) -> Result<PathBuf, String> {
     let dir = root.join("provider-accounts");
-    distill_root::reject_document_links(root, &dir)?;
+    flock_root::reject_document_links(root, &dir)?;
     Ok(dir)
 }
 
 fn account_dir(root: &Path, account: &ProviderAccount) -> Result<PathBuf, String> {
     validate_identity(account)?;
     let path = store_dir(root)?.join(&account.id);
-    distill_root::reject_document_links(root, &path)?;
+    flock_root::reject_document_links(root, &path)?;
     Ok(path)
 }
 
 fn read_store(root: &Path) -> Result<ProviderAccountsSnapshot, String> {
     let path = store_dir(root)?.join("index.json");
-    distill_root::reject_document_links(root, &path)?;
+    flock_root::reject_document_links(root, &path)?;
     let mut migrated = false;
     let mut snapshot = match fs::read(&path) {
         Ok(bytes) => {
@@ -288,7 +288,7 @@ fn read_store(root: &Path) -> Result<ProviderAccountsSnapshot, String> {
             match value["schemaVersion"].as_u64() {
                 Some(1) => {
                     // Retire references to external CLI logins. Never copy or change
-                    // their credentials, and keep every Distill-owned account intact.
+                    // their credentials, and keep every Flock-owned account intact.
                     let accounts = value["accounts"]
                         .as_array_mut()
                         .ok_or("Provider account index has no account list")?;
@@ -400,7 +400,7 @@ fn write_store(root: &Path, snapshot: &ProviderAccountsSnapshot) -> Result<(), S
         .map_err(|error| format!("Cannot create provider account store: {error}"))?;
     protect_directory(&dir)?;
     let path = dir.join("index.json");
-    distill_root::reject_document_links(root, &path)?;
+    flock_root::reject_document_links(root, &path)?;
     let bytes = serde_json::to_vec_pretty(&StoreDocument {
         schema_version: 2,
         snapshot: snapshot.clone(),
@@ -411,7 +411,7 @@ fn write_store(root: &Path, snapshot: &ProviderAccountsSnapshot) -> Result<(), S
 
 pub fn snapshot(app: &AppHandle) -> Result<ProviderAccountsSnapshot, String> {
     let _guard = store_lock()?;
-    read_store(&distill_root::app_root(app)?)
+    read_store(&flock_root::app_root(app)?)
 }
 
 pub fn account(app: &AppHandle, id: &str) -> Result<ProviderAccount, String> {
@@ -477,7 +477,7 @@ fn prepare_home(root: &Path, account: &ProviderAccount) -> Result<PathBuf, Strin
         .map_err(|error| format!("Cannot create provider account directory: {error}"))?;
     protect_directory(&dir)?;
     let home = dir.join("home");
-    distill_root::reject_document_links(root, &home)?;
+    flock_root::reject_document_links(root, &home)?;
     fs::create_dir_all(&home)
         .map_err(|error| format!("Cannot create isolated CLI home: {error}"))?;
     protect_directory(&home)?;
@@ -485,23 +485,23 @@ fn prepare_home(root: &Path, account: &ProviderAccount) -> Result<PathBuf, Strin
         // A private file store avoids any machine-wide keychain backend selected
         // by a user's system Codex config. CLI token refresh stays in this home.
         let config = home.join("config.toml");
-        distill_root::reject_document_links(root, &config)?;
-        distill_root::create_missing_file(&config, "cli_auth_credentials_store = \"file\"\n")?;
+        flock_root::reject_document_links(root, &config)?;
+        flock_root::create_missing_file(&config, "cli_auth_credentials_store = \"file\"\n")?;
     }
     Ok(home)
 }
 
 pub fn account_home(app: &AppHandle, account: &ProviderAccount) -> Result<PathBuf, String> {
     validate_identity(account)?;
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let path = account_dir(&root, account)?.join("home");
-    distill_root::reject_document_links(&root, &path)?;
+    flock_root::reject_document_links(&root, &path)?;
     Ok(path)
 }
 
 fn secret_path(root: &Path, account: &ProviderAccount) -> Result<PathBuf, String> {
     let path = account_dir(root, account)?.join("api-key.dat");
-    distill_root::reject_document_links(root, &path)?;
+    flock_root::reject_document_links(root, &path)?;
     Ok(path)
 }
 
@@ -578,7 +578,7 @@ pub fn scoped_env(
     if account_change_in_progress(&account.id) {
         return Err(AUTHORIZATION_CHANGING.into());
     }
-    scoped_env_at(&distill_root::app_root(app)?, account, base)
+    scoped_env_at(&flock_root::app_root(app)?, account, base)
 }
 
 /// The saved API key of `account`, for the one host operation that hands it
@@ -592,14 +592,14 @@ pub fn api_key(app: &AppHandle, account: &ProviderAccount) -> Result<String, Str
         return Err("This account has no saved API key".into());
     }
     validate_identity(account)?;
-    read_api_key(&distill_root::app_root(app)?, account)
+    read_api_key(&flock_root::app_root(app)?, account)
 }
 
 /// Presence is a local diagnostic, not evidence that the provider accepted a
 /// credential. An expired OAuth access token with a refresh token remains usable.
 pub fn account_has_credentials(app: &AppHandle, account: &ProviderAccount) -> Result<bool, String> {
     if account.auth_method == AuthMethod::ApiKey {
-        let root = distill_root::app_root(app)?;
+        let root = flock_root::app_root(app)?;
         if !secret_path(&root, account)?
             .try_exists()
             .map_err(|_| "Cannot inspect account credentials")?
@@ -614,7 +614,7 @@ pub fn account_has_credentials(app: &AppHandle, account: &ProviderAccount) -> Re
     } else {
         ".credentials.json"
     });
-    distill_root::reject_document_links(&distill_root::app_root(app)?, &file)?;
+    flock_root::reject_document_links(&flock_root::app_root(app)?, &file)?;
     let bytes = match fs::read(file) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -647,7 +647,7 @@ pub fn account_has_credentials(app: &AppHandle, account: &ProviderAccount) -> Re
 }
 
 pub fn clear_api_credentials(app: &AppHandle, account_id: &str) -> Result<(), String> {
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let _guard = store_lock()?;
     let snapshot = read_store(&root)?;
     let account = snapshot
@@ -669,7 +669,7 @@ fn clear_api_credentials_at(root: &Path, account: &ProviderAccount) -> Result<()
         home.join(".credentials.json"),
     ];
     for path in &paths {
-        distill_root::reject_document_links(root, path)?;
+        flock_root::reject_document_links(root, path)?;
     }
     for path in &paths {
         match fs::remove_file(path) {
@@ -688,7 +688,7 @@ pub fn add_account(
     auth_method: AuthMethod,
     api_key: Option<String>,
 ) -> Result<ProviderAccount, String> {
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let _guard = store_lock()?;
     add_account_at(&root, provider_id, label, auth_method, api_key)
 }
@@ -765,7 +765,7 @@ pub fn update_account(
     label: Option<String>,
     api_key: Option<String>,
 ) -> Result<ProviderAccount, String> {
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let _guard = store_lock()?;
     let mut snapshot = read_store(&root)?;
     let account = snapshot
@@ -792,7 +792,7 @@ pub fn remove_account(
     app: &AppHandle,
     account_id: &str,
 ) -> Result<ProviderAccountsSnapshot, String> {
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let _guard = store_lock()?;
     remove_account_at(&root, account_id)
 }
@@ -830,7 +830,7 @@ fn remove_account_at(root: &Path, account_id: &str) -> Result<ProviderAccountsSn
     ];
     // Check every path before moving any file.
     for path in &paths {
-        distill_root::reject_document_links(root, path)?;
+        flock_root::reject_document_links(root, path)?;
     }
     let mut staged = Vec::new();
     let removal = (|| {
@@ -866,7 +866,7 @@ pub fn set_default(
     provider_id: &str,
     account_id: &str,
 ) -> Result<ProviderAccountsSnapshot, String> {
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let _guard = store_lock()?;
     let mut snapshot = read_store(&root)?;
     resolve_from(&snapshot, provider_id, Some(account_id))?;
@@ -883,7 +883,7 @@ pub fn set_routing(
     automatic_switching: bool,
 ) -> Result<ProviderAccountsSnapshot, String> {
     validate_provider(provider_id)?;
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let _guard = store_lock()?;
     let mut snapshot = read_store(&root)?;
     snapshot

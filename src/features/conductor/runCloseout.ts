@@ -120,7 +120,7 @@ export function buildRunCloseout(input: CloseoutInput): string {
   lines.push(
     "---",
     "",
-    "Written by Distill from what the run recorded — the plan, the steps and their reports — not from a model asked to summarize its own work.",
+    "Written by Flock from what the run recorded — the plan, the steps and their reports — not from a model asked to summarize its own work.",
   );
   return lines.join("\n");
 }

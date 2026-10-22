@@ -1,6 +1,6 @@
 {
-  "identifier": "com.levocat.distill.dev",
-  "productName": "Distill",
+  "identifier": "com.levocat.flock.dev",
+  "productName": "Levocat Flock",
   "bundle": {
     "externalBin": []
   }

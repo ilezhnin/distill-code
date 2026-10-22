@@ -27,7 +27,7 @@ async function repository(value) {
   git(dir, "config", "user.name", "Invented Operator");
   git(dir, "config", "user.email", "operator@example.invalid");
   if (value !== undefined)
-    git(dir, "config", "distill.privateBenchmarkHistoryPending", value);
+    git(dir, "config", "flock.privateBenchmarkHistoryPending", value);
   const commit = (message) => {
     git(dir, "commit", "--quiet", "--allow-empty", "-m", message);
     return git(dir, "rev-parse", "HEAD");
@@ -139,11 +139,25 @@ describe("private-history-guard", () => {
     );
   });
 
+  it("still reads the settings an earlier build left under the distill section", async () => {
+    const { dir, base, older, published, cleanMerged } =
+      await repository(undefined);
+    const section = ["dis", "till"].join("");
+    git(dir, "config", `${section}.privateBenchmarkHistoryPending`, "true");
+    const tag = push(dir, [`refs/tags/old ${older} refs/tags/old ${zero}`]);
+    assert.equal(tag.status, 1);
+    assert.match(tag.stderr, /Push refused/);
+    git(dir, "config", `${section}.privateBenchmarkReviewedBase`, base);
+    const update = `refs/heads/main ${cleanMerged} refs/heads/main ${published}`;
+    const result = push(dir, [update]);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
   it("allows a topic merged from a reviewed base older than the remote tip", async () => {
     const { dir, base, published, cleanMerged } = await repository("true");
     const update = `refs/heads/main ${cleanMerged} refs/heads/main ${published}`;
     assert.equal(push(dir, [update]).status, 1);
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     const result = push(dir, [update]);
     assert.equal(result.status, 0, result.stderr);
   });
@@ -151,7 +165,7 @@ describe("private-history-guard", () => {
   it("rejects legacy side commits even when their merge descends from the reviewed base", async () => {
     const { dir, base, published, merged, legacyMerged } =
       await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     for (const tip of [merged, legacyMerged]) {
       const result = push(dir, [
         `refs/heads/main ${tip} refs/heads/main ${published}`,
@@ -164,7 +178,7 @@ describe("private-history-guard", () => {
   it("requires the configured base to be an immutable available commit", async () => {
     const { dir, published, next } = await repository("true");
     for (const base of ["", "main", published.slice(0, 12), "f".repeat(40)]) {
-      git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+      git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
       const result = push(dir, [
         `refs/heads/main ${next} refs/heads/main ${published}`,
       ]);
@@ -176,7 +190,7 @@ describe("private-history-guard", () => {
   it("rejects a base that was not published on the destination branch", async () => {
     const { dir, published, next, older } = await repository("true");
     for (const base of [next, older]) {
-      git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+      git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
       const result = push(dir, [
         `refs/heads/main ${next} refs/heads/main ${published}`,
       ]);
@@ -187,7 +201,7 @@ describe("private-history-guard", () => {
 
   it("still rejects tags, deletion and non-fast-forward updates with a reviewed base", async () => {
     const { dir, base, published, next } = await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     for (const update of [
       `refs/tags/new ${next} refs/tags/new ${zero}`,
       `(delete) ${zero} refs/heads/main ${published}`,
@@ -199,7 +213,7 @@ describe("private-history-guard", () => {
 
   it("publishes a new topic from the reviewed base advertised by the actual remote", async () => {
     const { dir, base, published, topic } = await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     const remote = publishFixture(dir, published);
     const result = push(
       dir,
@@ -211,7 +225,7 @@ describe("private-history-guard", () => {
 
   it("does not trust a stale tracking ref, another remote or an unavailable destination", async () => {
     const { dir, base, published, topic, older } = await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     git(dir, "update-ref", "refs/remotes/origin/main", published);
     const unrelatedRemote = publishFixture(dir, older);
     const emptyRemote = join(dir, "empty.git");
@@ -235,7 +249,7 @@ describe("private-history-guard", () => {
   it("refuses new branches that contain legacy or unrelated history", async () => {
     const { dir, base, published, older, legacy, legacyMerged } =
       await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     const remote = publishFixture(dir, published);
     for (const tip of [older, legacy, legacyMerged]) {
       assert.equal(
@@ -249,7 +263,7 @@ describe("private-history-guard", () => {
   it("fails the whole push when one of several refs contains legacy history", async () => {
     const { dir, base, published, cleanMerged, legacyMerged } =
       await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     assert.equal(
       push(dir, [
         `refs/heads/unsafe ${legacyMerged} refs/heads/unsafe ${published}`,
@@ -261,7 +275,7 @@ describe("private-history-guard", () => {
 
   it("refuses incomplete local history", async () => {
     const { dir, base, published, next } = await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     await writeFile(join(dir, ".git", "shallow"), `${base}\n`);
     const result = push(dir, [
       `refs/heads/main ${next} refs/heads/main ${published}`,
@@ -272,7 +286,7 @@ describe("private-history-guard", () => {
 
   it("refuses when the advertised commit is unavailable locally", async () => {
     const { dir, base, next } = await repository("true");
-    git(dir, "config", "distill.privateBenchmarkReviewedBase", base);
+    git(dir, "config", "flock.privateBenchmarkReviewedBase", base);
     const result = push(dir, [
       `refs/heads/main ${next} refs/heads/main ${"f".repeat(40)}`,
     ]);

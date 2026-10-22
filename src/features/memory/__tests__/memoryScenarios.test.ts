@@ -11,13 +11,13 @@
  * next night shift fails here instead.
  *
  * Not a substitute for the manual pass — nothing here proves the file lands
- * in the Distill folder or that the window close hook fires — and each case
+ * in the Flock folder or that the window close hook fires — and each case
  * names the checklist step it stands in for.
  */
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 
-import { flushDistillStores } from "@/features/settings/lib/distillStoreHydration";
+import { flushFlockStores } from "@/features/settings/lib/flockStoreHydration";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import {
@@ -47,8 +47,8 @@ const NOW = new Date(2026, 7, 31, 22, 0).getTime();
 /**
  * The document the store writes.
  *
- * Outside the desktop runtime `distillDocument` falls back to the browser key
- * rather than `<Distill folder>/memory.json`, but it is the same serializer
+ * Outside the desktop runtime `flockDocument` falls back to the browser key
+ * rather than `<Flock folder>/memory.json`, but it is the same serializer
  * and the same payload — which is the part these cases are about. Whether the
  * file exists on disk is C.1's manual half.
  */
@@ -395,9 +395,9 @@ describe("C.7 — a fact written a second before the window closes", () => {
     expect(storedTexts()).not.toContain(text);
 
     // What `pagehide` and a hide-to-tray `visibilitychange` call. Its wiring is
-    // covered in `distillStoreHydration.test.ts`; what matters here is that
+    // covered in `flockStoreHydration.test.ts`; what matters here is that
     // the memory store is one of the documents it actually pushes.
-    flushDistillStores();
+    flushFlockStores();
     await flushMemoryWrites();
 
     expect(storedTexts()).toContain(text);

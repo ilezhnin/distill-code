@@ -1,17 +1,17 @@
 import { normalizeConcreteModelId } from "./modelIdentity";
 
 /**
- * A folded model id — `gpt-5.6-sol[ultra]` — is Distill's own invention: a
+ * A folded model id — `gpt-5.6-sol[ultra]` — is Flock's own invention: a
  * model and a reasoning effort glued into one string. They are separate
  * selections, so nothing writes such an id any more. This module is the app's
  * only reader of the ones already written down: stored preferences, persisted
- * sessions, run journals, telemetry, and distillctl clients that memorised them.
+ * sessions, run journals, telemetry, and flockctl clients that memorised them.
  *
  * There is deliberately no compose function. Folding can only come back by
  * someone adding one here, which is a reviewable change.
  *
  * Sunset by condition, not by date: this module can go once no
- * `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 distillctl
+ * `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 flockctl
  * clients are in use.
  */
 

@@ -25,7 +25,7 @@
     "importComplete": "Import complete",
     "importCompleteDescription_one": "Imported {{title}} with {{displayCount}} message.",
     "importCompleteDescription_other": "Imported {{title}} with {{displayCount}} messages.",
-    "importDisconnectedError": "Distill disconnected while {{phase}} ({{fileSize}}). The import did not return a result; the backend may have restarted, crashed, or rejected the large payload. The underlying server error is only available in the Distill logs.",
+    "importDisconnectedError": "Flock disconnected while {{phase}} ({{fileSize}}). The import did not return a result; the backend may have restarted, crashed, or rejected the large payload. The underlying server error is only available in the Flock logs.",
     "importFailed": "Import failed",
     "importFailedDescription": "{{fileName}} {{message}}",
     "importFailedFallback": "could not be imported.",

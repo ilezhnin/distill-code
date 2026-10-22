@@ -26,7 +26,7 @@ function git(dir, ...args) {
 }
 
 async function fixture(command = "exit 0") {
-  const root = await mkdtemp(join(tmpdir(), "distill-commit-gate-"));
+  const root = await mkdtemp(join(tmpdir(), "flock-commit-gate-"));
   temporary.push(root);
   const repo = join(root, "repo with spaces");
   const bin = join(root, "bin");

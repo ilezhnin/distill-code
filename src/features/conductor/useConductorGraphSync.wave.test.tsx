@@ -44,7 +44,7 @@ vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
 
 /**
  * The envelope is the whole point of 3a, so it is the seam the tests hold: a
- * digest is a *real user message* through the distillctl cross-session path, not
+ * digest is a *real user message* through the flockctl cross-session path, not
  * a synthetic assistant bubble. The mock commits exactly what that path
  * commits — a user message carrying `origin: "distillctl_cross_session"`.
  */
@@ -268,7 +268,7 @@ describe("useConductorGraphSync wave bridge", () => {
     // One digest per wave, covering both steps — never one per worker.
     expect(digest).toContain("Three callers in src/");
     expect(digest).toContain("Test plan written");
-    expect(digest).toContain("[distill-digest:");
+    expect(digest).toContain("[flock-digest:");
 
     // No synthetic assistant summary is appended any more: the only thing that
     // reaches the conductor is the digest the envelope committed.

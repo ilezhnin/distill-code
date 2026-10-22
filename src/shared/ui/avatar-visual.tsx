@@ -12,7 +12,7 @@ interface AvatarVisualProps {
 
 /**
  * Renders every supported avatar representation through one still-image
- * surface. Catalog videos keep their poster when that is all Distill has.
+ * surface. Catalog videos keep their poster when that is all Flock has.
  */
 export function AvatarVisual({
   avatar,

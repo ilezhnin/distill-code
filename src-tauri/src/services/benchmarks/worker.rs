@@ -19,7 +19,7 @@ static RUNTIME: OnceLock<WorkerRuntime> = OnceLock::new();
 
 /// Local metadata only: startup neither boots WSL nor installs a renderer.
 pub fn configure(app: &tauri::AppHandle) -> Result<()> {
-    let root = crate::services::distill_root::app_root(app)
+    let root = crate::services::flock_root::app_root(app)
         .map_err(|error| BenchmarkError::new("storage_unavailable", error))?
         .join("benchmarks");
     let _ = RUNTIME.set(WorkerRuntime { root });

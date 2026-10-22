@@ -31,10 +31,10 @@ import type { ChatSendOptions } from "../types";
  *
  * The two callers that compose an `executionSystemPrompt` themselves (the
  * foreground controller and the queued drain) already carry this; the
- * fallback below did not, so a session driven only through here — a distillctl
+ * fallback below did not, so a session driven only through here — a flockctl
  * `sessions.create`/`sessions.send` — ran without the operator's memory and
  * without the protocol to add to it. Nothing about this context forbids it:
- * distillctl runs in the main window's renderer, where the memory store is
+ * flockctl runs in the main window's renderer, where the memory store is
  * hydrated at startup like everywhere else, and the entries are the
  * operator's standing facts, not foreground UI state — they are scoped by
  * the *target* session's own project, read from the store.
@@ -42,7 +42,7 @@ import type { ChatSendOptions } from "../types";
  * Same exclusion as the other two paths: a wave child answers to its
  * conductor, not to the operator's list — its prompt ends "with this report
  * block and no extra commentary after it", and a one-shot task runner has no
- * business writing to memory. distillctl can address a
+ * business writing to memory. flockctl can address a
  * wave-managed session directly, so the guard is checked here too — through
  * `isWaveExecutorSession`, which also answers for a child whose graph node the
  * conductor has already evicted (the graph alone forgets it and the chat then
@@ -73,7 +73,7 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
  * conversation is complete when the user opens the session.
  *
  * Returns once the send is dispatched, not when the turn completes — the
- * caller (distillctl sessions.create) must not block on the agent's answer.
+ * caller (flockctl sessions.create) must not block on the agent's answer.
  *
  * `providerId` is the target session's provider (callers have it from
  * session creation); it stamps the pending-assistant hint for the response.

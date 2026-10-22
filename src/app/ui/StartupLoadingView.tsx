@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useReducedMotion } from "motion/react";
 
 import { STARTUP_LOADING_LOGO_SIZE_PX } from "@/app/lib/startupLoading";
-import { DistillLoader } from "@/shared/ui/distill-loader";
+import { FlockLoader } from "@/shared/ui/flock-loader";
 
 export function StartupLoadingView() {
   const { t } = useTranslation("common");
@@ -15,7 +15,7 @@ export function StartupLoadingView() {
       aria-label={t("startup.loadingLabel")}
       data-tauri-drag-region
     >
-      <DistillLoader
+      <FlockLoader
         animated={!shouldReduceMotion}
         aria-hidden="true"
         className="pointer-events-none"

@@ -108,7 +108,7 @@ pub fn benchmark_sign_in_expiring(
 /// sign-in as due and renews it; unset is 300 seconds.
 const RENEWAL_WINDOW_ENV: &str = "GROK_AUTH_EARLY_INVALIDATION_SECS";
 
-/// The renewal window Distill starts the user's Grok chat bridge with: the
+/// The renewal window Flock starts the user's Grok chat bridge with: the
 /// longest a benchmark turn asks a sign-in to last
 /// ([`benchmark_sign_in_margin_ms`]). A sign-in too short for a turn is then
 /// always one the CLI renews on its next request. With Grok's own five

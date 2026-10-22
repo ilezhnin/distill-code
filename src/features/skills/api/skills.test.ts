@@ -142,3 +142,63 @@ describe("skill mutation events", () => {
     }
   });
 });
+
+describe("bundled skill markers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  it("keeps the previous builds' marker names beside the current one", async () => {
+    // The app wrote the marker under two earlier names. A mechanical rename
+    // that touched them would collapse the list into one repeated key and
+    // make a skill marked by an earlier build editable.
+    const { BUNDLED_SKILL_MARKER_KEYS } = await import("./skills");
+    expect(BUNDLED_SKILL_MARKER_KEYS[0]).toBe("flockBundled");
+    expect(BUNDLED_SKILL_MARKER_KEYS).toHaveLength(3);
+    expect(new Set(BUNDLED_SKILL_MARKER_KEYS).size).toBe(
+      BUNDLED_SKILL_MARKER_KEYS.length,
+    );
+  });
+
+  it("a skill marked by an earlier build is read-only like a current one", async () => {
+    const { BUNDLED_SKILL_MARKER_KEYS, listHostSourceSkills } = await import(
+      "./skills"
+    );
+    const marked = BUNDLED_SKILL_MARKER_KEYS.map((key) => ({
+      type: "skill",
+      name: `marked-${key}`,
+      description: "Installed by the app",
+      content: "Body",
+      path: `/Users/test/.distill/skills/marked-${key}`,
+      global: true,
+      properties: { [key]: true },
+    }));
+    mockGooseSourcesList.mockImplementation(
+      async ({ type }: { type: string }) =>
+        type === "skill"
+          ? {
+              sources: [
+                ...marked,
+                {
+                  type: "skill",
+                  name: "own",
+                  description: "The user's",
+                  content: "Body",
+                  path: "/Users/test/.distill/skills/own",
+                  global: true,
+                  properties: { flockBundledSource: "marked-flockBundled" },
+                },
+              ],
+            }
+          : { sources: [] },
+    );
+
+    const skills = await listHostSourceSkills([]);
+
+    expect(skills.map((skill) => [skill.name, skill.readonly])).toEqual([
+      ...BUNDLED_SKILL_MARKER_KEYS.map((key) => [`marked-${key}`, true]),
+      ["own", false],
+    ]);
+  });
+});

@@ -41,7 +41,7 @@ describe("steerPromptInSession payload budget", () => {
 
   it("rejects an over-budget steer before committing anything", async () => {
     // Discriminating test for the steer-side budget guard: non-composer
-    // callers (distillctl, queued steers) reach steerPromptInSession directly,
+    // callers (flockctl, queued steers) reach steerPromptInSession directly,
     // where an oversized ACP message would silently kill the shared
     // WebSocket and every open chat with it (BOT-1463). Pre-guard code
     // commits the user message and calls acpSteerMessage; guarded code
@@ -65,7 +65,7 @@ describe("steerPromptInSession payload budget", () => {
 });
 
 // A steer's user-message append is provisional until the backend acknowledges
-// it, so the ChatSendOptions commit callback — the anchor `distill_chat` send
+// it, so the ChatSendOptions commit callback — the anchor `flock_chat` send
 // telemetry rides on — must fire exactly at the durable commit: never at the
 // append, never for a rolled-back steer, and still for a steer whose delivery
 // was established even though the acknowledgement errored.

@@ -228,7 +228,7 @@
     "missing": "This test is unavailable.",
     "sections": {
       "test": "Test",
-      "testHint": "Identity, routing class and dataset split. The class ties results to the work Distill delegates.",
+      "testHint": "Identity, routing class and dataset split. The class ties results to the work Flock delegates.",
       "task": "Task",
       "taskHint": "Everything the candidate sees: the prompt and public fixtures. Answers and checks stay hidden.",
       "evaluation": "Evaluation",
@@ -404,7 +404,7 @@
     "completeNotice": "All tests measured. Measuring again starts a new paid run.",
     "waitingResources": "Waiting for resources",
     "readinessBlocked": "Cannot start or continue",
-    "policyCheckMissing": "The sandbox check must be renewed for this version of Distill.",
+    "policyCheckMissing": "The sandbox check must be renewed for this version of Flock.",
     "availabilityFailed": "Current availability could not be verified.",
     "readinessRetry": "Check again",
     "readinessChecking": "Checking…"
@@ -591,7 +591,7 @@
   },
   "schedules": {
     "title": "Automatic retesting",
-    "description": "Campaigns run only while Distill is open and stay disabled until you enable them. Missed work is shown; it never launches a catch-up burst.",
+    "description": "Campaigns run only while Flock is open and stay disabled until you enable them. Missed work is shown; it never launches a catch-up burst.",
     "save": "Save campaign",
     "existing": "Campaigns",
     "newCampaign": "New campaign",

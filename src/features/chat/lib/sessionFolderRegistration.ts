@@ -224,7 +224,7 @@ export async function attachSessionFolder(
     );
     if (!alreadyAttached && realAttachments.length > 0) {
       throw new FolderAttachmentError(
-        "Multi-workspace support is disabled and this chat already has a workspace. Enable it, or use `distillctl folder replace` / `distillctl folder set-cwd`.",
+        "Multi-workspace support is disabled and this chat already has a workspace. Enable it, or use `flockctl folder replace` / `flockctl folder set-cwd`.",
       );
     }
   }

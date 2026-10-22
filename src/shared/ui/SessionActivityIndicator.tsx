@@ -4,9 +4,9 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/shared/lib/cn";
 import { RESPONDING_SHIMMER_PROPS } from "@/shared/ui/ai-elements/shimmer";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
-import { DistillLoaderInline } from "@/shared/ui/distill-loader-inline";
+import { FlockLoaderInline } from "@/shared/ui/flock-loader-inline";
 
-const ACTIVE_CHAT_DISTILL_SIZE_PX = 14;
+const ACTIVE_CHAT_FLOCK_SIZE_PX = 14;
 const WORKING_INDICATOR_ENTRANCE_CLASSES =
   "transition-opacity duration-200 ease-out animate-in fade-in-0";
 
@@ -17,10 +17,10 @@ interface SessionActivityIndicatorProps {
   className?: string;
 }
 
-export function ActiveChatDistillIndicator({
+export function ActiveChatFlockIndicator({
   className,
   respectAnimationPreference = false,
-  size = ACTIVE_CHAT_DISTILL_SIZE_PX,
+  size = ACTIVE_CHAT_FLOCK_SIZE_PX,
 }: {
   className?: string;
   respectAnimationPreference?: boolean;
@@ -35,7 +35,7 @@ export function ActiveChatDistillIndicator({
       workingIndicatorAnimationPreference.enabled);
 
   return (
-    <DistillLoaderInline
+    <FlockLoaderInline
       animated={motionEnabled}
       className={className}
       decorative
@@ -96,10 +96,10 @@ export function SessionActivityIndicator({
             className,
           )}
         >
-          <DistillLoaderInline
+          <FlockLoaderInline
             animated={motionEnabled}
             decorative
-            size={ACTIVE_CHAT_DISTILL_SIZE_PX}
+            size={ACTIVE_CHAT_FLOCK_SIZE_PX}
           />
         </span>
       );
@@ -115,10 +115,10 @@ export function SessionActivityIndicator({
           className,
         )}
       >
-        <DistillLoaderInline
+        <FlockLoaderInline
           animated={motionEnabled}
           decorative
-          size={ACTIVE_CHAT_DISTILL_SIZE_PX}
+          size={ACTIVE_CHAT_FLOCK_SIZE_PX}
         />
       </span>
     );

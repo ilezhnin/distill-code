@@ -16,9 +16,9 @@ describe("MessageResponse local Markdown links", () => {
   });
 
   it.each([
-    "/__distill_local_path__/data%3Atext%2Fhtml%2Chello",
-    "/__distill_local_path__/java%0Ascript%3Aalert(1)",
-    "/__distill_local_path__/%00javascript%3Aalert(1)",
+    "/__flock_local_path__/data%3Atext%2Fhtml%2Chello",
+    "/__flock_local_path__/java%0Ascript%3Aalert(1)",
+    "/__flock_local_path__/%00javascript%3Aalert(1)",
   ])("does not decode forged local-path sentinel %s", (forgedSentinel) => {
     render(
       <MessageResponse mode="static">

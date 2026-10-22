@@ -1,7 +1,7 @@
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { installRunJournal } from "@/features/conductor/runJournal";
-import { hydrateDistillStores } from "@/features/settings/lib/distillStoreHydration";
+import { hydrateFlockStores } from "@/features/settings/lib/flockStoreHydration";
 import { loadPersistedMessageQueues } from "@/features/chat/stores/queuePersistence";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { getCuratedAgentProviders } from "@/features/providers/curatedProviders";
@@ -56,7 +56,7 @@ async function startChatRuntime(
   // store stays empty and refuses to write until its own read lands (the
   // conductor's three merge instead, so a node created in that window is never
   // dropped), so a slow disk delays those panels rather than the chat.
-  void hydrateDistillStores();
+  void hydrateFlockStores();
   // The run journal (P27) watches the wave and graph stores from here on, so
   // every wave from this point has a trace in the folder. Installed after the
   // hydration call and not before it: the merge that hydration performs is
@@ -179,7 +179,7 @@ async function startChatRuntime(
     const refreshProviderIds = getModelCacheRefreshProviderIds();
     // Forced: a persisted list that is merely recent says nothing about
     // whether it still matches the host's inventory, and a host-side change
-    // (Distill's own extra models, a re-probe) would otherwise stay invisible
+    // (Flock's own extra models, a re-probe) would otherwise stay invisible
     // for as long as the renderer kept refreshing the list in time. Cheap by
     // construction -- the host re-probes a harness only while its cached list
     // is empty, so forcing costs one round trip, not a bridge spawn.

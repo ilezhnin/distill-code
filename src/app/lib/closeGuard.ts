@@ -4,8 +4,8 @@ import { toast } from "sonner";
 import { flushMessageQueues } from "@/features/chat/stores/queuePersistence";
 import { flushUsageLedger } from "@/features/stats/lib/usageLedger";
 import { flushMemoryWrites } from "@/features/memory/stores/memoryStore";
-import { isDesktopRuntime } from "@/shared/api/distillStore";
-import { flushDistillDocuments } from "@/shared/lib/distillDocument";
+import { isDesktopRuntime } from "@/shared/api/flockStore";
+import { flushFlockDocuments } from "@/shared/lib/flockDocument";
 import { flushRootSettings } from "@/shared/preferences/rootSettings";
 
 /** Leave the window available for recovery when a save fails. */
@@ -23,7 +23,7 @@ export async function installCloseGuard(): Promise<void> {
     try {
       flushUsageLedger();
       await Promise.all([
-        flushDistillDocuments(),
+        flushFlockDocuments(),
         flushMessageQueues(),
         flushRootSettings(),
         flushMemoryWrites(),

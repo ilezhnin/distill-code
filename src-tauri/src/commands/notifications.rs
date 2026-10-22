@@ -11,7 +11,11 @@ pub fn show_completion_notification(
     // The session id is part of the command's contract with the frontend but
     // has no use here: the notification plugin carries no click payload.
     let _ = session_id;
-    let mut builder = app.notification().builder().title("Distill").body(body);
+    let mut builder = app
+        .notification()
+        .builder()
+        .title("Levocat Flock")
+        .body(body);
     if let Some(sound) = sound {
         builder = builder.sound(sound);
     }

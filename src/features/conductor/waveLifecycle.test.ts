@@ -39,7 +39,7 @@ vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
 /**
  * The envelope is mocked at `deliverEnvelope`, the single seam every outgoing
  * message in this feature goes through, and the mock commits what the real
- * distillctl path commits: a user message with `origin: "distillctl_cross_session"`.
+ * flockctl path commits: a user message with `origin: "distillctl_cross_session"`.
  * Everything downstream of that — the verdict anchor, the re-entrancy checks,
  * the card — reads the transcript, so the tests exercise the real machinery.
  */
@@ -394,7 +394,7 @@ describe("wave closed loop", () => {
     resetWaveRunnerForTests();
     resetWaveEngineStateCache();
     window.localStorage.setItem(
-      "distill:conductor-waves",
+      "flock:conductor-waves",
       JSON.stringify({
         version: 2,
         waves: [{ ...wave, phase: "dispatchingDigest" }],
@@ -423,7 +423,7 @@ describe("wave closed loop", () => {
     }): void {
       resetWaveRunnerForTests();
       window.localStorage.setItem(
-        "distill:conductor-waves",
+        "flock:conductor-waves",
         JSON.stringify({
           version: 2,
           waves: [{ ...wave, phase: "dispatchingDigest" }],

@@ -1,32 +1,39 @@
 # src-tauri
 
-The Tauri 2 shell: the app crate (`src/`), the distillctl workspace crates
+The Tauri 2 shell: the app crate (`src/`), the flockctl workspace crates
 (`crates/`, `plugins/`), and the app's IPC permission grants
-(`capabilities/`). Design and reasoning: `docs/distillctl-architecture.md`.
+(`capabilities/`). Design and reasoning: `docs/flockctl-architecture.md`.
 
-## distillctl crates
+## flockctl crates
 
-| | `crates/distillctl` | `plugins/distillctl` |
+| | `crates/flockctl` | `plugins/flockctl` |
 |---|---|---|
 | What | Standalone CLI binary | Tauri plugin (the broker) |
 | Runs | Outside the app, in agent shells | Inside the app binary |
 | Does | clap tree, `--help`, local errors, exit codes | Loopback HTTP server, global caps, renderer bridge |
-| Ships as | `externalBin` sidecar (`scripts/windows/Stage-Sidecar-Windows.ps1` → `binaries/distillctl-<triple>.exe`) | Compiled in via `tauri_plugin_distillctl::init()` |
+| Ships as | `externalBin` sidecar (`scripts/windows/Stage-Sidecar-Windows.ps1` → `binaries/flockctl-<triple>.exe`) | Compiled in via `tauri_plugin_flockctl::init()` |
 
-The CLI embeds the contract artifacts (`crates/distillctl/api-surface.json` +
+The CLI embeds the contract artifacts (`crates/flockctl/api-surface.json` +
 `cli-surface.json`) and builds its clap tree at startup. It locates the
-broker through the `DISTILLCTL_LOCK` discovery file, verifies
+broker through the discovery file named by `FLOCKCTL_LOCK` (or by
+`DISTILLCTL_LOCK`, which a session of the previous build still has), verifies
 `protocolVersion`/generation via `GET /v1/ping`, and sends
 `POST /v1/call {"command", "args"}`. The broker forwards to the renderer
-over Tauri IPC (`distillctl:request` event out, `submit_result` back).
+over Tauri IPC (`flockctl:request` event out, `submit_result` back).
 Command dispatch, zod validation, guards, and execution live in the
-renderer registry (`src/features/distillctl/`). The two crates share no code;
+renderer registry (`src/features/flockctl/`). The two crates share no code;
 `PROTOCOL_VERSION` is duplicated in both `discovery.rs` files and in
 `commands/contract.ts`.
 
-## `plugins/distillctl/permissions/`
+At runtime the agent host puts `flockctl` and `flock-monitor` on every
+session's `PATH` through shims in the Flock folder's `cache/bin/`, beside the
+compatibility shims `distillctl` and `distill-monitor`, which run the same
+binaries; see
+[names and compatibility](../docs/flockctl-architecture.md#names-and-compatibility).
 
-Tauri 2's IPC ACL: a webview can only `invoke("plugin:distillctl|…")` if its
+## `plugins/flockctl/permissions/`
+
+Tauri 2's IPC ACL: a webview can only `invoke("plugin:flockctl|…")` if its
 capability grants a permission allowing that command.
 
 - `build.rs` — `tauri_plugin::Builder::new(COMMANDS)` declares the plugin's
@@ -35,9 +42,9 @@ capability grants a permission allowing that command.
   permission pairs per command, plus `reference.md`. Do not edit.
 - `permissions/schemas/schema.json` — generated schema for editor
   validation of the TOMLs.
-- `permissions/default.toml` — hand-authored `distillctl:default` permission
+- `permissions/default.toml` — hand-authored `flockctl:default` permission
   set bundling the four allows.
-- `capabilities/default.json` — grants `distillctl:default` to the main
+- `capabilities/default.json` — grants `flockctl:default` to the main
   window.
 
 This ACL gates webview → Rust IPC only; the localhost HTTP side is governed
@@ -51,6 +58,7 @@ Stock Tauri 2 plugin layout. Docs:
 [Capabilities](https://v2.tauri.app/security/capabilities/).
 
 Adding a broker IPC command: append to `COMMANDS` in
-`plugins/distillctl/build.rs`, rebuild, add the `allow-*` to `default.toml`.
-App-control commands are added in the renderer registry via
-`.agents/skills/distillctl-new-command/SKILL.md`, not here.
+`plugins/flockctl/build.rs`, rebuild, add the `allow-*` to `default.toml`.
+App-control commands are added in the renderer registry with
+`just new-command <noun> <verb>`, following
+[docs/flockctl-architecture.md](../docs/flockctl-architecture.md), not here.

@@ -7,7 +7,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-DistillRepoRoot)
+Set-Location (Get-FlockRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Initialize-FnmEnvironment | Out-Null
@@ -33,32 +33,32 @@ $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 Write-WindowsDevInfo "Using Vite port: $env:VITE_PORT"
 Write-WindowsDevInfo "Using Tauri Cargo target dir: $env:CARGO_TARGET_DIR"
 
-$E2eMode = $env:DISTILL_E2E_MODE -eq "1"
+$E2eMode = $env:FLOCK_E2E_MODE -eq "1"
 if ($E2eMode) {
-    if ([string]::IsNullOrWhiteSpace($env:DISTILL_E2E_RUN_ROOT)) {
-        throw "DISTILL_E2E_RUN_ROOT is required when DISTILL_E2E_MODE=1."
+    if ([string]::IsNullOrWhiteSpace($env:FLOCK_E2E_RUN_ROOT)) {
+        throw "FLOCK_E2E_RUN_ROOT is required when FLOCK_E2E_MODE=1."
     }
     $e2e = New-E2eRunContract `
-        -RunRoot $env:DISTILL_E2E_RUN_ROOT `
-        -RunId $env:DISTILL_E2E_RUN_ID `
+        -RunRoot $env:FLOCK_E2E_RUN_ROOT `
+        -RunId $env:FLOCK_E2E_RUN_ID `
         -DriverToken $env:APP_TEST_DRIVER_TOKEN
-    $env:DISTILL_E2E_RUN_ROOT = $e2e.RunRoot
-    $env:DISTILL_E2E_RUN_ID = $e2e.RunId
+    $env:FLOCK_E2E_RUN_ROOT = $e2e.RunRoot
+    $env:FLOCK_E2E_RUN_ID = $e2e.RunId
     $env:APP_TEST_DRIVER_TOKEN = $e2e.DriverToken
     [Environment]::SetEnvironmentVariable("APP_TEST_DRIVER_PORT", $null, "Process")
     New-Item -ItemType Directory -Force -Path $e2e.RunRoot | Out-Null
 
     $runtimeConfigPath = $null
-    if (-not [string]::IsNullOrWhiteSpace($env:DISTILL_E2E_RUNTIME_CONFIG)) {
-        if (-not (Test-Path $env:DISTILL_E2E_RUNTIME_CONFIG -PathType Leaf)) {
-            throw "DISTILL_E2E_RUNTIME_CONFIG must reference an existing JSON file."
+    if (-not [string]::IsNullOrWhiteSpace($env:FLOCK_E2E_RUNTIME_CONFIG)) {
+        if (-not (Test-Path $env:FLOCK_E2E_RUNTIME_CONFIG -PathType Leaf)) {
+            throw "FLOCK_E2E_RUNTIME_CONFIG must reference an existing JSON file."
         }
         $runtimeConfigPath = Join-Path $e2e.RunRoot "runtime-config.json"
-        if ((Normalize-FullPath $env:DISTILL_E2E_RUNTIME_CONFIG) -ne (Normalize-FullPath $runtimeConfigPath)) {
-            Copy-Item -LiteralPath $env:DISTILL_E2E_RUNTIME_CONFIG -Destination $runtimeConfigPath
+        if ((Normalize-FullPath $env:FLOCK_E2E_RUNTIME_CONFIG) -ne (Normalize-FullPath $runtimeConfigPath)) {
+            Copy-Item -LiteralPath $env:FLOCK_E2E_RUNTIME_CONFIG -Destination $runtimeConfigPath
         }
         Get-Content -LiteralPath $runtimeConfigPath -Raw | ConvertFrom-Json | Out-Null
-        $env:DISTILL_E2E_RUNTIME_CONFIG = $runtimeConfigPath
+        $env:FLOCK_E2E_RUNTIME_CONFIG = $runtimeConfigPath
     }
 
     Remove-Item -LiteralPath $e2e.DriverReadyPath -Force -ErrorAction SilentlyContinue
@@ -71,27 +71,28 @@ $version = Resolve-AppVersion
 $env:VITE_APP_VERSION = $version.RichVersion
 Write-WindowsDevInfo "Using app version: $($version.Version) ($($version.RichVersion))"
 
-$distillctlArgs = @("build", "-p", "distillctl")
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList $distillctlArgs -WorkingDirectory (Join-Path (Get-DistillRepoRoot) "src-tauri") -Label "cargo build distillctl"
-$env:DISTILLCTL_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "distillctl.exe"
-if (-not (Test-Path $env:DISTILLCTL_BIN -PathType Leaf)) {
-    throw "Expected distillctl.exe at $env:DISTILLCTL_BIN after cargo build."
+$flockctlArgs = @("build", "-p", "flockctl")
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList $flockctlArgs -WorkingDirectory (Join-Path (Get-FlockRepoRoot) "src-tauri") -Label "cargo build flockctl"
+$flockctlBin = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "flockctl.exe"
+if (-not (Test-Path $flockctlBin -PathType Leaf)) {
+    throw "Expected flockctl.exe at $flockctlBin after cargo build."
 }
-Write-WindowsDevInfo "Using distillctl CLI: $env:DISTILLCTL_BIN"
+Write-WindowsDevInfo "Using flockctl CLI: $flockctlBin"
 
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "distill-monitor") -WorkingDirectory (Join-Path (Get-DistillRepoRoot) "src-tauri") -Label "cargo build distill-monitor"
-$env:DISTILL_MONITOR_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "distill-monitor.exe"
-if (-not (Test-Path $env:DISTILL_MONITOR_BIN -PathType Leaf)) {
-    throw "Expected distill-monitor.exe at $env:DISTILL_MONITOR_BIN after cargo build."
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "flock-monitor") -WorkingDirectory (Join-Path (Get-FlockRepoRoot) "src-tauri") -Label "cargo build flock-monitor"
+$monitorBin = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "flock-monitor.exe"
+if (-not (Test-Path $monitorBin -PathType Leaf)) {
+    throw "Expected flock-monitor.exe at $monitorBin after cargo build."
 }
-Write-WindowsDevInfo "Using distill-monitor CLI: $env:DISTILL_MONITOR_BIN"
+Write-WindowsDevInfo "Using flock-monitor CLI: $monitorBin"
+# FLOCKCTL_BIN / FLOCK_MONITOR_BIN, plus the pre-rename spellings for one release.
+Set-FlockCliBinEnvironment -FlockctlBin $flockctlBin -MonitorBin $monitorBin
 
 $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 
-$distroDir = Join-Path (Get-DistillRepoRoot) "distro"
-if ([string]::IsNullOrWhiteSpace($env:DISTILL_DISTRO_DIR) -and (Test-Path $distroDir -PathType Container)) {
-    $env:DISTILL_DISTRO_DIR = $distroDir
-    Write-WindowsDevInfo "Using distro dir: $env:DISTILL_DISTRO_DIR"
+$distroDir = Initialize-FlockDistroDirEnvironment
+if (-not [string]::IsNullOrWhiteSpace($distroDir)) {
+    Write-WindowsDevInfo "Using distro dir: $distroDir"
 }
 
 # Fail fast if a previous run's vite survived: tauri only kills its direct
@@ -123,12 +124,12 @@ $devConfig = @{
 }
 if ($E2eMode) {
     $devConfig.identifier = $e2e.Identifier
-    $devConfig.productName = "Distill E2E ($($e2e.RunId))"
+    $devConfig.productName = "Levocat Flock E2E ($($e2e.RunId))"
 }
 $devConfigPath = if ($E2eMode) {
     $e2e.ConfigPath
 } else {
-    Join-Path (Get-DistillDevRoot) "tauri-dev-windows.config.json"
+    Join-Path (Get-FlockDevRoot) "tauri-dev-windows.config.json"
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $devConfigPath) | Out-Null
 # Write without a BOM: Windows PowerShell's `Set-Content -Encoding UTF8` adds
@@ -139,7 +140,7 @@ Write-WindowsDevInfo "Using Tauri dev config: $devConfigPath"
 
 $tauriArguments = @(
     "exec", "tauri", "dev",
-    "--features", (Get-DistillAppFeatures),
+    "--features", (Get-FlockAppFeatures),
     "--config", "src-tauri/tauri.dev.conf.json",
     "--config", $devConfigPath
 )
@@ -147,11 +148,11 @@ $tauriArguments = @(
 # under src-tauri, so the ordinary dev watcher can otherwise invalidate its
 # own in-flight compile before the test driver publishes readiness.
 #
-# DISTILL_DEV_NO_WATCH=1 is the same switch for working on Distill *in* this
+# FLOCK_DEV_NO_WATCH=1 is the same switch for working on Flock *in* this
 # dev app: an agent saving a file under src-tauri otherwise makes the watcher
 # rebuild and relaunch the app, which kills the bridge running that agent's
 # turn. Vite still hot-reloads the renderer; Rust changes wait for a relaunch.
-$NoWatch = $E2eMode -or ($env:DISTILL_DEV_NO_WATCH -eq "1")
+$NoWatch = $E2eMode -or ($env:FLOCK_DEV_NO_WATCH -eq "1")
 if ($NoWatch) {
     $tauriArguments += "--no-watch"
 }

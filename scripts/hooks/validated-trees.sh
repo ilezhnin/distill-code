@@ -3,7 +3,7 @@
 # common Git directory so every worktree shares them. validate-tree.sh records
 # the tree it validated; validate-push.sh skips the gate for a recorded tree.
 validated_trees_file() {
-  printf '%s/distill-validated-trees\n' "$(git rev-parse --git-common-dir)"
+  printf '%s/flock-validated-trees\n' "$(git rev-parse --git-common-dir)"
 }
 
 tree_is_validated() {

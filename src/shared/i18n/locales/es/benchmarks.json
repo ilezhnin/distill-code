@@ -228,7 +228,7 @@
     "missing": "Esta prueba no está disponible.",
     "sections": {
       "test": "Prueba",
-      "testHint": "Identidad, clase de enrutamiento y partición de datos. La clase vincula los resultados al trabajo que Distill delega.",
+      "testHint": "Identidad, clase de enrutamiento y partición de datos. La clase vincula los resultados al trabajo que Flock delega.",
       "task": "Tarea",
       "taskHint": "Todo lo que ve el candidato: el prompt y los fixtures públicos. Las respuestas y comprobaciones permanecen ocultas.",
       "evaluation": "Evaluación",
@@ -404,7 +404,7 @@
     "completeNotice": "Todas las pruebas están medidas. Medir de nuevo inicia una ejecución de pago.",
     "waitingResources": "Esperando recursos locales",
     "readinessBlocked": "No se puede iniciar ni continuar",
-    "policyCheckMissing": "Hay que renovar la comprobación del entorno aislado para esta versión de Distill.",
+    "policyCheckMissing": "Hay que renovar la comprobación del entorno aislado para esta versión de Flock.",
     "availabilityFailed": "No se pudo verificar la disponibilidad actual.",
     "readinessRetry": "Comprobar de nuevo",
     "readinessChecking": "Comprobando…"
@@ -591,7 +591,7 @@
   },
   "schedules": {
     "title": "Repetición automática",
-    "description": "Las campañas se ejecutan solo mientras Distill está abierto y permanecen desactivadas hasta que las actives. El trabajo omitido se muestra; nunca lanza una ráfaga de recuperación.",
+    "description": "Las campañas se ejecutan solo mientras Flock está abierto y permanecen desactivadas hasta que las actives. El trabajo omitido se muestra; nunca lanza una ráfaga de recuperación.",
     "save": "Guardar campaña",
     "existing": "Campañas",
     "newCampaign": "Nueva campaña",

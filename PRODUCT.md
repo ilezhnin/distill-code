@@ -88,10 +88,14 @@ layouts usable with assistive technology.
 
 ## Names
 
-Flock grew out of a project called Distill, and the current build still shows
-that name in its window title, tools, data root, and protocol blocks. The
-product name is Levocat Flock; the rename of the code base is in progress and
-is tracked in the [documentation index](docs/README.md#a-note-on-names).
+The product name is Levocat Flock; "Flock" is the short form inside a
+sentence. Flock grew out of a project called Distill, and the app, its tools,
+its identifier, its bundled skills and its default data folder now carry the
+Flock name. The names that still say Distill are kept on purpose, for
+compatibility with existing data and protocols: the protocol fences, the
+persisted keys, each project's `.distill/` folder, the `~/.distill` folder of
+an upgraded install and the benchmark sandbox. The
+[documentation index](docs/README.md#a-note-on-names) lists them.
 
 For onboarding, see [README.md](README.md). Development guidance lives in
 [AGENTS.md](AGENTS.md); required product behavior is defined in

@@ -3,7 +3,7 @@
 // renderer bridge. The package scripts used to set the harness variables with
 // a POSIX `NAME=value command` prefix, which cmd.exe - the shell pnpm runs
 // scripts in on Windows - cannot parse, so the CI lane only ever ran on the
-// macOS runner and never on the platform Distill ships for.
+// macOS runner and never on the platform Flock ships for.
 //
 // Usage: node scripts/transcript-virtualization.mjs <real|ci> [playwright args]
 

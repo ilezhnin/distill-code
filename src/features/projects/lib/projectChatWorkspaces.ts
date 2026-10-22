@@ -145,20 +145,16 @@ function friendlyWorkspaceSetupError(error: unknown): Error {
   }
   if (/permission denied|operation not permitted/i.test(message)) {
     return new Error(
-      "Distill doesn’t have permission to create a worktree there.",
+      "Flock doesn’t have permission to create a worktree there.",
     );
   }
   if (
     /git\s+worktree\s+add/i.test(message) ||
     /failed to create worktree/i.test(message)
   ) {
-    return new Error(
-      "Distill couldn’t create that worktree. Try another name.",
-    );
+    return new Error("Flock couldn’t create that worktree. Try another name.");
   }
-  return new Error(
-    "Distill couldn’t prepare the project workspace. Try again.",
-  );
+  return new Error("Flock couldn’t prepare the project workspace. Try again.");
 }
 
 async function rollbackStartupMutations(

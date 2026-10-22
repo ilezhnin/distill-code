@@ -36,8 +36,8 @@
  *   nothing here makes it a better one.
  */
 
-import type { DistillVerdictParse } from "./distillVerdict";
-import type { WaveStep } from "./distillWave";
+import type { FlockVerdictParse } from "./flockVerdict";
+import type { WaveStep } from "./flockWave";
 import type { StructuredReport } from "./types";
 import {
   waveRequiresVerification,
@@ -160,7 +160,7 @@ export interface WaveVerdictDecision {
  * incremented.
  */
 export function decideWaveVerdict(input: {
-  parse: DistillVerdictParse;
+  parse: FlockVerdictParse;
   revisionCount: number;
   maxRevisions?: number;
   /** The wave being judged. Read only for the E2 evidence gate. */

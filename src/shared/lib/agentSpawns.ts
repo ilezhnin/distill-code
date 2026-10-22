@@ -86,9 +86,41 @@ export function parseSpawnAgents(value: unknown): string[] | undefined {
 }
 
 /**
+ * Frontmatter `metadata` keys naming the bundled agent a persona file was
+ * made from: the current key first, then the ones builds under the app's
+ * earlier names wrote, which a copy the startup rewrite has not reached (one
+ * in a project's own folder, say) still carries. None of them is an
+ * ownership claim; see `BUNDLED_AGENT_MARKER_KEYS` for those.
+ */
+export const BUNDLED_SOURCE_METADATA_KEYS = [
+  "flockBundledSource",
+  "distillBundledSource",
+  "berdBundledSource",
+] as const;
+
+/**
+ * The bundled agent a persona's frontmatter `metadata` names as its origin,
+ * trimmed, under whichever key it was written; `undefined` when it names
+ * none.
+ */
+export function readBundledSource(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return undefined;
+  }
+  const record = metadata as Record<string, unknown>;
+  for (const key of BUNDLED_SOURCE_METADATA_KEYS) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+/**
  * Every normalized name a persona answers to: the file stem of its id, its
  * display name, and — for bundled agents whose display name drifted from
- * the file stem — the `distillBundledSource` metadata key. An allowlist entry
+ * the file stem — the bundled-source metadata key. An allowlist entry
  * matches a persona when it matches any of these, so authors can write the
  * name they see in the UI or the name on disk and mean the same agent.
  */
@@ -106,12 +138,8 @@ export function personaAgentRefs(persona: {
     .replace(/\.md$/i, "");
   if (stem) refs.add(normalizeAgentRef(stem));
   if (persona.displayName) refs.add(normalizeAgentRef(persona.displayName));
-  const metadata = persona.sourceProperties?.metadata;
-  const bundledSource =
-    metadata && typeof metadata === "object"
-      ? (metadata as Record<string, unknown>).distillBundledSource
-      : undefined;
-  if (typeof bundledSource === "string" && bundledSource.trim()) {
+  const bundledSource = readBundledSource(persona.sourceProperties?.metadata);
+  if (bundledSource) {
     refs.add(normalizeAgentRef(bundledSource));
   }
   return [...refs];

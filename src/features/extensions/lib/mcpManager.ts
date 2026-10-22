@@ -23,7 +23,7 @@ export function mcpItems(
 ): McpItem[] {
   return [
     ...managed.map((entry) => ({
-      id: `distill:${entry.config_key}`,
+      id: `flock:${entry.config_key}`,
       name: entry.name,
       description: entry.description,
       transport: entry.type === "streamable_http" ? "http" : entry.type,
@@ -46,7 +46,7 @@ export function mcpItems(
 
 export function itemHarnesses(item: McpItem): string {
   return item.managed
-    ? "Distill"
+    ? "Flock"
     : [
         ...new Set(
           item.sources.map((source) => HARNESS_LABELS[source.harness]),

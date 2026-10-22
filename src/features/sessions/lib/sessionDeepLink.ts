@@ -1,26 +1,53 @@
-export function createSessionDeepLink(sessionId: string): string {
-  return `distill://session/${encodeURIComponent(sessionId)}`;
-}
+/**
+ * Protocols a session link may use, the one this build registers and creates
+ * first. `distill:` is the protocol of the links earlier builds wrote into
+ * transcripts, notes and memory entries; those are not rewritten, so the
+ * installer keeps registering both schemes and the parser accepts both.
+ * Mirrors `SESSION_DEEP_LINK_SCHEMES` in `src-tauri/src/deep_links.rs`.
+ */
+export const SESSION_LINK_PROTOCOLS = ["flock:", "distill:"] as const;
 
-const SESSION_LINK_PROTOCOL = "distill:";
+type SessionLinkProtocol = (typeof SESSION_LINK_PROTOCOLS)[number];
+
+export function createSessionDeepLink(sessionId: string): string {
+  return `${SESSION_LINK_PROTOCOLS[0]}//session/${encodeURIComponent(sessionId)}`;
+}
 
 type SessionDeepLinkRoute = "host" | "path";
 
-function rawSessionDeepLinkRoute(raw: string): SessionDeepLinkRoute | null {
-  if (
-    raw.trim() !== raw ||
-    raw.slice(0, SESSION_LINK_PROTOCOL.length).toLowerCase() !==
-      SESSION_LINK_PROTOCOL
-  ) {
+interface RawSessionDeepLink {
+  protocol: SessionLinkProtocol;
+  route: SessionDeepLinkRoute;
+}
+
+/**
+ * Each protocol is matched on its own length (never on the longest one), so
+ * `distill://` is read past eight characters and `flock://` past six.
+ */
+function rawSessionLinkProtocol(raw: string): SessionLinkProtocol | null {
+  if (raw.trim() !== raw) {
     return null;
   }
 
-  const route = raw.slice(SESSION_LINK_PROTOCOL.length);
+  return (
+    SESSION_LINK_PROTOCOLS.find(
+      (protocol) => raw.slice(0, protocol.length).toLowerCase() === protocol,
+    ) ?? null
+  );
+}
+
+function rawSessionDeepLinkRoute(raw: string): RawSessionDeepLink | null {
+  const protocol = rawSessionLinkProtocol(raw);
+  if (!protocol) {
+    return null;
+  }
+
+  const route = raw.slice(protocol.length);
   if (route.startsWith("//session/")) {
-    return "host";
+    return { protocol, route: "host" };
   }
   if (route.startsWith("///session/")) {
-    return "path";
+    return { protocol, route: "path" };
   }
   return null;
 }
@@ -36,8 +63,8 @@ function strictPathSegments(url: URL): string[] | null {
 }
 
 export function parseSessionDeepLink(raw: string): string | null {
-  const route = rawSessionDeepLinkRoute(raw);
-  if (!route) {
+  const link = rawSessionDeepLinkRoute(raw);
+  if (!link) {
     return null;
   }
 
@@ -48,7 +75,7 @@ export function parseSessionDeepLink(raw: string): string | null {
     return null;
   }
 
-  if (url.protocol !== SESSION_LINK_PROTOCOL) {
+  if (url.protocol !== link.protocol) {
     return null;
   }
 
@@ -58,10 +85,14 @@ export function parseSessionDeepLink(raw: string): string | null {
   }
 
   let encodedSessionId: string | undefined;
-  if (route === "host" && url.hostname === "session" && segments.length === 1) {
+  if (
+    link.route === "host" &&
+    url.hostname === "session" &&
+    segments.length === 1
+  ) {
     encodedSessionId = segments[0];
   } else if (
-    route === "path" &&
+    link.route === "path" &&
     url.hostname === "" &&
     segments.length === 2 &&
     segments[0] === "session"

@@ -5,8 +5,8 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 
-const STORAGE_KEY = "distill:pending-session-workspace-activations";
-const CHANGED_EVENT = "distill:pending-session-workspace-activations-changed";
+const STORAGE_KEY = "flock:pending-session-workspace-activations";
+const CHANGED_EVENT = "flock:pending-session-workspace-activations-changed";
 
 export interface PendingSessionWorkspaceActivation {
   requestId: string;
@@ -234,7 +234,7 @@ export function applyPendingSessionWorkspaceActivation(
       const attempted: PendingSessionWorkspaceActivation = next;
       try {
         // Failures intentionally leave the request persisted: the chat must not
-        // silently continue from its old folder after Distill accepted the switch.
+        // silently continue from its old folder after Flock accepted the switch.
         const missing = await checkDirectoriesExist([attempted.path]);
         if (missing.length > 0) {
           // Keep the request persisted so prompt barriers remain closed until the

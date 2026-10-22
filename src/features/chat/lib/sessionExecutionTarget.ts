@@ -65,7 +65,7 @@ export interface SessionExecutionModelSnapshot {
  *       (`isCachedModelInventoryAuthoritative`), not the last list the cache
  *       happens to still hold; or
  *   (b) the operator's explicit choice in the composer's model pill (or the
- *       equivalent explicit instruction, e.g. a distillctl `model_id`), which is
+ *       equivalent explicit instruction, e.g. a flockctl `model_id`), which is
  *       theirs to get wrong and theirs to change back; or
  *   (c) the harness' own report of what the session is already running.
  *

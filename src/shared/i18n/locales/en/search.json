@@ -13,7 +13,7 @@
   "heading": {
     "ariaLabel": "Universal search",
     "filterAriaLabel": "Filter search results",
-    "placeholder": "Search Distill"
+    "placeholder": "Search Flock"
   },
   "noMatches": "No matches for \"{{query}}\"",
   "settingsResult": {

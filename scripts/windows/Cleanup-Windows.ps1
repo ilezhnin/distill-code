@@ -18,7 +18,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-DistillRepoRoot)
+Set-Location (Get-FlockRepoRoot)
 Update-SessionPathFromRegistry
 
 if ($Mode -eq "remove" -and -not $Yes) {
@@ -40,9 +40,9 @@ if ($All) {
 # executing their removal requires the second -YesShared acknowledgment.
 $sharedSelected = $IncludeNodeState -or $IncludeSharedTools -or $IncludeVisualStudioBuildTools -or $IncludeWebView2
 if ($Mode -eq "remove" -and $sharedSelected -and -not $YesShared) {
-    throw ("The selected categories uninstall software shared beyond Distill (Node state, rustup, CMake, just, Lefthook, Build Tools" +
+    throw ("The selected categories uninstall software shared beyond Flock (Node state, rustup, CMake, just, Lefthook, Build Tools" +
         $(if ($IncludeWebView2) { ", WebView2 Runtime" } else { "" }) +
-        "). Review the dry run, then re-run with both -Yes and -YesShared, or drop -All/-Include* to remove only Distill-owned state.")
+        "). Review the dry run, then re-run with both -Yes and -YesShared, or drop -All/-Include* to remove only Flock-owned state.")
 }
 
 $script:Warnings = 0
@@ -291,25 +291,30 @@ function Invoke-WingetUninstall {
     }
 }
 
-Write-WindowsDevSection "Distill Windows cleanup ($Mode)"
+Write-WindowsDevSection "Flock Windows cleanup ($Mode)"
 if ($Mode -eq "check") {
     Write-WindowsDevInfo "Dry run only. Use 'just cleanup-windows remove -Yes' for default removal."
 }
 
 $paths = Resolve-WindowsCleanupPaths
-Write-WindowsDevSection "Distill-local caches"
-Remove-CleanupPath "Distill dev cache" $paths.DistillDevRoot $paths.DistillDevRoot
-Remove-CleanupPath "Tauri cargo cache" $paths.DistillTauriRoot $paths.DistillTauriRoot
-if (-not [string]::IsNullOrWhiteSpace($paths.LegacyDistillTauriRoot)) {
+Write-WindowsDevSection "Flock-local caches"
+Remove-CleanupPath "Flock dev cache" $paths.FlockDevRoot $paths.FlockDevRoot
+if (-not [string]::IsNullOrWhiteSpace($paths.LegacyFlockDevRoot)) {
+    # Before the Levocat Flock rename the dev scripts kept their state in
+    # %LOCALAPPDATA%\distill-dev. Nothing writes there now.
+    Remove-CleanupPath "legacy Flock dev cache" $paths.LegacyFlockDevRoot $paths.LegacyFlockDevRoot
+}
+Remove-CleanupPath "Tauri cargo cache" $paths.FlockTauriRoot $paths.FlockTauriRoot
+if (-not [string]::IsNullOrWhiteSpace($paths.LegacyFlockTauriRoot)) {
     # Pre-2026-09 checkouts built into %LOCALAPPDATA%\berd-tauri. Nothing
     # writes there now, but the tens of GB it holds still need reclaiming.
-    Remove-CleanupPath "legacy Tauri cargo cache" $paths.LegacyDistillTauriRoot $paths.LegacyDistillTauriRoot
+    Remove-CleanupPath "legacy Tauri cargo cache" $paths.LegacyFlockTauriRoot $paths.LegacyFlockTauriRoot
 }
 
 Write-WindowsDevSection "Repo-local generated state"
-Remove-CleanupPath "root node_modules" $paths.RepoNodeModules (Get-DistillRepoRoot)
-Remove-CleanupPath "root pnpm store" $paths.RepoPnpmStore (Get-DistillRepoRoot)
-Remove-CleanupPath "root dist" $paths.RepoDist (Get-DistillRepoRoot)
+Remove-CleanupPath "root node_modules" $paths.RepoNodeModules (Get-FlockRepoRoot)
+Remove-CleanupPath "root pnpm store" $paths.RepoPnpmStore (Get-FlockRepoRoot)
+Remove-CleanupPath "root dist" $paths.RepoDist (Get-FlockRepoRoot)
 Remove-LefthookGitHook "pre-commit"
 Remove-LefthookGitHook "pre-push"
 

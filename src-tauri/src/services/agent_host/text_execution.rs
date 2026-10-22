@@ -86,7 +86,7 @@ pub(crate) fn policy_hash(request: &OwnedSessionRequest, revision: &str) -> Resu
 }
 
 /// Whether `provider`'s sessions sign in with a grant the sandbox keeps
-/// (Kimi). Every other provider's session runs on a lease of the Distill
+/// (Kimi). Every other provider's session runs on a lease of the Flock
 /// app's own sign-in, staged when it starts: no sandbox sign-in to check.
 pub(crate) fn requires_sandbox_sign_in(provider: NativeProvider) -> bool {
     !crate::services::credential_lease::leased(provider)

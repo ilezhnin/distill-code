@@ -53,7 +53,7 @@ pub(crate) use security::{OwnedWindowsStaging, WindowsSecurityFacts};
 /// its JavaScript `realpath` walk every ancestor; the native `realpath` asks
 /// the kernel for the opened file's final path and needs no ancestor access.
 const NODE_REALPATH_PRELOAD: &str = r#"'use strict';
-// Distill protected launch: fall back to the kernel's final path when the
+// Flock protected launch: fall back to the kernel's final path when the
 // ancestor walk is denied. Every other error is reported unchanged.
 const fs = require('fs');
 const walkSync = fs.realpathSync;
@@ -82,7 +82,7 @@ fs.realpath = realpath;
 pub(crate) fn stage_node_runtime(
     staging: &OwnedWindowsStaging,
 ) -> io::Result<(OsString, OsString)> {
-    let preload = staging.runtime().join("distill-lowbox-node.cjs");
+    let preload = staging.runtime().join("flock-lowbox-node.cjs");
     std::fs::write(&preload, NODE_REALPATH_PRELOAD)?;
     // NODE_OPTIONS treats a backslash inside quotes as an escape.
     let path = preload.to_string_lossy().replace('\\', "/");
@@ -457,7 +457,7 @@ async fn stdio_pipe(
     suffix: &str,
     parent_reads: bool,
 ) -> io::Result<(NamedPipeServer, OwnedHandle)> {
-    let name = format!(r"\\.\pipe\LOCAL\Distill.Owned.{}.{}", id.simple(), suffix);
+    let name = format!(r"\\.\pipe\LOCAL\Flock.Owned.{}.{}", id.simple(), suffix);
     let mut options = ServerOptions::new();
     options
         .first_pipe_instance(true)

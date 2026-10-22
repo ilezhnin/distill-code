@@ -363,8 +363,8 @@ pub struct Bridge {
 }
 
 /// Everything a bridge process inherits: the user's login-shell environment,
-/// the directories to put in front of PATH (managed bridge shims, the distillctl
-/// shim), and host-provided variables such as `DISTILLCTL_LOCK`.
+/// the directories to put in front of PATH (managed bridge shims, the flockctl
+/// shim), and host-provided variables such as `FLOCKCTL_LOCK`.
 #[derive(Clone)]
 pub struct SpawnEnv {
     pub shell_env: HashMap<String, String>,
@@ -376,7 +376,7 @@ pub struct SpawnEnv {
 /// The file `spec.command` runs as it stands on disk right now, or `None`
 /// where the harness is not installed.
 ///
-/// A harness CLI is updated underneath Distill — by its own updater, by npm,
+/// A harness CLI is updated underneath Flock — by its own updater, by npm,
 /// by the doctor — and the models it serves change with it. This is the cheap
 /// question the model inventory asks before trusting its cache: the path the
 /// command resolves to, plus the size and modification time of what runs
@@ -553,10 +553,10 @@ fn missing_bridge(spec: &HarnessSpec) -> String {
 }
 
 /// Installs `env` on a bridge `command`. An `owned` launch starts from a
-/// cleared environment, so nothing of Distill's own process reaches it, and
+/// cleared environment, so nothing of Flock's own process reaches it, and
 /// the launcher-identity scrub is skipped: it removes by name, after
 /// everything below, and would also take away what the host set under such a
-/// name (a provider home that Orca redirects for Distill itself, say).
+/// name (a provider home that Orca redirects for Flock itself, say).
 fn apply_env(command: &mut std::process::Command, spec: &HarnessSpec, env: &SpawnEnv, owned: bool) {
     if owned {
         command.env_clear();
@@ -583,9 +583,9 @@ fn apply_env(command: &mut std::process::Command, spec: &HarnessSpec, env: &Spaw
     for key in spec.env_remove {
         command.env_remove(key);
     }
-    // `RUST_LOG` configures Distill's own log. Handed down, it turns a
+    // `RUST_LOG` configures Flock's own log. Handed down, it turns a
     // Rust-built bridge (grok) into an INFO firehose whose stderr lands in
-    // distill.log and rotates it every few minutes, taking crash history
+    // flock.log and rotates it every few minutes, taking crash history
     // with it.
     command.env_remove("RUST_LOG");
     if !owned {
@@ -753,7 +753,7 @@ impl Bridge {
             }
         });
 
-        // stderr: keep the bridge's own logging visible in Distill's log.
+        // stderr: keep the bridge's own logging visible in Flock's log.
         if let Some(stderr) = stderr {
             let harness = route_key.to_string();
             let pending = Arc::clone(&pending);
@@ -1844,7 +1844,7 @@ pub(super) mod tests {
     /// The exact body `managed_acp_tools::shim_contents` writes on Windows.
     fn windows_shim_body(node: &str, entrypoint: &str) -> String {
         format!(
-            "@echo off\r\nREM Written by Distill's managed ACP tools installer; do not edit.\r\n\"{node}\" \"{entrypoint}\" %*\r\n"
+            "@echo off\r\nREM Written by Flock's managed ACP tools installer; do not edit.\r\n\"{node}\" \"{entrypoint}\" %*\r\n"
         )
     }
 
@@ -1936,13 +1936,13 @@ pub(super) mod tests {
         );
     }
 
-    /// Distill started from an Orca pane carries Orca's redirect of a
+    /// Flock started from an Orca pane carries Orca's redirect of a
     /// provider home with its `ORCA_` twin. The owned process must still get
     /// the private home the host set, not lose it to the launcher scrub.
     #[test]
     fn an_owned_launch_keeps_what_the_host_set_under_a_launcher_name() {
-        const NAME: &str = "DISTILL_OWNED_HOME_TEST_5E2B";
-        const TWIN: &str = "ORCA_DISTILL_OWNED_HOME_TEST_5E2B";
+        const NAME: &str = "FLOCK_OWNED_HOME_TEST_5E2B";
+        const TWIN: &str = "ORCA_FLOCK_OWNED_HOME_TEST_5E2B";
         std::env::set_var(NAME, "orca-redirect");
         std::env::set_var(TWIN, "orca-redirect");
         let spec = super::super::harness::harness("grok-acp").unwrap();
@@ -1961,7 +1961,7 @@ pub(super) mod tests {
         let mut owned = std::process::Command::new("grok");
         apply_env(&mut owned, spec, &env, true);
         assert_eq!(value(&owned), Some(Some("private-home".to_string())));
-        // A chat bridge inherits Distill's own environment, so the scrub stays.
+        // A chat bridge inherits Flock's own environment, so the scrub stays.
         let mut chat = std::process::Command::new("grok");
         apply_env(&mut chat, spec, &env, false);
         assert_eq!(value(&chat), Some(None));
@@ -2037,7 +2037,7 @@ pub(super) mod tests {
     #[cfg(all(feature = "app-test-driver", windows))]
     #[test]
     fn an_isolated_fixture_override_fingerprints_and_launches_the_attested_entrypoint() {
-        const CHILD_ENV: &str = "DISTILL_FIXTURE_LAUNCHER_REGRESSION_CHILD";
+        const CHILD_ENV: &str = "FLOCK_FIXTURE_LAUNCHER_REGRESSION_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
             // Isolate startup-only fixture state and the tools override from
             // every other test. This child never starts Node or a provider.
@@ -2052,12 +2052,12 @@ pub(super) mod tests {
                     "--nocapture",
                 ])
                 .env(CHILD_ENV, "1")
-                .env("DISTILL_E2E_MODE", "1")
-                .env("DISTILL_E2E_RUN_ID", "fixture-launcher-regression")
-                .env("DISTILL_E2E_RUN_ROOT", &root)
+                .env("FLOCK_E2E_MODE", "1")
+                .env("FLOCK_E2E_RUN_ID", "fixture-launcher-regression")
+                .env("FLOCK_E2E_RUN_ROOT", &root)
                 .env("APP_TEST_DRIVER_TOKEN", "a".repeat(32))
-                .env("DISTILL_ACP_TOOLS_DIR", &root)
-                .env_remove("DISTILL_E2E_RUNTIME_CONFIG");
+                .env("FLOCK_ACP_TOOLS_DIR", &root)
+                .env_remove("FLOCK_E2E_RUNTIME_CONFIG");
             crate::services::process::apply_no_window(&mut command);
             let output = command.output().unwrap();
             assert!(
@@ -2069,7 +2069,7 @@ pub(super) mod tests {
             );
             return;
         }
-        let root = PathBuf::from(std::env::var_os("DISTILL_E2E_RUN_ROOT").unwrap());
+        let root = PathBuf::from(std::env::var_os("FLOCK_E2E_RUN_ROOT").unwrap());
         let node = root.join("node.exe");
         let entrypoint = root.join("invented.mjs");
         let shim = root.join("claude-agent-acp.cmd");
@@ -2099,9 +2099,9 @@ pub(super) mod tests {
             .unwrap(),
         )
         .unwrap();
-        std::env::set_var("DISTILL_E2E_NATIVE_FIXTURE_MANIFEST", &manifest);
+        std::env::set_var("FLOCK_E2E_NATIVE_FIXTURE_MANIFEST", &manifest);
         let mode = crate::services::e2e_mode::E2eMode::from_process_env(
-            "com.levocat.distill.e2e.fixture-launcher-regression",
+            "com.levocat.flock.e2e.fixture-launcher-regression",
         )
         .unwrap()
         .unwrap();

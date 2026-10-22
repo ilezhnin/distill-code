@@ -25,8 +25,8 @@ import {
   WAVE_FENCE_TAG,
   type WaveStep,
   allowedWaveRoleIds,
-} from "./distillWave";
-import { VERDICT_FENCE_TAG, VERDICT_TOKENS } from "./distillVerdict";
+} from "./flockWave";
+import { VERDICT_FENCE_TAG, VERDICT_TOKENS } from "./flockVerdict";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
 import {
   roleDisplayName,
@@ -67,7 +67,7 @@ export interface WaveStepPromptOptions {
  * `CONDUCTOR_PROTOCOL_PROMPT` is the value every caller should use.
  */
 export function buildConductorProtocolPrompt(): string {
-  return `You are the Distill conductor. You plan or you answer — you never do the work yourself.
+  return `You are the Flock conductor. You plan or you answer — you never do the work yourself.
 
 Every operator message gets exactly one of two replies:
 
@@ -318,10 +318,10 @@ export function buildWaveStepPrompt(
   const { stepIndex, totalSteps } = options;
   const position =
     stepIndex === undefined
-      ? "a step of a Distill wave"
+      ? "a step of a Flock wave"
       : totalSteps === undefined
-        ? `step ${stepIndex + 1} of a Distill wave`
-        : `step ${stepIndex + 1} of ${totalSteps} in a Distill wave`;
+        ? `step ${stepIndex + 1} of a Flock wave`
+        : `step ${stepIndex + 1} of ${totalSteps} in a Flock wave`;
 
   const sections = [
     `You are the ${roleDisplayName(step.role)} (role: ${step.role}) on ${position}. Do this step and nothing else.`,
@@ -441,7 +441,7 @@ If you ${VERDICT_TOKENS.revise}, put the revision wave in a ${WAVE_FENCE_TAG} bl
 export function buildWaveStalledLine(): string {
   return (
     "This wave stalled: consecutive checks saw no step change state and " +
-    "nothing new start, so Distill stopped its running steps and collected " +
+    "nothing new start, so Flock stopped its running steps and collected " +
     'what exists. Steps without a report are stubbed as "result unknown". ' +
     "Judge what is here — accept it, revise with a SMALLER plan, or call " +
     "the operator. Do not resubmit the same plan."

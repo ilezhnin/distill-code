@@ -431,7 +431,7 @@ impl NativeProvider {
 
 /// Removes the sign-in file Grok may have written into its private home
 /// from the session it was handed, so the user's access token never stays
-/// in the Distill root after the bridge that needed it. Nothing for other
+/// in the Flock root after the bridge that needed it. Nothing for other
 /// providers.
 pub fn discard_owned_sign_in(provider: NativeProvider, dir: &Path) -> std::io::Result<()> {
     if provider != NativeProvider::Grok {
@@ -447,7 +447,7 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Removes every file in Grok's sign-in folder under `dir`: what a Distill
+/// Removes every file in Grok's sign-in folder under `dir`: what a Flock
 /// that stopped while a bridge was starting left there.
 fn discard_stale_sign_ins(dir: &Path) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir.join(GROK_SIGN_IN)) {
@@ -467,7 +467,7 @@ fn discard_stale_sign_ins(dir: &Path) -> std::io::Result<()> {
 /// `runtime_root` (`<root>/benchmarks/runtime`): the files in Grok's sign-in
 /// folder and the session Grok may have written into its private home. The
 /// host calls it when it starts, before any owned bridge runs, and as the app
-/// quits, so a token a stopped Distill left on disk does not wait for the
+/// quits, so a token a stopped Flock left on disk does not wait for the
 /// next Grok benchmark.
 pub fn discard_left_sign_ins(runtime_root: &Path) -> std::io::Result<()> {
     let dir = runtime_root.join(NativeProvider::Grok.harness_id());
@@ -799,6 +799,14 @@ mod tests {
     /// A provider runs only on a passed loopback probe of exactly what this
     /// build ships. Kimi, Codex and Grok passed on October 4, Z.ai on
     /// October 17.
+    /// The native policy revision is recorded in every measurement; it keeps
+    /// the name the measurements were taken under, whatever the product is
+    /// called. A rename sweep that rewrites it fails here.
+    #[test]
+    fn the_policy_revision_keeps_the_name_the_measurements_carry() {
+        assert!(NATIVE_TEXT_POLICY_REVISION.starts_with(&["dis", "till"].concat()));
+    }
+
     #[test]
     fn only_a_probe_of_the_shipped_entry_and_adapter_admits_a_provider() {
         assert_eq!(NativeProvider::Claude.admission_issue(), None);
@@ -1269,7 +1277,7 @@ mod tests {
         assert_eq!(config["features"]["title_refresh"].as_bool(), Some(false));
     }
 
-    /// A Distill stopped while a Grok bridge started leaves its sign-in on
+    /// A Flock stopped while a Grok bridge started leaves its sign-in on
     /// disk; the host removes it when it starts again or quits, without
     /// waiting for another Grok benchmark.
     #[test]

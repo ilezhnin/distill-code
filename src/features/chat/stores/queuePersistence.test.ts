@@ -21,10 +21,10 @@ describe("queuePersistence", () => {
   });
 
   it("does not replace a failed native read with stale browser commands", async () => {
-    window.localStorage.setItem("distill:chat-message-queues:v1", '{"s1":[]}');
+    window.localStorage.setItem("flock:chat-message-queues:v1", '{"s1":[]}');
     mockInvoke.mockRejectedValue(new Error("read denied"));
     await expect(loadPersistedMessageQueues()).rejects.toThrow("read denied");
-    expect(window.localStorage.getItem("distill:chat-message-queues:v1")).toBe(
+    expect(window.localStorage.getItem("flock:chat-message-queues:v1")).toBe(
       '{"s1":[]}',
     );
   });
@@ -292,7 +292,7 @@ describe("queuePersistence", () => {
       draftSession: { id: "draft-2", creationState: "failed" },
     });
     expect(
-      window.localStorage.getItem("distill:chat-message-queues:v1"),
+      window.localStorage.getItem("flock:chat-message-queues:v1"),
     ).toContain("pending-record");
   });
 

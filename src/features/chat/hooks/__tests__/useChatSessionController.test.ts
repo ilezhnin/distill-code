@@ -68,7 +68,7 @@ const mockUseChatRuntime = {
   isRunCancellationPending: false,
 };
 const mockListSkills = vi.fn();
-const mockListDistillAppSkills = vi.fn();
+const mockListFlockAppSkills = vi.fn();
 const mockListGooseSourceSkills = vi.fn();
 const mockLoadWorkspaceInstructionFiles = vi.fn();
 const mockListProjectDocuments = vi.fn();
@@ -223,8 +223,7 @@ vi.mock("@/shared/api/agents", () => ({
 }));
 
 vi.mock("@/features/skills/api/skills", () => ({
-  listDistillAppSkills: (...args: unknown[]) =>
-    mockListDistillAppSkills(...args),
+  listFlockAppSkills: (...args: unknown[]) => mockListFlockAppSkills(...args),
   listHostSourceSkills: (...args: unknown[]) =>
     mockListGooseSourceSkills(...args),
   listSkills: (...args: unknown[]) => mockListSkills(...args),
@@ -468,7 +467,7 @@ describe("useChatSessionController", () => {
     mockListSkills
       .mockReset()
       .mockImplementation(() => immediatelyResolved([]));
-    mockListDistillAppSkills
+    mockListFlockAppSkills
       .mockReset()
       .mockImplementation(() => immediatelyResolved([]));
     mockListGooseSourceSkills.mockReset().mockResolvedValue([]);
@@ -873,7 +872,7 @@ describe("useChatSessionController", () => {
       { id: "gpt-4o", name: "GPT-4o", providerId: "claude-acp" },
     ];
     window.localStorage.setItem(
-      "distill:preferredModelsByAgent",
+      "flock:preferredModelsByAgent",
       JSON.stringify({
         "claude-acp": {
           modelId: "gpt-4o",
@@ -1928,7 +1927,7 @@ describe("useChatSessionController", () => {
     // the newer pick owns the preference, so the discarded selection leaves no
     // residue in goose:preferredModelsByAgent.
     expect(
-      window.localStorage.getItem("distill:preferredModelsByAgent"),
+      window.localStorage.getItem("flock:preferredModelsByAgent"),
     ).toBeNull();
   });
 
@@ -1984,7 +1983,7 @@ describe("useChatSessionController", () => {
 
     function switchToCodex(stored: typeof RETIRED) {
       window.localStorage.setItem(
-        "distill:preferredModelsByAgent",
+        "flock:preferredModelsByAgent",
         JSON.stringify({ "codex-acp": stored }),
       );
       mockPickerState.modelsByAgent.set("codex-acp", [SERVED]);
@@ -2016,7 +2015,7 @@ describe("useChatSessionController", () => {
       });
       // The preference was never proven wrong on its own, so it stays.
       expect(
-        window.localStorage.getItem("distill:preferredModelsByAgent"),
+        window.localStorage.getItem("flock:preferredModelsByAgent"),
       ).not.toBeNull();
     });
   });
@@ -2336,7 +2335,7 @@ describe("useChatSessionController", () => {
     ).not.toHaveProperty("restored");
   });
 
-  // Regression coverage for the `distill_chat` send-telemetry anchor: both events
+  // Regression coverage for the `flock_chat` send-telemetry anchor: both events
   // fire from the user-message-commit callback, so an attempt that fails
   // before committing emits nothing and the queue's automatic retry of the
   // same payload emits exactly once, when it finally commits.

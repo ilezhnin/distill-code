@@ -10,7 +10,7 @@ pub(super) fn push_tool_manager_dirs(paths: &mut Vec<PathBuf>) {
         paths.push(appdata.join("npm"));
     }
     if let Some(home) = dirs::home_dir() {
-        // Claude Code and Grok CLI install user shims here; Distill's doctor
+        // Claude Code and Grok CLI install user shims here; Flock's doctor
         // and managed ACP bridges spawn those CLIs and must see them.
         paths.push(home.join(".local").join("bin"));
         paths.push(home.join(".grok").join("bin"));

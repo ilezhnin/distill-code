@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   sendPromptToExistingSessionInBackground: vi.fn(),
 }));
 
-vi.mock("@/features/distillctl/commands/runtime/sessionSend", () => ({
+vi.mock("@/features/flockctl/commands/runtime/sessionSend", () => ({
   sendPromptToExistingSessionInBackground: (...args: unknown[]) =>
     mocks.sendPromptToExistingSessionInBackground(...args),
 }));
@@ -16,10 +16,10 @@ describe("resendUnansweredMessage", () => {
     mocks.sendPromptToExistingSessionInBackground.mockResolvedValue(undefined);
   });
 
-  // The resend button reaches the agent through the sender distillctl uses, whose
+  // The resend button reaches the agent through the sender flockctl uses, whose
   // defaults stamp the message as a delivery from another chat — so the
   // operator's own re-sent words rendered, forever, as somebody else's.
-  it("does not send the operator's own message as a distillctl delivery", () => {
+  it("does not send the operator's own message as a flockctl delivery", () => {
     resendUnansweredMessage("session-1", "  do the thing  ");
 
     expect(mocks.sendPromptToExistingSessionInBackground).toHaveBeenCalledWith(

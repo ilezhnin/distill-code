@@ -3,7 +3,7 @@
  * app recognises that text again later.
  *
  * Everything here is pure. The digest is delivered as a *real user message*
- * through the distillctl cross-session seam (`digestDelivery.ts`), so once it has
+ * through the flockctl cross-session seam (`digestDelivery.ts`), so once it has
  * been sent it is an ordinary transcript message like any other — there is no
  * store that remembers "this message was a digest". A marker in the text is
  * what makes it recognisable again, and it has to earn its keep three times:
@@ -27,7 +27,7 @@
 import type { Message } from "@/shared/types/messages";
 import { getTextContent } from "@/shared/types/messages";
 
-import { closingFencePattern, openingFencePattern } from "./distillWave";
+import { closingFencePattern, openingFencePattern } from "./flockWave";
 import { formatConductorAnswer } from "./orchestratorReport";
 import type { SessionNode, StructuredReport } from "./types";
 import type { WaveState, WaveVerdictIssue } from "./waveEngine";
@@ -43,9 +43,9 @@ import {
 } from "./wavePrompts";
 
 /** Opening of every digest marker. Also the cheap reject before a real parse. */
-export const DIGEST_MARKER_PREFIX = "[distill-digest:";
+export const DIGEST_MARKER_PREFIX = "[flock-digest:";
 
-const DIGEST_MARKER_PATTERN = /^\[distill-digest:([^\]\s]+)\]$/;
+const DIGEST_MARKER_PATTERN = /^\[flock-digest:([^\]\s]+)\]$/;
 
 /** Marker ids must survive the marker syntax: no whitespace, no `]`, no `#`. */
 function safeDigestId(value: string): string {

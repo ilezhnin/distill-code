@@ -441,7 +441,7 @@ export async function provisionPreSendProjectWorkspaces(
     let rollbackError: unknown;
     if (switchedTarget && !originalWorkspaceState.workingDir) {
       rollbackError = new Error(
-        "Distill couldn’t safely return the chat to its original folder.",
+        "Flock couldn’t safely return the chat to its original folder.",
       );
     } else if (switchedTarget && originalWorkspaceState.workingDir) {
       const restored = await transitionSessionTarget({
@@ -451,7 +451,7 @@ export async function provisionPreSendProjectWorkspaces(
       });
       if (!restored.applied) {
         rollbackError = new Error(
-          "Distill couldn’t safely return the chat to its original folder.",
+          "Flock couldn’t safely return the chat to its original folder.",
         );
       }
     }
@@ -683,7 +683,7 @@ export async function createDeferredWorkspaces(
               ...record.state,
               status: "failed",
               error:
-                "Distill couldn’t safely return the chat to its original folder.",
+                "Flock couldn’t safely return the chat to its original folder.",
             });
           return;
         }
@@ -720,7 +720,7 @@ export async function createDeferredWorkspaces(
             ...record.state,
             status: "failed",
             error:
-              "Distill couldn’t safely return the chat to its original folder.",
+              "Flock couldn’t safely return the chat to its original folder.",
           });
         return;
       }

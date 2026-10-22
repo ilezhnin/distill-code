@@ -199,7 +199,7 @@ export function extractToolResultImages(update: {
 
 /**
  * Inline bytes for any extracted image that only has a local path/`file:` URI
- * so the transcript can render it. Distill's webview cannot load raw `file:`
+ * so the transcript can render it. Flock's webview cannot load raw `file:`
  * URIs, and tool-written files often sit outside the chat cwd.
  */
 export async function hydrateToolResultImages(

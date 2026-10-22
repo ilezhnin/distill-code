@@ -5,7 +5,7 @@ import { FolderOpen, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/shared/lib/cn";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { SettingsRow } from "@/shared/ui/settings-row";
-import { DistillFolderRow } from "./DistillFolderRow";
+import { FlockFolderRow } from "./FlockFolderRow";
 import {
   SettingsSection,
   SettingsSections,
@@ -47,7 +47,7 @@ function AboutInfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-// System (rev 3): "settings about Distill as installed software on this
+// System (rev 3): "settings about Flock as installed software on this
 // machine" -- split out of the old GeneralSettings.tsx. Language lives here
 // (not Chat) per the settings-categories-and-content.md spec.
 //
@@ -71,7 +71,7 @@ function AboutInfoRow({ label, value }: { label: string; value: string }) {
 // indent, and it's just additional description text, not a badge.
 //
 // Rev 5 (Aug 19): "About" merged into System instead of staying its own nav
-// destination -- both pages were "settings about Distill itself," just split
+// destination -- both pages were "settings about Flock itself," just split
 // across install-level vs. identity-level, which wasn't a distinction
 // worth a second sidebar row. The embedded Updates card (app version + the
 // "Check for updates" row) moved to the very top of this page, since
@@ -243,7 +243,7 @@ export function SystemSettings() {
             </Select>
           </SettingsRow>
 
-          <DistillFolderRow />
+          <FlockFolderRow />
 
           <SettingsRow
             label={t("general.artifacts.label")}

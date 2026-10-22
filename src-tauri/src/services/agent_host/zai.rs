@@ -53,7 +53,7 @@ pub(super) fn repository_config(text: &Value, prompt: &str) -> Value {
     agents.insert(
         REPOSITORY_AGENT.into(),
         json!({
-            "description": "Distill repository benchmark: local tools, no delegation",
+            "description": "Flock repository benchmark: local tools, no delegation",
             "mode": "primary",
             "prompt": prompt,
             "permission": {

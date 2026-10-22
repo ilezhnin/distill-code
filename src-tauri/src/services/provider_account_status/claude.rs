@@ -11,7 +11,7 @@ use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout, Command};
 
 use super::{claude_resets, now_ms, timestamp, types::*};
-use crate::services::{distill_root, managed_acp_tools, process, provider_accounts};
+use crate::services::{flock_root, managed_acp_tools, process, provider_accounts};
 use provider_accounts::ProviderAccount;
 
 struct Client {
@@ -34,7 +34,7 @@ impl Client {
 
     async fn request(&mut self, request: Value) -> Result<Value, String> {
         self.next_id += 1;
-        let id = format!("distill-status-{}", self.next_id);
+        let id = format!("flock-status-{}", self.next_id);
         self.send(json!({"type":"control_request","request_id":id,"request":request}))
             .await?;
         loop {
@@ -397,9 +397,9 @@ fn unrestored_status(
 
 /// The saved OAuth block of this account, or null when it has none.
 fn saved_oauth(app: &AppHandle, account: &ProviderAccount) -> Result<Value, String> {
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let path = provider_accounts::account_home(app, account)?.join(".credentials.json");
-    distill_root::reject_document_links(&root, &path)?;
+    flock_root::reject_document_links(&root, &path)?;
     let mut value = match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
             .map_err(|_| "Cannot read Claude authorization".to_string())?,
@@ -477,11 +477,11 @@ fn account_plan(app: &AppHandle, account: &ProviderAccount, identity: &Value) ->
     // The native profile records upgrades and Max tiers that the credential's
     // subscriptionType (and initialize response) can omit or leave outdated.
     let profile = (|| {
-        let root = distill_root::app_root(app).ok()?;
+        let root = flock_root::app_root(app).ok()?;
         let path = provider_accounts::account_home(app, account)
             .ok()?
             .join(".claude.json");
-        distill_root::reject_document_links(&root, &path).ok()?;
+        flock_root::reject_document_links(&root, &path).ok()?;
         serde_json::from_slice::<Value>(&std::fs::read(path).ok()?).ok()
     })()
     .unwrap_or(Value::Null);
@@ -768,12 +768,12 @@ fn settle_renewal(
 /// until the CLI left one that lasts longer; otherwise it is put back.
 pub(crate) async fn renew_grant(app: &AppHandle, account: &ProviderAccount) -> Result<(), String> {
     let changing = provider_accounts::begin_account_change(&account.id)?;
-    let root = distill_root::app_root(app)?;
+    let root = flock_root::app_root(app)?;
     let home = provider_accounts::account_home(app, account)?;
     let path = home.join(".credentials.json");
     let copy = home.join(RENEWAL_COPY);
-    distill_root::reject_document_links(&root, &path)?;
-    distill_root::reject_document_links(&root, &copy)?;
+    flock_root::reject_document_links(&root, &path)?;
+    flock_root::reject_document_links(&root, &copy)?;
     recover_renewal_copy(&home)?;
     let mut document =
         std::fs::read(&path).map_err(|_| "Cannot read Claude authorization".to_string())?;
@@ -822,7 +822,7 @@ async fn run_renewal(
 ) -> Result<bool, String> {
     let mut env: HashMap<String, String> = changing
         .scoped_env(
-            &distill_root::app_root(app)?,
+            &flock_root::app_root(app)?,
             account,
             managed_acp_tools::provider_env(app)
                 .await

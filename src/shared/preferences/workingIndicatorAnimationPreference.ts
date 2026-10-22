@@ -1,9 +1,9 @@
 import { createBooleanLocalStoragePreference } from "@/shared/preferences/createBooleanLocalStoragePreference";
 
 export const WORKING_INDICATOR_ANIMATION_STORAGE_KEY =
-  "distill:working-indicator-animation-enabled";
+  "flock:working-indicator-animation-enabled";
 export const WORKING_INDICATOR_ANIMATION_CHANGED_EVENT =
-  "distill:working-indicator-animation-changed";
+  "flock:working-indicator-animation-changed";
 
 const workingIndicatorAnimationPreference = createBooleanLocalStoragePreference(
   {

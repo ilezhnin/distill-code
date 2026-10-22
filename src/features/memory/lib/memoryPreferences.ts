@@ -28,12 +28,12 @@ import type { MemoryEntry } from "./memoryEntry";
 import { composeMemorySection } from "./memoryPrompt";
 import { isRecord } from "@/shared/lib/isRecord";
 
-export const MEMORY_PREFERENCES_STORAGE_KEY = "distill:memory-preferences";
+export const MEMORY_PREFERENCES_STORAGE_KEY = "flock:memory-preferences";
 export const MEMORY_PREFERENCES_STORAGE_VERSION = 1;
 export const MEMORY_PREFERENCES_CHANGE_EVENT =
-  "distill:memory-preferences-change";
+  "flock:memory-preferences-change";
 
-const EMPTY_STORAGE_SNAPSHOT = "__distill_memory_preferences_empty__";
+const EMPTY_STORAGE_SNAPSHOT = "__flock_memory_preferences_empty__";
 
 export interface MemoryPreferences {
   /** Agents may keep and retire memories through the `distill-memory` fence. */

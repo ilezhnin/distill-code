@@ -5,8 +5,9 @@ Guidelines for people and agents working on Levocat Flock.
 Levocat Flock is a Windows desktop development environment where models from
 different providers work as a team, built with Tauri, React, TypeScript, and
 Rust. It combines chats, projects, reusable roles and skills, conductor waves,
-memory, and benchmarks. The code base still carries the project's earlier name,
-Distill, in its window title, tools, data root, and protocol blocks; see the
+memory, and benchmarks. Flock grew out of a project named Distill; the app,
+its tools, its identifier, its bundled skills and its default data folder are
+now Flock, and the names that stay Distill for compatibility are listed in the
 [note on names](docs/README.md#a-note-on-names). The product texts are
 [README.md](README.md) and [PRODUCT.md](PRODUCT.md); the
 [documentation index](docs/README.md) maps every guide.
@@ -33,9 +34,9 @@ Distill, in its window title, tools, data root, and protocol blocks; see the
 | `src/features/` | Product features, including chats, projects, agents, skills, providers, conductor, memory, and benchmarks |
 | `src/shared/` | Shared UI, types, APIs, and utilities |
 | `src-tauri/src/services/` | Rust services, including the agent host, storage, provider accounts, and benchmarks |
-| `src/features/distillctl/` | App command registry and command contracts |
-| `src-tauri/plugins/distillctl/` | Command broker |
-| `src-tauri/crates/` | Bundled `distillctl` and `distill-monitor` CLIs |
+| `src/features/flockctl/` | App command registry and command contracts |
+| `src-tauri/plugins/flockctl/` | Command broker |
+| `src-tauri/crates/` | Bundled `flockctl` and `flock-monitor` CLIs |
 | `distro/` | Public application help |
 | `scripts/windows/` | Windows setup, development, validation, and packaging |
 | `docs/` | Architecture and development guides |
@@ -45,15 +46,20 @@ Provider-specific operations belong in the existing provider integration.
 
 ## Data and roles
 
-App-owned data lives under the configured Distill root (`~/.distill` by
-default), with project-local data in each project's `.distill/` directory.
-Follow [the storage guide](docs/distill-root-layout.md) for ownership, overrides,
-and migrations. Preserve existing user data and customizations.
+App-owned data lives in the configured Flock folder (`~/.flock` on new
+installs, `~/.distill` on installs upgraded from Distill, adopted in place),
+with project-local data in each project's `.distill/` directory, a name that
+stays. Follow [the storage guide](docs/flock-root-layout.md) for ownership,
+overrides, and migrations. Preserve existing user data and customizations:
+the old names an upgraded install still carries (the `distillctl` and
+`distill-monitor` aliases, the `DISTILL_*` variables, the `distillBundled`
+marker, the `distill-*` protocol fences) are read on purpose; check the
+[note on names](docs/README.md#a-note-on-names) before removing one.
 
 Roles and working skills are user-owned local content. Do not add a personal
 role catalog, prompt schema, profile scaffolding, or instruction-delivery
 workflow to application source, defaults, or UI. The only public bundled skills
-are `distill-help` and `distill-monitor`.
+are `flock-help` and `flock-monitor`.
 
 Role images are optional and supplied by the user. A role must work without
 one. Use the existing media helpers to resolve imported local images; do not
@@ -114,9 +120,9 @@ During development, use focused checks for quick feedback:
   Rust tests.
 - Windows scripts: `just test-windows-dev`.
 - Broad or packaging changes: `just ci` and `just ci-windows`.
-- App commands: regenerate with `pnpm generate:distillctl-contract`, run
-  `pnpm vitest run src/features/distillctl`, and run
-  `cargo test -p distillctl` from `src-tauri/`.
+- App commands: regenerate with `pnpm generate:flockctl-contract`, run
+  `pnpm vitest run src/features/flockctl`, and run
+  `cargo test -p flockctl` from `src-tauri/`.
 
 Installers include the two workspace CLIs as sidecars. Managed ACP bridges are
 installed at runtime from `acp-tools.lock.json`; update their pins through
@@ -124,7 +130,7 @@ installed at runtime from `acp-tools.lock.json`; update their pins through
 
 ## App commands
 
-Read [distillctl architecture](docs/distillctl-architecture.md) before changing
+Read [flockctl architecture](docs/flockctl-architecture.md) before changing
 commands. Scaffold a command with `just new-command <noun> <verb>`.
 
 - Keep one dispatch point in the renderer. The broker handles transport, not
@@ -147,7 +153,7 @@ commands. Scaffold a command with `just new-command <noun> <verb>`.
 Keep personal profiles, memory, conversations, project history, roles, images,
 working skills, credentials, account exports, internal audits, development plans,
 roadmaps, and handoffs outside every project Git checkout. Store them under the
-configured Distill root or in a private local workspace. Do not seed personal
+configured Flock root or in a private local workspace. Do not seed personal
 material from the application distribution or add working roles and skills to
 `distro/` or `.agents/skills/`.
 
@@ -159,7 +165,7 @@ examples and tests.
 Actual evaluation tasks are private local data. Keep their prompts, fixtures,
 repository snapshots, expected answers, protected checks, rubrics, alternatives,
 mutants, calibration results, reports, and detailed plans outside Git. Private
-authoring data belongs in `benchmark-tasks` under the configured Distill root,
+authoring data belongs in `benchmark-tasks` under the configured Flock root,
 with plans in its `documentation` directory. Only generic benchmark
 infrastructure, schema guidance, and deliberately public development examples
 belong in this repository. See [benchmark authoring](docs/benchmark-authoring.md).

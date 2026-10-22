@@ -43,7 +43,7 @@ function manifest(overrides = {}, omit = []) {
   const lines = Object.entries(fields).map(
     ([key, value]) => `${key}: ${value}`,
   );
-  return `---\n${lines.join("\n")}\nmetadata:\n  distillBundled: true\n---\n\nBody.\n`;
+  return `---\n${lines.join("\n")}\nmetadata:\n  flockBundled: true\n---\n\nBody.\n`;
 }
 
 /** Runs the validator over one file; returns its exit status and stderr. */
@@ -106,7 +106,33 @@ describe("the bundled agent validator catches a bad manifest", () => {
       ),
     );
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /distillBundled/);
+    assert.match(result.stderr, /flockBundled/);
+  });
+
+  it("fails when the agent carries only a previous build's marker", () => {
+    // The app wrote the marker as `distillBundled` and, before that,
+    // `berdBundled`. Installed copies under those keys are still accepted at
+    // runtime, but a shipped manifest must carry the current key: the app
+    // rewrites installed copies to it at startup, and a shipped copy under
+    // the old key would then differ from its install on every launch. A
+    // mechanical rename that turned these keys into the current one would
+    // make both manifests validate, and this case fail.
+    for (const retired of ["distillBundled", "berdBundled"]) {
+      const result = validate(
+        write(
+          `${retired}.md`,
+          `---\n${Object.entries(VALID_FRONTMATTER)
+            .map(([key, value]) => `${key}: ${value}`)
+            .join("\n")}\nmetadata:\n  ${retired}: true\n---\n\nBody.\n`,
+        ),
+      );
+      assert.equal(result.status, 1, `${retired}: ${result.stderr}`);
+      assert.match(
+        result.stderr,
+        new RegExp(`retired key \`metadata.${retired}\``),
+      );
+      assert.match(result.stderr, /metadata\.flockBundled: true/);
+    }
   });
 
   it("fails on an avatar ref that names no image", () => {

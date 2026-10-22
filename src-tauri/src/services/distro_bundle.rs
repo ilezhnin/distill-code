@@ -112,14 +112,22 @@ fn load_distro_bundle_from_root(root_dir: PathBuf) -> Result<DistroBundle, Strin
     })
 }
 
+/// The override for the bundled `distro` folder: the current spelling first,
+/// then the one Distill builds read, so an existing developer environment
+/// keeps working for one release.
+const DISTRO_DIR_ENV: [&str; 2] = ["FLOCK_DISTRO_DIR", "DISTILL_DISTRO_DIR"];
+
 fn resolve_distro_root(app_handle: &AppHandle) -> Result<Option<PathBuf>, String> {
-    if let Ok(override_dir) = env::var("DISTILL_DISTRO_DIR") {
+    if let Some((name, override_dir)) = DISTRO_DIR_ENV
+        .iter()
+        .find_map(|name| env::var(name).ok().map(|value| (*name, value)))
+    {
         let path = PathBuf::from(override_dir);
         if path.is_dir() {
             return Ok(Some(path));
         }
         return Err(format!(
-            "DISTILL_DISTRO_DIR points to a non-directory path: {}",
+            "{name} points to a non-directory path: {}",
             path.display()
         ));
     }
@@ -187,6 +195,18 @@ fn validate_distribution_config(config: &mut DistributionDistroConfig) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Compatibility pin: the current spelling first, the one Distill builds
+    /// read second. A rename sweep that rewrites the fallback collapses the
+    /// two and fails here.
+    #[test]
+    fn the_distro_dir_override_keeps_its_earlier_spelling_as_fallback() {
+        assert_eq!(DISTRO_DIR_ENV[0], "FLOCK_DISTRO_DIR");
+        assert_eq!(
+            DISTRO_DIR_ENV[1],
+            format!("{}_DISTRO_DIR", ["DIS", "TILL"].concat())
+        );
+    }
 
     #[test]
     fn rejects_insecure_or_credential_bearing_distribution_urls() {

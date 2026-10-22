@@ -5,7 +5,7 @@ import type {
   OwnedTaskRequestV2,
 } from "@/features/benchmarks/lib/ownedTaskExecution";
 
-import type { WaveStep } from "./distillWave";
+import type { WaveStep } from "./flockWave";
 import { createWaveState } from "./waveEngine";
 import {
   ownedWaveLineage,

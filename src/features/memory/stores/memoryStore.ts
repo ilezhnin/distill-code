@@ -1,7 +1,7 @@
 /**
  * Where remembered facts live.
  *
- * A JSON document in the operator's Distill folder, beside their projects and
+ * A JSON document in the operator's Flock folder, beside their projects and
  * sessions. It began in `localStorage` for want of a way to write a file, and
  * that was the wrong home for the one thing in the app that is supposed to
  * outlive everything: memory that a backup cannot see and a reinstall erases
@@ -15,7 +15,7 @@
 
 import { create } from "zustand";
 
-import { distillDocument } from "@/shared/lib/distillDocument";
+import { flockDocument } from "@/shared/lib/flockDocument";
 
 import {
   useConductorGraphStore,
@@ -50,11 +50,11 @@ import {
 } from "../lib/memoryEntry";
 import { messageIdSet } from "../lib/transcriptScan";
 
-/** Path under the Distill root. */
+/** Path under the Flock root. */
 export const MEMORY_DOCUMENT_PATH = "memory.json";
 
 /** Where memory lived before the move; read once, then removed. */
-export const MEMORY_STORAGE_KEY = "distill:memory";
+export const MEMORY_STORAGE_KEY = "flock:memory";
 
 /** Upper bound on stored memories. Oldest go first. */
 export const MAX_MEMORY_ENTRIES = 300;
@@ -779,7 +779,7 @@ function stateFromDocument(parsed: unknown): MemoryState {
   };
 }
 
-const document = distillDocument<MemoryState>({
+const document = flockDocument<MemoryState>({
   path: MEMORY_DOCUMENT_PATH,
   legacyStorageKey: MEMORY_STORAGE_KEY,
   parse: stateFromDocument,

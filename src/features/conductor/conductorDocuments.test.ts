@@ -1,21 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const files = vi.hoisted(() => new Map<string, string>());
-const writeDistillDocument = vi.hoisted(() =>
+const writeFlockDocument = vi.hoisted(() =>
   vi.fn(async (path: string, contents: string) => {
     files.set(path, contents);
   }),
 );
-const readDistillDocument = vi.hoisted(() =>
+const readFlockDocument = vi.hoisted(() =>
   vi.fn(async (path: string) => files.get(path) ?? null),
 );
 
-vi.mock("@/shared/api/distillStore", () => ({
+vi.mock("@/shared/api/flockStore", () => ({
   isDesktopRuntime: () => true,
-  readDistillDocument,
-  writeDistillDocument,
-  getDistillRoot: async () => null,
-  setDistillRoot: async () => undefined,
+  readFlockDocument,
+  writeFlockDocument,
+  getFlockRoot: async () => null,
+  setFlockRoot: async () => undefined,
 }));
 
 const {
@@ -77,7 +77,7 @@ beforeEach(async () => {
   await flushWaveTelemetryWrites();
   files.clear();
   window.localStorage.clear();
-  readDistillDocument.mockImplementation(
+  readFlockDocument.mockImplementation(
     async (path: string) => files.get(path) ?? null,
   );
   useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
@@ -90,13 +90,13 @@ beforeEach(async () => {
 
 /** One rejected read of `path`, then the file map answers as usual. */
 function rejectNextRead(path: string): void {
-  readDistillDocument.mockImplementationOnce(async (requested: string) => {
+  readFlockDocument.mockImplementationOnce(async (requested: string) => {
     if (requested === path) throw new Error("EPERM: sharing violation");
     return files.get(requested) ?? null;
   });
 }
 
-describe("the conductor's state lives in the Distill folder (P24)", () => {
+describe("the conductor's state lives in the Flock folder (P24)", () => {
   it("migrates a browser copy into the folder once, then drops it", async () => {
     // The one-way door: after this the folder is the only source, so a second
     // copy can never drift out of step with it.

@@ -55,7 +55,7 @@
     "invalid": "Shortcuts need a modifier key like Ctrl or Alt",
     "invalidUnmodified": "That key can't be used on its own — add a modifier key, or use Enter or an arrow key",
     "label": "Keyboard shortcuts",
-    "pageDescription": "Customize the keyboard shortcuts used across Distill.",
+    "pageDescription": "Customize the keyboard shortcuts used across Flock.",
     "recording": "Press shortcut…",
     "recordingHint": "Press the new key combination. Esc cancels.",
     "reset": "Reset to default",

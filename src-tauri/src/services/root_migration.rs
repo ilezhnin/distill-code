@@ -1,14 +1,14 @@
-//! Adopt old Distill stores once. Originals remain available for rollback;
+//! Adopt old Flock stores once. Originals remain available for rollback;
 //! after adoption only the root copy is opened by this version of the app.
 //!
 //! This is the only place that reads the folder older builds shared with other
 //! tools (`~/.agents`), and only while it is still there: the copy runs once,
 //! never creates the folder and never writes to it. Everything else reads the
-//! Distill root and a project's `.distill`.
+//! Flock root and a project's `.distill`.
 use sqlx::Connection;
 use sqlx::Row;
 
-/// The Distill root's copy of an agent an older build recorded at
+/// The Flock root's copy of an agent an older build recorded at
 /// `~/.agents/agents/<file>`, when the root has it. A string rewrite: the old
 /// folder is not opened.
 pub(crate) fn rebase_agent_path(value: &str, home: &Path, root: &Path) -> Option<String> {
@@ -115,8 +115,7 @@ fn rebase_config_file(path: &Path, home: &Path, root: &Path) -> Result<(), Strin
     }
     let pending = path.with_extension("root-migration.tmp");
     let bytes = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
-    crate::commands::distill_store::write_file_synced(&pending, &bytes)
-        .map_err(|e| e.to_string())?;
+    crate::commands::flock_store::write_file_synced(&pending, &bytes).map_err(|e| e.to_string())?;
     fs::rename(pending, path).map_err(|e| e.to_string())
 }
 use std::fs;
@@ -182,13 +181,57 @@ pub fn adopt_files(root: &Path, legacy: &Path, home: &Path) -> Result<(), String
     ] {
         rebase_config_file(&root.join(file), home, root)?;
     }
-    crate::commands::distill_store::write_file_synced(&marker, b"{\"version\":1}\n")
+    crate::commands::flock_store::write_file_synced(&marker, b"{\"version\":1}\n")
         .map_err(|e| e.to_string())
+}
+
+/// The table the adopted sessions database records its source in. Written
+/// into every adopted database since the Distill days and read back on every
+/// start, so it keeps its name through the product's renames.
+const ROOT_ADOPTION_TABLE: &str = "_distill_root_adoption";
+
+/// The identifiers an install of this app recorded its source under before
+/// the current one. A rename of the identifier folders (see
+/// `identifier_migration`) moves the database but not the path inside it.
+const REPLACED_IDENTIFIER_SEGMENTS: [&str; 4] = [
+    "xyz.block.berd",
+    "xyz.block.berd.dev",
+    "com.levocat.distill",
+    "com.levocat.distill.dev",
+];
+
+/// The recorded source as it reads under the current identifier: every path
+/// segment that is a replaced identifier becomes `identifier`. The separators
+/// and everything else stay as recorded; the row itself is never rewritten.
+fn normalize_recorded_source(recorded: &str, identifier: &str) -> String {
+    let mut normalized = String::with_capacity(recorded.len());
+    let mut segment = String::new();
+    let flush = |segment: &mut String, normalized: &mut String| {
+        if REPLACED_IDENTIFIER_SEGMENTS.contains(&segment.as_str()) {
+            normalized.push_str(identifier);
+        } else {
+            normalized.push_str(segment);
+        }
+        segment.clear();
+    };
+    for character in recorded.chars() {
+        if character == '/' || character == '\\' {
+            flush(&mut segment, &mut normalized);
+            normalized.push(character);
+        } else {
+            segment.push(character);
+        }
+    }
+    flush(&mut segment, &mut normalized);
+    normalized
 }
 
 /// SQLite produces a consistent snapshot, including committed WAL contents.
 /// A raw copy of a live database (or independent copies of db/wal/shm) cannot.
-pub async fn adopt_sessions(root: &Path, legacy: &Path) -> Result<(), String> {
+///
+/// `identifier` is the app identifier `legacy` is keyed by; a source the
+/// database recorded under a previous identifier counts as this one.
+pub async fn adopt_sessions(root: &Path, legacy: &Path, identifier: &str) -> Result<(), String> {
     let source = legacy.join("agent-host/agent-host.db");
     let target = root.join("sessions/agent-host.db");
     if !source.is_file() {
@@ -201,17 +244,23 @@ pub async fn adopt_sessions(root: &Path, legacy: &Path) -> Result<(), String> {
         let mut db = sqlx::SqliteConnection::connect_with(&options)
             .await
             .map_err(|e| e.to_string())?;
-        let adopted =
-            sqlx::query_scalar::<_, String>("SELECT source FROM _distill_root_adoption LIMIT 1")
-                .fetch_optional(&mut db)
-                .await
-                .ok()
-                .flatten();
+        let adopted = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT source FROM {ROOT_ADOPTION_TABLE} LIMIT 1"
+        ))
+        .fetch_optional(&mut db)
+        .await
+        .ok()
+        .flatten();
         db.close().await.map_err(|e| e.to_string())?;
-        if adopted.as_deref() == Some(source.to_string_lossy().as_ref()) {
+        if adopted
+            .as_deref()
+            .map(|recorded| normalize_recorded_source(recorded, identifier))
+            .as_deref()
+            == Some(source.to_string_lossy().as_ref())
+        {
             return Ok(());
         }
-        return Err(format!("Both '{}' and '{}' exist without a completed migration. Choose the database to keep before starting Distill.", source.display(), target.display()));
+        return Err(format!("Both '{}' and '{}' exist without a completed migration. Choose the database to keep before starting Flock.", source.display(), target.display()));
     }
     let pending = root.join("sessions/agent-host.migrating.db");
     // An interrupted snapshot is never promoted or opened as the live store.
@@ -281,15 +330,19 @@ pub async fn adopt_sessions(root: &Path, legacy: &Path) -> Result<(), String> {
             }
         }
     }
-    sqlx::query("CREATE TABLE _distill_root_adoption (source TEXT NOT NULL)")
-        .execute(&mut snapshot)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("INSERT INTO _distill_root_adoption (source) VALUES (?)")
-        .bind(source.to_string_lossy().as_ref())
-        .execute(&mut snapshot)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(&format!(
+        "CREATE TABLE {ROOT_ADOPTION_TABLE} (source TEXT NOT NULL)"
+    ))
+    .execute(&mut snapshot)
+    .await
+    .map_err(|e| e.to_string())?;
+    sqlx::query(&format!(
+        "INSERT INTO {ROOT_ADOPTION_TABLE} (source) VALUES (?)"
+    ))
+    .bind(source.to_string_lossy().as_ref())
+    .execute(&mut snapshot)
+    .await
+    .map_err(|e| e.to_string())?;
     sqlx::query("COMMIT")
         .execute(&mut snapshot)
         .await
@@ -308,7 +361,7 @@ mod tests {
     fn persona_identities_move_without_rewriting_instructions_or_messages() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
-        let root = temp.path().join("distill");
+        let root = temp.path().join("flock");
         fs::create_dir_all(root.join("agents")).unwrap();
         fs::write(root.join("agents/worker.md"), "persona").unwrap();
         let old = home
@@ -437,7 +490,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("root");
         let legacy = temp.path().join("legacy");
-        crate::services::distill_root::ensure_root_layout(&root).unwrap();
+        crate::services::flock_root::ensure_root_layout(&root).unwrap();
         fs::create_dir_all(legacy.join("projects")).unwrap();
         fs::write(legacy.join("projects/a.md"), "old").unwrap();
         fs::write(root.join("projects/a.md"), "edited").unwrap();
@@ -457,7 +510,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("root");
         let legacy = temp.path().join("legacy");
-        crate::services::distill_root::ensure_root_layout(&root).unwrap();
+        crate::services::flock_root::ensure_root_layout(&root).unwrap();
         fs::create_dir_all(legacy.join("agent-host")).unwrap();
         let source = legacy.join("agent-host/agent-host.db");
         let options = sqlx::sqlite::SqliteConnectOptions::new()
@@ -487,7 +540,7 @@ mod tests {
             .execute(&mut db)
             .await
             .unwrap();
-        adopt_sessions(&root, &legacy).await.unwrap();
+        adopt_sessions(&root, &legacy, "legacy").await.unwrap();
         let mut copy = sqlx::SqliteConnection::connect_with(
             &sqlx::sqlite::SqliteConnectOptions::new()
                 .filename(root.join("sessions/agent-host.db")),
@@ -515,11 +568,162 @@ mod tests {
             .unwrap();
         assert_eq!(original, old);
         assert!(source.exists());
-        adopt_sessions(&root, &legacy).await.unwrap();
+        adopt_sessions(&root, &legacy, "legacy").await.unwrap();
         // Dropped connections close their files later, on sqlx's worker
         // threads; the folder is deleted right after this test returns.
         copy.close().await.unwrap();
         db.close().await.unwrap();
+    }
+
+    /// The marker table keeps the name every adopted database already has,
+    /// spelled out of pieces so a rename sweeping the sources cannot change
+    /// what this build looks for.
+    #[test]
+    fn the_adoption_table_keeps_its_distill_name() {
+        assert_eq!(
+            ROOT_ADOPTION_TABLE,
+            ["_dis", "till", "_root_adoption"].concat()
+        );
+    }
+
+    /// The identifiers older installs recorded their source under, spelled
+    /// out of pieces for the same reason.
+    #[test]
+    fn the_replaced_identifiers_are_the_chain_members() {
+        assert_eq!(
+            REPLACED_IDENTIFIER_SEGMENTS,
+            [
+                ["xyz.block.", "be", "rd"].concat(),
+                ["xyz.block.", "be", "rd", ".dev"].concat(),
+                ["com.levocat.", "dis", "till"].concat(),
+                ["com.levocat.", "dis", "till", ".dev"].concat(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recorded_source_reads_under_the_current_identifier() {
+        let current = "com.levocat.flock.dev";
+        assert_eq!(
+            normalize_recorded_source(
+                r"C:\Users\Example\AppData\Roaming\com.levocat.distill.dev\agent-host\agent-host.db",
+                current
+            ),
+            r"C:\Users\Example\AppData\Roaming\com.levocat.flock.dev\agent-host\agent-host.db"
+        );
+        assert_eq!(
+            normalize_recorded_source(
+                "/home/example/.local/share/xyz.block.berd.dev/agent-host/agent-host.db",
+                current
+            ),
+            "/home/example/.local/share/com.levocat.flock.dev/agent-host/agent-host.db"
+        );
+        // Only a whole segment is an identifier; the current one and
+        // unrelated names are left as recorded.
+        for recorded in [
+            r"C:\Roaming\com.levocat.flock.dev\agent-host\agent-host.db",
+            r"C:\Roaming\com.levocat.distill.dev.backup\agent-host.db",
+            r"C:\Roaming\xyz.block.berd-copy\agent-host.db",
+        ] {
+            assert_eq!(normalize_recorded_source(recorded, current), recorded);
+        }
+    }
+
+    async fn sessions_db_recording(path: &Path, recorded: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut db = sqlx::SqliteConnection::connect_with(
+            &sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        db.execute(format!("CREATE TABLE {ROOT_ADOPTION_TABLE} (source TEXT NOT NULL)").as_str())
+            .await
+            .unwrap();
+        sqlx::query(&format!(
+            "INSERT INTO {ROOT_ADOPTION_TABLE} (source) VALUES (?)"
+        ))
+        .bind(recorded)
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+    }
+
+    async fn recorded_source(path: &Path) -> String {
+        let mut db = sqlx::SqliteConnection::connect_with(
+            &sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .read_only(true),
+        )
+        .await
+        .unwrap();
+        let recorded: String =
+            sqlx::query_scalar(&format!("SELECT source FROM {ROOT_ADOPTION_TABLE}"))
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        db.close().await.unwrap();
+        recorded
+    }
+
+    /// A database adopted while the app was Distill recorded its source
+    /// under `com.levocat.distill.dev`. After the identifier folders moved,
+    /// the same file sits under `com.levocat.flock.dev`: that is a completed
+    /// adoption, not a conflict, and the row is left as it was.
+    #[tokio::test]
+    async fn a_source_recorded_under_the_distill_identifier_is_a_completed_adoption() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = "com.levocat.flock.dev";
+        let root = temp.path().join("root");
+        let legacy = temp.path().join("Roaming").join(current);
+        crate::services::flock_root::ensure_root_layout(&root).unwrap();
+        fs::create_dir_all(legacy.join("agent-host")).unwrap();
+        fs::write(legacy.join("agent-host/agent-host.db"), b"old database").unwrap();
+        let recorded = temp
+            .path()
+            .join("Roaming")
+            .join(["com.levocat.", "dis", "till", ".dev"].concat())
+            // Joined the way `adopt_sessions` records it, separator included.
+            .join("agent-host/agent-host.db")
+            .to_string_lossy()
+            .into_owned();
+        let target = root.join("sessions/agent-host.db");
+        sessions_db_recording(&target, &recorded).await;
+
+        adopt_sessions(&root, &legacy, current).await.unwrap();
+
+        assert_eq!(recorded_source(&target).await, recorded);
+        assert!(!root.join("sessions/agent-host.migrating.db").exists());
+    }
+
+    /// A source recorded somewhere else is a second database, and the start
+    /// refuses rather than guess which one to keep.
+    #[tokio::test]
+    async fn a_source_recorded_elsewhere_is_still_a_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = "com.levocat.flock.dev";
+        let root = temp.path().join("root");
+        let legacy = temp.path().join("Roaming").join(current);
+        crate::services::flock_root::ensure_root_layout(&root).unwrap();
+        fs::create_dir_all(legacy.join("agent-host")).unwrap();
+        fs::write(legacy.join("agent-host/agent-host.db"), b"old database").unwrap();
+        let recorded = temp
+            .path()
+            .join("Elsewhere")
+            .join(["com.levocat.", "dis", "till", ".dev"].concat())
+            // Joined the way `adopt_sessions` records it, separator included.
+            .join("agent-host/agent-host.db")
+            .to_string_lossy()
+            .into_owned();
+        let target = root.join("sessions/agent-host.db");
+        sessions_db_recording(&target, &recorded).await;
+
+        let error = adopt_sessions(&root, &legacy, current).await.unwrap_err();
+
+        assert!(error.contains("without a completed migration"), "{error}");
+        assert_eq!(recorded_source(&target).await, recorded);
     }
 
     #[test]
@@ -561,7 +765,7 @@ mod tests {
         let home = temp.path().join("home");
         let root = home.join(".distill");
         let legacy = temp.path().join("legacy");
-        crate::services::distill_root::ensure_root_layout(&root).unwrap();
+        crate::services::flock_root::ensure_root_layout(&root).unwrap();
         fs::create_dir_all(&legacy).unwrap();
 
         adopt_files(&root, &legacy, &home).unwrap();
@@ -578,7 +782,7 @@ mod tests {
         let home = temp.path().join("home");
         let root = home.join(".distill");
         let legacy = temp.path().join("legacy");
-        crate::services::distill_root::ensure_root_layout(&root).unwrap();
+        crate::services::flock_root::ensure_root_layout(&root).unwrap();
         fs::create_dir_all(home.join(".agents/agents")).unwrap();
         fs::write(home.join(".agents/agents/worker.md"), "old").unwrap();
         fs::write(home.join(".agents/agents/scout.md"), "old scout").unwrap();

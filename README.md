@@ -149,7 +149,7 @@ short list:
 | [Provider accounts](docs/provider-accounts.md) | Connecting the harnesses, usage limits, and automatic account switching |
 | [Waves: the conductor's contract](LAWS/WAVES.md) | How plans, reports, and verdicts work |
 | [Operating benchmarks and learned routing](docs/benchmark-operations.md) | Measuring, certifying, and routing |
-| [Data storage](docs/distill-root-layout.md) | What lives under `~/.distill` |
+| [Data storage](docs/flock-root-layout.md) | What lives in the Flock folder (`~/.flock`, or `~/.distill` on an install upgraded from Distill) |
 | [Contributor guide](AGENTS.md) | Working rules, code map, and the validation gate |
 
 ## Project status
@@ -160,11 +160,18 @@ short list:
 - **Windows only.** The host is a Tauri 2 app with a Rust agent host and a React
   renderer, in English and Spanish. Benchmarks evaluate inside a WSL Linux
   sandbox.
-- **Still called Distill inside.** Flock grew out of a project named Distill.
-  The window title, the `distillctl` and `distill-monitor` tools, the
-  `~/.distill` data root, and the `distill-*` protocol blocks still carry that
-  name while the code base is renamed. The guides say "Distill" wherever they
-  describe the current build literally.
+- **Renamed from Distill.** Flock grew out of a project named Distill. The
+  app, its `flockctl` and `flock-monitor` tools, its `com.levocat.flock`
+  identifier, its bundled skills and its default data folder (`~/.flock`) now
+  carry the Flock name. An install upgraded from Distill keeps its `~/.distill`
+  folder, adopted in place, and `distillctl` and `distill-monitor` still work
+  as aliases. What stays Distill on purpose: the `distill-wave`,
+  `distill-report`, `distill-verdict`, `distill-memory` and `distill-recall`
+  protocol fences, the `_meta.distill` event metadata, the persisted
+  queued-message keys, the `"distill"` lifecycle value and protocol client
+  names, each project's `.distill/` folder, flock-monitor's on-disk state and
+  the benchmark sandbox. The [note on names](docs/README.md#a-note-on-names)
+  has the full list.
 
 ## Contributing
 

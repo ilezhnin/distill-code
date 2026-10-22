@@ -1,10 +1,9 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 
-export const TERMINAL_FALLBACK_CWD_STORAGE_KEY =
-  "distill:terminal-fallback-cwd";
+export const TERMINAL_FALLBACK_CWD_STORAGE_KEY = "flock:terminal-fallback-cwd";
 const TERMINAL_FALLBACK_CWD_CHANGED_EVENT =
-  "distill:terminal-fallback-cwd-changed";
+  "flock:terminal-fallback-cwd-changed";
 
 function trimValue(value: string | null | undefined): string | null {
   const trimmed = value?.trim();

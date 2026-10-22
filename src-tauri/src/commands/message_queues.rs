@@ -7,7 +7,7 @@ const MESSAGE_QUEUES_FILENAME: &str = "message-queues.json";
 static MESSAGE_QUEUES_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn message_queues_path(app: &AppHandle) -> Result<PathBuf, String> {
-    crate::services::distill_root::app_root(app)
+    crate::services::flock_root::app_root(app)
         .map(|dir| dir.join("state").join(MESSAGE_QUEUES_FILENAME))
 }
 
@@ -21,7 +21,7 @@ pub async fn load_message_queues(app: AppHandle) -> Result<Option<String>, Strin
         .wait_until_ready()
         .await;
     let path = message_queues_path(&app)?;
-    let root = crate::services::distill_root::app_root(&app)?;
+    let root = crate::services::flock_root::app_root(&app)?;
     let home = dirs::home_dir();
     tokio::task::spawn_blocking(move || read_message_queues_at(&path, home.as_deref(), &root))
         .await
@@ -29,7 +29,7 @@ pub async fn load_message_queues(app: AppHandle) -> Result<Option<String>, Strin
 }
 
 /// The persisted queues as the renderer gets them. A message queued before
-/// the agents moved into the Distill root names its persona by its old path
+/// the agents moved into the Flock root names its persona by its old path
 /// (`~/.agents/agents/<file>`); it is handed over naming the root's copy of
 /// that agent, so it still sends with it. A string rewrite only: the old
 /// folder is never opened, and the file changes with the renderer's next
@@ -136,7 +136,7 @@ fn persist_message_queues_at_path(path: &Path, serialized: Option<&str>) -> Resu
     fs::create_dir_all(parent)
         .map_err(|error| format!("Failed to create message queue directory: {error}"))?;
     let pending_path = path.with_extension("json.pending");
-    super::distill_store::write_file_synced(&pending_path, serialized.as_bytes())
+    super::flock_store::write_file_synced(&pending_path, serialized.as_bytes())
         .map_err(|error| format!("Failed to write message queues: {error}"))?;
     fs::rename(&pending_path, path)
         .map_err(|error| format!("Failed to commit message queues: {error}"))

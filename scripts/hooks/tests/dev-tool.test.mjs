@@ -13,7 +13,7 @@ const BASE_PATH = "/usr/bin:/bin";
 const tempDirs = [];
 
 async function tempDir() {
-  const path = await mkdtemp(join(tmpdir(), "distill-dev-tool-test-"));
+  const path = await mkdtemp(join(tmpdir(), "flock-dev-tool-test-"));
   tempDirs.push(path);
   return path;
 }
@@ -89,23 +89,21 @@ describe("dev-tool.sh", { skip: process.platform === "win32" }, () => {
   });
 
   it("blocks a missing tool on a developer machine too", () => {
-    const result = runLauncher(["distill-missing-test-tool", "lint"]);
+    const result = runLauncher(["flock-missing-test-tool", "lint"]);
 
     assert.equal(result.status, 127);
-    assert.ok(
-      result.stderr.includes("distill-missing-test-tool was not found"),
-    );
+    assert.ok(result.stderr.includes("flock-missing-test-tool was not found"));
     assert.ok(result.stderr.includes("Refusing to skip"));
     assert.equal(result.stdout, "");
   });
 
   it("still fails hard on a missing tool where the environment is built, not chosen", () => {
-    for (const env of [{ CI: "true" }, { DISTILL_REQUIRE_DEV_TOOLS: "1" }]) {
-      const result = runLauncher(["distill-missing-test-tool", "fmt"], env);
+    for (const env of [{ CI: "true" }, { FLOCK_REQUIRE_DEV_TOOLS: "1" }]) {
+      const result = runLauncher(["flock-missing-test-tool", "fmt"], env);
 
       assert.equal(result.status, 127);
       assert.ok(
-        result.stderr.includes("distill-missing-test-tool was not found"),
+        result.stderr.includes("flock-missing-test-tool was not found"),
       );
       assert.ok(result.stderr.includes("Refusing to skip"));
     }
@@ -128,7 +126,7 @@ describe("dev-tool.cmd", { skip: process.platform !== "win32" }, () => {
     const bin = join(await tempDir(), "bin with spaces");
     await mkdir(bin);
     await writeFile(
-      join(bin, "distill-test-tool.cmd"),
+      join(bin, "flock-test-tool.cmd"),
       "@echo off\r\necho args=%*\r\nexit /b 23\r\n",
     );
     const env = Object.fromEntries(
@@ -142,7 +140,7 @@ describe("dev-tool.cmd", { skip: process.platform !== "win32" }, () => {
       [
         "/d",
         "/c",
-        "scripts\\hooks\\dev-tool.cmd distill-test-tool lint -- --strict",
+        "scripts\\hooks\\dev-tool.cmd flock-test-tool lint -- --strict",
       ],
       { cwd: repo, encoding: "utf8", env },
     );
@@ -153,7 +151,7 @@ describe("dev-tool.cmd", { skip: process.platform !== "win32" }, () => {
   it("blocks a missing tool without requiring a CI environment", () => {
     const result = spawnSync(
       process.env.ComSpec ?? "cmd.exe",
-      ["/d", "/c", "scripts\\hooks\\dev-tool.cmd distill-missing-test-tool"],
+      ["/d", "/c", "scripts\\hooks\\dev-tool.cmd flock-missing-test-tool"],
       { cwd: repo, encoding: "utf8", env: { ...process.env, CI: "" } },
     );
     assert.equal(result.status, 127, result.stderr);

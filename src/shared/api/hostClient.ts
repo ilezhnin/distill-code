@@ -27,7 +27,7 @@ import type {
   UpdateSourceRequest,
 } from "./hostTypes";
 
-const EXT_PREFIX = "_distill/";
+const EXT_PREFIX = "_flock/";
 
 type Params = object;
 

@@ -25,11 +25,11 @@ use crate::services::credential_lease;
 use futures_util::future::BoxFuture;
 
 /// Why a test waits while its account drains for a renewal.
-pub(crate) const APP_SIGN_IN_DRAIN: &str = "the Distill sign-in of this account renews once the tests running on it finish; this test starts then";
+pub(crate) const APP_SIGN_IN_DRAIN: &str = "the Flock sign-in of this account renews once the tests running on it finish; this test starts then";
 
 /// Why a test waits while a chat or CLI of its account keeps its sign-in
 /// from being renewed.
-pub(crate) const APP_SIGN_IN_HELD: &str = "the Distill sign-in this test needs is renewed once the chats and CLIs running on that account stop; this test starts then";
+pub(crate) const APP_SIGN_IN_HELD: &str = "the Flock sign-in this test needs is renewed once the chats and CLIs running on that account stop; this test starts then";
 
 const APP_SIGN_IN_CHANGING: &str =
     "the account's sign-in is being updated; this test waits for the update to finish";
@@ -49,7 +49,7 @@ const RETRY_AFTER_FAILURE_MS: i64 = 15 * 60_000;
 /// Why a test waits when the grant its lease would come from no longer lasts
 /// for it at the start: its next try renews the grant first.
 pub(crate) const APP_SIGN_IN_SHORT: &str =
-    "the Distill sign-in this test runs on is renewed before it starts";
+    "the Flock sign-in this test runs on is renewed before it starts";
 
 pub(crate) const KEEPALIVE_LEAD_MS: i64 = 30 * 60_000;
 
@@ -146,7 +146,7 @@ pub(super) async fn ensure(
         if others > 0 {
             renewals.settle(key);
             log::info!(
-                "[agent-host] the Distill {} sign-in of {key} renews once its {others} chat or CLI process(es) stop",
+                "[agent-host] the Flock {} sign-in of {key} renews once its {others} chat or CLI process(es) stop",
                 provider.key()
             );
             return Err(format!("sign_in_wait: {APP_SIGN_IN_HELD}"));
@@ -168,7 +168,7 @@ pub(super) async fn ensure(
         }
     }
     log::info!(
-        "[agent-host] renewing the Distill {} sign-in of {key}{}",
+        "[agent-host] renewing the Flock {} sign-in of {key}{}",
         provider.key(),
         if natural { " (in its own window)" } else { "" }
     );
@@ -201,7 +201,7 @@ pub(super) async fn ensure(
     }
     io.renewed().await;
     log::info!(
-        "[agent-host] Distill {} sign-in of {key} renewed",
+        "[agent-host] Flock {} sign-in of {key} renewed",
         provider.key()
     );
     if !credential_lease::covers(provider, after, until_ms) {
@@ -222,7 +222,7 @@ fn failed(
     error: &str,
 ) -> String {
     let message = format!(
-        "capability_missing: The Distill {} sign-in was not renewed ({error}); the grant is kept. If it stays refused, sign in again in Settings > AI providers",
+        "capability_missing: The Flock {} sign-in was not renewed ({error}); the grant is kept. If it stays refused, sign in again in Settings > AI providers",
         provider.key()
     );
     if renewals.fail(key, expiry, now, &message) {

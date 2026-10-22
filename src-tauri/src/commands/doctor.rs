@@ -57,7 +57,7 @@ pub struct AgentVersionInfo {
     /// `FixType::UpdateMain` or `FixType::UpdateBridge`, matching the slot this
     /// readout occupies. Always paired with `update_command`.
     pub update_fix_type: Option<FixType>,
-    /// Whether this binary resolves from Distill's managed ACP tools dir rather
+    /// Whether this binary resolves from Flock's managed ACP tools dir rather
     /// than a user install. Stamped by the doctor
     /// crate alongside `install_source == Bundled` when the caller supplies
     /// `RunChecksOptions::bundled_tools_dir`.
@@ -470,7 +470,7 @@ pub(crate) fn provider_supports_logout(provider_id: &str) -> bool {
 }
 
 /// Provider-wide sign-out is only available to single-account integrations.
-/// Codex and Claude use the selected Distill account's sign-out command.
+/// Codex and Claude use the selected Flock account's sign-out command.
 pub(crate) fn provider_logout_command(provider_id: &str) -> Option<&'static str> {
     match provider_id {
         "grok-acp" => Some("grok logout"),
@@ -625,7 +625,7 @@ fn build_local_result(
     }
 }
 
-/// Disk states of the Distill-managed Node.js runtime the check reports on.
+/// Disk states of the Flock-managed Node.js runtime the check reports on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManagedNodeRuntimeState {
     /// The pinned version is installed and answers the readiness probe.
@@ -638,10 +638,10 @@ enum ManagedNodeRuntimeState {
     Missing,
 }
 
-/// Report the state of the Distill-managed Node.js runtime that npm-installed
+/// Report the state of the Flock-managed Node.js runtime that npm-installed
 /// agent tools run on, with a native fix that (re)installs the pinned
 /// version. Silent when there is nothing to report: an unsupported target,
-/// or a runtime that was never installed and no Distill-installed npm tools
+/// or a runtime that was never installed and no Flock-installed npm tools
 /// that would need it.
 async fn run_node_runtime_check(
     managed_node_root: Option<PathBuf>,
@@ -670,7 +670,7 @@ async fn run_node_runtime_check(
     build_managed_node_runtime_check(state, &install_dir, &npm_tools)
 }
 
-/// Names of the bin shims npm wrote into the Distill-private prefix — the tools
+/// Names of the bin shims npm wrote into the Flock-private prefix — the tools
 /// that need the managed runtime to run at all.
 fn installed_npm_tool_names(bin_dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(bin_dir) else {
@@ -694,17 +694,17 @@ fn build_managed_node_runtime_check(
     let (status, message) = match state {
         ManagedNodeRuntimeState::Ready => (
             CheckStatus::Pass,
-            format!("Distill-managed Node.js {version} is installed"),
+            format!("Flock-managed Node.js {version} is installed"),
         ),
         ManagedNodeRuntimeState::Broken => (
             CheckStatus::Warn,
-            format!("Distill-managed Node.js {version} is damaged; run the fix to reinstall it"),
+            format!("Flock-managed Node.js {version} is damaged; run the fix to reinstall it"),
         ),
         ManagedNodeRuntimeState::Missing if npm_tools.is_empty() => return None,
         ManagedNodeRuntimeState::Missing => (
             CheckStatus::Warn,
             format!(
-                "Distill-managed Node.js {version} is not installed; Distill-installed agent tools require it"
+                "Flock-managed Node.js {version} is not installed; Flock-installed agent tools require it"
             ),
         ),
     };
@@ -715,15 +715,15 @@ fn build_managed_node_runtime_check(
         ManagedNodeRuntimeState::Missing => "missing",
     };
     let mut detail = vec![
-        "checked: Distill-managed Node.js runtime".to_string(),
+        "checked: Flock-managed Node.js runtime".to_string(),
         format!("pinned version: {version}"),
         format!("install dir: {}", install_dir.display()),
         format!("state: {state_label}"),
     ];
     if npm_tools.is_empty() {
-        detail.push("Distill-installed npm tools: none".to_string());
+        detail.push("Flock-installed npm tools: none".to_string());
     } else {
-        detail.push("Distill-installed npm tools:".to_string());
+        detail.push("Flock-installed npm tools:".to_string());
         detail.extend(npm_tools.iter().map(|name| format!("- {name}")));
     }
 
@@ -748,7 +748,7 @@ fn build_managed_node_runtime_check(
         // confirmation dialog displays, not a shell command.
         check.fix_type = Some(FixType::Command);
         check.fix_command = Some(format!(
-            "download and install Node.js {version} into Distill's app data"
+            "download and install Node.js {version} into Flock's app data"
         ));
     }
     Some(check)
@@ -832,7 +832,7 @@ fn managed_bridge_probe(
 }
 
 /// The upstream doctor resolver joins bare executable names onto PATH entries.
-/// Windows does not apply PATHEXT to that manual join, so Distill's intentional
+/// Windows does not apply PATHEXT to that manual join, so Flock's intentional
 /// `<binary>.cmd` shims are invisible there. Re-probe Windows bridge identities
 /// from the exact managed or developer override directory and repair those results;
 /// other checks and platforms remain upstream-owned.
@@ -926,7 +926,7 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
         });
         check.bridge = None;
         check.raw_output = Some(format!(
-            "# Distill Windows managed bridge repair\npath: {}\nprobe: {}\n{}",
+            "# Flock Windows managed bridge repair\npath: {}\nprobe: {}\n{}",
             shim_path.display(),
             probe_label,
             probe_output
@@ -1017,7 +1017,7 @@ async fn windows_override_system_checks(env_vars: &[(String, String)]) -> Vec<do
     })
 }
 
-/// Account authorization belongs to Distill's registry, independently of any
+/// Account authorization belongs to Flock's registry, independently of any
 /// login discovered by the upstream CLI diagnostics.
 pub(crate) fn apply_managed_account_checks(app: &AppHandle, checks: &mut [doctor::DoctorCheck]) {
     use crate::services::provider_accounts;
@@ -1116,7 +1116,7 @@ async fn run_doctor_impl(
                 env: None,
                 // The crate labels binaries resolving from this dir as bundled
                 // (install source + readout flag) and suppresses registry
-                // install/update fixes for them — Distill installs and upgrades these
+                // install/update fixes for them — Flock installs and upgrades these
                 // bridges itself, so no manual update nag is shown.
                 bundled_tools_dir: bundled_tools_dir.clone(),
             }
@@ -1203,7 +1203,7 @@ fn doctor_timeout_report(timeout_duration: Duration) -> DoctorReport {
             path: None,
             bridge_path: None,
             raw_output: Some(format!(
-                "checked: app-side doctor timeout\ntimeout_seconds: {}\nmessage: Distill stopped waiting for Doctor checks so the page could render. The upstream doctor crate may still have an unbounded subprocess running.",
+                "checked: app-side doctor timeout\ntimeout_seconds: {}\nmessage: Flock stopped waiting for Doctor checks so the page could render. The upstream doctor crate may still have an unbounded subprocess running.",
                 timeout_duration.as_secs()
             )),
             auth_status: None,

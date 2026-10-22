@@ -1,5 +1,5 @@
-import { isDesktopRuntime } from "@/shared/api/distillStore";
-import { distillDocument } from "@/shared/lib/distillDocument";
+import { isDesktopRuntime } from "@/shared/api/flockStore";
+import { flockDocument } from "@/shared/lib/flockDocument";
 
 import {
   isConductorGraphHydrating,
@@ -168,11 +168,11 @@ export function parseRunJournalEvents(raw: unknown): RunEvent[] {
 function journalFor(waveId: string): Journal {
   const existing = journals.get(waveId);
   if (existing) return existing;
-  const document = distillDocument<RunEvent[]>({
+  const document = flockDocument<RunEvent[]>({
     path: runJournalPath(waveId),
     // No browser copy ever existed for these, and inventing one would put a
     // per-wave key back into the storage this release is emptying.
-    legacyStorageKey: `distill:run-journal:${waveId}`,
+    legacyStorageKey: `flock:run-journal:${waveId}`,
     parse: parseRunJournalEvents,
     serialize: (events) => ({ version: 1, waveId, events }),
   });

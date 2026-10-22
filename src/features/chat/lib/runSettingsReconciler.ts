@@ -30,7 +30,7 @@ import {
  * This is mandatory, not defensive. No bridge preserves the operator's choice
  * across a model change: Claude LOSES effort entirely once a session passes
  * through a model without one, codex silently clamps to the target model's
- * default, and grok keeps effort per model. Distill re-applying intent is the
+ * default, and grok keeps effort per model. Flock re-applying intent is the
  * only thing that makes a chosen effort survive a trip through Haiku.
  *
  * The two rules that make it safe to run on every snapshot:

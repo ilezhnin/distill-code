@@ -16,7 +16,7 @@ import {
   CONDUCTOR_WAVES_DOCUMENT,
   conductorDocument,
 } from "./conductorDocuments";
-import type { WaveStepBudget } from "./distillWave";
+import type { WaveStepBudget } from "./flockWave";
 import { notePersistFailure } from "./persistHealth";
 import { conductorProcessStartedAt } from "./processClock";
 import {
@@ -31,7 +31,7 @@ import {
 import type { CompletedWaveStepReport } from "./wavePrompts";
 import type { StructuredReport } from "./types";
 
-export const CONDUCTOR_WAVES_STORAGE_KEY = "distill:conductor-waves";
+export const CONDUCTOR_WAVES_STORAGE_KEY = "flock:conductor-waves";
 
 /**
  * Cap on remembered plan messages. Tombstones are tiny and only grow one entry

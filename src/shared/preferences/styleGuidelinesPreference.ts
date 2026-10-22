@@ -2,8 +2,8 @@ import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useCallback, useSyncExternalStore } from "react";
 import { isRecord } from "@/shared/lib/isRecord";
 
-export const STYLE_GUIDELINES_STORAGE_KEY = "distill:style-guidelines";
-const STYLE_GUIDELINES_CHANGE_EVENT = "distill:style-guidelines-change";
+export const STYLE_GUIDELINES_STORAGE_KEY = "flock:style-guidelines";
+const STYLE_GUIDELINES_CHANGE_EVENT = "flock:style-guidelines-change";
 
 export const DEFAULT_STYLE_GUIDELINES_PROMPT = `Response style:
 - Be concise, direct, and friendly; avoid unnecessary detail unless the user asks for it.

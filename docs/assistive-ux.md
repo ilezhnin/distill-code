@@ -6,12 +6,12 @@ as shipped behavior.
 
 ## Summary
 
-Assistive UX is a product and architecture pattern for moments where Distill helps
+Assistive UX is a product and architecture pattern for moments where Flock helps
 users shape the app around their work. These moments can teach that a control
 exists, suggest a better default, or change a setting after the app has strong
 evidence that the user wants that behavior.
 
-The goal is not to add more tips. The goal is to make Distill attentive without
+The goal is not to add more tips. The goal is to make Flock attentive without
 being intrusive:
 
 ```text
@@ -139,7 +139,7 @@ Assistive UX state should be stored separately from feature settings.
 For renderer-local behavior, use a single local storage umbrella:
 
 ```text
-distill:assistive-ux
+flock:assistive-ux
 ```
 
 The stored state should be versioned, resilient to invalid data, and safe to

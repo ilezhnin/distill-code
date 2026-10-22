@@ -2,7 +2,7 @@
 //!
 //! This mode is intentionally gated twice: the binary must include the
 //! `app-test-driver` feature and the launcher must explicitly set
-//! `DISTILL_E2E_MODE=1`. Only then is persistent state redirected into the run
+//! `FLOCK_E2E_MODE=1`. Only then is persistent state redirected into the run
 //! root and the driver socket bound on a random port behind a required token.
 //!
 //! A feature-only developer build enables its normal-profile driver only when
@@ -12,12 +12,12 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
-pub(crate) const MODE_ENV: &str = "DISTILL_E2E_MODE";
-pub(crate) const RUN_ID_ENV: &str = "DISTILL_E2E_RUN_ID";
-pub(crate) const RUN_ROOT_ENV: &str = "DISTILL_E2E_RUN_ROOT";
+pub(crate) const MODE_ENV: &str = "FLOCK_E2E_MODE";
+pub(crate) const RUN_ID_ENV: &str = "FLOCK_E2E_RUN_ID";
+pub(crate) const RUN_ROOT_ENV: &str = "FLOCK_E2E_RUN_ROOT";
 pub(crate) const DRIVER_TOKEN_ENV: &str = "APP_TEST_DRIVER_TOKEN";
-pub(crate) const RUNTIME_CONFIG_ENV: &str = "DISTILL_E2E_RUNTIME_CONFIG";
-pub(crate) const APP_IDENTIFIER_PREFIX: &str = "com.levocat.distill.e2e.";
+pub(crate) const RUNTIME_CONFIG_ENV: &str = "FLOCK_E2E_RUNTIME_CONFIG";
+pub(crate) const APP_IDENTIFIER_PREFIX: &str = "com.levocat.flock.e2e.";
 
 pub(crate) const BB_HOME_ENV: &str = "BB_HOME";
 pub(crate) const BB_AUTH_STORAGE_ENV: &str = "BB_AUTH_STORAGE";
@@ -122,11 +122,14 @@ impl E2eMode {
     }
 
     pub(crate) fn agents_root(&self) -> PathBuf {
-        self.distill_root()
+        self.flock_root()
     }
 
-    pub(crate) fn distill_root(&self) -> PathBuf {
-        self.agents_home.join(".distill")
+    /// The run's own Flock root, under the run's home. A fresh run never had
+    /// Distill data, so it gets the folder a fresh install gets.
+    pub(crate) fn flock_root(&self) -> PathBuf {
+        self.agents_home
+            .join(crate::services::flock_root::DEFAULT_ROOT_DIR_NAME)
     }
 
     pub(crate) fn agents_dir(&self) -> PathBuf {
@@ -259,21 +262,13 @@ mod tests {
     use std::ffi::OsString;
 
     const RUN_ID: &str = "run-123";
-    const IDENTIFIER: &str = "com.levocat.distill.e2e.run-123";
+    const IDENTIFIER: &str = "com.levocat.flock.e2e.run-123";
 
     #[test]
     fn feature_only_and_runtime_only_do_not_enable_e2e_mode() {
         assert_eq!(
-            E2eMode::from_values(
-                true,
-                None,
-                None,
-                None,
-                None,
-                None,
-                "com.levocat.distill.dev"
-            )
-            .unwrap(),
+            E2eMode::from_values(true, None, None, None, None, None, "com.levocat.flock.dev")
+                .unwrap(),
             None
         );
         assert!(E2eMode::from_values(
@@ -292,12 +287,12 @@ mod tests {
     #[test]
     fn rejects_production_dev_and_malformed_identifiers() {
         for identifier in [
-            "com.levocat.distill",
-            "com.levocat.distill.dev",
-            "com.levocat.distill.e2e.",
-            "com.levocat.distill.e2e.run.with.dot",
-            "com.levocat.distill.e2e.run_with_underscore",
-            "com.levocat.distill.e2e.run/escape",
+            "com.levocat.flock",
+            "com.levocat.flock.dev",
+            "com.levocat.flock.e2e.",
+            "com.levocat.flock.e2e.run.with.dot",
+            "com.levocat.flock.e2e.run_with_underscore",
+            "com.levocat.flock.e2e.run/escape",
         ] {
             assert!(E2eMode::from_values(
                 true,
@@ -341,11 +336,11 @@ mod tests {
         let _guard = crate::test_support::env_lock().lock().expect("env lock");
         let temp = tempfile::tempdir().unwrap();
         let run_root = temp.path().join(RUN_ID);
-        let normal_distill_root = temp.path().join("com.levocat.distill.dev");
+        let normal_flock_root = temp.path().join("com.levocat.flock.dev");
         let normal_builderbot_root = temp.path().join("normal-builderbot");
-        std::fs::create_dir_all(&normal_distill_root).unwrap();
+        std::fs::create_dir_all(&normal_flock_root).unwrap();
         std::fs::create_dir_all(&normal_builderbot_root).unwrap();
-        std::fs::write(normal_distill_root.join("sentinel"), b"distill").unwrap();
+        std::fs::write(normal_flock_root.join("sentinel"), b"flock").unwrap();
         std::fs::write(normal_builderbot_root.join("sentinel"), b"builderbot").unwrap();
 
         let saved = save_env([BB_HOME_ENV, BB_AUTH_STORAGE_ENV, BB_AUTH_STORAGE_FILE_ENV]);
@@ -373,20 +368,36 @@ mod tests {
         );
         assert_eq!(std::env::var_os(BB_AUTH_STORAGE_FILE_ENV), None);
         assert_eq!(
-            std::fs::read(normal_distill_root.join("sentinel")).unwrap(),
-            b"distill"
+            std::fs::read(normal_flock_root.join("sentinel")).unwrap(),
+            b"flock"
         );
         assert_eq!(
             std::fs::read(normal_builderbot_root.join("sentinel")).unwrap(),
             b"builderbot"
         );
-        assert_eq!(std::fs::read_dir(&normal_distill_root).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&normal_flock_root).unwrap().count(), 1);
         assert_eq!(
             std::fs::read_dir(&normal_builderbot_root).unwrap().count(),
             1
         );
 
         restore_env(saved);
+    }
+
+    /// Everything the run owns sits under its root: the Flock root is the
+    /// fresh-install folder inside the run's home, never `~/.distill`.
+    #[test]
+    fn the_isolated_flock_root_is_the_fresh_install_folder_under_the_run_home() {
+        let run_root = absolute_test_base().join(RUN_ID);
+        let mode = enabled_mode(run_root.clone());
+
+        assert_eq!(
+            mode.flock_root(),
+            run_root.join(AGENTS_DIR_NAME).join(".flock")
+        );
+        assert_eq!(mode.agents_dir(), mode.flock_root().join("agents"));
+        assert_eq!(mode.skills_dir(), mode.flock_root().join("skills"));
+        assert!(mode.flock_root().starts_with(&run_root));
     }
 
     fn enabled_mode(run_root: PathBuf) -> E2eMode {
@@ -410,11 +421,11 @@ mod tests {
     fn absolute_test_base() -> PathBuf {
         #[cfg(windows)]
         {
-            PathBuf::from(r"C:\distill-e2e-mode-tests")
+            PathBuf::from(r"C:\flock-e2e-mode-tests")
         }
         #[cfg(not(windows))]
         {
-            PathBuf::from("/tmp/distill-e2e-mode-tests")
+            PathBuf::from("/tmp/flock-e2e-mode-tests")
         }
     }
 

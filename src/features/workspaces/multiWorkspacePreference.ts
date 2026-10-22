@@ -1,7 +1,7 @@
 import { createBooleanLocalStoragePreference } from "@/shared/preferences/createBooleanLocalStoragePreference";
 
-export const MULTI_WORKSPACE_STORAGE_KEY = "distill:multi-workspace-enabled";
-const MULTI_WORKSPACE_CHANGED_EVENT = "distill:multi-workspace-changed";
+export const MULTI_WORKSPACE_STORAGE_KEY = "flock:multi-workspace-enabled";
+const MULTI_WORKSPACE_CHANGED_EVENT = "flock:multi-workspace-changed";
 
 const multiWorkspacePreference = createBooleanLocalStoragePreference({
   storageKey: MULTI_WORKSPACE_STORAGE_KEY,

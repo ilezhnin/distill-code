@@ -353,13 +353,13 @@ describe("ChatInput", () => {
         sendOptions: {
           acpPromptMetadata: {
             origin: "distillctl_cross_session",
-            distillSenderLabel: "distill-monitor",
+            distillSenderLabel: "flock-monitor",
             distillDeliveryId: "event-1",
             threadId: "thread-1",
           },
           userMessageMetadata: {
             origin: "distillctl_cross_session",
-            distillSenderLabel: "distill-monitor",
+            distillSenderLabel: "flock-monitor",
             distillDeliveryId: "event-1",
           },
         },

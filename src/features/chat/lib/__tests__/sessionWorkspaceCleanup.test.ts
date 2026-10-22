@@ -159,7 +159,7 @@ describe("session workspace cleanup", () => {
     });
   });
 
-  it("plans only Distill-managed cleanup targets", () => {
+  it("plans only Flock-managed cleanup targets", () => {
     const managed = makeManagedWorktree();
     const selected: WorkspaceAttachment = {
       ...managed,

@@ -25,7 +25,7 @@
     },
     "theme": {
       "darkLabel": "Dark",
-      "description": "Choose how Distill looks: light, dark, or matched to your system.",
+      "description": "Choose how Flock looks: light, dark, or matched to your system.",
       "label": "Theme",
       "lightLabel": "Light",
       "systemDescription": "Matches your device.",
@@ -44,7 +44,7 @@
       "label": "Archive inactive chats",
       "description": "Automatically archive chats after this much time without a message. Chats pinned to Home are never archived automatically.",
       "confirmTitle": "Turn on automatic archiving?",
-      "confirmDescription": "Distill will archive unpinned chats {{duration}} without another prompt. You can restore them from Archive or turn this off at any time.",
+      "confirmDescription": "Flock will archive unpinned chats {{duration}} without another prompt. You can restore them from Archive or turn this off at any time.",
       "confirmAction": "Turn on",
       "options": {
         "never": "Never",
@@ -67,14 +67,14 @@
   "connections": {
     "askAgent": "Add connection",
     "empty": {
-      "description": "Add an MCP server to connect Distill to the apps and services you use.",
+      "description": "Add an MCP server to connect Flock to the apps and services you use.",
       "title": "No connections yet"
     },
     "localError": {
       "title": "Couldn’t load your local MCPs",
       "description": "Try again in a moment.",
       "partialTitle": "Some local MCPs may be missing",
-      "partialDescription": "Distill couldn’t read every local configuration source.",
+      "partialDescription": "Flock couldn’t read every local configuration source.",
       "retry": "Try again",
       "retrying": "Trying…"
     },
@@ -94,18 +94,18 @@
   },
   "doctor": {
     "agents": "Agents",
-    "bundledPath": "Managed by Distill",
+    "bundledPath": "Managed by Flock",
     "copied": "Copied",
     "copyDetails": "Copy report",
     "empty": "Couldn't load checks. Try again.",
     "longRunning": "Still running after {{seconds}}s. We'll stop waiting after {{timeoutSeconds}}s if a check is stuck.",
     "open": "Open",
     "rerun": "Run again",
-    "rowDescription": "Run health checks on Distill, agents, and tools.",
+    "rowDescription": "Run health checks on Flock, agents, and tools.",
     "rowStatus_one": "{{count}} check needs attention",
     "rowStatus_other": "{{count}} checks need attention",
     "runFix": "Run fix command?",
-    "runFixDescription": "Distill will run:",
+    "runFixDescription": "Flock will run:",
     "running": "Running checks...",
     "title": "Doctor",
     "tools": "Tools",
@@ -122,7 +122,7 @@
       "source": {
         "asdf": "asdf",
         "brew": "Homebrew",
-        "bundled": "Distill",
+        "bundled": "Flock",
         "cargo": "Cargo",
         "curlPipe": "native installer",
         "mise": "mise",
@@ -135,7 +135,7 @@
     }
   },
   "extensions": {
-    "description": "Connect Distill to apps, services, and built-in capabilities."
+    "description": "Connect Flock to apps, services, and built-in capabilities."
   },
   "general": {
     "artifactAutoOpen": {
@@ -160,13 +160,13 @@
       "label": "@ mention default"
     },
     "followUpBehavior": {
-      "description": "Queue follow-ups while Distill responds or steer the current run. Press Ctrl+Enter to do the opposite for one message.",
+      "description": "Queue follow-ups while Flock responds or steer the current run. Press Ctrl+Enter to do the opposite for one message.",
       "label": "Follow-up behavior",
       "queue": "Queue",
       "steer": "Steer"
     },
     "language": {
-      "description": "Sets the language Distill uses across menus, buttons, and messages.",
+      "description": "Sets the language Flock uses across menus, buttons, and messages.",
       "english": "English",
       "label": "Language",
       "spanish": "Spanish",
@@ -205,16 +205,16 @@
       "saveSuccess": "Terminal fallback folder updated."
     },
     "title": "General",
-    "distillFolder": {
-      "label": "Distill folder",
-      "description": "Settings, chat history, memory, agents, skills and artifacts live here. Each project's .distill folder holds its own app data and overrides.",
-      "chooseDialogTitle": "Choose the Distill folder",
+    "flockFolder": {
+      "label": "Flock folder",
+      "description": "Settings, chat history, memory, agents, skills and artifacts live here. New installs use ~/.flock; an install upgraded from Distill keeps its ~/.distill folder. Each project's .distill folder holds its own app data and overrides.",
+      "chooseDialogTitle": "Choose the Flock folder",
       "choose": "Change folder",
       "saved": "New folder saved",
-      "savedDescription": "Nothing was moved. Copy the old folder's contents across, then restart Distill.",
+      "savedDescription": "Nothing was moved. Copy the old folder's contents across, then restart Flock.",
       "saveError": "Couldn't use that folder",
       "restartRequired": "Takes effect after a restart.",
-      "forcedByEnvironment": "Set by DISTILL_ROOT for this run, so this setting is not in charge."
+      "forcedByEnvironment": "Set by FLOCK_ROOT (or its earlier name, DISTILL_ROOT) for this run, so this setting is not in charge."
     }
   },
   "memory": {
@@ -281,7 +281,7 @@
       "badNewsBird": "Very Excited",
       "beakYeah": "Excited",
       "paidInBread": "A Bit of Everything",
-      "politeHonk": "Distill",
+      "politeHonk": "Flock",
       "quickPeep": "Chime",
       "silent": "Silent",
       "twinkle": "Twinkle",
@@ -300,7 +300,7 @@
     "agents": {
       "applyUpdates": "Update",
       "collapseLabel": "Collapse {{name}} details",
-      "description": "Agent harnesses Distill can run chats on. Install or sign in to the ones you use.",
+      "description": "Agent harnesses Flock can run chats on. Install or sign in to the ones you use.",
       "errors": {
         "genericSetupFailure": "Setup hit a snag.",
         "installStart": "Couldn’t start installation",
@@ -321,7 +321,7 @@
       "progress": {
         "installedProvider": "{{name}} installed successfully.",
         "installing": "Installing {{name}}...",
-        "installingForDistill": "Installing {{name}} for Distill…",
+        "installingForFlock": "Installing {{name}} for Flock…",
         "preparingProvider": "Preparing the {{name}} installation…",
         "preparingRuntime": "Preparing the Node.js runtime...",
         "step": "Step {{step}} of {{total}}",
@@ -387,7 +387,7 @@
     "costUnavailable": "n/a",
     "dailyIntensity": "Daily intensity",
     "dailyIntensityDescription": "Recent chat and token activity across your agents.",
-    "description": "Distill stats plus token analytics across your agents and providers.",
+    "description": "Flock stats plus token analytics across your agents and providers.",
     "duration": {
       "daysHours": "{{days}}d {{hours}}h",
       "hoursMinutes": "{{hours}}h {{minutes}}m",
@@ -476,7 +476,7 @@
       "factsDescription": "Counts from waves that ran here, shown once a model has at least {{count}} observations. These same lines are given to the conductor as facts, never as advice.",
       "factStep": "{{model}} on \"{{role}}\" steps: {{completed}} of {{runs}} completed",
       "factConductor": "Waves planned on {{model}}: {{accepted}} of {{waves}} accepted",
-      "readOutage": "The conductor is off for this session: {{documents}} could not be read from the Distill folder. Waves are not started at all while that is true, so a plan in a conductor chat is ignored. Something was most likely holding the file at launch, such as an antivirus scan or a sync client.",
+      "readOutage": "The conductor is off for this session: {{documents}} could not be read from the Flock folder. Waves are not started at all while that is true, so a plan in a conductor chat is ignored. Something was most likely holding the file at launch, such as an antivirus scan or a sync client.",
       "readOutageRetry": "Try again",
       "readOutageRetrying": "Reading…",
       "readOutageRetryFailed": "Still could not read it. Close whatever is holding the file, or restart the app."
@@ -513,8 +513,8 @@
   "title": "Settings",
   "routing": {
     "title": "Automatic task selection",
-    "pageDescription": "Choose how Distill selects models for your chats and wave steps.",
-    "selectionDescription": "Certified selectors choose a provider, model and effort for each task. When no policy applies, Distill uses the category’s fallback order. Explicit model pins stay selected.",
+    "pageDescription": "Choose how Flock selects models for your chats and wave steps.",
+    "selectionDescription": "Certified selectors choose a provider, model and effort for each task. When no policy applies, Flock uses the category’s fallback order. Explicit model pins stay selected.",
     "fallbackSummary": "Using fallback preferences",
     "certifiedSummary": "Certified policies available for {{count}} of {{total}} categories",
     "categories": "Task categories",
@@ -535,7 +535,7 @@
     "waveThresholdDescription": "Prefer another available platform when this much of its allowance is spent. If all platforms are near their limits, an available fallback may still be used.",
     "chatThreshold": "Move your own chats off a platform at",
     "chatThresholdDescription": "You are in front of a chat and can react, so it may run closer to a limit than a wave step.",
-    "classesDescription": "Distill selects a provider, model and reasoning effort for each new task. Applicable certified policies take priority; otherwise saved fallback preferences apply. Explicit model pins are respected.",
+    "classesDescription": "Flock selects a provider, model and reasoning effort for each new task. Applicable certified policies take priority; otherwise saved fallback preferences apply. Explicit model pins are respected.",
     "classOverridden": "Custom fallback preferences saved.",
     "classes": {
       "code-implement": "Implementation",
@@ -801,7 +801,7 @@
     "checking": "Checking…",
     "configurations": "Configurations",
     "connectionDetails": "Connection details",
-    "managedSource": "Saved in Distill and available to compatible providers.",
+    "managedSource": "Saved in Flock and available to compatible providers.",
     "changesApply": "Configuration changes apply when a new agent session starts. Running chats keep their current connections.",
     "notCheckedDescription": "This connection has not been checked. Checking it starts the local server or contacts its remote endpoint.",
     "checkedAt": "Last checked: {{date}}",
@@ -814,11 +814,11 @@
     "emptyDescription": "Add a server using its URL, local command, or MCP configuration.",
     "actionFailed": "MCP action failed",
     "restartTitle": "Restart required",
-    "restartDescription": "The interface has updated, but the running app still uses an older backend. Restart Distill after rebuilding to use MCP management.",
+    "restartDescription": "The interface has updated, but the running app still uses an older backend. Restart Flock after rebuilding to use MCP management.",
     "addTitle": "Add an MCP server",
     "configureTitle": "Configure MCP server",
-    "addDescription": "Save a connection in Distill. Its server starts when you check the connection or use it in a chat.",
-    "nativeEditDescription": "Save settings in this provider’s configuration. Distill keeps a backup and preserves other entries.",
+    "addDescription": "Save a connection in Flock. Its server starts when you check the connection or use it in a chat.",
+    "nativeEditDescription": "Save settings in this provider’s configuration. Flock keeps a backup and preserves other entries.",
     "name": "Name",
     "namePlaceholder": "my-server",
     "description": "Description",
@@ -842,9 +842,9 @@
     "install": "Add server",
     "removing": "Removing…",
     "removeTitle": "Remove {{name}}?",
-    "removeDescription": "Remove this connection from Distill. The server package and external account are not deleted.",
+    "removeDescription": "Remove this connection from Flock. The server package and external account are not deleted.",
     "removeNativeDescription": "Remove this server’s definition from {{source}}. Other servers are preserved, and a configuration backup is kept.",
-    "duplicateName": "An MCP with this name already exists in Distill. Choose another name.",
+    "duplicateName": "An MCP with this name already exists in Flock. Choose another name.",
     "invalidName": "Use 1–128 letters, numbers, dots, underscores, or hyphens for the server name.",
     "commandRequired": "Enter a command for the local MCP server.",
     "invalidUrl": "Enter a valid HTTP or HTTPS server URL.",

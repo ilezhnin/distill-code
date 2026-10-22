@@ -4,7 +4,7 @@ const read = vi.hoisted(() => vi.fn());
 const update = vi.hoisted(() => vi.fn());
 const projectRead = vi.hoisted(() => vi.fn());
 const projectInit = vi.hoisted(() => vi.fn());
-vi.mock("@/shared/api/distillStore", () => ({ readDistillDocument: read }));
+vi.mock("@/shared/api/flockStore", () => ({ readFlockDocument: read }));
 vi.mock("@/shared/api/invokeWithStartupRetry", () => ({
   invokeWithStartupRetry: update,
 }));
@@ -57,7 +57,47 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Distill root settings", () => {
+describe("Flock root settings", () => {
+  it("names every browser-era preference key with the flock: prefix", async () => {
+    const settings = await import("./rootSettings");
+    const storage = settings.getPreferenceStorage();
+    const gooseNamed = new Map([
+      ["trusted-domains", "goose_trusted_domains"],
+      ["theme-mode", "goose-theme-mode"],
+      ["primary-color", "goose-primary-color"],
+      ["zoom-level", "goose-zoom-level"],
+    ]);
+    const keys = settings.PREFERENCE_KEYS.map((_, index) =>
+      storage?.key(index),
+    );
+    expect(keys).toEqual(
+      settings.PREFERENCE_KEYS.map(
+        (name) => gooseNamed.get(name) ?? `flock:${name}`,
+      ),
+    );
+    expect(storage?.key(settings.PREFERENCE_KEYS.length)).toBeNull();
+  });
+
+  it("adopts a preference the previous product left in the browser", async () => {
+    // main.tsx runs the legacy storage migration before this module loads,
+    // so the previous product's `<old>:locale` is read as `flock:locale`.
+    // The old name is spelled in halves so a rename sweep cannot rewrite it.
+    const previous = ["dis", "till"].join("");
+    localStorage.setItem(`${previous}:locale`, "es");
+    localStorage.setItem(`${previous}:sidebar:layout`, "unchanged");
+    const { migrateLegacyStorage } = await import(
+      "@/app/lib/legacyStorageMigration"
+    );
+    migrateLegacyStorage(localStorage);
+    const settings = await import("./rootSettings");
+    await settings.initializeRootSettings();
+    expect(disk).toEqual({ locale: "es" });
+    expect(settings.getPreferenceStorage()?.getItem("flock:locale")).toBe("es");
+    expect(localStorage.getItem("flock:locale")).toBeNull();
+    expect(localStorage.getItem(`${previous}:locale`)).toBeNull();
+    expect(localStorage.getItem("flock:sidebar:layout")).toBe("unchanged");
+  });
+
   it("keeps a write accepted while a stale disk refresh is in flight", async () => {
     const settings = await import("./rootSettings");
     await settings.initializeRootSettings();
@@ -70,20 +110,18 @@ describe("Distill root settings", () => {
     );
     const refresh = settings.refreshRootSettings();
     await vi.waitFor(() => expect(resolveRead).toBeDefined());
-    settings.getPreferenceStorage()?.setItem("distill:locale", "es");
+    settings.getPreferenceStorage()?.setItem("flock:locale", "es");
     await settings.flushRootSettings();
     resolveRead('{"locale":"en"}');
     await refresh;
-    expect(settings.getPreferenceStorage()?.getItem("distill:locale")).toBe(
-      "es",
-    );
+    expect(settings.getPreferenceStorage()?.getItem("flock:locale")).toBe("es");
     expect(disk.locale).toBe("es");
   });
   it("migrates browser preferences once, preserving disk values and UI state", async () => {
     disk = { locale: "es", custom: { retained: true } };
-    localStorage.setItem("distill:locale", "en");
-    localStorage.setItem("distill:notifications", '{"enabled":false}');
-    localStorage.setItem("distill:sidebar:layout", "unchanged");
+    localStorage.setItem("flock:locale", "en");
+    localStorage.setItem("flock:notifications", '{"enabled":false}');
+    localStorage.setItem("flock:sidebar:layout", "unchanged");
     const settings = await import("./rootSettings");
     await settings.initializeRootSettings();
     expect(disk).toEqual({
@@ -91,35 +129,33 @@ describe("Distill root settings", () => {
       custom: { retained: true },
       notifications: { enabled: false },
     });
-    expect(settings.getPreferenceStorage()?.getItem("distill:locale")).toBe(
-      "es",
-    );
-    expect(localStorage.getItem("distill:notifications")).toBeNull();
-    expect(localStorage.getItem("distill:sidebar:layout")).toBe("unchanged");
+    expect(settings.getPreferenceStorage()?.getItem("flock:locale")).toBe("es");
+    expect(localStorage.getItem("flock:notifications")).toBeNull();
+    expect(localStorage.getItem("flock:sidebar:layout")).toBe("unchanged");
     await settings.initializeRootSettings();
     expect(update).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the browser copy when migration fails and retries on the next start attempt", async () => {
-    localStorage.setItem("distill:locale", "es");
+    localStorage.setItem("flock:locale", "es");
     update.mockRejectedValueOnce(new Error("disk unavailable"));
     const settings = await import("./rootSettings");
     await expect(settings.initializeRootSettings()).rejects.toThrow(
       "disk unavailable",
     );
-    expect(localStorage.getItem("distill:locale")).toBe("es");
+    expect(localStorage.getItem("flock:locale")).toBe("es");
     await settings.initializeRootSettings();
     expect(disk.locale).toBe("es");
-    expect(localStorage.getItem("distill:locale")).toBeNull();
+    expect(localStorage.getItem("flock:locale")).toBeNull();
   });
 
   it("does not overwrite malformed operator settings", async () => {
-    localStorage.setItem("distill:locale", "es");
+    localStorage.setItem("flock:locale", "es");
     read.mockResolvedValueOnce("not JSON");
     const settings = await import("./rootSettings");
     await expect(settings.initializeRootSettings()).rejects.toThrow();
     expect(update).not.toHaveBeenCalled();
-    expect(localStorage.getItem("distill:locale")).toBe("es");
+    expect(localStorage.getItem("flock:locale")).toBe("es");
   });
 
   it("writes only changed keys and keeps an unrelated edit from another window", async () => {
@@ -128,10 +164,10 @@ describe("Distill root settings", () => {
     disk.locale = "es";
     settings
       .getPreferenceStorage()
-      ?.setItem("distill:notifications", '{"enabled":false}');
+      ?.setItem("flock:notifications", '{"enabled":false}');
     await settings.flushRootSettings();
     expect(disk).toEqual({ locale: "es", notifications: { enabled: false } });
-    expect(localStorage.getItem("distill:notifications")).toBeNull();
+    expect(localStorage.getItem("flock:notifications")).toBeNull();
   });
 
   it("retries failed writes without dropping earlier changed keys", async () => {
@@ -139,7 +175,7 @@ describe("Distill root settings", () => {
     const settings = await import("./rootSettings");
     await settings.initializeRootSettings();
     update.mockRejectedValue(new Error("offline"));
-    settings.getPreferenceStorage()?.setItem("distill:locale", "es");
+    settings.getPreferenceStorage()?.setItem("flock:locale", "es");
     await expect(settings.flushRootSettings()).rejects.toThrow("offline");
     update.mockImplementation(async (_command, { patch }) => {
       Object.assign(disk, patch);
@@ -148,7 +184,7 @@ describe("Distill root settings", () => {
     expect(disk).toEqual({ locale: "es" });
     settings
       .getPreferenceStorage()
-      ?.setItem("distill:notifications", '{"enabled":false}');
+      ?.setItem("flock:notifications", '{"enabled":false}');
     await settings.flushRootSettings();
     expect(disk).toEqual({ locale: "es", notifications: { enabled: false } });
   });
@@ -176,7 +212,7 @@ describe("Distill root settings", () => {
     const settings = await import("./rootSettings");
     await settings.initializeRootSettings();
     const storage = settings.getPreferenceStorage();
-    const key = "distill:chat-workspace-metadata";
+    const key = "flock:chat-workspace-metadata";
     const stringify = vi.spyOn(JSON, "stringify");
     const first = storage?.getItem(key);
     const second = storage?.getItem(key);

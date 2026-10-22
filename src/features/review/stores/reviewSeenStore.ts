@@ -1,7 +1,7 @@
 /**
  * When the operator last looked at what finished.
  *
- * One timestamp in a JSON document in the operator's Distill folder.
+ * One timestamp in a JSON document in the operator's Flock folder.
  * It must survive a reload, and nothing may break if it cannot be read. An old browser copy is migrated on first read, then removed.
  *
  * Marking seen is explicit — a button — rather than automatic on render.
@@ -19,13 +19,13 @@
 
 import { create } from "zustand";
 
-import { distillDocument } from "@/shared/lib/distillDocument";
+import { flockDocument } from "@/shared/lib/flockDocument";
 
-/** Path under the Distill root. */
+/** Path under the Flock root. */
 export const REVIEW_SEEN_DOCUMENT_PATH = "review-seen.json";
 
 /** Where this lived before the move; read once, then removed. */
-export const REVIEW_SEEN_STORAGE_KEY = "distill:review-seen";
+export const REVIEW_SEEN_STORAGE_KEY = "flock:review-seen";
 
 interface ReviewSeenState {
   lastSeenAt: number;
@@ -45,7 +45,7 @@ export function parseLastSeenAt(value: unknown): number {
   return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
 
-const document = distillDocument<number>({
+const document = flockDocument<number>({
   path: REVIEW_SEEN_DOCUMENT_PATH,
   legacyStorageKey: REVIEW_SEEN_STORAGE_KEY,
   parse: parseLastSeenAt,

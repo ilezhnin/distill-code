@@ -12,7 +12,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-DistillRepoRoot)
+Set-Location (Get-FlockRepoRoot)
 Update-SessionPathFromRegistry
 
 $script:Failures = 0
@@ -233,7 +233,7 @@ if ($Mode -eq "install") {
     # while every lane still failed with "pnpm is not available. Run 'just
     # bootstrap-windows install'".
     if (-not [string]::IsNullOrWhiteSpace((Get-CommandSource "node"))) {
-        # Distill fetches the version-pinned pnpm from public npmjs through
+        # Flock fetches the version-pinned pnpm from public npmjs through
         # Corepack, with a global npm install of the same pin as the fallback.
         if (-not (Install-PnpmForUser)) {
             Add-Warn "pnpm" "Could not put pnpm@$(Get-RequiredPnpmVersion) on PATH automatically."

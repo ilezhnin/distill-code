@@ -2,7 +2,7 @@
 
 This document describes the generic benchmark workflow. Private task plans,
 task content, qualification evidence and measurement reports are local data,
-stored outside the application repository under the configured Distill root.
+stored outside the application repository under the configured Flock root.
 Detailed working plans belong in `benchmark-tasks/documentation`. Do not append
 private task details or campaign results to this document.
 
@@ -41,13 +41,14 @@ as an unseen holdout merely because its latest file was deleted.
 The staged-file hook rejects private artifact directories and private artifact
 references in documentation. It is an accidental-disclosure check, not a semantic
 audit of arbitrary text. During history remediation, set the local Git option
-`distill.privateBenchmarkHistoryPending` to `true`: while older local tags and
+`flock.privateBenchmarkHistoryPending` to `true` (a value left under the former
+`distill.*` section is still read): while older local tags and
 branches still carry removed history, the pre-push hook refuses tags, deletions,
 history rewrites and unreviewed ancestry. By default, outgoing commits must all
 descend from the destination branch's published tip.
 
 After reviewing a clean, already published base, store its full commit ID in the
-local Git option `distill.privateBenchmarkReviewedBase`. This permits merges of
+local Git option `flock.privateBenchmarkReviewedBase`. This permits merges of
 branches created from that base or later, without requiring each branch to start
 from the latest remote tip. Every outgoing commit must descend from the reviewed
 base, including commits merged from other branches. A shared ancestor alone is

@@ -7,7 +7,7 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import { distillctlCrossSessionSendOptions } from "@/features/distillctl/commands/runtime/sessionSend";
+import { flockctlCrossSessionSendOptions } from "@/features/flockctl/commands/runtime/sessionSend";
 import { reconcileSessionRunSettings } from "@/features/chat/lib/runSettingsReconciler";
 import {
   normalizeSessionRunSettings,
@@ -309,7 +309,7 @@ export async function spawnConductorChildSession(args: {
         name: args.personaName?.trim() || displayName,
       }
     : { kind: "inherit" as const };
-  const sendOptions = distillctlCrossSessionSendOptions();
+  const sendOptions = flockctlCrossSessionSendOptions();
   if (args.executorDecisionKey) {
     sendOptions.acpPromptMetadata = {
       ...sendOptions.acpPromptMetadata,

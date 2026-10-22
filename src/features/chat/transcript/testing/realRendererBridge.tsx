@@ -66,8 +66,8 @@ declare global {
     __TRANSCRIPT_VIRTUALIZATION_FIXTURE__?: TranscriptFixture;
     __TRANSCRIPT_VIRTUALIZATION_RENDERER_MODE__?: TranscriptRendererMode;
     __TRANSCRIPT_VIRTUALIZATION_HARNESS__?: TranscriptVirtualizationBrowserHarness;
-    __DISTILL_TRANSCRIPT_DIAGNOSTICS__?: TranscriptDiagnostics | undefined;
-    __DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?:
+    __FLOCK_TRANSCRIPT_DIAGNOSTICS__?: TranscriptDiagnostics | undefined;
+    __FLOCK_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?:
       | VirtualMessageTimelineDiagnostics
       | undefined;
   }
@@ -593,9 +593,9 @@ type RealRendererProductionDiagnostics = Partial<TranscriptDiagnostics> &
   Partial<VirtualMessageTimelineDiagnostics>;
 
 function getProductionDiagnostics(): RealRendererProductionDiagnostics | null {
-  const sharedDiagnostics = window.__DISTILL_TRANSCRIPT_DIAGNOSTICS__;
+  const sharedDiagnostics = window.__FLOCK_TRANSCRIPT_DIAGNOSTICS__;
   const virtualDiagnostics =
-    window.__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__;
+    window.__FLOCK_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__;
   const sharedRecord =
     sharedDiagnostics && typeof sharedDiagnostics === "object"
       ? sharedDiagnostics
@@ -745,7 +745,7 @@ function RealRendererBridgeApp() {
       backgroundStreamingTasksRef.current.clear();
       metricsRef.current = createMetrics();
       pendingScrollPositionRef.current = "tail";
-      window.__DISTILL_TRANSCRIPT_DIAGNOSTICS__ = undefined;
+      window.__FLOCK_TRANSCRIPT_DIAGNOSTICS__ = undefined;
 
       await commitState(() => ({
         ...createEmptyState(),
@@ -1201,7 +1201,7 @@ function RealRendererBridgeApp() {
           metricsRef.current.staleMeasurementSessionDrops +=
             operation.pendingAsyncWork.length;
           pendingScrollPositionRef.current = "top";
-          window.__DISTILL_TRANSCRIPT_DIAGNOSTICS__ = undefined;
+          window.__FLOCK_TRANSCRIPT_DIAGNOSTICS__ = undefined;
           await commitState((previous) => ({
             ...previous,
             activeSessionId: operation.toSessionId,
@@ -1332,7 +1332,7 @@ function RealRendererBridgeApp() {
       ),
     };
 
-    window.__DISTILL_TRANSCRIPT_DIAGNOSTICS__ = diagnosticsWithStreaming;
+    window.__FLOCK_TRANSCRIPT_DIAGNOSTICS__ = diagnosticsWithStreaming;
     return diagnosticsWithStreaming;
   }, []);
 

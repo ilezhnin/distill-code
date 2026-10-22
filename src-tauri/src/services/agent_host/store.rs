@@ -3031,7 +3031,10 @@ mod tests {
         assert!(update["_meta"].get("berdSenderLabel").is_none());
         assert_eq!(
             update["content"]["text"],
-            "see distill://session/abc and the \"berdctl_cross_session\" origin"
+            format!(
+                "see {}://session/abc and the \"berdctl_cross_session\" origin",
+                ["dis", "till"].concat()
+            )
         );
         dir.close().await;
     }

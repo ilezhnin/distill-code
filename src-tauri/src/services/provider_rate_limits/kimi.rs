@@ -1,4 +1,4 @@
-//! Kimi's own local API owns token refresh. Distill reads only configuration
+//! Kimi's own local API owns token refresh. Flock reads only configuration
 //! to decide whether subscription quotas apply, never the OAuth credential.
 
 use super::types::{

@@ -202,17 +202,17 @@
       "removeConfirmCancel": "Cancel",
       "removeConfirmTitle": "Are you sure you want to remove this workspace?",
       "removeManagedConfirmAction": "Remove {{resource}}",
-      "removeManagedConfirmBody": "This removes the Distill-created {{resource}} and detaches the workspace from this chat.",
-      "removeManagedConfirmBodyWithChanges_one": "This {{resource}} has {{count}} uncommitted change. Removing it will discard local changes and delete the Distill-created {{resource}}.",
-      "removeManagedConfirmBodyWithChanges_other": "This {{resource}} has {{count}} uncommitted changes. Removing it will discard local changes and delete the Distill-created {{resource}}.",
+      "removeManagedConfirmBody": "This removes the Flock-created {{resource}} and detaches the workspace from this chat.",
+      "removeManagedConfirmBodyWithChanges_one": "This {{resource}} has {{count}} uncommitted change. Removing it will discard local changes and delete the Flock-created {{resource}}.",
+      "removeManagedConfirmBodyWithChanges_other": "This {{resource}} has {{count}} uncommitted changes. Removing it will discard local changes and delete the Flock-created {{resource}}.",
       "removeManagedConfirmTitle": "Are you sure you want to remove this {{resource}}?",
       "removeManagedError": "Couldn't clean up {{resource}}.",
       "removeWorktreeConfirmAction": "Remove workspace",
-      "removeWorktreeConfirmBody": "If you remove this workspace, the Distill-created worktree {{worktree}} will be deleted from disk.",
+      "removeWorktreeConfirmBody": "If you remove this workspace, the Flock-created worktree {{worktree}} will be deleted from disk.",
       "removeWorktreeConfirmBodyWithChanges_one": "You have {{count}} uncommitted change on this worktree. If you remove this workspace, that change will be lost and {{worktree}} will be deleted from disk.",
       "removeWorktreeConfirmBodyWithChanges_other": "You have {{count}} uncommitted changes on this worktree. If you remove this workspace, those changes will be lost and {{worktree}} will be deleted from disk.",
       "removeWorktreeConfirmTitle": "Are you sure you want to remove this worktree?",
-      "removeSharedManagedConfirmBodyOtherChat": "Another active chat uses the same Distill-created {{resource}}. Only this workspace will be removed from this chat; the {{resource}} will stay on disk.",
+      "removeSharedManagedConfirmBodyOtherChat": "Another active chat uses the same Flock-created {{resource}}. Only this workspace will be removed from this chat; the {{resource}} will stay on disk.",
       "terminal": "Terminal"
     },
     "picker": {
@@ -356,9 +356,9 @@
       "worktreesAndBranches": "Archive chat and remove its worktrees and branches?"
     },
     "archiveConfirmDescriptionWithFiles": {
-      "worktrees": "This will discard local files and changes, archive the chat, then remove its Distill-created worktrees.",
-      "branches": "This will discard local changes, archive the chat, then remove its Distill-created branches.",
-      "worktreesAndBranches": "This will discard local files and changes, archive the chat, then remove its Distill-created worktrees and branches."
+      "worktrees": "This will discard local files and changes, archive the chat, then remove its Flock-created worktrees.",
+      "branches": "This will discard local changes, archive the chat, then remove its Flock-created branches.",
+      "worktreesAndBranches": "This will discard local files and changes, archive the chat, then remove its Flock-created worktrees and branches."
     },
     "archiveConfirmAction": "Archive and remove"
   },
@@ -385,8 +385,8 @@
     "providerError": {
       "anthropicThinkingHistory": "This chat can't continue with a Claude model because its earlier reasoning history is no longer in a form Claude will accept. Start a new chat, or switch this chat to a non-Claude model to keep going."
     },
-    "distillctlCrossSessionLabel": "Sent by Distill from another session",
-    "distillctlCrossSessionNamedLabel": "Sent by Distill from another session · source: {{sender}}",
+    "flockctlCrossSessionLabel": "Sent by Flock from another session",
+    "flockctlCrossSessionNamedLabel": "Sent by Flock from another session · source: {{sender}}",
     "steerLabel": "Steered",
     "steerPendingLabel": "Steering — waiting for the agent's next step",
     "viewMore": "View more",
@@ -458,7 +458,7 @@
     "pickAgentDescription": "The conductor is one of your agents. It will pick other agents for orchestrators and workers.",
     "pickAgentConfirm": "Start conductor",
     "pickAgentCancel": "Cancel",
-    "pickAgentEmpty": "No agents yet. Distill will start with Producer.",
+    "pickAgentEmpty": "No agents yet. Flock will start with Producer.",
     "openTranscript": "Open transcript",
     "backToConductor": "Back to {{name}}",
     "openChild": "{{name}}, {{status}}",
@@ -643,7 +643,7 @@
       "empty": "Nothing was recorded for this step yet."
     },
     "stall": {
-      "title": "This wave stopped making progress, so Distill ended it and collected what exists.",
+      "title": "This wave stopped making progress, so Flock ended it and collected what exists.",
       "body": "Nothing moved for {{count}} consecutive checks — no step changed state, nothing new started. Running steps were stopped; steps without a report appear in the digest as “result unknown”. The digest below says the wave stalled, so judge it with that in mind."
     },
     "reportVerification": {
@@ -653,7 +653,7 @@
     },
     "unreadable": {
       "title": "The conductor is off for this session: its saved state could not be read.",
-      "body": "{{documents}} could not be read from the Distill folder, even after retrying. Waves are not started at all while that is true — a plan in this chat will simply be ignored — because running on an empty copy would re-run old plans and then overwrite the only record of them.",
+      "body": "{{documents}} could not be read from the Flock folder, even after retrying. Waves are not started at all while that is true — a plan in this chat will simply be ignored — because running on an empty copy would re-run old plans and then overwrite the only record of them.",
       "retry": "Something else was probably holding the file when the app started, such as an antivirus scan or a sync client. Settings → Stats has a Try again button that re-reads it without restarting.",
       "reason": "The read failed with: {{reason}}"
     }

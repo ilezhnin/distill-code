@@ -172,8 +172,8 @@
     "previewAlt": "Imported agent preview",
     "name": "Agent name",
     "default": "Default",
-    "unsupportedConfiguration": "The source provider or model is unavailable. Choose a supported configuration, or leave both unset to use Distill defaults.",
-    "memoryIgnored": "This card contains memory. Distill won’t import it.",
+    "unsupportedConfiguration": "The source provider or model is unavailable. Choose a supported configuration, or leave both unset to use Flock defaults.",
+    "memoryIgnored": "This card contains memory. Flock won’t import it.",
     "noInstructions": "No instructions provided.",
     "cancel": "Cancel",
     "adding": "Adding…",
@@ -183,7 +183,7 @@
     "added": "Agent added from image.",
     "invalid": "The agent image is invalid or damaged.",
     "missing": "This image doesn’t contain a compatible agent.",
-    "unsupportedVersion": "This agent image uses a newer format that this version of Distill doesn’t support.",
+    "unsupportedVersion": "This agent image uses a newer format that this version of Flock doesn’t support.",
     "tooLarge": "Agent image must be 10 MB or smaller.",
     "pngOnly": "Agent image must be a PNG file."
   },
@@ -211,7 +211,7 @@
   },
   "ranking": {
     "label": "Model selection",
-    "empty": "No custom fallback list. Distill uses role preferences, then the saved single model or app default.",
+    "empty": "No custom fallback list. Flock uses role preferences, then the saved single model or app default.",
     "add": "Add model",
     "remove": "Remove",
     "moveUp": "Move up",

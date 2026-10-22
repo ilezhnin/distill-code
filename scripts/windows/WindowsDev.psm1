@@ -27,12 +27,82 @@ function Test-IsElevated {
 
 function Assert-WindowsHost {
     if (-not (Test-IsWindowsHost)) {
-        throw "This command runs on Windows only; Distill has no macOS or Linux build."
+        throw "This command runs on Windows only; Flock has no macOS or Linux build."
     }
 }
 
-function Get-DistillRepoRoot {
+function Get-FlockRepoRoot {
     return $script:RepoRoot
+}
+
+# ── Environment compatibility (Distill -> Levocat Flock rename) ──────────
+# User-level variables survive the rename of the scripts: a machine that set
+# DISTILL_TAURI_CARGO_TARGET_DIR or DISTILL_DEV_ROOT before the rename keeps
+# them in the user environment, and silently ignoring them would move a
+# 30-60 GB build cache onto the system drive. Every FLOCK_* variable a user
+# (not the repository's own scripts) sets is read through this helper: the
+# FLOCK_* spelling wins, the DISTILL_* spelling is the fallback.
+$script:LegacyEnvironmentPrefix = "DISTILL"
+$script:EnvironmentPrefix = "FLOCK"
+
+# The DISTILL_* spelling of a FLOCK_* variable name, e.g.
+# FLOCK_DEV_ROOT -> DISTILL_DEV_ROOT, FLOCKCTL_BIN -> DISTILLCTL_BIN.
+function Get-FlockLegacyEnvironmentName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if (-not $Name.StartsWith($script:EnvironmentPrefix, [System.StringComparison]::Ordinal)) {
+        throw "Only $($script:EnvironmentPrefix)* variables have a legacy spelling; got '$Name'."
+    }
+    return $script:LegacyEnvironmentPrefix + $Name.Substring($script:EnvironmentPrefix.Length)
+}
+
+# The value of a FLOCK_* variable from the process environment, or of its
+# DISTILL_* spelling when the FLOCK_* one is unset or blank; $null when
+# neither is set.
+function Get-FlockEnvironmentValue {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $legacyName = Get-FlockLegacyEnvironmentName -Name $Name
+    foreach ($candidate in @($Name, $legacyName)) {
+        $value = [System.Environment]::GetEnvironmentVariable($candidate, "Process")
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $value
+        }
+    }
+    return $null
+}
+
+# Export the paths of the agent-facing CLIs for the app and its child
+# processes. The old spellings are exported with the same values for one
+# release: an agent harness or a skill that still reads DISTILLCTL_BIN finds
+# the same binary.
+function Set-FlockCliBinEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$FlockctlBin,
+        [Parameter(Mandatory = $true)][string]$MonitorBin
+    )
+    foreach ($name in @("FLOCKCTL_BIN", (Get-FlockLegacyEnvironmentName -Name "FLOCKCTL_BIN"))) {
+        [System.Environment]::SetEnvironmentVariable($name, $FlockctlBin, "Process")
+    }
+    foreach ($name in @("FLOCK_MONITOR_BIN", (Get-FlockLegacyEnvironmentName -Name "FLOCK_MONITOR_BIN"))) {
+        [System.Environment]::SetEnvironmentVariable($name, $MonitorBin, "Process")
+    }
+}
+
+# Resolve the bundled-content directory the dev app reads (FLOCK_DISTRO_DIR):
+# an explicit value from the environment, in either spelling, else this
+# checkout's distro folder when it exists. The resolved value is exported
+# under the FLOCK_* name so the app and its children see one spelling.
+function Initialize-FlockDistroDirEnvironment {
+    $distroDir = Get-FlockEnvironmentValue -Name "FLOCK_DISTRO_DIR"
+    if ([string]::IsNullOrWhiteSpace($distroDir)) {
+        $checkoutDistro = Join-Path $script:RepoRoot "distro"
+        if (Test-Path -LiteralPath $checkoutDistro -PathType Container) {
+            $distroDir = $checkoutDistro
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($distroDir)) {
+        [System.Environment]::SetEnvironmentVariable("FLOCK_DISTRO_DIR", $distroDir, "Process")
+    }
+    return $distroDir
 }
 
 function Get-RequiredPnpmVersion {
@@ -72,7 +142,7 @@ function Write-WindowsDevSection {
 
 function Write-WindowsDevInfo {
     param([Parameter(Mandatory = $true)][string]$Message)
-    Write-Host "[distill-windows] $Message"
+    Write-Host "[flock-windows] $Message"
 }
 
 function Get-CommandSource {
@@ -188,7 +258,7 @@ function Test-CodexRuntimePath {
     return $Path -match "\\\.cache\\codex-runtimes\\"
 }
 
-function New-DistillTemporaryFile {
+function New-FlockTemporaryFile {
     # Avoid PowerShell module autoloading here. GitHub-hosted Windows runners can
     # launch nested Windows PowerShell with Microsoft.PowerShell.Utility absent
     # from PSModulePath, which makes the New-TemporaryFile cmdlet unavailable.
@@ -201,7 +271,7 @@ function New-DistillTemporaryFile {
 # object and waits for every process it spawned as well. An MSVC-backed cargo
 # build leaves `vctip.exe` (the Visual C++ telemetry helper) running long after
 # cl.exe and cargo are gone, so `-Wait` hangs there indefinitely -- the launcher
-# would print "cargo build distillctl", finish the build, and then sit forever with
+# would print "cargo build flockctl", finish the build, and then sit forever with
 # no output. Starting with -PassThru but no -Wait and joining on the process
 # handle waits for that process only.
 # Every `Start-Process -PassThru` call site reads `$process.Handle` right
@@ -361,8 +431,8 @@ function Join-WindowsProcessArguments {
 }
 
 # Maps the renderer build gates onto the matching Tauri Cargo feature set.
-function Get-DistillAppFeatures {
-    param([string[]]$BaseFeatures = @("distillctl", "app-test-driver"))
+function Get-FlockAppFeatures {
+    param([string[]]$BaseFeatures = @("flockctl", "app-test-driver"))
 
     $features = New-Object System.Collections.Generic.List[string]
     foreach ($feature in $BaseFeatures) {
@@ -395,7 +465,7 @@ function Assert-SafeCleanupPath {
     # Never allow removal of broad user/system roots, whatever the caller
     # passed as AllowedRoot; a bad env override must not become `rm -rf $HOME`.
     $protected = New-Object System.Collections.Generic.List[string]
-    foreach ($candidate in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA, $env:TEMP, $env:SystemRoot, $env:ProgramFiles, $HOME, (Get-DistillRepoRoot))) {
+    foreach ($candidate in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA, $env:TEMP, $env:SystemRoot, $env:ProgramFiles, $HOME, (Get-FlockRepoRoot))) {
         if (-not [string]::IsNullOrWhiteSpace($candidate)) {
             $protected.Add((Normalize-FullPath $candidate))
         }
@@ -456,22 +526,28 @@ function Resolve-WindowsCleanupPaths {
     $fnmRoot = Get-FnmRoot
     $blockCertDir = Join-Path $userProfile ".block-certs"
     $nodeVersion = "v$(Get-RequiredNodeVersion)"
-    $repoRoot = Get-DistillRepoRoot
+    $repoRoot = Get-FlockRepoRoot
 
     # Honor the same overrides the rest of the lane uses so cleanup targets
     # the state that setup/dev actually created: the active cargo target dir
-    # (repo-local unless DISTILL_TAURI_CARGO_TARGET_DIR overrides it), plus the
+    # (repo-local unless FLOCK_TAURI_CARGO_TARGET_DIR overrides it), plus the
     # %LOCALAPPDATA%\berd-tauri tree older checkouts left behind.
-    $distillTauriRoot = Get-TauriCargoTargetDir
-    $legacyDistillTauriRoot = Get-LegacyTauriCargoTargetRoot
-    if ($legacyDistillTauriRoot -eq $distillTauriRoot) {
-        $legacyDistillTauriRoot = $null
+    $flockTauriRoot = Get-TauriCargoTargetDir
+    $legacyFlockTauriRoot = Get-LegacyTauriCargoTargetRoot
+    if ($legacyFlockTauriRoot -eq $flockTauriRoot) {
+        $legacyFlockTauriRoot = $null
+    }
+    $flockDevRoot = Get-FlockDevRoot
+    $legacyFlockDevRoot = Get-LegacyFlockDevRoot
+    if ($legacyFlockDevRoot -eq $flockDevRoot) {
+        $legacyFlockDevRoot = $null
     }
 
     return [pscustomobject]@{
-        DistillDevRoot = (Get-DistillDevRoot)
-        DistillTauriRoot = $distillTauriRoot
-        LegacyDistillTauriRoot = $legacyDistillTauriRoot
+        FlockDevRoot = $flockDevRoot
+        LegacyFlockDevRoot = $legacyFlockDevRoot
+        FlockTauriRoot = $flockTauriRoot
+        LegacyFlockTauriRoot = $legacyFlockTauriRoot
         BlockCertDir = $blockCertDir
         BlockCertFile = Join-Path $blockCertDir "root-certs.pem"
         CorepackPnpmVersionDir = Join-Path $localAppData "node\corepack\v1\pnpm\$(Get-RequiredPnpmVersion)"
@@ -485,24 +561,32 @@ function Resolve-WindowsCleanupPaths {
     }
 }
 
-function Get-DistillDevRoot {
-    $devRoot = $env:DISTILL_DEV_ROOT
+function Get-FlockDevRoot {
+    $devRoot = Get-FlockEnvironmentValue -Name "FLOCK_DEV_ROOT"
     if ([string]::IsNullOrWhiteSpace($devRoot)) {
-        $devRoot = Join-Path (Get-LocalAppDataRoot) "distill-dev"
+        $devRoot = Join-Path (Get-LocalAppDataRoot) "flock-dev"
     }
     return $devRoot
 }
 
+# Where the dev scripts kept their state before the Levocat Flock rename
+# (%LOCALAPPDATA%\distill-dev). Nothing writes there any more; cleanup still
+# reclaims it.
+function Get-LegacyFlockDevRoot {
+    return (Join-Path (Get-LocalAppDataRoot) "distill-dev")
+}
+
 function Get-TauriCargoTargetDir {
-    if (-not [string]::IsNullOrWhiteSpace($env:DISTILL_TAURI_CARGO_TARGET_DIR)) {
-        return $env:DISTILL_TAURI_CARGO_TARGET_DIR
+    $override = Get-FlockEnvironmentValue -Name "FLOCK_TAURI_CARGO_TARGET_DIR"
+    if (-not [string]::IsNullOrWhiteSpace($override)) {
+        return $override
     }
     # Repo-local by default. A debug Tauri build of this workspace is 30-60 GB
     # (deps + incremental + PDBs); parking that under %LOCALAPPDATA% fills the
     # system drive and, when the checkout lives on another drive, keeps a
-    # second full copy alive next to the one `Launch-Distill.ps1` builds.
-    # Point DISTILL_TAURI_CARGO_TARGET_DIR somewhere else to override.
-    return (Join-Path (Get-DistillRepoRoot) "src-tauri\target")
+    # second full copy alive next to the one `Launch-Flock.ps1` builds.
+    # Point FLOCK_TAURI_CARGO_TARGET_DIR somewhere else to override.
+    return (Join-Path (Get-FlockRepoRoot) "src-tauri\target")
 }
 
 # Where pre-2026-09 checkouts wrote the Tauri cargo target. Kept only so
@@ -681,8 +765,8 @@ $script:PeMachineI386 = 0x014C
 $script:PeCharacteristicsExecutableImage = 0x0002
 
 # Return the exact Tauri-resolved sidecar file name for a stem/triple, e.g.
-# Get-WindowsSidecarName "distillctl" "x86_64-pc-windows-msvc"
-#   -> distillctl-x86_64-pc-windows-msvc.exe
+# Get-WindowsSidecarName "flockctl" "x86_64-pc-windows-msvc"
+#   -> flockctl-x86_64-pc-windows-msvc.exe
 function Get-WindowsSidecarName {
     param(
         [Parameter(Mandatory = $true)][string]$Stem,
@@ -938,7 +1022,7 @@ function Resolve-AppVersion {
     param([AllowNull()][string]$Override)
 
     if ([string]::IsNullOrWhiteSpace($Override)) {
-        $Override = $env:DISTILL_APP_VERSION_OVERRIDE
+        $Override = Get-FlockEnvironmentValue -Name "FLOCK_APP_VERSION_OVERRIDE"
     }
     if (-not [string]::IsNullOrWhiteSpace($Override)) {
         $numeric = ($Override -split "[-+]")[0]
@@ -968,10 +1052,10 @@ function New-E2eRunContract {
         $RunId = $rootRunId
     }
     if ($RunId -notmatch '^[A-Za-z0-9-]{1,64}$') {
-        throw "DISTILL_E2E_RUN_ID must be 1-64 ASCII letters, digits, or '-'."
+        throw "FLOCK_E2E_RUN_ID must be 1-64 ASCII letters, digits, or '-'."
     }
     if ($rootRunId -cne $RunId) {
-        throw "DISTILL_E2E_RUN_ROOT must end with DISTILL_E2E_RUN_ID '$RunId'."
+        throw "FLOCK_E2E_RUN_ROOT must end with FLOCK_E2E_RUN_ID '$RunId'."
     }
 
     if ([string]::IsNullOrWhiteSpace($DriverToken)) {
@@ -991,7 +1075,7 @@ function New-E2eRunContract {
     return [pscustomobject]@{
         RunRoot = $normalizedRoot
         RunId = $RunId
-        Identifier = "com.levocat.distill.e2e.$RunId"
+        Identifier = "com.levocat.flock.e2e.$RunId"
         DriverToken = $DriverToken
         ConfigPath = Join-Path $normalizedRoot "tauri-dev-windows.config.json"
         DriverReadyPath = Join-Path $normalizedRoot "app-test-driver.json"
@@ -1169,7 +1253,7 @@ function Initialize-MsvcEnvironment {
     }
 
     $arch = Get-MsvcArch
-    $environmentFile = New-DistillTemporaryFile
+    $environmentFile = New-FlockTemporaryFile
     try {
         # Capturing `cmd.exe` output directly through Windows PowerShell can
         # return no pipeline records for batch files on some hosts. Have cmd
@@ -1461,7 +1545,7 @@ req.on("error", (error) => {
 req.end();
 '@
 
-    $scriptFile = New-DistillTemporaryFile
+    $scriptFile = New-FlockTemporaryFile
     try {
         Set-Content -Path $scriptFile -Value $script -Encoding UTF8
         $result = Invoke-CaptureCommand -FilePath "node" -ArgumentList @($scriptFile.FullName, $Registry)
@@ -1506,8 +1590,8 @@ function Initialize-FnmEnvironment {
         return $false
     }
 
-    $stdout = New-DistillTemporaryFile
-    $stderr = New-DistillTemporaryFile
+    $stdout = New-FlockTemporaryFile
+    $stderr = New-FlockTemporaryFile
     try {
         $process = Start-Process $fnm -ArgumentList "env --shell powershell" -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
         if ($process.ExitCode -ne 0) {
@@ -1536,7 +1620,7 @@ function Ensure-FnmNode {
 }
 
 function Initialize-PublicNpmEnvironment {
-    # Distill uses public npm. Leftover Berd/Block Artifactory settings from
+    # Flock uses public npm. Leftover Berd/Block Artifactory settings from
     # the user or process environment would send pnpm/corepack at a VPN-only
     # host; rewrite those to registry.npmjs.org and drop Block CA overrides.
     $public = $script:PublicNpmRegistry

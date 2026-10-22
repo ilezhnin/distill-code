@@ -91,7 +91,7 @@ impl ProcessTree {
 
     #[cfg(not(windows))]
     pub(crate) fn contain(_child: &tokio::process::Child) -> Option<Self> {
-        // Job Objects are a Windows facility, and Windows is what Distill ships on.
+        // Job Objects are a Windows facility, and Windows is what Flock ships on.
         None
     }
 

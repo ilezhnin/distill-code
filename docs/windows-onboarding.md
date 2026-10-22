@@ -1,6 +1,6 @@
 # Windows setup
 
-Distill builds and runs on Windows only. This lane takes a machine from nothing
+Flock builds and runs on Windows only. This lane takes a machine from nothing
 to a running dev app and an installer:
 
 - install or diagnose the native Windows prerequisites
@@ -139,7 +139,7 @@ security advisories published later.
 Format before staging (`just fmt`). The commit hook checks that tracked files
 match the staged tree and that no non-ignored untracked files can influence the
 tests. It checks the tree again after validation and lists the validated tree
-in `.git/distill-validated-trees`. It never stashes, rewrites, or stages files.
+in `.git/flock-validated-trees`. It never stashes, rewrites, or stages files.
 Use a separate worktree if unrelated changes are present.
 Remove obsolete skip entries from `lefthook-local.yml` or `lefthook.local.yml`;
 agents must not bypass validation with local overrides or `--no-verify`.
@@ -155,13 +155,17 @@ whatever drive you cloned to:
 <repo>\src-tauri\target
 ```
 
-Set `DISTILL_TAURI_CARGO_TARGET_DIR` (a user-level environment variable) to move
-it somewhere else. Do not point it at the system drive: earlier versions
-defaulted to `%LOCALAPPDATA%\berd-tauri\cargo-target` and routinely filled C:.
-The launcher warns when the resolved target dir is on the system drive.
+Set `FLOCK_TAURI_CARGO_TARGET_DIR` (a user-level environment variable) to move
+it somewhere else; `DISTILL_TAURI_CARGO_TARGET_DIR`, the variable's earlier
+name, is still read when the new one is unset. Do not point it at the system
+drive: earlier versions defaulted to `%LOCALAPPDATA%\berd-tauri\cargo-target`
+and routinely filled C:. The launcher warns when the resolved target dir is on
+the system drive.
 
-Only small dev state stays under `%LOCALAPPDATA%\distill-dev` (the generated
-Tauri dev config and launch locks).
+Only small dev state stays under `%LOCALAPPDATA%\flock-dev` (the generated
+Tauri dev config and launch locks; `FLOCK_DEV_ROOT` moves it). A
+`%LOCALAPPDATA%\distill-dev` folder left by an earlier checkout holds nothing
+worth keeping and can be deleted.
 
 To reclaim space without uninstalling the toolchain:
 
@@ -178,7 +182,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Prune-Bu
 ```
 
 It only removes output it can regenerate, and refuses to run while `cargo`,
-`rustc` or `Distill` is alive. Anything it does not recognize is printed as a
+`rustc` or the app (`levocat-flock`) is alive. Anything it does not recognize
+is printed as a
 `keep` line and left alone.
 
 `just cleanup-windows` is the uninstall lane instead: it removes
@@ -190,34 +195,35 @@ It only removes output it can regenerate, and refuses to run while `cargo`,
 just dev-windows
 ```
 
-`just dev-windows` builds `distillctl.exe` and `distill-monitor.exe`, points the app
+`just dev-windows` builds `flockctl.exe` and `flock-monitor.exe`, points the app
 at this repository's `distro\` for bundled agents and skills, and starts Tauri
 dev mode.
 
 Expected result:
 
 - Vite starts on a port derived from the checkout path
-- `Distill.exe` launches from the Tauri cargo target as the Distill window
+- `levocat-flock.exe` launches from the Tauri cargo target as the Levocat
+  Flock window
 - on launch the app installs the pinned Claude Code and Codex bridges onto the
   managed Node runtime (the first launch downloads both); later launches reuse
   them until a pin changes
 
-`scripts\windows\Launch-Distill.ps1 -InstallShortcut` puts a "Distill Code"
+`scripts\windows\Launch-Flock.ps1 -InstallShortcut` puts a "Levocat Flock Dev"
 shortcut on the desktop that runs the same launch from Explorer. That launcher
-builds with `distillctl` only: unlike `just dev-windows` it does not enable
+builds with `flockctl` only: unlike `just dev-windows` it does not enable
 `app-test-driver`, so a shortcut-launched app exposes no
 UI-driving socket (see [docs/app-e2e.md](app-e2e.md)).
 
 The launcher also starts `tauri dev` with `--no-watch`. It is the app agents
-work on Distill from, and with the Rust watcher on, an agent saving a file
+work on Flock from, and with the Rust watcher on, an agent saving a file
 under `src-tauri` rebuilds and relaunches the app it runs in, which ends its
 turn. Rust changes reach the app on the next launch; pass `-Watch` to get the
 rebuild-on-save back. `just dev-windows` keeps the watcher, and
-`DISTILL_DEV_NO_WATCH=1` turns it off there too.
+`FLOCK_DEV_NO_WATCH=1` turns it off there too.
 
 For an app that runs benchmark waves, `-Optimized` builds the app's own crates
 at opt-level 2, as the dependencies already are, under the same dev identity,
-app folders and distillctl endpoint. The setting goes on that launch's cargo
+app folders and flockctl endpoint. The setting goes on that launch's cargo
 command line (`scripts\windows\cargo-optimized.cmd` as the Tauri runner), not
 into the environment, so builds and tests started from the app's terminals and
 agents keep the unoptimized profile, where the debug stack-depth checks run.
@@ -235,10 +241,67 @@ just bundle-windows msi     # MSI
 just bundle-debug           # NSIS with WebView devtools
 ```
 
-The bundle script installs locked dependencies, stages `distillctl` and
-`distill-monitor` as `*-x86_64-pc-windows-msvc.exe` sidecars, runs `tauri build`
+The bundle script installs locked dependencies, stages `flockctl` and
+`flock-monitor` as `*-x86_64-pc-windows-msvc.exe` sidecars, runs `tauri build`
 for that target and prints the installer path under
-`<target>\x86_64-pc-windows-msvc\release\bundle\`. Installers are unsigned.
+`<target>\x86_64-pc-windows-msvc\release\bundle\`: the installer is named
+after the product, `Levocat Flock_<version>_x64-setup.exe` (NSIS), and
+installs `levocat-flock.exe` with `flockctl.exe` and `flock-monitor.exe`
+beside it. Installers are unsigned.
+
+## Upgrading from Distill
+
+The app was called Distill before it became Levocat Flock. An installed
+Distill and the Levocat Flock installer do not know about each other: the
+NSIS installer is keyed by product name, so it installs Levocat Flock side by
+side instead of replacing Distill. Upgrade in this order:
+
+1. Close Distill, including monitors it started (see below).
+2. Run `Levocat Flock_<version>_x64-setup.exe`.
+3. Uninstall the Distill entry under Settings > Apps (Add/Remove Programs) by
+   hand, and never start the old build again. Both builds would use the same
+   `~/.distill` folder with different migration sets, and the old one would
+   write over what the new one has already adopted.
+
+What the first start of Levocat Flock does:
+
+- **Identifier folders.** Everything the OS keys by the application
+  identifier (`%APPDATA%\com.levocat.distill`,
+  `%LOCALAPPDATA%\com.levocat.distill`, and the `.dev` pair for dev builds) is
+  renamed once to `com.levocat.flock`. If Distill is still running and holds
+  those folders open, Levocat Flock waits a few seconds, then refuses to start
+  and names the folder; nothing is changed in that case. Close Distill and
+  start again.
+- **The data folder.** `~/.distill` is adopted in place through the
+  `root-path` pointer: nothing is moved or copied, and the pointer records the
+  folder so every later start finds it. A fresh install uses `~/.flock`
+  instead. Inside the folder, the `distillBundled` marker on installed help
+  skills becomes `flockBundled`, the retired `distill-help` and
+  `distill-monitor` skill copies make way for `flock-help` and
+  `flock-monitor`, and the old `distill-sounds-N.mp3` notification sound ids
+  are mapped to the new names. Project folders keep their `.distill/` name.
+- **Developer variables.** `FLOCK_ROOT` is the new override, and
+  `DISTILL_ROOT` is still read when it is unset. The same holds for the other
+  variables a developer sets by hand: `DISTILL_TAURI_CARGO_TARGET_DIR`,
+  `DISTILL_DISTRO_DIR`, `DISTILL_DEV_ROOT`, `DISTILLCTL_LOCK`,
+  `DISTILLCTL_BIN` and `DISTILL_MONITOR_BIN` are read behind their `FLOCK_*`
+  spellings. The variables only the repository's own scripts set were renamed
+  outright.
+- **Tools.** `flockctl` and `flock-monitor` replace `distillctl` and
+  `distill-monitor`; the old names remain on every agent session's `PATH` as
+  shims that run the new binaries, so installed skills and old transcripts
+  keep working. Session links of the form `distill://session/<id>` still
+  open; new ones are written as `flock://session/<id>`.
+- **Monitors.** A monitor started by the old build cannot deliver after the
+  identifier folders are renamed: it is still talking to the old app. Stop
+  such monitors with `flock-monitor stop --session-id <id> --state-key <key>`
+  (the monitor state folder and delivery ids did not change, so they are
+  found) and start them again from the new build. Output the old monitor
+  could not deliver stays in its pending file, and a monitor started again
+  with the same state key delivers it.
+
+Check `%LOCALAPPDATA%\com.levocat.flock\logs\flock.log` after the first
+start for the adoption lines; a second start logs none of them.
 
 ## Validation Commands
 
@@ -264,7 +327,7 @@ Cleanup is dry-run by default:
 just cleanup-windows
 ```
 
-Default removal deletes the local dev caches (`%LOCALAPPDATA%\distill-dev` and
+Default removal deletes the local dev caches (`%LOCALAPPDATA%\flock-dev` and
 the Tauri cargo target) and generated repo setup/dev artifacts: root
 `node_modules`, root `.pnpm-store`, root `dist`, and the Lefthook-managed
 `pre-commit` and `pre-push` hooks:
@@ -345,7 +408,9 @@ just setup-windows
 ```
 
 If an agent session will not start, check the app log at
-`%LOCALAPPDATA%\com.levocat.distill\logs\distill.log`; each harness's stderr is
+`%LOCALAPPDATA%\com.levocat.flock\logs\flock.log` (on an install upgraded from
+Distill the folder was renamed from `com.levocat.distill` at first start; see
+[Upgrading from Distill](#upgrading-from-distill)); each harness's stderr is
 logged there prefixed with its id, such as `[claude-acp]`.
 
 If you want a full fresh-machine reset after testing, review the cleanup dry run

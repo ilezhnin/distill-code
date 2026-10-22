@@ -36,7 +36,7 @@ evidence that learned routing improves orchestration.
 
 ## 1. Prepare the runtime
 
-Build and start Distill using [Windows setup](windows-onboarding.md). From the
+Build and start Flock using [Windows setup](windows-onboarding.md). From the
 repository root, the normal development sequence is:
 
 ```powershell
@@ -65,7 +65,7 @@ node scripts/benchmark-sandbox.mjs selftest
 
 Provisioning installs dependencies and restarts that distribution. Schedule it
 before measurement, not during a run. Claude, Codex, Grok and Z.ai accounts
-sign in once, in Distill (Settings > AI providers; Grok through its own CLI
+sign in once, in Flock (Settings > AI providers; Grok through its own CLI
 sign-in): every sandbox session of theirs runs on a lease of that sign-in (see
 below), so there is nothing to sign in inside the sandbox, and the Z.ai key
 reaches it the same way (see [Z.ai Coding Plan](zai.md#benchmarks)). Z.ai
@@ -405,10 +405,10 @@ rendering results do not qualify the new renderer.
 
 Before dispatch, verify sandbox readiness, the exact account's authentication,
 quota and billing mode, and the provider/model/effort acknowledgement. A
-sandbox session spends the account's one allowance under its Distill sign-in,
+sandbox session spends the account's one allowance under its Flock sign-in,
 so dispatch reads the account's status in the app for it.
 
-The Distill application is the only place an account signs in, and the only
+The Flock application is the only place an account signs in, and the only
 process that refreshes a grant. A Claude, Codex, Grok or Z.ai benchmark session
 runs on a lease of the app's own sign-in: once the broker reserved the session
 and before it starts, the host reads the account's current grant (the Claude
@@ -454,7 +454,7 @@ stopped (a stopped exchange is logged, since it may cost one sign-in).
 A forced renewal rotates the refresh token. Whether each pinned CLI (Claude,
 Codex app-server, Grok 1.0.40) reads its credential store again before it
 refreshes, instead of replaying the token it loaded, has not been verified.
-So Distill renews by force only while nothing else may hold the token: no chat
+So Flock renews by force only while nothing else may hold the token: no chat
 of the account runs in the app, no `grok.exe` runs for Grok (the user's Grok
 sign-in is shared), and no `codex.exe` runs for Codex (which home a Codex
 process uses is not visible). Until then a test the grant still covers goes

@@ -10,7 +10,7 @@ import {
 import { isRecord } from "@/shared/lib/isRecord";
 
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
-const MODEL_PREFERENCES_STORAGE_KEY = "distill:preferredModelsByAgent";
+const MODEL_PREFERENCES_STORAGE_KEY = "flock:preferredModelsByAgent";
 
 /** The two model-scoped knobs an agent's preferred model is remembered with. */
 export interface StoredModelRunSettings {

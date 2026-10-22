@@ -76,12 +76,12 @@ vi.mock("../acpApi", () => ({
   cancelSession: vi.fn(),
 }));
 
-const mockGetDistillctlPreamble = vi.fn<
+const mockGetFlockctlPreamble = vi.fn<
   () => string | null | Promise<string | null>
 >(() => null);
 
-vi.mock("@/features/distillctl/appPreamble", () => ({
-  getDistillctlPreamble: () => mockGetDistillctlPreamble(),
+vi.mock("@/features/flockctl/appPreamble", () => ({
+  getFlockctlPreamble: () => mockGetFlockctlPreamble(),
 }));
 
 vi.mock("../acpActiveMessageTracking", () => ({
@@ -122,7 +122,7 @@ describe("acpSendMessage", () => {
     vi.resetModules();
     // clearAllMocks clears call history but not return values; reset the
     // preamble to unavailable so tests opt in explicitly.
-    mockGetDistillctlPreamble.mockReturnValue(null);
+    mockGetFlockctlPreamble.mockReturnValue(null);
   });
 
   it("blocks transport when the prepared session has no acknowledged model", async () => {
@@ -152,7 +152,7 @@ describe("acpSendMessage", () => {
       "/tmp/project",
       "test-model",
     );
-    mockGetDistillctlPreamble.mockRejectedValueOnce(
+    mockGetFlockctlPreamble.mockRejectedValueOnce(
       new Error("ACP setup failed"),
     );
 
@@ -252,7 +252,7 @@ describe("acpSendMessage", () => {
   it("does not apply model config after prompt admission until the prompt finishes", async () => {
     const promptSetup = deferred<string | null>();
     const promptResponse = deferred<void>();
-    mockGetDistillctlPreamble.mockReturnValueOnce(promptSetup.promise);
+    mockGetFlockctlPreamble.mockReturnValueOnce(promptSetup.promise);
     mockPrompt.mockReturnValueOnce(promptResponse.promise);
     const sessionRegistry = await import("../acpSessionRegistry");
     const { acpSendMessage } = await import("../acp");
@@ -265,9 +265,7 @@ describe("acpSendMessage", () => {
     );
 
     const send = acpSendMessage(sessionId, "hello");
-    await vi.waitFor(() =>
-      expect(mockGetDistillctlPreamble).toHaveBeenCalled(),
-    );
+    await vi.waitFor(() => expect(mockGetFlockctlPreamble).toHaveBeenCalled());
     const setModel = sessionRegistry.applySessionModel(sessionId, "gpt-5.6");
     await Promise.resolve();
 

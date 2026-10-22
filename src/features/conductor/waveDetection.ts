@@ -11,10 +11,10 @@ import { getTextContent, type Message } from "@/shared/types/messages";
 
 import {
   WAVE_FENCE_TAG,
-  parseDistillWave,
+  parseFlockWave,
   type WaveInvalid,
   type WavePlan,
-} from "./distillWave";
+} from "./flockWave";
 
 export interface WavePlanCandidate {
   conductorSessionId: string;
@@ -93,7 +93,7 @@ export function detectWavePlanCandidates(args: {
         });
         continue;
       }
-      const parse = parseDistillWave(text);
+      const parse = parseFlockWave(text);
       if (parse.kind === "none") {
         args.markScanned?.(message.id, {
           conductorSessionId,

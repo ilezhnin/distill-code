@@ -5,7 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{sqlite::SqliteRow, Row};
 
-pub(super) const REPORTED_KEY: &str = "__distillReportedSelection";
+pub(super) const REPORTED_KEY: &str = "__flockReportedSelection";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

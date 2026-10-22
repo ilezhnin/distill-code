@@ -1,14 +1,14 @@
 # Driving the running app
 
 Dev builds started through `just dev-windows` include the `app-test-driver`
-Tauri plugin (`app_features` in the `justfile` is `distillctl,app-test-driver`), so
-a running Distill can be clicked, typed into and read from outside. There is no
+Tauri plugin (`app_features` in the `justfile` is `flockctl,app-test-driver`), so
+a running Flock can be clicked, typed into and read from outside. There is no
 checked-in end-to-end suite built on it: you use the driver by hand, or an agent
 uses it through the [agent-driver relay](../scripts/agent-driver/README.md).
 
 Two entry points deliberately leave the feature out: the NSIS/MSI bundles
-(`just bundle`), and `scripts\windows\Launch-Distill.ps1` — the one-click
-launcher behind the "Distill Code" desktop shortcut. Launch the app with
+(`just bundle`), and `scripts\windows\Launch-Flock.ps1` — the one-click
+launcher behind the "Levocat Flock Dev" desktop shortcut. Launch the app with
 `just dev-windows` when you want to drive it.
 
 Automated UI coverage lives elsewhere: component tests next to the code in
@@ -67,18 +67,19 @@ failure behaviour are in [its README](../scripts/agent-driver/README.md).
 ## Isolated mode
 
 Isolated mode is an explicit opt-in for a run that must not touch your real
-profile. It needs a binary built with `app-test-driver` and `DISTILL_E2E_MODE=1`
+profile. It needs a binary built with `app-test-driver` and `FLOCK_E2E_MODE=1`
 with a validated run root, run ID and driver token. The app then:
 
-- runs under its own identifier, `com.levocat.distill.e2e.<run-id>`, so it gets
+- runs under its own identifier, `com.levocat.flock.e2e.<run-id>`, so it gets
   its own app data;
-- keeps the complete Distill root under `<run-root>/home/.distill`;
+- keeps the complete Flock folder under `<run-root>/home/.flock`, a
+  fresh-install folder, never the user's `~/.flock` or `~/.distill`;
 - skips the legacy background subscription poll, which reads host CLI
   credentials; explicit provider tests still need isolated account fixtures;
 - listens on a random loopback port, requires the token on every command, and
   writes `{ "host", "port", "pid" }` to `<run-root>/app-test-driver.json` once
   it is ready;
-- reads an optional `DISTILL_E2E_RUNTIME_CONFIG` — a `runtime-config.json` in the
+- reads an optional `FLOCK_E2E_RUNTIME_CONFIG` — a `runtime-config.json` in the
   shape of `src-tauri/resources/runtime-config.json` — copied into the run
   root.
 
@@ -87,8 +88,8 @@ must be absolute and end in the run ID (which defaults to its last segment).
 Set the token yourself (32–128 letters or digits) so the relay can send it:
 
 ```powershell
-$env:DISTILL_E2E_MODE = "1"
-$env:DISTILL_E2E_RUN_ROOT = "$env:TEMP\distill-e2e\run-1"
+$env:FLOCK_E2E_MODE = "1"
+$env:FLOCK_E2E_RUN_ROOT = "$env:TEMP\flock-e2e\run-1"
 $env:APP_TEST_DRIVER_TOKEN = -join ((1..48) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Dev-Windows.ps1
 ```

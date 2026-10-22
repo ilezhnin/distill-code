@@ -1,55 +1,48 @@
 export const SILENT_NOTIFICATION_SOUND = "silent";
-export const DEFAULT_NOTIFICATION_SOUND = "distill-sounds-4.mp3";
+export const DEFAULT_NOTIFICATION_SOUND = "flock-sounds-4.mp3";
 
 export const NOTIFICATION_SOUNDS = [
   {
     id: DEFAULT_NOTIFICATION_SOUND,
     labelKey: "notifications.sounds.politeHonk",
-    resource: "distill-sounds-4.mp3",
-    url: new URL("../../../resources/distill-sounds-4.mp3", import.meta.url)
-      .href,
+    resource: "flock-sounds-4.mp3",
+    url: new URL("../../../resources/flock-sounds-4.mp3", import.meta.url).href,
   },
   {
-    id: "distill-sounds-0.mp3",
+    id: "flock-sounds-0.mp3",
     labelKey: "notifications.sounds.quickPeep",
-    resource: "distill-sounds-0.mp3",
-    url: new URL("../../../resources/distill-sounds-0.mp3", import.meta.url)
-      .href,
+    resource: "flock-sounds-0.mp3",
+    url: new URL("../../../resources/flock-sounds-0.mp3", import.meta.url).href,
   },
   {
-    id: "distill-sounds-1.mp3",
+    id: "flock-sounds-1.mp3",
     labelKey: "notifications.sounds.twinkle",
-    resource: "distill-sounds-1.mp3",
-    url: new URL("../../../resources/distill-sounds-1.mp3", import.meta.url)
-      .href,
+    resource: "flock-sounds-1.mp3",
+    url: new URL("../../../resources/flock-sounds-1.mp3", import.meta.url).href,
   },
   {
-    id: "distill-sounds-2.mp3",
+    id: "flock-sounds-2.mp3",
     labelKey: "notifications.sounds.dingDong",
-    resource: "distill-sounds-2.mp3",
-    url: new URL("../../../resources/distill-sounds-2.mp3", import.meta.url)
-      .href,
+    resource: "flock-sounds-2.mp3",
+    url: new URL("../../../resources/flock-sounds-2.mp3", import.meta.url).href,
   },
   {
-    id: "distill-sounds-3.mp3",
+    id: "flock-sounds-3.mp3",
     labelKey: "notifications.sounds.paidInBread",
-    resource: "distill-sounds-3.mp3",
-    url: new URL("../../../resources/distill-sounds-3.mp3", import.meta.url)
-      .href,
+    resource: "flock-sounds-3.mp3",
+    url: new URL("../../../resources/flock-sounds-3.mp3", import.meta.url).href,
   },
   {
-    id: "distill-sounds-5.mp3",
+    id: "flock-sounds-5.mp3",
     labelKey: "notifications.sounds.beakYeah",
-    resource: "distill-sounds-5.mp3",
-    url: new URL("../../../resources/distill-sounds-5.mp3", import.meta.url)
-      .href,
+    resource: "flock-sounds-5.mp3",
+    url: new URL("../../../resources/flock-sounds-5.mp3", import.meta.url).href,
   },
   {
-    id: "distill-sounds-6.mp3",
+    id: "flock-sounds-6.mp3",
     labelKey: "notifications.sounds.badNewsBird",
-    resource: "distill-sounds-6.mp3",
-    url: new URL("../../../resources/distill-sounds-6.mp3", import.meta.url)
-      .href,
+    resource: "flock-sounds-6.mp3",
+    url: new URL("../../../resources/flock-sounds-6.mp3", import.meta.url).href,
   },
 ] as const;
 
@@ -66,10 +59,27 @@ export function isNotificationSoundId(
   );
 }
 
+/** Prefix every bundled sound id shares (`flock-sounds-<n>.mp3`). */
+const SOUND_ID_PREFIX = "flock-sounds-";
+/**
+ * Prefix of the sound ids that builds before the Levocat Flock rename saved
+ * in the notification preferences. The sound files were renamed with the
+ * product, so a saved id that still names the old file is read as the
+ * renamed one instead of being reset to the default sound. The left spelling
+ * is a read-only compatibility literal; its unit test fails if a rename sweep
+ * rewrites it.
+ */
+const LEGACY_SOUND_ID_PREFIX = "distill-sounds-";
+
 export function normalizeNotificationSoundId(
   sound: unknown,
 ): NotificationSoundId {
-  return isNotificationSoundId(sound) ? sound : DEFAULT_NOTIFICATION_SOUND;
+  if (isNotificationSoundId(sound)) return sound;
+  if (typeof sound === "string" && sound.startsWith(LEGACY_SOUND_ID_PREFIX)) {
+    const renamed = `${SOUND_ID_PREFIX}${sound.slice(LEGACY_SOUND_ID_PREFIX.length)}`;
+    if (isNotificationSoundId(renamed)) return renamed;
+  }
+  return DEFAULT_NOTIFICATION_SOUND;
 }
 
 export function getNotificationSoundResource(

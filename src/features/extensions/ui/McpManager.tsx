@@ -276,7 +276,7 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
                 name: target.item.name,
                 provider: target.source
                   ? HARNESS_LABELS[target.source.harness]
-                  : "Distill",
+                  : "Flock",
               })}
             />
           </>
@@ -324,7 +324,7 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
                 <Card className="gap-0 py-0">
                   <CardContent className="px-5">
                     <SettingsRow
-                      label="Distill"
+                      label="Flock"
                       description={t("mcpManager.managedSource")}
                       details={selected.endpoint ?? selected.transport}
                       action={targetActions(
@@ -367,7 +367,7 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
                 ? [
                     {
                       id: selected.id,
-                      provider: "Distill",
+                      provider: "Flock",
                       result: latestItemDiagnostic(selected, diagnostics),
                     },
                   ]
@@ -714,7 +714,7 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
           {
             provider: removing?.source
               ? HARNESS_LABELS[removing.source.harness]
-              : "Distill",
+              : "Flock",
             source: removing?.source?.source.label ?? "",
           },
         )}

@@ -1,5 +1,5 @@
 /**
- * The conductor's own state, as files in the Distill folder (P24).
+ * The conductor's own state, as files in the Flock folder (P24).
  *
  * The graph, the waves and the telemetry were the last three stores keeping
  * operator state in `localStorage`, and they were the worst three to leave
@@ -20,18 +20,18 @@
  * asynchronous, and by then a session could already have registered a node.
  * So hydration *merges*: entries the folder knows about and memory does not
  * are added, and anything memory already holds wins. A first run migrates in
- * the other direction — `distillDocument` finds no file, writes the browser
+ * the other direction — `flockDocument` finds no file, writes the browser
  * copy into the folder and drops the browser copy — after which the
  * synchronous load reads an empty `localStorage` and the folder is the only
  * source there is.
  */
 
-import { isDesktopRuntime } from "@/shared/api/distillStore";
-import { distillDocument } from "@/shared/lib/distillDocument";
+import { isDesktopRuntime } from "@/shared/api/flockStore";
+import { flockDocument } from "@/shared/lib/flockDocument";
 
 import { notePersistFailure, type PersistScope } from "./persistHealth";
 
-/** Where each store's document lives under the Distill root. */
+/** Where each store's document lives under the Flock root. */
 export const CONDUCTOR_GRAPH_DOCUMENT = "conductor/graph.json";
 export const CONDUCTOR_WAVES_DOCUMENT = "conductor/waves.json";
 export const WAVE_TELEMETRY_DOCUMENT = "conductor/telemetry.json";
@@ -51,7 +51,7 @@ export function conductorDocument<T>(options: {
   parse: (raw: unknown) => T;
   serialize: (value: T) => unknown;
 }) {
-  const document = distillDocument<T>({
+  const document = flockDocument<T>({
     path: options.path,
     legacyStorageKey: options.legacyStorageKey,
     parse: options.parse,

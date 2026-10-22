@@ -3,59 +3,6 @@
 version = 4
 
 [[package]]
-name = "Distill"
-version = "0.6.2"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "dirs",
- "doctor",
- "dunce",
- "flate2",
- "futures-util",
- "hex",
- "ignore",
- "libc",
- "log",
- "mime_guess",
- "nucleo-matcher",
- "percent-encoding",
- "portable-pty",
- "reqwest",
- "rmcp",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "sysinfo",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-app-test-driver",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-distillctl",
- "tauri-plugin-log",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-window-state",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
- "toml 1.1.4+spec-1.1.0",
- "toml_edit 0.25.13+spec-1.1.0",
- "url",
- "uuid",
- "webview2-com",
- "windows-sys 0.59.0",
- "yaml_serde",
- "zip",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1256,27 +1203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "distill-monitor"
-version = "0.6.2"
-dependencies = [
- "clap",
- "fs2",
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "distillctl"
-version = "0.6.2"
-dependencies = [
- "clap",
- "indexmap 2.13.1",
- "serde",
- "serde_json",
- "ureq",
-]
-
-[[package]]
 name = "dlopen2"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1631,6 +1557,27 @@ dependencies = [
  "crc32fast",
  "miniz_oxide",
  "zlib-rs",
+]
+
+[[package]]
+name = "flock-monitor"
+version = "0.6.2"
+dependencies = [
+ "clap",
+ "fs2",
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "flockctl"
+version = "0.6.2"
+dependencies = [
+ "clap",
+ "indexmap 2.13.1",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -2840,6 +2787,59 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
  "spin",
+]
+
+[[package]]
+name = "levocat-flock"
+version = "0.6.2"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "dirs",
+ "doctor",
+ "dunce",
+ "flate2",
+ "futures-util",
+ "hex",
+ "ignore",
+ "libc",
+ "log",
+ "mime_guess",
+ "nucleo-matcher",
+ "percent-encoding",
+ "portable-pty",
+ "reqwest",
+ "rmcp",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "sysinfo",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-app-test-driver",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-flockctl",
+ "tauri-plugin-log",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 1.1.4+spec-1.1.0",
+ "toml_edit 0.25.13+spec-1.1.0",
+ "url",
+ "uuid",
+ "webview2-com",
+ "windows-sys 0.59.0",
+ "yaml_serde",
+ "zip",
 ]
 
 [[package]]
@@ -5545,7 +5545,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tauri-plugin-distillctl"
+name = "tauri-plugin-flockctl"
 version = "0.6.2"
 dependencies = [
  "axum",

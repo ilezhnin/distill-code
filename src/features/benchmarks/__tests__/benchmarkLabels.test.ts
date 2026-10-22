@@ -202,9 +202,9 @@ describe("attentionLabel", () => {
       }),
     ).toBe("sign in");
     for (const reason of [
-      "The Distill claude sign-in was not renewed (Account authorization is being changed; try again when it completes); the grant is kept. If it stays refused, sign in again in Settings > AI providers",
+      "The Flock claude sign-in was not renewed (Account authorization is being changed; try again when it completes); the grant is kept. If it stays refused, sign in again in Settings > AI providers",
       "the account's sign-in is being updated; this test waits for the update to finish",
-      "the Distill sign-in of this account renews once the tests running on it finish; this test starts then",
+      "the Flock sign-in of this account renews once the tests running on it finish; this test starts then",
     ]) {
       expect(
         attentionLabel(t, {

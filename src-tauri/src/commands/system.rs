@@ -379,7 +379,7 @@ pub async fn path_exists(path: String) -> bool {
 }
 
 /// Lets the `asset:` scheme serve files under the open chat's folders. The
-/// static scope covers only $HOME, $TEMP and the Distill root, while most
+/// static scope covers only $HOME, $TEMP and the Flock root, while most
 /// projects live on other drives, so images and artifacts in them failed to
 /// load. The renderer passes the folders it already trusts for the chat (its
 /// working folder and attached folders); anything that is not an existing,

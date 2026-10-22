@@ -18,8 +18,8 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { groupBrigadeNodesByHostMessage } from "@/features/conductor/brigadeAnchors";
 import {
   collectWavePlanSteps,
-  distillConductorTranscript,
-} from "@/features/conductor/distillConductorTranscript";
+  flockConductorTranscript,
+} from "@/features/conductor/flockConductorTranscript";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import type { RunStatus } from "@/features/conductor/types";
@@ -28,8 +28,8 @@ import { RawEventRail } from "@/features/conductor/ui/RawEventRail";
 import { cn } from "@/shared/lib/cn";
 import type { Message } from "@/shared/types/messages";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
-import { ActiveChatDistillIndicator } from "@/shared/ui/SessionActivityIndicator";
-import { LoadingDistill } from "./LoadingDistill";
+import { ActiveChatFlockIndicator } from "@/shared/ui/SessionActivityIndicator";
+import { LoadingFlock } from "./LoadingFlock";
 import { SidePanelShell } from "./SidePanelShell";
 import { VirtualMessageTimelineGate } from "./VirtualMessageTimelineGate";
 import {
@@ -39,7 +39,7 @@ import {
   type ChildChatTab,
 } from "../stores/childChatTabsStore";
 
-const CHILD_CHAT_WIDTH_STORAGE_KEY = "distill:child-chat-panel-width";
+const CHILD_CHAT_WIDTH_STORAGE_KEY = "flock:child-chat-panel-width";
 const EMPTY_MESSAGES: Message[] = [];
 
 /**
@@ -441,7 +441,7 @@ function ChildChatTranscript({
       grandchildren.length > 0 ||
       childNode?.role === "conductor" ||
       childNode?.role === "orchestrator"
-        ? distillConductorTranscript(messages, {
+        ? flockConductorTranscript(messages, {
             wavePlanLabel: t("conductor.wave.planSummary"),
           })
         : messages,
@@ -508,8 +508,8 @@ function ChildChatTranscript({
             data-testid="child-chat-activity"
             className="flex h-8 shrink-0 items-center gap-2 px-3"
           >
-            <ActiveChatDistillIndicator size={14} />
-            <LoadingDistill
+            <ActiveChatFlockIndicator size={14} />
+            <LoadingFlock
               chatState={chatState}
               className="mb-0 px-0"
               motionPreset="responding"

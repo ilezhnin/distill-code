@@ -15,6 +15,22 @@ import { emitSkillsChanged } from "../lib/skillsEvents";
 const SKILL_SOURCE_TYPE = "skill" as const;
 const BUILTIN_SKILL_SOURCE_TYPE = "builtinSkill" as const;
 
+/**
+ * Frontmatter `metadata` flags under which the app marks a skill it
+ * installed: the current key first, then the ones builds under the app's
+ * earlier names wrote, which a copy the startup rewrite has not reached
+ * still carries. A skill under any of them is the app's, and read-only.
+ */
+export const BUNDLED_SKILL_MARKER_KEYS = [
+  "flockBundled",
+  "distillBundled",
+  "berdBundled",
+] as const;
+
+function isBundledSkill(props: Record<string, unknown>): boolean {
+  return BUNDLED_SKILL_MARKER_KEYS.some((key) => props[key] === true);
+}
+
 export interface SkillProjectLink {
   id: string;
   name: string;
@@ -75,7 +91,7 @@ interface ListAgentSkillsResponse {
 
 export interface ListSkillsOptions {
   providerId?: string | null;
-  /** Set false when the caller already owns the Distill app-skill list (e.g. the
+  /** Set false when the caller already owns the Flock app-skill list (e.g. the
    *  chat controller's dedicated catalog effect) so it isn't fetched again
    *  only to be filtered out. Defaults to true. */
   includeAppSkills?: boolean;
@@ -156,7 +172,7 @@ function toSkillInfo(source: SkillSourceEntry): SkillInfo {
     sourceLabel:
       sourceKind === "global" ? "Personal" : projectName || "Project",
     projectLinks,
-    readonly: props.distillBundled === true,
+    readonly: isBundledSkill(props),
     color: readStoredColor(source.properties),
   };
 }
@@ -352,16 +368,16 @@ export async function createSkill(
 // Several surfaces list app skills at once when a chat mounts; those callers
 // pass `{ coalesce: true }` so a same-tick burst issues one IPC call. Callers
 // that must observe post-event data call plainly (the skills-layer `fresh`
-// flag, threaded through by `fetchDistillAppSkills`, translates to that), so the
+// flag, threaded through by `fetchFlockAppSkills`, translates to that), so the
 // shared slot is replaced instead of handing back an invoke that started
 // before the change.
-export const listDistillAppSkills = shareInFlight(
+export const listFlockAppSkills = shareInFlight(
   async (): Promise<SkillInfo[]> => {
     if (!isDesktopRuntime()) {
       return [];
     }
     const response = await invoke<ListAgentSkillsResponse>(
-      "list_distill_app_skills",
+      "list_flock_app_skills",
     );
     return response.skills.map((skill) => toAgentSkillInfo(skill, null));
   },
@@ -475,7 +491,7 @@ export async function updateSkill(
 ): Promise<SkillInfo> {
   const client = await getClient();
   // properties replaces the full bag, so only send fields skills own
-  // client-side. projectDir/projectName/distillBundled and legacy
+  // client-side. projectDir/projectName/flockBundled and legacy
   // gooseInternalBundled are derived by the backend at list time, not
   // persisted through this path.
   const response = await client.host.sourcesUpdate({

@@ -1,11 +1,11 @@
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useCallback, useSyncExternalStore } from "react";
 
-export const AUTO_ARCHIVE_STORAGE_KEY = "distill:auto-archive-unpinned-after";
+export const AUTO_ARCHIVE_STORAGE_KEY = "flock:auto-archive-unpinned-after";
 export const AUTO_ARCHIVE_CHANGED_EVENT =
-  "distill:auto-archive-unpinned-after-changed";
+  "flock:auto-archive-unpinned-after-changed";
 export const AUTO_ARCHIVE_CONSENT_STORAGE_KEY =
-  "distill:auto-archive-unpinned-consented";
+  "flock:auto-archive-unpinned-consented";
 
 export type AutoArchiveAfter =
   | "never"

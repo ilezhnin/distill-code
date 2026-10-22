@@ -11,7 +11,7 @@ import {
   type PendingOwnedTaskIntentV2,
 } from "./ownedTaskIntent";
 
-const key = "distill.pendingOwnedTaskIntent.v1";
+const key = "flock.pendingOwnedTaskIntent.v1";
 const intent: PendingOwnedTaskIntent = {
   kind: "chat",
   request: {

@@ -58,7 +58,7 @@ import {
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
-import type { WaveStep } from "./distillWave";
+import type { WaveStep } from "./flockWave";
 import { resolvePersonaForRole } from "./roleCatalog";
 import type { WaveStepModelCheck } from "./waveEngine";
 

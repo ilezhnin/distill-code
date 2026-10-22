@@ -48,7 +48,7 @@ export interface AgentVersionInfo {
   // `'updateMain'` for the main CLI readout, `'updateBridge'` for the ACP
   // bridge readout. Always paired with `updateCommand`.
   updateFixType?: FixType | null;
-  // True when this binary resolves from Distill's managed ACP tools dir rather
+  // True when this binary resolves from Flock's managed ACP tools dir rather
   // than a user install. Stamped by the doctor
   // crate alongside `installSource === "bundled"`.
   bundled?: boolean | null;

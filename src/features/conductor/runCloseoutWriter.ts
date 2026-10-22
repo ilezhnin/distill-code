@@ -3,7 +3,7 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { i18n } from "@/shared/i18n";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
-import { isDesktopRuntime } from "@/shared/api/distillStore";
+import { isDesktopRuntime } from "@/shared/api/flockStore";
 import { invoke } from "@tauri-apps/api/core";
 
 import { useConductorGraphStore } from "./conductorGraphStore";

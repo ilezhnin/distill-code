@@ -1,5 +1,5 @@
 #!/bin/sh
-# pre-push hook: while `distill.privateBenchmarkHistoryPending` is true, older
+# pre-push hook: while `flock.privateBenchmarkHistoryPending` is true, older
 # local tags and branches may still carry history that was removed from the
 # published repository (docs/benchmark-authoring.md). Outgoing commits must grow
 # from a reviewed, already published base. Without that local base, retain the
@@ -9,13 +9,25 @@
 #   <local ref> <local sha> <remote ref> <remote sha>
 # The first argument is the actual push URL, forwarded by lefthook. Only new
 # branches need a remote lookup; existing branches use Git's advertised tip.
-value=$(git config --bool --get distill.privateBenchmarkHistoryPending 2>/dev/null)
+# The settings moved from the distill.* section to flock.*; a value left under
+# the old section by an earlier build still counts until it is moved.
+read_setting() {
+  value=$(git config "$1" --get "flock.$2" 2>/dev/null)
+  status=$?
+  if [ "$status" -eq 1 ]; then
+    value=$(git config "$1" --get "distill.$2" 2>/dev/null)
+    status=$?
+  fi
+  printf '%s' "$value"
+  return $status
+}
+value=$(read_setting --bool privateBenchmarkHistoryPending)
 status=$?
 if [ "$status" -eq 1 ] || [ "$value" = "false" ]; then
   exit 0
 fi
 refuse() {
-  echo "Push refused: $1 History remediation is pending (distill.privateBenchmarkHistoryPending)." >&2
+  echo "Push refused: $1 History remediation is pending (flock.privateBenchmarkHistoryPending)." >&2
   fail=1
 }
 fail=0
@@ -24,7 +36,7 @@ if [ "$status" -ne 0 ]; then
   refuse "the setting is not a boolean."
   exit 1
 fi
-reviewed_base=$(git config --get distill.privateBenchmarkReviewedBase 2>/dev/null)
+reviewed_base=$(read_setting --no-type privateBenchmarkReviewedBase)
 status=$?
 if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
   refuse "the reviewed base setting cannot be read."

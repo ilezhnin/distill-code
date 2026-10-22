@@ -24,7 +24,7 @@ import {
   type SessionDispatchTargetLease,
 } from "../lib/sessionTargetCoordinator";
 import { registerForegroundQueueOwner } from "../lib/foregroundQueueOwnership";
-import { isDistillctlCrossSessionQueuedMessage } from "../lib/queuedMessageOrigin";
+import { isFlockctlCrossSessionQueuedMessage } from "../lib/queuedMessageOrigin";
 import type { QueuedMessageRecord } from "../stores/chatStore";
 import type { ChatSendOptions } from "../types";
 import type { SessionExecutionTarget } from "../lib/sessionExecutionTarget";
@@ -179,7 +179,7 @@ export function useMessageQueue(
         ) ||
         queuedMsg.restored ||
         queuedMsg.releasedFromDeferred ||
-        isDistillctlCrossSessionQueuedMessage(queuedMsg)
+        isFlockctlCrossSessionQueuedMessage(queuedMsg)
       ) {
         return false;
       }

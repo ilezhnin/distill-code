@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
-import { getAppNavigationController } from "@/features/distillctl/navigation";
+import { getAppNavigationController } from "@/features/flockctl/navigation";
 import { resetAgentBuilderSourceLifecycleForTests } from "@/features/agents/lib/agentBuilderSourceLifecycle";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -762,7 +762,7 @@ describe("AppShell global navigation", () => {
       id: "session-1",
       title: "Active chat",
       executionTarget: { harnessId: "claude-acp" },
-      workingDir: "~/.distill/artifacts",
+      workingDir: "~/.flock/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -855,8 +855,8 @@ describe("AppShell global navigation", () => {
     expect(order).toEqual(["archive", "stop-terminals"]);
   });
 
-  it("never stops the chat's terminals for a distillctl archive", async () => {
-    // distillctl reaches the same `archiveChat`, is declared `destructive: false`
+  it("never stops the chat's terminals for a flockctl archive", async () => {
+    // flockctl reaches the same `archiveChat`, is declared `destructive: false`
     // and promises in its help that it discards nothing local. Killing a dev
     // server, a build or a migration is unrecoverable (unarchive restores no
     // shell), so only the operator's own Archive may do it. `session archive`
@@ -1242,7 +1242,7 @@ describe("AppShell global navigation", () => {
       expect(mockAcpPrepareSession).toHaveBeenCalledWith(
         "created-session",
         "codex-acp",
-        "~/.distill/artifacts",
+        "~/.flock/artifacts",
         expect.objectContaining({ modelId: "gpt-5.4-mini" }),
       );
     });
@@ -1261,9 +1261,7 @@ describe("AppShell global navigation", () => {
       });
     });
     expect(
-      JSON.parse(
-        localStorage.getItem("distill:preferredModelsByAgent") ?? "{}",
-      ),
+      JSON.parse(localStorage.getItem("flock:preferredModelsByAgent") ?? "{}"),
     ).toMatchObject({
       "codex-acp": {
         modelId: "gpt-5.4-mini",
@@ -1307,7 +1305,7 @@ describe("AppShell global navigation", () => {
   it("bootstraps Home with remembered settings as an automatic fallback", async () => {
     useChatSessionStore.setState({ hasHydratedSessions: true });
     window.localStorage.setItem(
-      "distill:preferredModelsByAgent",
+      "flock:preferredModelsByAgent",
       JSON.stringify({
         "claude-acp": {
           modelId: "claude-opus-5",
@@ -1344,7 +1342,7 @@ describe("AppShell global navigation", () => {
       createdAt: "2026-09-13T00:00:00Z",
       updatedAt: "2026-09-13T00:00:00Z",
       messageCount: 0,
-      workingDir: "~/.distill/artifacts",
+      workingDir: "~/.flock/artifacts",
       executionTargetSource: "acp",
       executionTarget: {
         harnessId: "claude-acp",
@@ -1361,7 +1359,7 @@ describe("AppShell global navigation", () => {
     const unregister = registerPreparedSession(
       session.id,
       "claude-acp",
-      "~/.distill/artifacts",
+      "~/.flock/artifacts",
       "example-model",
     );
     try {
@@ -1383,7 +1381,7 @@ describe("AppShell global navigation", () => {
   it("opens a chat sent from the global composer on the Home selection's model, effort and fast mode in session/new", async () => {
     mockGetPlatform.mockReturnValue("windows");
     window.localStorage.setItem(
-      "distill:preferredModelsByAgent",
+      "flock:preferredModelsByAgent",
       JSON.stringify({
         "claude-acp": {
           modelId: "claude-opus-5",

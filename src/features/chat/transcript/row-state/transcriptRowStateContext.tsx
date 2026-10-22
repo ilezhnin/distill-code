@@ -84,7 +84,7 @@ const ACTIVE_STREAM_SOURCE_ID = "message-stream";
 const ACTIVE_TOOL_SOURCE_ID = "active-tool";
 
 export const TRANSCRIPT_SELECTED_TEXT_CONTEXT_MENU_EVENT =
-  "distill:transcript-selected-text-context-menu";
+  "flock:transcript-selected-text-context-menu";
 
 export interface TranscriptSelectedTextContextMenuEventDetail {
   open: boolean;

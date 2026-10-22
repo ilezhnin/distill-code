@@ -21,7 +21,7 @@ before publishing details.
 
 ## Scope
 
-In scope: the desktop app, the bundled `distillctl` and `distill-monitor`
+In scope: the desktop app, the bundled `flockctl` and `flock-monitor`
 command-line tools, the managed agent bridges the app installs, the benchmark
 sandbox, and this repository's build and release scripts.
 

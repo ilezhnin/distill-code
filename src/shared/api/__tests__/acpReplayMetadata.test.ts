@@ -57,14 +57,14 @@ describe("getReplayUserMetadata", () => {
         _meta: {
           distill: {
             origin: "distillctl_cross_session",
-            distillSenderLabel: "distill-monitor",
+            distillSenderLabel: "flock-monitor",
             distillDeliveryId: "monitor-event-1",
           },
         },
       }),
     ).toEqual({
       origin: "distillctl_cross_session",
-      distillSenderLabel: "distill-monitor",
+      distillSenderLabel: "flock-monitor",
       distillDeliveryId: "monitor-event-1",
     });
   });

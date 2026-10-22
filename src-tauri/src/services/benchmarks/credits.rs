@@ -147,7 +147,7 @@ pub async fn observe(root: &Path, account: &str, balance: f64, observed_at: i64)
     let target = root.join(LEDGER);
     tokio::task::spawn_blocking(move || {
         let temporary = target.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
-        crate::commands::distill_store::write_file_synced(&temporary, contents.as_bytes())
+        crate::commands::flock_store::write_file_synced(&temporary, contents.as_bytes())
             .and_then(|()| std::fs::rename(&temporary, &target))
             .inspect_err(|_| {
                 let _ = std::fs::remove_file(&temporary);

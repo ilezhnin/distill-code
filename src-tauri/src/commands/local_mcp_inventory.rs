@@ -141,7 +141,7 @@ pub(crate) fn effective_workspace_paths(
 ) -> Result<Vec<String>, String> {
     let paths = workspace_paths.unwrap_or_default();
     if paths.is_empty() {
-        Ok(vec![crate::services::distill_root::app_root(app)?
+        Ok(vec![crate::services::flock_root::app_root(app)?
             .join("artifacts")
             .to_string_lossy()
             .into_owned()])
@@ -162,7 +162,7 @@ fn list_local_mcp_inventory_blocking(workspace_paths: &[String]) -> Result<McpIn
     })
 }
 
-/// Claude Code config files Distill passively inspects. Local-project MCPs do not
+/// Claude Code config files Flock passively inspects. Local-project MCPs do not
 /// live in a separate workspace file; they are selected from the active
 /// workspace records in `~/.claude.json` during collection.
 fn claude_code_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
@@ -186,9 +186,9 @@ fn claude_code_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
     files
 }
 
-/// The complete allowlist of Codex config locations Distill reads, to show
+/// The complete allowlist of Codex config locations Flock reads, to show
 /// what the Codex CLI will load. It never writes them: they are the CLI's
-/// configuration, not Distill data (see `docs/distill-root-layout.md`).
+/// configuration, not Flock data (see `docs/flock-root-layout.md`).
 pub fn codex_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
     let mut files = Vec::new();
     if let Some(home) = home_dir() {

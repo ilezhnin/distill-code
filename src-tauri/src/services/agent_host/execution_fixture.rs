@@ -67,20 +67,20 @@ fn validate(root: &Path, manifest_path: &Path) -> Result<Fixture, String> {
     if !manifest_path.is_absolute() {
         return Err("fixture manifest must be absolute".into());
     }
-    crate::services::distill_root::reject_document_links(&declared_root, manifest_path)?;
+    crate::services::flock_root::reject_document_links(&declared_root, manifest_path)?;
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let path = manifest_path.canonicalize().map_err(|e| e.to_string())?;
     if !path.starts_with(&root) {
         return Err("fixture manifest is outside the isolated run root".into());
     }
-    crate::services::distill_root::reject_document_links(&root, &path)?;
+    crate::services::flock_root::reject_document_links(&root, &path)?;
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     if bytes.len() > 16 * 1024 {
         return Err("fixture manifest exceeds its cap".into());
     }
     let mut manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let declared_entrypoint = manifest.entrypoint.clone();
-    crate::services::distill_root::reject_document_links(&declared_root, &declared_entrypoint)?;
+    crate::services::flock_root::reject_document_links(&declared_root, &declared_entrypoint)?;
     if manifest.schema_version != 1
         || manifest.kind != "invented-native-text"
         || manifest.sha256.len() != 64
@@ -94,7 +94,7 @@ fn validate(root: &Path, manifest_path: &Path) -> Result<Fixture, String> {
     if !manifest.entrypoint.starts_with(&root) {
         return Err("fixture runtime is outside the isolated run root".into());
     }
-    crate::services::distill_root::reject_document_links(&root, &manifest.entrypoint)?;
+    crate::services::flock_root::reject_document_links(&root, &manifest.entrypoint)?;
     if file_digest(&manifest.entrypoint)? != manifest.sha256 {
         return Err("fixture runtime bytes differ from the truthful manifest".into());
     }
@@ -112,7 +112,7 @@ fn validate(root: &Path, manifest_path: &Path) -> Result<Fixture, String> {
 }
 
 pub(crate) fn initialize(mode: &crate::services::e2e_mode::E2eMode) -> Result<(), String> {
-    let Some(path) = std::env::var_os("DISTILL_E2E_NATIVE_FIXTURE_MANIFEST") else {
+    let Some(path) = std::env::var_os("FLOCK_E2E_NATIVE_FIXTURE_MANIFEST") else {
         return Ok(());
     };
     let fixture = validate(mode.driver_run_root(), Path::new(&path))?;
@@ -126,7 +126,7 @@ pub(crate) fn verified(path: &Path) -> Result<Option<String>, String> {
     let Some(fixture) = FIXTURE.get() else {
         return Ok(None);
     };
-    crate::services::distill_root::reject_document_links(
+    crate::services::flock_root::reject_document_links(
         &fixture.declared_root,
         &fixture.declared_entrypoint,
     )?;

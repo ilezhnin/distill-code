@@ -1,7 +1,7 @@
 import { isRecord } from "@/shared/lib/isRecord";
 export const TRANSCRIPT_DIAGNOSTICS_SCHEMA_VERSION = "2026-06-04.v2";
 
-export const TRANSCRIPT_DIAGNOSTICS_EVENT = "distill:transcript-diagnostics";
+export const TRANSCRIPT_DIAGNOSTICS_EVENT = "flock:transcript-diagnostics";
 
 const LOGICAL_ROW_ESTIMATE_BLOCK_SIZE_PX = 1_400;
 

@@ -1009,7 +1009,7 @@ export const MessageBubble = memo(function MessageBubble({
   // difference between a steer that looks ignored and one that is waiting.
   const isPendingSteerMessage =
     isUser && message.metadata?.delivery === "steering";
-  const isDistillctlCrossSessionMessage =
+  const isFlockctlCrossSessionMessage =
     isUser && message.metadata?.origin === "distillctl_cross_session";
   // A brigade digest is a real cross-session user message; contract 3 says it
   // renders as a compact card rather than a chat bubble. The marker lives in
@@ -1024,7 +1024,7 @@ export const MessageBubble = memo(function MessageBubble({
     isUser && isDigestMessage(message)
       ? parseDigestEnvelope(getTextContent(message))
       : null;
-  const distillSenderLabel = isDistillctlCrossSessionMessage
+  const distillSenderLabel = isFlockctlCrossSessionMessage
     ? message.metadata?.distillSenderLabel
     : undefined;
   const timestamp = (
@@ -1138,20 +1138,20 @@ export const MessageBubble = memo(function MessageBubble({
                   : "w-full",
               )}
             >
-              {isDistillctlCrossSessionMessage ||
+              {isFlockctlCrossSessionMessage ||
               isSteeredMessage ||
               isPendingSteerMessage ? (
                 <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
-                  {isDistillctlCrossSessionMessage ? (
+                  {isFlockctlCrossSessionMessage ? (
                     <span
-                      data-role="distillctl-cross-session-message-label"
+                      data-role="flockctl-cross-session-message-label"
                       className="leading-4"
                     >
                       {distillSenderLabel
-                        ? t("message.distillctlCrossSessionNamedLabel", {
+                        ? t("message.flockctlCrossSessionNamedLabel", {
                             sender: distillSenderLabel,
                           })
-                        : t("message.distillctlCrossSessionLabel")}
+                        : t("message.flockctlCrossSessionLabel")}
                     </span>
                   ) : null}
                   {isSteeredMessage ? (

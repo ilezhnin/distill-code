@@ -45,7 +45,7 @@
     "dialog:allow-save",
     "clipboard-manager:allow-write-text",
     "app-test-driver:default",
-    "distillctl:default",
+    "flockctl:default",
     "notification:default"
   ]
 }

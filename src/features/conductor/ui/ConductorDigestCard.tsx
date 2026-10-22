@@ -15,7 +15,7 @@ import { BrigadeStatusGlyph } from "./BrigadeChip";
  * what wakes the parent's model — but it is not something the operator typed,
  * and rendering a wall of machine-facing report text as a chat bubble makes
  * the conversation unreadable. Contract 3 of the combined plan says card; the
- * original Distill's feed says the card should read as *the workers speaking*,
+ * original Flock's feed says the card should read as *the workers speaking*,
  * so each report is projected into its own sub-bubble: avatar, worker name,
  * status verb, and the report body under it.
  *
@@ -156,7 +156,7 @@ export function ConductorDigestCard({
  * One worker's report as a feed sub-bubble.
  *
  * Collapsed, the body is clamped to two lines — enough to read the opening of
- * the summary, the way the original Distill's feed previews an agent bubble.
+ * the summary, the way the original Flock's feed previews an agent bubble.
  * Expanded, it is the report verbatim. The status dot reuses the brigade
  * chips' glyph so "what happened to this worker" looks the same wherever it
  * appears.

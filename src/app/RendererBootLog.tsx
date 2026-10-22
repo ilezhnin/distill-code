@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { logRendererEvent } from "@/shared/api/rendererLog";
 
-const LAST_BOOT_KEY = "distill.renderer.lastBootAt";
+const LAST_BOOT_KEY = "flock.renderer.lastBootAt";
 
 /**
  * If two production boots happen within this window the renderer likely
@@ -50,7 +50,7 @@ function reportBoot(): void {
   }
 }
 
-/** Headless component that records each renderer (re)boot in `distill.log`. */
+/** Headless component that records each renderer (re)boot in `flock.log`. */
 export function RendererBootLog() {
   useEffect(() => {
     reportBoot();

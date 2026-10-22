@@ -78,7 +78,7 @@ enum SetupPhase {
     Installing,
     Authenticating,
     SigningOut,
-    /// Downloading/installing the Distill-managed Node.js runtime an npm-backed
+    /// Downloading/installing the Flock-managed Node.js runtime an npm-backed
     /// fix is about to run on.
     PreparingRuntime,
 }
@@ -201,7 +201,7 @@ pub struct SetupPlan {
     /// failure against the absent doctor check.
     #[serde(default)]
     verify_install: bool,
-    /// Whether Distill bundles this provider's ACP bridge. The bridge vendors the
+    /// Whether Flock bundles this provider's ACP bridge. The bridge vendors the
     /// full harness CLI, so it is the provider's only binary and the doctor
     /// crate reports it under `path`. The frontend readiness gate
     /// (`readinessFromReport`) treats a bundled-bridge provider with no
@@ -405,7 +405,7 @@ async fn find_check_with_options(
     {
         return Ok(check);
     }
-    // Agents the crate doesn't know are Distill's own local checks.
+    // Agents the crate doesn't know are Flock's own local checks.
     crate::commands::doctor::run_local_agent_check(
         &target,
         &managed_acp_tools::provider_env(app).await,
@@ -432,7 +432,7 @@ async fn run_crate_check_report(
             offline: false,
             env: None,
             // The crate labels binaries resolving from this dir as bundled and
-            // offers no registry install/update fix for them — Distill installs
+            // offers no registry install/update fix for them — Flock installs
             // and upgrades these bridges itself (the startup reconciler floats
             // them to the latest version), so the crate must not nag the user
             // to update them manually.
@@ -1016,7 +1016,7 @@ async fn run_fix(
         return run_managed_install(app, registry, provider_id, &log_tag).await;
     }
 
-    // npm-backed fixes run the managed npm into the Distill-private prefix, so
+    // npm-backed fixes run the managed npm into the Flock-private prefix, so
     // the managed Node runtime must exist before the command does.
     let resolved_command = command_override
         .clone()
@@ -1247,7 +1247,7 @@ async fn run_managed_install(
     result
 }
 
-/// Make sure the Distill-managed Node.js runtime is installed before an
+/// Make sure the Flock-managed Node.js runtime is installed before an
 /// npm-backed fix runs. Quiet no-op when the pinned runtime is already
 /// healthy; otherwise the operation enters the visible `preparingRuntime`
 /// phase, streams download/extract progress into the output buffer, and
@@ -1270,7 +1270,7 @@ async fn ensure_managed_runtime(
         app,
         registry,
         provider_id,
-        &format!("Installing Distill-managed Node.js {version}"),
+        &format!("Installing Flock-managed Node.js {version}"),
     );
 
     let app_for_lines = app.clone();

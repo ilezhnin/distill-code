@@ -292,7 +292,7 @@ pub struct BenchmarkState {
 }
 impl BenchmarkState {
     pub async fn start_existing(&self, app: &tauri::AppHandle) -> Result<()> {
-        let root = super::distill_root::app_root(app)
+        let root = super::flock_root::app_root(app)
             .map_err(|e| BenchmarkError::new("storage_unavailable", e))?;
         if root.join("benchmarks/benchmarks.db").is_file() {
             self.get(app).await?;
@@ -302,7 +302,7 @@ impl BenchmarkState {
     pub async fn get(&self, app: &tauri::AppHandle) -> Result<Arc<BenchmarkService>> {
         self.service
             .get_or_try_init(|| async {
-                let root = super::distill_root::app_root(app)
+                let root = super::flock_root::app_root(app)
                     .map_err(|e| BenchmarkError::new("storage_unavailable", e))?
                     .join("benchmarks");
                 let store = Store::open(&root).await?;

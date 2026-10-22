@@ -1,5 +1,5 @@
 # Cargo features for the full dev/CI posture of the app crate.
-app_features := "distillctl,app-test-driver"
+app_features := "flockctl,app-test-driver"
 
 # This wall-clock comparison must not compete with the rest of the test suite.
 turn_seat_perf_test := "services::benchmarks::runner::turn_seat_tests::handing_the_seat_on_takes_the_checks_off_a_lanes_path"
@@ -26,7 +26,7 @@ default:
 bootstrap-windows mode="check":
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Bootstrap-Windows.ps1 -Mode "{{ mode }}"
 
-# Report native Windows readiness for first-milestone Distill verification.
+# Report native Windows readiness for first-milestone Flock verification.
 doctor-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Doctor-Windows.ps1
 
@@ -42,7 +42,7 @@ prune-build-cache *ARGS:
 setup-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Setup-Windows.ps1
 
-# Launch the native Windows Tauri dev app with distillctl.exe.
+# Launch the native Windows Tauri dev app with flockctl.exe.
 dev-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Dev-Windows.ps1
 
@@ -67,16 +67,16 @@ test-windows-dev:
 
 # ── Build & Check ────────────────────────────────────────────
 
-# Run the frontend non-test checks: design-system guardrails, distillctl contract freshness, formatting, lint, i18n, bundled agents, and TypeScript.
-check: design-system-check distillctl-contract-check frontend-fmt-check lint i18n-check bundled-agents-check typecheck
+# Run the frontend non-test checks: design-system guardrails, flockctl contract freshness, formatting, lint, i18n, bundled agents, and TypeScript.
+check: design-system-check flockctl-contract-check frontend-fmt-check lint i18n-check bundled-agents-check typecheck
 
-# Regenerate the distillctl CLI contract artifacts from the command registry.
-distillctl-contract-generate:
-    pnpm generate:distillctl-contract
+# Regenerate the flockctl CLI contract artifacts from the command registry.
+flockctl-contract-generate:
+    pnpm generate:flockctl-contract
 
-# Check that the generated distillctl contract artifacts are up to date.
-distillctl-contract-check:
-    {{ dev_tool }} pnpm generate:distillctl-contract --check
+# Check that the generated flockctl contract artifacts are up to date.
+flockctl-contract-check:
+    {{ dev_tool }} pnpm generate:flockctl-contract --check
 
 # Format frontend and Tauri/Rust files.
 fmt:
@@ -105,7 +105,7 @@ design-system-manifest-check:
 design-system-audit:
     {{ dev_tool }} pnpm design-system:audit
 
-# Check that app color usage follows the shadcn + Distill token contract.
+# Check that app color usage follows the shadcn + Flock token contract.
 design-system-tokens:
     {{ dev_tool }} pnpm design-system:tokens
 
@@ -163,10 +163,10 @@ _tauri-cargo-windows *ARGS:
     Assert-WindowsHost
     Update-SessionPathFromRegistry
     Assert-MsvcEnvironment
-    Set-Location (Join-Path (Get-DistillRepoRoot) "src-tauri")
+    Set-Location (Join-Path (Get-FlockRepoRoot) "src-tauri")
     $env:CARGO_TARGET_DIR = Get-TauriCargoTargetDir
     $env:TAURI_CONFIG = '{"bundle":{"externalBin":[],"resources":[]}}'
-    & (Join-Path (Get-DistillRepoRoot) "scripts/windows/Invoke-Tauri-Cargo-Windows.ps1") @cargoArguments
+    & (Join-Path (Get-FlockRepoRoot) "scripts/windows/Invoke-Tauri-Cargo-Windows.ps1") @cargoArguments
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Run Rust clippy with warnings denied. `--all-targets` lints test code too,
@@ -175,9 +175,9 @@ _tauri-cargo-windows *ARGS:
 clippy:
     just _tauri-cargo-windows clippy --all-targets -- -D warnings
     just _tauri-cargo-windows clippy --all-targets --features {{ app_features }} -- -D warnings
-    just _tauri-cargo-windows clippy --all-targets -p distillctl -- -D warnings
-    just _tauri-cargo-windows clippy --all-targets -p distill-monitor -- -D warnings
-    just _tauri-cargo-windows clippy --all-targets -p tauri-plugin-distillctl --features server -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p flockctl -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p flock-monitor -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p tauri-plugin-flockctl --features server -- -D warnings
     just _tauri-cargo-windows clippy --all-targets -p tauri-plugin-app-test-driver -- -D warnings
 
 # Build the frontend.
@@ -190,17 +190,17 @@ tauri-check:
     just tauri-check-windows
 
 # Run the Rust tests with external sidecars disabled: the app library's own
-# unit tests, then the distillctl plugin, CLI and monitor crates. The app library
+# unit tests, then the flockctl plugin, CLI and monitor crates. The app library
 # runs with the full app feature set, so a test behind `#[cfg(feature = ...)]`
-# (distillctl, app-test-driver) is actually executed instead of compiled away.
+# (flockctl, app-test-driver) is actually executed instead of compiled away.
 [windows]
 tauri-test:
     just _tauri-cargo-windows test --lib --features {{ app_features }} -- --skip {{ turn_seat_perf_test }}
     just _tauri-cargo-windows test --lib --features {{ app_features }} {{ turn_seat_perf_test }} -- --exact --test-threads=1
-    just _tauri-cargo-windows test -p tauri-plugin-distillctl --features server
+    just _tauri-cargo-windows test -p tauri-plugin-flockctl --features server
     just _tauri-cargo-windows test -p tauri-plugin-app-test-driver
-    just _tauri-cargo-windows test -p distillctl
-    just _tauri-cargo-windows test -p distill-monitor
+    just _tauri-cargo-windows test -p flockctl
+    just _tauri-cargo-windows test -p flock-monitor
 
 # Check npm and Rust dependencies against published advisories, the same way CI
 # does. Both halves need network access; cargo-audit must be installed.
@@ -224,7 +224,7 @@ transcript-test:
 
 # Native x64 MSVC CI gate for the managed Node runtime + ACP bridge.
 # Runs the managed_node / managed_acp_tools module tests (including the
-# DISTILL_WS2_NATIVE_GATE real-ZIP gate) and Windows clippy in both feature
+# FLOCK_WS2_NATIVE_GATE real-ZIP gate) and Windows clippy in both feature
 # configurations. Kept for local and release validation.
 ci-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/CI-Windows.ps1
@@ -276,9 +276,9 @@ bump-node-runtime *ARGS:
 
 # ── Utilities ────────────────────────────────────────────────
 
-# Scaffold a new distillctl command (see .agents/skills/distillctl-new-command/SKILL.md).
+# Scaffold a new flockctl command (see docs/flockctl-architecture.md).
 new-command noun verb:
-    node scripts/new-distillctl-command.mjs {{ noun }} {{ verb }}
+    node scripts/new-flockctl-command.mjs {{ noun }} {{ verb }}
 
 # Same broken multi-argument shebang as _tauri-cargo-windows; see there.
 [windows]

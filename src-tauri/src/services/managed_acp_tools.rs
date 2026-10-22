@@ -1,8 +1,8 @@
-//! Distill-managed ACP tool installs.
+//! Flock-managed ACP tool installs.
 //!
-//! Distill owns both sides of every npm-backed agent install: the managed Node
+//! Flock owns both sides of every npm-backed agent install: the managed Node
 //! runtime (`managed_node`) supplies `node`/`npm`, and everything npm writes
-//! lands in Distill-private directories under `<app-data>/packages` instead of
+//! lands in Flock-private directories under `<app-data>/packages` instead of
 //! the host's global prefix. Two install families live here:
 //!
 //! - **Private npm prefix** (`packages/npm-prefix`): the doctor crate's
@@ -24,11 +24,11 @@
 //!   PATH required) and records the installed version in `packages/state.json`.
 //!   The startup reconciler (`acp_tools_reconciler`) runs this for every
 //!   managed bridge on launch, so a new bridge release ships to users — after
-//!   a pin bump — the next time Distill starts. A publisher/registry compromise
+//!   a pin bump — the next time Flock starts. A publisher/registry compromise
 //!   cannot substitute any package, root or transitive, without failing npm's
 //!   own integrity check against the checked-in lockfile.
 //!
-//! `DISTILL_ACP_TOOLS_DIR` stays honored as a dev/bridge-developer override: when
+//! `FLOCK_ACP_TOOLS_DIR` stays honored as a dev/bridge-developer override: when
 //! set, managed resolution short-circuits (no managed tools, no shim dir, no
 //! installs) so the override dir is the one source of bridge binaries.
 
@@ -44,7 +44,7 @@ use crate::services::{env_key, managed_node};
 /// Dev/bridge-developer override: a directory of bridge binaries that
 /// replaces all managed resolution (no managed tools, no shim dir, no
 /// installs).
-pub const ACP_TOOLS_DIR_ENV: &str = "DISTILL_ACP_TOOLS_DIR";
+pub const ACP_TOOLS_DIR_ENV: &str = "FLOCK_ACP_TOOLS_DIR";
 
 /// Pinned bridge installs download ~70-95 MB of packages through the
 /// registry; a hung npm must not wedge the install mutex forever.
@@ -63,17 +63,17 @@ const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// changed version on any bump; nothing here is hand-editable.
 const ACP_TOOLS_LOCK_JSON: &str = include_str!("../../../acp-tools.lock.json");
 
-/// `<app-data>/packages` — the root every Distill-managed npm asset (node
+/// `<app-data>/packages` — the root every Flock-managed npm asset (node
 /// runtime, npm prefix, managed bridge installs, and bin shims) lives under.
 /// Named `packages` rather than `acp` because npm pulls in dependencies that
 /// are not themselves ACP bridges (and the Node runtime lives here too).
 pub fn managed_packages_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
-    crate::services::distill_root::app_root(app)
+    crate::services::flock_root::app_root(app)
         .ok()
         .map(|dir| dir.join("cache").join("packages"))
 }
 
-/// The Distill-private npm global prefix, `<app-data>/packages/npm-prefix`.
+/// The Flock-private npm global prefix, `<app-data>/packages/npm-prefix`.
 pub fn npm_prefix_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     managed_packages_root(app).map(|dir| dir.join("npm-prefix"))
 }
@@ -96,9 +96,9 @@ pub fn npm_global_bin_dir(prefix: &Path) -> PathBuf {
     }
 }
 
-/// `<app-data>/packages/bin` — the Distill-written shims for managed bridges.
+/// `<app-data>/packages/bin` — the Flock-written shims for managed bridges.
 /// `None` when this build does not manage bridges or while the
-/// `DISTILL_ACP_TOOLS_DIR` dev override is active, so stale managed shims cannot
+/// `FLOCK_ACP_TOOLS_DIR` dev override is active, so stale managed shims cannot
 /// resolve in either posture.
 pub fn managed_shim_bin_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     if !managed_bridges_enabled() {
@@ -122,7 +122,7 @@ fn dev_tools_override_active() -> bool {
     dev_tools_override_dir().is_some()
 }
 
-/// The `DISTILL_ACP_TOOLS_DIR` override dir, when set and non-empty.
+/// The `FLOCK_ACP_TOOLS_DIR` override dir, when set and non-empty.
 pub fn dev_tools_override_dir() -> Option<PathBuf> {
     std::env::var_os(ACP_TOOLS_DIR_ENV)
         .filter(|value| !value.is_empty())
@@ -163,7 +163,7 @@ fn package_dir(install_dir: &Path, package: &str) -> PathBuf {
 }
 
 /// Directories to prepend (in order) wherever agent binaries must resolve:
-/// the `DISTILL_ACP_TOOLS_DIR` dev override when active (it replaces the
+/// the `FLOCK_ACP_TOOLS_DIR` dev override when active (it replaces the
 /// managed shim dir), then the managed bridge shims, the private prefix's bin
 /// shims, and the managed Node runtime's bin dir — the latter is what makes
 /// npm's `#!/usr/bin/env node` shims run without host Node, and what resolves
@@ -178,7 +178,7 @@ pub fn managed_prepend_dirs<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec
 }
 
 /// Canonical execution environment for provider discovery, auth, chats and
-/// usage. Resolve the configured Distill root on every call so its private
+/// usage. Resolve the configured Flock root on every call so its private
 /// CLI installs and Node runtime are visible without modifying the host PATH.
 pub async fn provider_env<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> HashMap<String, String> {
     crate::services::path_env::home_env_vars_with_extended_path_and_prepended_dirs(
@@ -190,7 +190,7 @@ pub async fn provider_env<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> HashM
 }
 
 /// Provider checks and installation share the execution environment, with
-/// npm directed at Distill's private prefix for both discovery and repair.
+/// npm directed at Flock's private prefix for both discovery and repair.
 pub async fn provider_setup_env<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Vec<(String, String)> {
@@ -215,14 +215,14 @@ fn managed_prepend_dirs_from_parts(
 
 /// The directory whose binaries the doctor crate labels `Bundled` (no
 /// registry install/update fix): the dev override dir when active, otherwise
-/// the managed shim dir the bridge installer writes into. Distill upgrades these
+/// the managed shim dir the bridge installer writes into. Flock upgrades these
 /// bridges itself on launch, so the crate must not nag the user to update
 /// them manually.
 pub fn bundled_tools_dir_for_checks(app: &tauri::AppHandle) -> Option<PathBuf> {
     dev_tools_override_dir().or_else(|| managed_shim_bin_dir(app))
 }
 
-/// Env pairs steering every npm invocation Distill spawns into the private
+/// Env pairs steering every npm invocation Flock spawns into the private
 /// prefix. Both spellings are set: npm canonically reads the lowercase
 /// `npm_config_*` form, but tooling conventionally exports the uppercase one.
 /// `sanitize_shell_env` already strips user-shell values for these keys from
@@ -266,7 +266,7 @@ pub fn is_npm_backed_command(command: &str) -> bool {
 // The managed bridge set — installed and upgraded from the private npm registry
 // ---------------------------------------------------------------------------
 
-/// A Distill-managed ACP bridge: installed by replaying its checked-in npm
+/// A Flock-managed ACP bridge: installed by replaying its checked-in npm
 /// documents (`acp-tools.lock.json`, see [`install_managed_tool`]) rather than
 /// floating on `@latest` or bundled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,7 +285,7 @@ pub struct ManagedTool {
     pub version: &'static str,
 }
 
-/// The ACP bridges Distill installs and upgrades on every launch. Both vendor
+/// The ACP bridges Flock installs and upgrades on every launch. Both vendor
 /// their agent's full CLI (Claude Code, `codex`) inside the npm package, so
 /// no separate main-CLI install is needed. This table pins each bridge's
 /// package and immutable version; `acp-tools.lock.json` is the checked-in
@@ -308,7 +308,7 @@ pub const MANAGED_TOOLS: &[ManagedTool] = &[
 ];
 
 /// The managed bridges this build installs at runtime, or an empty list when
-/// nothing is managed: the `DISTILL_ACP_TOOLS_DIR` dev override supplies bridges
+/// nothing is managed: the `FLOCK_ACP_TOOLS_DIR` dev override supplies bridges
 /// from its own dir, and an unsupported target has no managed runtime to
 /// install onto.
 pub fn managed_tools() -> Vec<ManagedTool> {
@@ -464,7 +464,7 @@ impl std::fmt::Display for ManagedToolError {
                 )
             }
             Self::NotManaged(message) => {
-                write!(f, "not a Distill-managed ACP bridge: {message}")
+                write!(f, "not a Flock-managed ACP bridge: {message}")
             }
             Self::Node(error) => error.fmt(f),
             Self::NpmInstall(message) => write!(f, "npm install failed: {message}"),
@@ -509,9 +509,7 @@ pub async fn install_managed_tool(
     on_line: &InstallLineFn<'_>,
 ) -> Result<(), ManagedToolError> {
     let tool = managed_tool(provider_id).ok_or_else(|| {
-        ManagedToolError::NotManaged(format!(
-            "'{provider_id}' is not a Distill-managed ACP bridge"
-        ))
+        ManagedToolError::NotManaged(format!("'{provider_id}' is not a Flock-managed ACP bridge"))
     })?;
     let packages_root = managed_packages_root(app).ok_or_else(|| {
         ManagedToolError::AppData("app data directory is unavailable".to_string())
@@ -642,7 +640,7 @@ async fn install_npm_tool(
     }
 
     on_line(&format!(
-        "Installing {}@{} into Distill's app data from the checked-in lockfile",
+        "Installing {}@{} into Flock's app data from the checked-in lockfile",
         tool.package, tool.version
     ));
     let install_result = run_pinned_npm_install(
@@ -781,15 +779,18 @@ impl InstallTransaction {
                 .expect("managed artifact has a name")
                 .to_string_lossy();
             // The backup carries the same per-transaction suffix as the stage.
-            // Under the previous fixed `.distill-backup` name, one backup Windows
+            // Under the previous fixed `.flock-backup` name, one backup Windows
             // refused to delete blocked every later install for good: the next
             // commit's `rename(live -> backup)` would land on an occupied path,
             // and `prepare` treated the leftover as unrecoverable state. The
             // journal records the exact path, so uniqueness costs recovery
             // nothing and demotes a stuck backup to ordinary garbage.
             (
-                parent.join(format!(".{name}.distill-stage-{suffix}")),
-                parent.join(format!(".{name}.distill-backup-{suffix}")),
+                parent.join(format!(".{name}.{}{suffix}", TRANSACTION_STAGE_INFIXES[0])),
+                parent.join(format!(
+                    ".{name}.{}-{suffix}",
+                    TRANSACTION_BACKUP_INFIXES[0]
+                )),
             )
         };
         let (staged_tree, backup_tree) = paths(install_dir);
@@ -835,7 +836,7 @@ impl InstallTransaction {
         }
         recover_transaction(&self.journal)?;
         remove_transaction_journal_temp(&self.journal)?;
-        sweep_transaction_trash(&transaction_trash_dir(&self.journal));
+        sweep_transaction_trash(&self.journal);
         for artifact in &self.artifacts {
             prune_stale_transaction_stages(artifact)?;
             TransactionArtifact::remove(&artifact.staged, artifact.kind)?;
@@ -937,7 +938,7 @@ fn write_transaction_journal(
 
 fn journal_recovery_error(path: &Path, detail: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(format!(
-        "cannot recover managed ACP transaction journal {}: {detail}. Preserve this file and any .distill-backup artifacts, restore access or repair/remove the journal after inspecting those backups, then restart Distill",
+        "cannot recover managed ACP transaction journal {}: {detail}. Preserve this file and any .flock-backup artifacts, restore access or repair/remove the journal after inspecting those backups, then restart Flock",
         path.display()
     ))
 }
@@ -990,14 +991,23 @@ fn recover_transaction(path: &Path) -> std::io::Result<()> {
     .map_err(|error| journal_recovery_error(path, error))
 }
 
-/// Where artifacts that resisted deletion are parked. Lives beside the journal
-/// — i.e. in the packages root — so a later sweep finds it without knowing
-/// which bridge left it behind.
+/// The per-transaction stage and backup names, as `.{name}.{infix}{suffix}`:
+/// the current spelling, which new transactions write, first, then the
+/// previous build's, which the prunes still sweep so its leftovers are
+/// cleaned the same way.
+const TRANSACTION_STAGE_INFIXES: &[&str] = &["flock-stage-", "distill-stage-"];
+const TRANSACTION_BACKUP_INFIXES: &[&str] = &["flock-backup", "distill-backup"];
+/// Where artifacts that resisted deletion are parked, beside the journal —
+/// i.e. in the packages root — so a later sweep finds them without knowing
+/// which bridge left them behind. The current name first; the previous
+/// build's folder is swept too.
+const TRANSACTION_TRASH_DIR_NAMES: &[&str] = &[".flock-trash", ".distill-trash"];
+
 fn transaction_trash_dir(journal: &Path) -> PathBuf {
     journal
         .parent()
         .unwrap_or_else(|| Path::new("."))
-        .join(".distill-trash")
+        .join(TRANSACTION_TRASH_DIR_NAMES[0])
 }
 
 /// Attempts and backoff for a filesystem operation Windows can refuse for
@@ -1044,7 +1054,7 @@ enum BackupDisposal {
     /// Undeletable, but moved aside; a later sweep deletes it.
     Retired { from: PathBuf, to: PathBuf },
     /// Neither deletable nor movable. The install still stands; the leftover
-    /// occupies disk until something outside Distill releases it.
+    /// occupies disk until something outside Flock releases it.
     Abandoned { path: PathBuf, detail: String },
 }
 
@@ -1081,7 +1091,7 @@ fn dispose_of_backup(path: &Path, kind: ArtifactKind, trash: &Path) -> BackupDis
 }
 
 /// The log has to distinguish these three, because only one of them means an
-/// operator may find something of Distill's still on disk.
+/// operator may find something of Flock's still on disk.
 fn log_backup_disposal(disposal: &BackupDisposal) {
     match disposal {
         BackupDisposal::Removed => {}
@@ -1097,9 +1107,17 @@ fn log_backup_disposal(disposal: &BackupDisposal) {
     }
 }
 
-/// Delete what previous runs parked in the trash. Silent and best-effort: a
-/// file still held open simply waits for the next launch.
-fn sweep_transaction_trash(trash: &Path) {
+/// Delete what previous runs parked in the trash beside `journal`, under the
+/// current name and the previous build's. Silent and best-effort: a file
+/// still held open simply waits for the next launch.
+fn sweep_transaction_trash(journal: &Path) {
+    let parent = journal.parent().unwrap_or_else(|| Path::new("."));
+    for name in TRANSACTION_TRASH_DIR_NAMES {
+        sweep_trash_dir(&parent.join(name));
+    }
+}
+
+fn sweep_trash_dir(trash: &Path) {
     let Ok(entries) = std::fs::read_dir(trash) else {
         return;
     };
@@ -1115,8 +1133,9 @@ fn sweep_transaction_trash(trash: &Path) {
 }
 
 /// Backups from earlier transactions, matched by prefix so the pre-suffix
-/// `.{name}.distill-backup` written by older builds is swept too. Best-effort:
-/// see the comment at the call site in `prepare`.
+/// `.{name}.flock-backup` written by older builds — and the previous build's
+/// spelling — are swept too. Best-effort: see the comment at the call site
+/// in `prepare`.
 fn prune_stale_transaction_backups(artifact: &TransactionArtifact, trash: &Path) {
     let Some(parent) = artifact.live.parent() else {
         return;
@@ -1126,12 +1145,16 @@ fn prune_stale_transaction_backups(artifact: &TransactionArtifact, trash: &Path)
         .file_name()
         .expect("managed artifact has a name")
         .to_string_lossy();
-    let prefix = format!(".{name}.distill-backup");
+    let prefixes: Vec<String> = TRANSACTION_BACKUP_INFIXES
+        .iter()
+        .map(|infix| format!(".{name}.{infix}"))
+        .collect();
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        if prefixes.iter().any(|prefix| entry_name.starts_with(prefix)) {
             log_backup_disposal(&dispose_of_backup(&entry.path(), artifact.kind, trash));
         }
     }
@@ -1219,10 +1242,14 @@ fn prune_stale_transaction_stages(artifact: &TransactionArtifact) -> std::io::Re
         .file_name()
         .expect("managed artifact has a name")
         .to_string_lossy();
-    let prefix = format!(".{name}.distill-stage-");
+    let prefixes: Vec<String> = TRANSACTION_STAGE_INFIXES
+        .iter()
+        .map(|infix| format!(".{name}.{infix}"))
+        .collect();
     for entry in std::fs::read_dir(parent)? {
         let entry = entry?;
-        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        if prefixes.iter().any(|prefix| entry_name.starts_with(prefix)) {
             TransactionArtifact::remove(&entry.path(), artifact.kind)?;
         }
     }
@@ -1304,7 +1331,7 @@ struct ToolLockEntry {
     package: String,
     #[allow(dead_code)]
     version: String,
-    /// Distill target triple → the `node_modules/<path>` of the native executable
+    /// Flock target triple → the `node_modules/<path>` of the native executable
     /// that target's bridge must run. npm records every platform's optional
     /// package in `package-lock.json` but materializes only the compatible one
     /// — and an optional fetch/extract failure is non-fatal, even under
@@ -1450,7 +1477,7 @@ fn lockfile_graph(
 /// or misbehaving npm — rather than upstream drift, which the replay makes
 /// impossible to reach here.
 ///
-/// The native-executable half keeps all its teeth. `target` is the Distill target
+/// The native-executable half keeps all its teeth. `target` is the Flock target
 /// triple the install was materialized for; npm records every platform's
 /// optional package in the lockfile while materializing only the compatible
 /// one, and an optional fetch/extract failure stays non-fatal under `npm ci`,
@@ -1540,11 +1567,11 @@ fn verify_pinned_install(
     Ok(())
 }
 
-/// The npm target selectors (`--os`, `--cpu`, and Linux `--libc`) for a Distill
+/// The npm target selectors (`--os`, `--cpu`, and Linux `--libc`) for a Flock
 /// target triple. These are passed on the npm command line, which outranks
 /// both process-environment `npm_config_*` and any `os`/`cpu`/`libc` set in a
 /// user/global npmrc, so npm materializes the current target's native package
-/// regardless of inherited npm configuration. `None` for a triple Distill manages
+/// regardless of inherited npm configuration. `None` for a triple Flock manages
 /// no runtime for — a target the installer never reaches (a unit test pins
 /// this to `managed_node`'s target set, which is also the set
 /// `nativeExecutables` must cover). Pure so tests can assert the vector.
@@ -1751,13 +1778,13 @@ fn shim_contents(
         // verbatim; the bare final invocation propagates node's exit code as
         // the batch script's exit code.
         format!(
-            "@echo off\r\nREM Written by Distill's managed ACP tools installer; do not edit.\r\n{} {} %*\r\n",
+            "@echo off\r\nREM Written by Flock's managed ACP tools installer; do not edit.\r\n{} {} %*\r\n",
             cmd_launcher_path(shim_dir, node),
             cmd_launcher_path(shim_dir, entrypoint)
         )
     } else {
         format!(
-            "#!/bin/sh\n# Written by Distill's managed ACP tools installer; do not edit.\nexec {} {} \"$@\"\n",
+            "#!/bin/sh\n# Written by Flock's managed ACP tools installer; do not edit.\nexec {} {} \"$@\"\n",
             sh_quote(node),
             sh_quote(entrypoint)
         )
@@ -1841,7 +1868,7 @@ async fn finish_reconcile_at(
     // Runs even when no bridge needed installing this launch, so leftovers a
     // previous run could not delete get another chance without waiting for the
     // next pin bump.
-    sweep_transaction_trash(&transaction_trash_dir(&journal));
+    sweep_transaction_trash(&journal);
     prune_stale_managed_tools(packages_root, managed);
     record_reconcile(packages_root, errors);
     // Success-gated Node prune: `errors` empty means every managed bridge
@@ -1887,7 +1914,7 @@ pub(crate) fn prune_stale_managed_tools(packages_root: &Path, managed: &[Managed
     }
 
     // Tool dirs with no state entry (crashed installs) and shims for binaries
-    // no longer managed. `packages/bin` holds only Distill-written shims, so pruning
+    // no longer managed. `packages/bin` holds only Flock-written shims, so pruning
     // by name is safe.
     if let Ok(entries) = std::fs::read_dir(tools_root(packages_root)) {
         for entry in entries.flatten() {
@@ -2044,7 +2071,7 @@ mod tests {
 
         apply_managed_npm_env(
             &mut vars,
-            &managed_npm_env_at(Path::new("C:\\Distill Data\\npm-prefix")),
+            &managed_npm_env_at(Path::new("C:\\Flock Data\\npm-prefix")),
         );
 
         assert_eq!(
@@ -2057,7 +2084,7 @@ mod tests {
             vars.iter()
                 .find(|(key, _)| key.eq_ignore_ascii_case("NPM_CONFIG_PREFIX"))
                 .map(|(_, value)| value.as_str()),
-            Some("C:\\Distill Data\\npm-prefix")
+            Some("C:\\Flock Data\\npm-prefix")
         );
     }
 
@@ -2110,7 +2137,7 @@ mod tests {
     /// written into fixture install trees so verification passes on the host.
     const TEST_NATIVE_REL: &str = "node_modules/@test/native/bridge-native";
 
-    /// The Distill target triple these host-run install-flow tests execute on.
+    /// The Flock target triple these host-run install-flow tests execute on.
     fn test_target() -> &'static str {
         managed_node::current_target_triple().expect("tests run on a supported target")
     }
@@ -2489,7 +2516,7 @@ mod tests {
     }
 
     /// `npm_target_selectors` and every bridge's `nativeExecutables` map must
-    /// cover exactly the targets Distill manages a Node runtime for. Adding a
+    /// cover exactly the targets Flock manages a Node runtime for. Adding a
     /// triple to one and not the others is the asymmetric failure this pins:
     /// a missing `nativeExecutables` entry rejects *every* install on that
     /// target.
@@ -2919,14 +2946,14 @@ mod tests {
     //
     // The Windows failure these cover: `npm ci` finishes, the promotion
     // succeeds, and deleting the previous tree comes back "Access is denied.
-    // (os error 5)" because something outside Distill still holds it. The install
+    // (os error 5)" because something outside Flock still holds it. The install
     // has already happened at that point, so the only question is what the
     // cleanup does about it — and the answer must never be "call the install a
     // failure", because that also left the committed journal on disk and every
     // later launch replayed the same doomed deletion.
 
     fn trash_entries(dir: &Path) -> Vec<PathBuf> {
-        let trash = dir.join(".distill-trash");
+        let trash = dir.join(".flock-trash");
         std::fs::read_dir(&trash)
             .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
             .unwrap_or_default()
@@ -3014,7 +3041,7 @@ mod tests {
         std::fs::create_dir_all(&live_tree).unwrap();
         std::fs::create_dir_all(live_shim.parent().unwrap()).unwrap();
         // The fixed name older builds used, with no journal beside it.
-        let legacy_backup = dir.path().join("tools").join(".claude-acp.distill-backup");
+        let legacy_backup = dir.path().join("tools").join(".claude-acp.flock-backup");
         std::fs::create_dir_all(&legacy_backup).unwrap();
 
         let tx = InstallTransaction::new(&live_tree, &live_shim, &live_state);
@@ -3022,6 +3049,74 @@ mod tests {
 
         assert!(!legacy_backup.exists());
         assert!(tx.staged_tree.is_dir());
+    }
+
+    /// The previous build's spellings are kept beside the current ones, not
+    /// renamed to them: a mechanical rename that touched them would leave
+    /// its leftovers unswept for good.
+    #[test]
+    fn the_previous_build_names_are_not_the_current_ones() {
+        for (list, current) in [
+            (TRANSACTION_STAGE_INFIXES, "flock-stage-"),
+            (TRANSACTION_BACKUP_INFIXES, "flock-backup"),
+            (TRANSACTION_TRASH_DIR_NAMES, ".flock-trash"),
+        ] {
+            assert_eq!(list[0], current);
+            assert_eq!(list.len(), 2, "{current}: one current name, one previous");
+            assert_ne!(list[1], list[0], "{current}: the previous name differs");
+        }
+        assert_eq!(TRANSACTION_STAGE_INFIXES[1], "distill-stage-");
+        assert_eq!(TRANSACTION_BACKUP_INFIXES[1], "distill-backup");
+        assert_eq!(TRANSACTION_TRASH_DIR_NAMES[1], ".distill-trash");
+    }
+
+    /// A stage, a backup (suffixed or the old fixed name) and a parked
+    /// leftover from the previous build sit under its spelling of the names.
+    /// `prepare` sweeps them exactly like the current build's own.
+    #[test]
+    fn leftovers_of_the_previous_build_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let live_tree = dir.path().join("tools").join("claude-acp");
+        let live_shim = dir.path().join("bin").join("claude-agent-acp.cmd");
+        let live_state = dir.path().join("state.json");
+        std::fs::create_dir_all(&live_tree).unwrap();
+        std::fs::create_dir_all(live_shim.parent().unwrap()).unwrap();
+        let old_stage = TRANSACTION_STAGE_INFIXES[1];
+        let old_backup = TRANSACTION_BACKUP_INFIXES[1];
+        let old_trash = TRANSACTION_TRASH_DIR_NAMES[1];
+        let leftovers = [
+            dir.path()
+                .join("tools")
+                .join(format!(".claude-acp.{old_stage}1-2-3")),
+            dir.path()
+                .join("tools")
+                .join(format!(".claude-acp.{old_backup}-1-2-3")),
+            dir.path()
+                .join("tools")
+                .join(format!(".claude-acp.{old_backup}")),
+            dir.path().join(old_trash).join("1-.claude-acp.parked"),
+        ];
+        for leftover in &leftovers {
+            std::fs::create_dir_all(leftover).unwrap();
+            std::fs::write(leftover.join("entrypoint.js"), "stale").unwrap();
+        }
+        let old_shim_stage = dir
+            .path()
+            .join("bin")
+            .join(format!(".claude-agent-acp.cmd.{old_stage}1-2-3"));
+        std::fs::write(&old_shim_stage, "stale shim").unwrap();
+
+        let tx = InstallTransaction::new(&live_tree, &live_shim, &live_state);
+        tx.prepare().unwrap();
+
+        for leftover in &leftovers {
+            assert!(!leftover.exists(), "{}", leftover.display());
+        }
+        assert!(!old_shim_stage.exists());
+        assert!(!dir.path().join(old_trash).exists());
+        assert!(tx.staged_tree.is_dir());
+        // The live tree is untouched by the sweep.
+        assert!(live_tree.is_dir());
     }
 
     // -- reconcile prune ----------------------------------------------------
@@ -3156,21 +3251,20 @@ mod tests {
     // launches the bridge by its bare name through the same shim directories
     // the agent host prepends to a bridge's PATH. This compiles on every host
     // but only executes on native Windows when opted in via
-    // `DISTILL_WS2_NATIVE_GATE=1`. `node.exe` and the `.cmd` launcher are not
+    // `FLOCK_WS2_NATIVE_GATE=1`. `node.exe` and the `.cmd` launcher are not
     // runnable on the Unix host, so off Windows it skips immediately. Covers
     // bridge install, Windows launcher generation, and bare-name launch through
     // the agent host's resolver.
 
     fn native_gate_enabled() -> bool {
-        cfg!(windows)
-            && std::env::var_os("DISTILL_WS2_NATIVE_GATE").is_some_and(|value| value == "1")
+        cfg!(windows) && std::env::var_os("FLOCK_WS2_NATIVE_GATE").is_some_and(|value| value == "1")
     }
 
     #[tokio::test]
     async fn native_gate_installs_and_launches_a_bridge_by_bare_name() {
         if !native_gate_enabled() {
             eprintln!(
-                "skipping: native Windows gate runs only on Windows with DISTILL_WS2_NATIVE_GATE=1"
+                "skipping: native Windows gate runs only on Windows with FLOCK_WS2_NATIVE_GATE=1"
             );
             return;
         }

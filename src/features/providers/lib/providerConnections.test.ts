@@ -43,7 +43,7 @@ describe("hasCompletedSignIn", () => {
     );
   });
 
-  it("needs a saved account for providers whose accounts Distill keeps", () => {
+  it("needs a saved account for providers whose accounts Flock keeps", () => {
     recordReadyProviders(new Set(["claude-acp"]), 1);
     recordReadyProviders(new Set(), 2);
     expect(hasCompletedSignIn("claude-acp", [account("claude-acp")])).toBe(

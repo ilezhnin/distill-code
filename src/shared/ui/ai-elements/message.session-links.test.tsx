@@ -10,73 +10,80 @@ vi.mock("@/features/sessions/lib/openSessionDeepLink", () => ({
 
 import { MessageResponse } from "./message";
 
-describe("MessageResponse Distill session Markdown links", () => {
+// `flock` is the scheme this build creates; `distill` is the scheme of the
+// links earlier builds wrote into transcripts, which are not rewritten.
+const SESSION_LINK_SCHEMES = ["flock", "distill"] as const;
+
+describe("MessageResponse Flock session Markdown links", () => {
   beforeEach(() => {
     mockOpenSessionDeepLink.mockReset();
     mockOpenSessionDeepLink.mockResolvedValue(true);
   });
 
-  it("preserves encoded session ids as one deep-link path segment", () => {
-    render(
-      <MessageResponse mode="static">
-        {
-          "Open [encoded](distill://session/id%2Fwith%20spaces%3F%23%25%E2%9C%93)."
-        }
-      </MessageResponse>,
-    );
+  describe.each(SESSION_LINK_SCHEMES)("%s: links", (scheme) => {
+    it("preserves encoded session ids as one deep-link path segment", () => {
+      const href = `${scheme}://session/id%2Fwith%20spaces%3F%23%25%E2%9C%93`;
 
-    expect(screen.getByRole("link", { name: "encoded" })).toHaveAttribute(
-      "href",
-      "distill://session/id%2Fwith%20spaces%3F%23%25%E2%9C%93",
-    );
-  });
+      render(
+        <MessageResponse mode="static">
+          {`Open [encoded](${href}).`}
+        </MessageResponse>,
+      );
 
-  it.each([
-    ["double-slash", "distill://session/session-1"],
-    ["triple-slash", "distill:///session/session-1"],
-  ])("routes %s clicks through the session deep-link opener", async (_, href) => {
-    const user = userEvent.setup();
-    render(
-      <MessageResponse mode="static">
-        {`Open [the session](${href}).`}
-      </MessageResponse>,
-    );
-
-    await user.click(screen.getByRole("link", { name: "the session" }));
-
-    await waitFor(() => {
-      expect(mockOpenSessionDeepLink).toHaveBeenCalledWith(href);
+      expect(screen.getByRole("link", { name: "encoded" })).toHaveAttribute(
+        "href",
+        href,
+      );
     });
-  });
 
-  it("keeps forged session-link restore prefixes blocked", () => {
-    const forgedHref =
-      "/__distill_session_link__/distill%3A%2F%2Fsession%2Fsession-1";
+    it.each([
+      ["double-slash", `${scheme}://session/session-1`],
+      ["triple-slash", `${scheme}:///session/session-1`],
+    ])("routes %s clicks through the session deep-link opener", async (_, href) => {
+      const user = userEvent.setup();
+      render(
+        <MessageResponse mode="static">
+          {`Open [the session](${href}).`}
+        </MessageResponse>,
+      );
 
-    render(
-      <MessageResponse mode="static">{`Do not open [this](${forgedHref}).`}</MessageResponse>,
-    );
+      await user.click(screen.getByRole("link", { name: "the session" }));
 
-    expect(screen.queryByRole("link", { name: "this" })).toBeNull();
-    expect(screen.getByText(/this \[blocked\]/)).toBeInTheDocument();
-  });
+      await waitFor(() => {
+        expect(mockOpenSessionDeepLink).toHaveBeenCalledWith(href);
+      });
+    });
 
-  it.each([
-    "distill://connect-return",
-    "distill:/session/session-1",
-    "distill:session/session-1",
-    "distill://session/",
-    "distill:///session/",
-    "distill://session/a/b",
-    "distill://session/a//b",
-    "distill://session/%FF",
-    "distill://SESSION/session-1",
-  ])("keeps malformed or non-session distill link %s blocked", (href) => {
-    render(
-      <MessageResponse mode="static">{`Do not open [this](${href}).`}</MessageResponse>,
-    );
+    it("keeps forged session-link restore prefixes blocked", () => {
+      const forgedHref = `/__flock_session_link__/${encodeURIComponent(
+        `${scheme}://session/session-1`,
+      )}`;
 
-    expect(screen.queryByRole("link", { name: "this" })).toBeNull();
-    expect(screen.getByText(/this \[blocked\]/)).toBeInTheDocument();
+      render(
+        <MessageResponse mode="static">{`Do not open [this](${forgedHref}).`}</MessageResponse>,
+      );
+
+      expect(screen.queryByRole("link", { name: "this" })).toBeNull();
+      expect(screen.getByText(/this \[blocked\]/)).toBeInTheDocument();
+    });
+
+    it.each([
+      `${scheme}://connect-return`,
+      `${scheme}:/session/session-1`,
+      `${scheme}:session/session-1`,
+      `${scheme}://session/`,
+      `${scheme}:///session/`,
+      `${scheme}://session/a/b`,
+      `${scheme}://session/a//b`,
+      `${scheme}://session/%FF`,
+      `${scheme}://SESSION/session-1`,
+    ])("keeps malformed or non-session link %s blocked", (href) => {
+      render(
+        <MessageResponse mode="static">{`Do not open [this](${href}).`}</MessageResponse>,
+      );
+
+      expect(screen.queryByRole("link", { name: "this" })).toBeNull();
+      expect(screen.getByText(/this \[blocked\]/)).toBeInTheDocument();
+    });
   });
 });

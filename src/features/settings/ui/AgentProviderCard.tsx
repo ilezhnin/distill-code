@@ -212,7 +212,7 @@ export function AgentProviderCard({
   // runnable source-aware command). Drives both the Update/Fix label and the
   // commands the setup plan carries. Bundled readouts never qualify: the
   // crate stamps them (install source "bundled") and derives no update
-  // command for them — they update with Distill itself.
+  // command for them — they update with Flock itself.
   const actionableReadouts =
     versionDisplay?.readouts.filter(
       (r) => r.updateAvailable && r.updateFixType && r.updateCommand,
@@ -320,7 +320,7 @@ export function AgentProviderCard({
           t("providers.agents.progress.preparingProvider", {
             name: provider.displayName,
           }),
-          t("providers.agents.progress.installingForDistill", {
+          t("providers.agents.progress.installingForFlock", {
             name: provider.displayName,
           }),
         ],

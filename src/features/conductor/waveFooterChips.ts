@@ -14,7 +14,7 @@
  * Pure: the caller owns the graph, the reports and the translations.
  */
 
-import type { WaveStep } from "./distillWave";
+import type { WaveStep } from "./flockWave";
 import { roleById } from "./roleCatalog";
 import type { SessionNode } from "./types";
 

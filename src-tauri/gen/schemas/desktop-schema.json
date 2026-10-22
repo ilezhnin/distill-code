@@ -2577,69 +2577,69 @@
           "markdownDescription": "Denies the save command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe distillctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`",
+          "description": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe flockctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`",
           "type": "string",
-          "const": "distillctl:default",
-          "markdownDescription": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe distillctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`"
+          "const": "flockctl:default",
+          "markdownDescription": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe flockctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`"
         },
         {
           "description": "Enables the set_timeouts command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:allow-set-timeouts",
+          "const": "flockctl:allow-set-timeouts",
           "markdownDescription": "Enables the set_timeouts command without any pre-configured scope."
         },
         {
           "description": "Enables the start command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:allow-start",
+          "const": "flockctl:allow-start",
           "markdownDescription": "Enables the start command without any pre-configured scope."
         },
         {
           "description": "Enables the status command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:allow-status",
+          "const": "flockctl:allow-status",
           "markdownDescription": "Enables the status command without any pre-configured scope."
         },
         {
           "description": "Enables the stop command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:allow-stop",
+          "const": "flockctl:allow-stop",
           "markdownDescription": "Enables the stop command without any pre-configured scope."
         },
         {
           "description": "Enables the submit_result command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:allow-submit-result",
+          "const": "flockctl:allow-submit-result",
           "markdownDescription": "Enables the submit_result command without any pre-configured scope."
         },
         {
           "description": "Denies the set_timeouts command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:deny-set-timeouts",
+          "const": "flockctl:deny-set-timeouts",
           "markdownDescription": "Denies the set_timeouts command without any pre-configured scope."
         },
         {
           "description": "Denies the start command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:deny-start",
+          "const": "flockctl:deny-start",
           "markdownDescription": "Denies the start command without any pre-configured scope."
         },
         {
           "description": "Denies the status command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:deny-status",
+          "const": "flockctl:deny-status",
           "markdownDescription": "Denies the status command without any pre-configured scope."
         },
         {
           "description": "Denies the stop command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:deny-stop",
+          "const": "flockctl:deny-stop",
           "markdownDescription": "Denies the stop command without any pre-configured scope."
         },
         {
           "description": "Denies the submit_result command without any pre-configured scope.",
           "type": "string",
-          "const": "distillctl:deny-submit-result",
+          "const": "flockctl:deny-submit-result",
           "markdownDescription": "Denies the submit_result command without any pre-configured scope."
         },
         {

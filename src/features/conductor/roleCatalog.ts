@@ -1,3 +1,4 @@
+import { readBundledSource } from "@/shared/lib/agentSpawns";
 import type { AgentSpawnLayer, Persona } from "@/shared/types/agents";
 
 /**
@@ -436,16 +437,12 @@ export function fileStemFromPersonaId(personaId: string): string {
   return base.replace(/\.md$/i, "").toLowerCase();
 }
 
+/**
+ * The bundled agent the persona's file names as its origin, under the
+ * current `flockBundledSource` key or the one an earlier build wrote.
+ */
 function metadataBundledSource(persona: Persona): string | undefined {
-  const metadata = persona.sourceProperties?.metadata;
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-    return undefined;
-  }
-  const source = (metadata as { distillBundledSource?: unknown })
-    .distillBundledSource;
-  return typeof source === "string" && source.trim()
-    ? source.trim()
-    : undefined;
+  return readBundledSource(persona.sourceProperties?.metadata);
 }
 
 export function resolvePersonaForRole(

@@ -1496,9 +1496,9 @@
   }
 }
 
-@keyframes distill-loader-frames {
+@keyframes flock-loader-frames {
   to {
-    background-position: calc(var(--distill-loader-size) * -5) 0;
+    background-position: calc(var(--flock-loader-size) * -5) 0;
   }
 }
 

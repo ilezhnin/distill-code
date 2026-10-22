@@ -393,12 +393,12 @@ describe("loadSessionMessages", () => {
     expect(checkDirectoriesExist).toHaveBeenCalledWith([
       "/resolved/missing/worktree",
     ]);
-    expect(acpLoadSession).toHaveBeenCalledWith("s-ws", "~/.distill/artifacts");
+    expect(acpLoadSession).toHaveBeenCalledWith("s-ws", "~/.flock/artifacts");
     expect(
       useChatSessionStore.getState().activeWorkspaceBySession["s-ws"],
     ).toBeUndefined();
     expect(useChatSessionStore.getState().getSession("s-ws")?.workingDir).toBe(
-      "~/.distill/artifacts",
+      "~/.flock/artifacts",
     );
     const warning = notificationFromLastMessage("s-ws");
     expect(warning.text).toContain("/resolved/missing/worktree");

@@ -15,7 +15,7 @@
 export const TOOL_CALL_ID_ATTRIBUTE = "data-tool-call-id";
 
 /** Document-level request to reveal one tool call. */
-export const HARNESS_SUBAGENT_REVEAL_EVENT = "distill:harness-subagent-reveal";
+export const HARNESS_SUBAGENT_REVEAL_EVENT = "flock:harness-subagent-reveal";
 
 export interface HarnessSubagentRevealDetail {
   toolCallId: string;

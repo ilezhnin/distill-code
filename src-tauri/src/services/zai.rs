@@ -1,5 +1,5 @@
 //! Z.ai Coding Plan runs through OpenCode's native ACP agent. Keep its
-//! provider selection, endpoint and storage scoped to the Distill account.
+//! provider selection, endpoint and storage scoped to the Flock account.
 
 use std::path::Path;
 
@@ -46,12 +46,12 @@ pub fn scoped_env(
             },
             "permission": "ask",
             "agent": {
-                "distill-auto": {
+                "flock-auto": {
                     "description": "Execute tasks with automatic tool approval",
                     "mode": "primary",
                     "permission": "allow"
                 },
-                "distill-edit": {
+                "flock-edit": {
                     "description": "Edit files and ask before running commands",
                     "mode": "primary",
                     "permission": {
@@ -92,9 +92,9 @@ mod tests {
         assert_eq!(env["DISTILL_ZAI_API_KEY"], "test-key");
         assert_eq!(config["share"], "disabled");
         assert_eq!(config["permission"], "ask");
-        assert_eq!(config["agent"]["distill-auto"]["permission"], "allow");
+        assert_eq!(config["agent"]["flock-auto"]["permission"], "allow");
         assert_eq!(
-            config["agent"]["distill-edit"]["permission"]["bash"],
+            config["agent"]["flock-edit"]["permission"]["bash"],
             serde_json::Value::Null
         );
         assert_eq!(env["XDG_DATA_HOME"], home.join("data").to_string_lossy());

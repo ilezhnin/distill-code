@@ -202,17 +202,17 @@
       "removeConfirmCancel": "Cancelar",
       "removeConfirmTitle": "¿Seguro que quieres quitar este espacio de trabajo?",
       "removeManagedConfirmAction": "Quitar {{resource}}",
-      "removeManagedConfirmBody": "Esto quita {{resource}} creado por Distill y desvincula el espacio de trabajo de este chat.",
-      "removeManagedConfirmBodyWithChanges_one": "Este {{resource}} tiene {{count}} cambio sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Distill.",
-      "removeManagedConfirmBodyWithChanges_other": "Este {{resource}} tiene {{count}} cambios sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Distill.",
+      "removeManagedConfirmBody": "Esto quita {{resource}} creado por Flock y desvincula el espacio de trabajo de este chat.",
+      "removeManagedConfirmBodyWithChanges_one": "Este {{resource}} tiene {{count}} cambio sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Flock.",
+      "removeManagedConfirmBodyWithChanges_other": "Este {{resource}} tiene {{count}} cambios sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Flock.",
       "removeManagedConfirmTitle": "¿Seguro que quieres quitar este {{resource}}?",
       "removeManagedError": "No se pudo limpiar {{resource}}.",
       "removeWorktreeConfirmAction": "Quitar espacio de trabajo",
-      "removeWorktreeConfirmBody": "Si quitas este espacio de trabajo, el worktree {{worktree}} creado por Distill se eliminará del disco.",
+      "removeWorktreeConfirmBody": "Si quitas este espacio de trabajo, el worktree {{worktree}} creado por Flock se eliminará del disco.",
       "removeWorktreeConfirmBodyWithChanges_one": "Tienes {{count}} cambio sin confirmar en este worktree. Si quitas este espacio de trabajo, ese cambio se perderá y {{worktree}} se eliminará del disco.",
       "removeWorktreeConfirmBodyWithChanges_other": "Tienes {{count}} cambios sin confirmar en este worktree. Si quitas este espacio de trabajo, esos cambios se perderán y {{worktree}} se eliminará del disco.",
       "removeWorktreeConfirmTitle": "¿Seguro que quieres quitar este worktree?",
-      "removeSharedManagedConfirmBodyOtherChat": "Otro chat activo usa el mismo {{resource}} creado por Distill. Solo se quitará este espacio de trabajo de este chat; el {{resource}} permanecerá en el disco.",
+      "removeSharedManagedConfirmBodyOtherChat": "Otro chat activo usa el mismo {{resource}} creado por Flock. Solo se quitará este espacio de trabajo de este chat; el {{resource}} permanecerá en el disco.",
       "terminal": "Terminal"
     },
     "picker": {
@@ -356,9 +356,9 @@
       "worktreesAndBranches": "¿Archivar el chat y quitar sus worktrees y ramas?"
     },
     "archiveConfirmDescriptionWithFiles": {
-      "worktrees": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees creados por Distill.",
-      "branches": "Esto descartará cambios locales, archivará el chat y luego quitará las ramas creadas por Distill.",
-      "worktreesAndBranches": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees y las ramas creados por Distill."
+      "worktrees": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees creados por Flock.",
+      "branches": "Esto descartará cambios locales, archivará el chat y luego quitará las ramas creadas por Flock.",
+      "worktreesAndBranches": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees y las ramas creados por Flock."
     },
     "archiveConfirmAction": "Archivar y quitar"
   },
@@ -385,8 +385,8 @@
     "providerError": {
       "anthropicThinkingHistory": "Este chat no puede continuar con un modelo Claude porque su historial de razonamiento previo ya no tiene una forma que Claude acepte. Inicia un chat nuevo o cambia este chat a un modelo que no sea Claude para continuar."
     },
-    "distillctlCrossSessionLabel": "Enviado por Distill desde otra sesión",
-    "distillctlCrossSessionNamedLabel": "Enviado por Distill desde otra sesión · fuente: {{sender}}",
+    "flockctlCrossSessionLabel": "Enviado por Flock desde otra sesión",
+    "flockctlCrossSessionNamedLabel": "Enviado por Flock desde otra sesión · fuente: {{sender}}",
     "steerLabel": "Guiado",
     "steerPendingLabel": "Guiando: esperando el siguiente paso del agente",
     "viewMore": "Ver más",
@@ -458,7 +458,7 @@
     "pickAgentDescription": "El conductor es uno de tus agentes. Elegirá otros agentes para orquestadores y trabajadores.",
     "pickAgentConfirm": "Iniciar conductor",
     "pickAgentCancel": "Cancelar",
-    "pickAgentEmpty": "Aún no hay agentes. Distill empezará con Producer.",
+    "pickAgentEmpty": "Aún no hay agentes. Flock empezará con Producer.",
     "openTranscript": "Abrir transcripción",
     "backToConductor": "Volver a {{name}}",
     "openChild": "{{name}}, {{status}}",
@@ -643,7 +643,7 @@
       "empty": "Todavía no se ha registrado nada de este paso."
     },
     "stall": {
-      "title": "Esta ola dejó de avanzar, así que Distill la terminó y recogió lo que existe.",
+      "title": "Esta ola dejó de avanzar, así que Flock la terminó y recogió lo que existe.",
       "body": "Nada se movió durante {{count}} comprobaciones seguidas: ningún paso cambió de estado y no arrancó nada nuevo. Los pasos en ejecución se detuvieron; los pasos sin informe aparecen en el resumen como «resultado desconocido». El resumen indica que la ola se atascó; júzgala teniéndolo en cuenta."
     },
     "reportVerification": {
@@ -653,7 +653,7 @@
     },
     "unreadable": {
       "title": "El conductor está desactivado en esta sesión: no se pudo leer su estado guardado.",
-      "body": "No se pudo leer {{documents}} de la carpeta de Distill, ni siquiera tras reintentarlo. Mientras eso siga así no se inicia ninguna ola —un plan en este chat simplemente se ignora—, porque trabajar sobre una copia vacía repetiría planes antiguos y luego sobrescribiría el único registro que queda de ellos.",
+      "body": "No se pudo leer {{documents}} de la carpeta de Flock, ni siquiera tras reintentarlo. Mientras eso siga así no se inicia ninguna ola —un plan en este chat simplemente se ignora—, porque trabajar sobre una copia vacía repetiría planes antiguos y luego sobrescribiría el único registro que queda de ellos.",
       "retry": "Lo más probable es que algo estuviera bloqueando el archivo al arrancar la app, como un análisis antivirus o un cliente de sincronización. En Ajustes → Estadísticas hay un botón «Reintentar» que vuelve a leerlo sin reiniciar.",
       "reason": "La lectura falló con: {{reason}}"
     }

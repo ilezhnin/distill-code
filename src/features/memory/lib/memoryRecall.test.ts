@@ -57,7 +57,7 @@ describe("recallReachable", () => {
 });
 
 describe("formatRecallAnswer", () => {
-  const projectNameOf = (id: string | null) => (id === "p-1" ? "Distill" : "?");
+  const projectNameOf = (id: string | null) => (id === "p-1" ? "Flock" : "?");
 
   it("keeps a quoted question from breaking the header", () => {
     const answer = formatRecallAnswer(

@@ -201,7 +201,7 @@ pub fn validate_draft(d: &BenchmarkDraft) -> Vec<String> {
         }
     }
     if !WORK_CLASSES.contains(&d.work_class_id.as_str()) {
-        issues.push("Unknown Distill work class".into());
+        issues.push("Unknown Flock work class".into());
     }
     if d.facets
         .difficulty

@@ -42,7 +42,21 @@ const resources = path.join(
   "resources",
   "benchmark-sandbox",
 );
-const root = process.env.DISTILL_ROOT || path.join(os.homedir(), ".distill");
+const root = resolveFlockRoot();
+
+// Mirrors the app's order without the identifier-keyed pointer file: the
+// override, then an existing ~/.flock, then the ~/.distill folder of an
+// install upgraded from Distill, else the new default.
+function resolveFlockRoot() {
+  const override = process.env.FLOCK_ROOT || process.env.DISTILL_ROOT;
+  if (override) return override;
+  const home = os.homedir();
+  for (const name of [".flock", ".distill"]) {
+    const candidate = path.join(home, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(home, ".flock");
+}
 const location = path.join(root, "benchmarks", "sandbox");
 // Versions pinned by the native benchmark policies.
 const SPECS = {

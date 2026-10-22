@@ -297,7 +297,7 @@ function releaseChatSession(sessionId: string): void {
  * does not cancel a running turn, and archiving a running chat is allowed — and
  * it re-creates the session's rows on its way in. Marking such a session unread
  * persists an id no session owns: nothing can ever open it to mark it read, so
- * the entry stays in `distill:unread-sessions` forever and is rehydrated as
+ * the entry stays in `flock:unread-sessions` forever and is rehydrated as
  * unread on every start. The id is forgotten again the moment the session is
  * genuinely back (a load, or the user marking it read or unread).
  */

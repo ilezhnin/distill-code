@@ -16,8 +16,8 @@ import {
   USAGE_LEDGER_VERSION,
 } from "./usageTypes";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
-import { isDesktopRuntime } from "@/shared/api/distillStore";
-import { distillDocument } from "@/shared/lib/distillDocument";
+import { isDesktopRuntime } from "@/shared/api/flockStore";
+import { flockDocument } from "@/shared/lib/flockDocument";
 
 const WORKING_CHAT_STATES: ReadonlySet<ChatState> = new Set([
   "thinking",
@@ -57,7 +57,7 @@ let removeFlushListeners: (() => void) | undefined;
 let storageWriteWarned = false;
 let nativeReady = false;
 let nativeStoredLedger: UsageLedger | null = null;
-const ledgerDocument = distillDocument<UsageLedger>({
+const ledgerDocument = flockDocument<UsageLedger>({
   path: "state/usage-ledger.json",
   legacyStorageKey: USAGE_LEDGER_STORAGE_KEY,
   parse: (value) => parseLedger(value) ?? cloneLedger(EMPTY_LEDGER),
@@ -78,7 +78,7 @@ export async function initializeUsageLedger(): Promise<void> {
   cachedLedger = nativeStoredLedger ?? cloneLedger(EMPTY_LEDGER);
   nativeReady = true;
   const { listen } = await import("@tauri-apps/api/event");
-  await listen<string>("distill-document-changed", (event) => {
+  await listen<string>("flock-document-changed", (event) => {
     if (event.payload !== "state/usage-ledger.json") return;
     void ledgerDocument
       .readExternal()

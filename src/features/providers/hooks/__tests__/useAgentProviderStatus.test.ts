@@ -61,7 +61,7 @@ describe("managed account readiness", () => {
       ).get("codex-acp"),
     ).toBe("not_ready");
   });
-  it("ignores external CLI sign-in when Distill has no connected account", () => {
+  it("ignores external CLI sign-in when Flock has no connected account", () => {
     const readiness = new Map([["codex-acp", "ready" as const]]);
     expect(
       applyManagedAccountReadiness(readiness, [], {}).get("codex-acp"),

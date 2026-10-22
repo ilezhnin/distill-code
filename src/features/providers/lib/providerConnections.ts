@@ -5,7 +5,7 @@ import {
   type ProviderAccount,
 } from "../api/providerAccounts";
 
-const STORAGE_KEY = "distill:providerConnections:v1";
+const STORAGE_KEY = "flock:providerConnections:v1";
 
 interface ProviderConnections {
   /** When each provider last became ready, in epoch milliseconds. */
@@ -65,7 +65,7 @@ export function recordReadyProviders(
 
 /**
  * Whether a sign-in to this provider has completed here: the provider was
- * ready at least once and, where Distill keeps the provider's accounts, an
+ * ready at least once and, where Flock keeps the provider's accounts, an
  * account is still saved. A not-ready provider with one is a real account
  * that signed out or expired. Without one it is a setup that only installed
  * the CLI or saved an account before its browser sign-in was abandoned.

@@ -13,10 +13,10 @@ const native = vi.hoisted(() => ({
   onChanged: null as ((event: { payload: string }) => void) | null,
 }));
 
-vi.mock("@/shared/api/distillStore", () => ({
+vi.mock("@/shared/api/flockStore", () => ({
   isDesktopRuntime: () => true,
-  readDistillDocument: vi.fn(async () => native.disk),
-  writeDistillDocument: vi.fn(async (_path: string, contents: string) => {
+  readFlockDocument: vi.fn(async () => native.disk),
+  writeFlockDocument: vi.fn(async (_path: string, contents: string) => {
     native.disk = contents;
     native.writes.push(contents);
   }),

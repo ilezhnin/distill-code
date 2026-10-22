@@ -48,7 +48,7 @@ import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { deliverEnvelope } from "./digestDelivery";
-import { parseDistillVerdict } from "./distillVerdict";
+import { parseFlockVerdict } from "./flockVerdict";
 import type { SessionNode } from "./types";
 import {
   admitWavePlan,
@@ -484,7 +484,7 @@ export function processWaveVerdicts(
     setWaveEngineState(next);
 
     const decision = decideWaveVerdict({
-      parse: parseDistillVerdict(getTextContent(answer)),
+      parse: parseFlockVerdict(getTextContent(answer)),
       revisionCount: wave.revisionCount,
       // E2: `accept` is honoured only on the verification step's evidence.
       // The decision stays pure — it is handed the wave and a report lookup,

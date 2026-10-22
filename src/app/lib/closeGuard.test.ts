@@ -15,9 +15,9 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ onCloseRequested: mocks.onCloseRequested }),
 }));
 vi.mock("sonner", () => ({ toast: { error: mocks.toast } }));
-vi.mock("@/shared/api/distillStore", () => ({ isDesktopRuntime: () => true }));
-vi.mock("@/shared/lib/distillDocument", () => ({
-  flushDistillDocuments: mocks.documents,
+vi.mock("@/shared/api/flockStore", () => ({ isDesktopRuntime: () => true }));
+vi.mock("@/shared/lib/flockDocument", () => ({
+  flushFlockDocuments: mocks.documents,
 }));
 vi.mock("@/features/chat/stores/queuePersistence", () => ({
   flushMessageQueues: mocks.queues,

@@ -320,7 +320,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
     ).toBe(released);
   });
 
-  it("drains a released deferred payload independently of the Distillctl bridge", async () => {
+  it("drains a released deferred payload independently of the Flockctl bridge", async () => {
     const released = releasedRecord();
     useChatStore.setState({
       queuedMessageBySession: { "session-1": [released] },

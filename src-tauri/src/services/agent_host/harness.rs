@@ -24,7 +24,7 @@ impl ModelGroup {
     }
 }
 
-/// A model Distill declares for a harness: where it belongs in the menu and,
+/// A model Flock declares for a harness: where it belongs in the menu and,
 /// for one the probe cannot reach, what it offers. A model the bridge lists
 /// is declared only to place and name it; its effort levels and fast support
 /// are probed.
@@ -60,9 +60,9 @@ pub struct HarnessSpec {
     pub args: &'static [&'static str],
     /// Environment variables stripped before spawning.
     pub env_remove: &'static [&'static str],
-    /// Distill agent mode → the bridge's ACP session mode id.
+    /// Flock agent mode → the bridge's ACP session mode id.
     pub modes: &'static [(&'static str, &'static str)],
-    /// What Distill knows about this harness's models beyond the probe.
+    /// What Flock knows about this harness's models beyond the probe.
     pub models: &'static [ModelDecl],
     /// `_meta` for `session/new` / `session/load` that opens a session on a
     /// given model, for harnesses with `opens_on_model` rows.
@@ -74,7 +74,7 @@ fn claude_session_model_meta(model_id: &str) -> Value {
     json!({ "claudeCode": { "options": { "model": model_id } } })
 }
 
-/// The effort values claude-agent-acp builds for the models Distill opens a
+/// The effort values claude-agent-acp builds for the models Flock opens a
 /// session on. They are declared because reading them takes a bridge session
 /// per model: the bridge offers exactly one of these models at a time.
 const CLAUDE_EFFORTS: &[&str] = &["default", "low", "medium", "high", "xhigh", "max"];
@@ -280,9 +280,9 @@ pub const HARNESSES: &[HarnessSpec] = &[
         args: &["acp"],
         env_remove: &[],
         modes: &[
-            ("auto", "distill-auto"),
+            ("auto", "flock-auto"),
             ("approve", "build"),
-            ("smartApprove", "distill-edit"),
+            ("smartApprove", "flock-edit"),
             ("chat", "plan"),
         ],
         models: &[],
@@ -335,7 +335,7 @@ pub fn harness(id: &str) -> Option<&'static HarnessSpec> {
 pub fn bridge_mode(spec: &HarnessSpec, agent_mode: &str) -> Option<&'static str> {
     spec.modes
         .iter()
-        .find(|(distill_mode, _)| *distill_mode == agent_mode)
+        .find(|(flock_mode, _)| *flock_mode == agent_mode)
         .map(|(_, bridge_mode)| *bridge_mode)
 }
 
@@ -359,7 +359,7 @@ pub fn probe_session_meta(harness_id: &str) -> Option<Value> {
 /// harness serves.
 const UNDECLARED_ORDER: u16 = 1000;
 
-/// A harness's whole model list: what Distill declares for it merged with
+/// A harness's whole model list: what Flock declares for it merged with
 /// what the probe found, in menu order.
 ///
 /// Declared rows place and name a model; probed rows say what it can do.
@@ -372,7 +372,7 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
         .filter_map(|decl| {
             let found = probed.iter().find(|row| row["id"] == decl.id);
             // A declaration only places and names a model the bridge lists;
-            // it does not conjure one. The models Distill opens a session on
+            // it does not conjure one. The models Flock opens a session on
             // are the exception — no bridge ever lists those.
             (found.is_some() || decl.opens_on_model)
                 .then(|| (decl.order, declared_row(decl, found)))
@@ -491,7 +491,7 @@ fn declared_row(decl: &ModelDecl, probed: Option<&Value>) -> Value {
     })
 }
 
-/// A model the harness advertises that Distill says nothing about.
+/// A model the harness advertises that Flock says nothing about.
 fn bridge_row(probed: &Value, order: u16) -> Value {
     let id = probed["id"].as_str().unwrap_or_default();
     let (efforts, default_effort, supports_fast, source) = probed_capabilities(Some(probed));
@@ -672,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn a_model_the_probe_cannot_select_carries_what_distill_declares() {
+    fn a_model_the_probe_cannot_select_carries_what_flock_declares() {
         let models = merge_inventory("claude-acp", claude_bridge_rows());
         let row = |id: &str| {
             models
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(opus_4_6["capabilitySource"], "probed");
         assert_eq!(opus_4_6["supportsFast"], true);
         assert_eq!(opus_4_6["efforts"].as_array().expect("efforts").len(), 3);
-        // Its place in the menu is still Distill's to decide.
+        // Its place in the menu is still Flock's to decide.
         assert_eq!(opus_4_6["group"], "more");
         assert_eq!(opus_4_6["order"], 80);
         assert_eq!(opus_4_6["opensOnModel"], false);
@@ -875,7 +875,7 @@ mod tests {
     #[test]
     fn a_declaration_places_a_bridge_row_rather_than_inventing_one() {
         // Only opus[1m] came back: a bridge that stops listing a model has
-        // stopped serving it, and Distill does not list it on its behalf.
+        // stopped serving it, and Flock does not list it on its behalf.
         // The six it opens a session on are its own to offer.
         let models = merge_inventory(
             "claude-acp",

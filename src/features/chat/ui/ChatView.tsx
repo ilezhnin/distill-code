@@ -22,7 +22,7 @@ import { summarizeProjectWorkspaceStartup } from "@/features/projects/lib/projec
 import { ChatInput } from "./ChatInput";
 import { OwnedTaskLauncher } from "./OwnedTaskLauncher";
 import { Button } from "@/shared/ui/button";
-import { LoadingDistill } from "./LoadingDistill";
+import { LoadingFlock } from "./LoadingFlock";
 import { ChatLoadingSkeleton } from "./ChatLoadingSkeleton";
 import { ConversationEmptyAvatar } from "./ConversationEmptyAvatar";
 import { ArtifactPolicyProvider } from "../hooks/ArtifactPolicyContext";
@@ -83,7 +83,7 @@ import {
   type TerminalDockedPlacement,
 } from "@/features/terminal/model/terminalState";
 import { useTerminalFallbackCwdPreference } from "@/features/terminal/lib/terminalCwdPreference";
-import { ActiveChatDistillIndicator } from "@/shared/ui/SessionActivityIndicator";
+import { ActiveChatFlockIndicator } from "@/shared/ui/SessionActivityIndicator";
 import { getTextContent } from "@/shared/types/messages";
 import { getMessageForkTarget } from "@/features/sessions/lib/sessionFork";
 import type { ForkSessionHandler } from "@/features/sessions/hooks/useForkSession";
@@ -109,10 +109,10 @@ import {
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import {
   collectWavePlanSteps,
-  distillConductorTranscript,
+  flockConductorTranscript,
   NO_WAVE_PLAN_STEPS,
-} from "@/features/conductor/distillConductorTranscript";
-import type { WaveStep } from "@/features/conductor/distillWave";
+} from "@/features/conductor/flockConductorTranscript";
+import type { WaveStep } from "@/features/conductor/flockWave";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
@@ -716,7 +716,7 @@ export function ChatView({
   const timelineMessages = useMemo(() => {
     const messages = isPreparingInitialTranscript ? [] : controller.messages;
     return isConductorChat
-      ? distillConductorTranscript(messages, {
+      ? flockConductorTranscript(messages, {
           // Shown in place of the machine-facing plan fence when the conductor
           // sent nothing but the plan. The message must stay non-empty: it is
           // the row the wave's brigade chips hang off.
@@ -1025,8 +1025,8 @@ export function ChatView({
             CHAT_RESPONDING_PILL_CLASS,
           )}
         >
-          <ActiveChatDistillIndicator size={14} />
-          <LoadingDistill
+          <ActiveChatFlockIndicator size={14} />
+          <LoadingFlock
             key="loading-indicator"
             chatState={loadingChatState}
             className="mb-0 px-0"

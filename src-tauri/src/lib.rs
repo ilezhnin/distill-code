@@ -9,8 +9,8 @@ use tauri::{include_image, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_window_state::StateFlags;
 
 const APP_LOG_MAX_FILE_SIZE_BYTES: u128 = 10 * 1024 * 1024;
-/// Archived log files kept once `distill.log` hits the size cap. `KeepSome`
-/// counts archives only — the active `distill.log` is always kept on top, so
+/// Archived log files kept once `flock.log` hits the size cap. `KeepSome`
+/// counts archives only — the active `flock.log` is always kept on top, so
 /// this retains three files total. The plugin's default strategy is
 /// `KeepOne`, which *deletes* the full file rather than archiving it — that
 /// would wipe the captured agent-bridge stderr and panic backtraces
@@ -76,7 +76,7 @@ pub fn run() {
     // that the deep-link state exists by the time this callback runs. Because
     // the dependency enables the plugin's `deep-link` feature, the plugin
     // itself hands `args` to `DeepLink::handle_cli_arguments` before invoking
-    // the closure below — that is what turns a `distill://…` link clicked while
+    // the closure below — that is what turns a `flock://…` link clicked while
     // the app is running into a `deep-link://new-url` event for
     // `deep_links::install`. The closure therefore only has to reveal the
     // window for a plain second launch; a session link additionally reveals it
@@ -101,7 +101,7 @@ pub fn run() {
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
-                        file_name: Some("distill".into()),
+                        file_name: Some("flock".into()),
                     }),
                 ])
                 .build(),
@@ -128,8 +128,8 @@ pub fn run() {
         builder.plugin(tauri_plugin_app_test_driver::init())
     };
 
-    #[cfg(feature = "distillctl")]
-    let builder = builder.plugin(tauri_plugin_distillctl::init());
+    #[cfg(feature = "flockctl")]
+    let builder = builder.plugin(tauri_plugin_flockctl::init());
 
     if let Some(mode) = &e2e_mode {
         mode.log_enabled();
@@ -164,11 +164,11 @@ pub fn run() {
             // Resolved before anything writes to disk so every part of the app
             // agrees on the chosen folder.
             let root_state =
-                commands::distill_store::initialize(app).map_err(std::io::Error::other)?;
-            let distill_root = root_state.root.clone();
+                commands::flock_store::initialize(app).map_err(std::io::Error::other)?;
+            let flock_root = root_state.root.clone();
             app.asset_protocol_scope()
-                .allow_directory(&distill_root, true)?;
-            log::info!("Distill root: {}", distill_root.display());
+                .allow_directory(&flock_root, true)?;
+            log::info!("Flock root: {}", flock_root.display());
             app.manage(root_state);
 
             let bundled_runtime_config_path = app
@@ -188,7 +188,7 @@ pub fn run() {
                 });
 
             app.manage(commands::runtime_config::RuntimeConfigState::new(
-                distill_root.clone(),
+                flock_root.clone(),
                 bundled_runtime_config_path,
             ));
             // Construct and register the distro bundle up front (the agent host
@@ -202,11 +202,12 @@ pub fn run() {
             app.manage(commands::agent_setup::AgentSetupRegistry::default());
             app.manage(services::provider_account_status::ProviderAccountStatusState::default());
 
-            if app.try_state::<services::e2e_mode::E2eMode>().is_none()
-                && std::env::var_os("DISTILL_ROOT").is_none()
-            {
+            if services::flock_root::adoption_enabled(
+                app.try_state::<services::e2e_mode::E2eMode>().is_some(),
+                services::flock_root::root_override().as_deref(),
+            ) {
                 let home = app.path().home_dir()?;
-                services::root_migration::adopt_files(&distill_root, &app_data_dir, &home)
+                services::root_migration::adopt_files(&flock_root, &app_data_dir, &home)
                     .map_err(std::io::Error::other)?;
             }
 
@@ -223,7 +224,7 @@ pub fn run() {
 
             deep_links::install(app);
 
-            services::distillctl_discovery::sweep_stale_discovery_files(&app_data_dir);
+            services::flockctl_discovery::sweep_stale_discovery_files(&app_data_dir);
 
             // Seed bundled skills and agents from the distro bundle registered
             // above. This touches the filesystem, so it runs after the state
@@ -235,7 +236,7 @@ pub fn run() {
             // seeders below must find their earlier installs in the root under
             // the names they now look for.
             if e2e_agents_dir.is_none() {
-                services::upstream_names::adopt(&distill_root);
+                services::upstream_names::adopt(&flock_root);
             }
             {
                 let distro_state = app.state::<DistroBundleState>();
@@ -245,7 +246,7 @@ pub fn run() {
                     .clone();
                 if let Some(bundle) = distro_state.bundle() {
                     let skills_bundle = bundle.clone();
-                    let skills_app_data_dir = distill_root.clone();
+                    let skills_app_data_dir = flock_root.clone();
                     tauri::async_runtime::spawn(async move {
                         match bundled_skills::seed_bundled_skills(
                             &skills_bundle,
@@ -260,7 +261,7 @@ pub fn run() {
                         bundled_skills_state.mark_ready();
                     });
 
-                    let agents_dir = e2e_agents_dir.unwrap_or_else(|| distill_root.join("agents"));
+                    let agents_dir = e2e_agents_dir.unwrap_or_else(|| flock_root.join("agents"));
                     match bundled_agents::seed_bundled_agents(bundle, &agents_dir) {
                         Ok(result) => {
                             if result.seeded_count > 0 {
@@ -274,7 +275,7 @@ pub fn run() {
                 }
             }
 
-            // Install or upgrade the Distill-managed ACP bridges (claude, codex)
+            // Install or upgrade the Flock-managed ACP bridges (claude, codex)
             // in the background to the versions pinned in
             // `acp-tools.lock.json`, onto the managed Node runtime in app
             // data; failures are logged and retried next launch while any
@@ -395,7 +396,7 @@ pub fn run() {
             commands::benchmarks::benchmark_list_schedules,
             commands::benchmarks::benchmark_save_schedule,
             commands::agents::read_import_agent_file,
-            commands::distill_store::update_distill_settings,
+            commands::flock_store::update_flock_settings,
             commands::project_store::initialize_project_context,
             commands::agents::read_agent_source_file,
             commands::avatars::get_cached_avatars_for_refs,
@@ -467,10 +468,10 @@ pub fn run() {
             commands::system::inspect_attachment_paths,
             commands::system::search_file_mentions,
             commands::system::read_image_attachment,
-            commands::distill_store::get_distill_root,
-            commands::distill_store::set_distill_root,
-            commands::distill_store::read_distill_document,
-            commands::distill_store::write_distill_document,
+            commands::flock_store::get_flock_root,
+            commands::flock_store::set_flock_root,
+            commands::flock_store::read_flock_document,
+            commands::flock_store::write_flock_document,
             commands::project_store::read_project_document,
             commands::project_store::write_project_document,
             commands::project_store::list_project_documents,
@@ -482,7 +483,7 @@ pub fn run() {
             commands::terminal::resize_terminal,
             commands::terminal::stop_terminal,
             commands::agent_skills::list_agent_skills,
-            commands::agent_skills::list_distill_app_skills,
+            commands::agent_skills::list_flock_app_skills,
             commands::workspace_context::load_workspace_context,
         ])
         .build(context)

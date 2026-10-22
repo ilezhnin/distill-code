@@ -17,7 +17,7 @@ export const startup = initializeRootSettings()
     renderApp();
   })
   .catch((error: unknown) => {
-    console.error("Cannot load Distill configuration", error);
+    console.error("Cannot load Flock configuration", error);
     const message = document.createElement("p");
     message.textContent = String(error);
     document.getElementById("root")?.replaceChildren(message);

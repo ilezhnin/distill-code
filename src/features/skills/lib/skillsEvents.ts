@@ -1,4 +1,4 @@
-export const SKILLS_CHANGED_EVENT = "distill:skills-changed";
+export const SKILLS_CHANGED_EVENT = "flock:skills-changed";
 
 export function listenSkillsChanged(handler: () => void): () => void {
   if (typeof window === "undefined") {

@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 if ($args.Count -eq 0) { throw 'The Cargo test executable is required.' }
 $testExecutable = (Resolve-Path -LiteralPath $args[0]).Path
 $testArguments = @($args | Select-Object -Skip 1)
-if ([IO.Path]::GetFileName($testExecutable) -match '^distill_lib-[a-f0-9]+\.exe$') {
+if ([IO.Path]::GetFileName($testExecutable) -match '^levocat_flock_lib-[a-f0-9]+\.exe$') {
     # Tauri embeds its activation manifest only into the app binary. Rust's
     # library test process also loads Common Controls v6; a global linker flag
     # would duplicate the app manifest, so modify only this generated artifact.

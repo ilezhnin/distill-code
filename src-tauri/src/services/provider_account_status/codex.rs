@@ -136,7 +136,7 @@ pub(super) async fn read_usage_command(
         next_id: 0,
     };
     let operation = async {
-        client.request("initialize", json!({"clientInfo":{"name":"distill_accounts","title":"Distill","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
+        client.request("initialize", json!({"clientInfo":{"name":"distill_accounts","title":"Levocat Flock","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         client
             .send(json!({"method":"initialized","params":{}}))
             .await?;
@@ -471,7 +471,7 @@ pub(crate) async fn refresh_grant(
         next_id: 0,
     };
     let operation = async {
-        client.request("initialize", json!({"clientInfo":{"name":"distill_accounts","title":"Distill","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
+        client.request("initialize", json!({"clientInfo":{"name":"distill_accounts","title":"Levocat Flock","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         client
             .send(json!({"method":"initialized","params":{}}))
             .await?;

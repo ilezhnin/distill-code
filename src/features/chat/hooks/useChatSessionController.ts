@@ -58,7 +58,7 @@ import { formatSessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { getSkillProviderCapabilities } from "@/features/chat/lib/skillProviderCapabilities";
 import { supportsSteeringHarness } from "@/features/chat/lib/steeringSupport";
 import {
-  fetchDistillAppSkills,
+  fetchFlockAppSkills,
   fetchSkillsList,
 } from "@/features/skills/api/skillsQuery";
 import { listenSkillsChanged } from "@/features/skills/lib/skillsEvents";
@@ -701,7 +701,7 @@ export function useChatSessionController({
       const currentRequestId = requestId + 1;
       requestId = currentRequestId;
 
-      void fetchDistillAppSkills(queryClient, options)
+      void fetchFlockAppSkills(queryClient, options)
         .then((skills) => {
           if (cancelled || currentRequestId !== requestId) return;
           setAppSkillsCatalogState((current) =>
@@ -713,7 +713,7 @@ export function useChatSessionController({
         })
         .catch((error) => {
           if (cancelled || currentRequestId !== requestId) return;
-          console.error("Failed to load Distill app skills catalog:", error);
+          console.error("Failed to load Flock app skills catalog:", error);
           setAppSkillsCatalogState((current) =>
             nextPromptState(current, {
               key: "app",
@@ -751,7 +751,7 @@ export function useChatSessionController({
       const currentRequestId = requestId + 1;
       requestId = currentRequestId;
 
-      // The app-skills catalog effect above owns the Distill app skills; skip
+      // The app-skills catalog effect above owns the Flock app skills; skip
       // them here instead of fetching a copy just to filter it out.
       void fetchSkillsList(queryClient, includedWorkspacePaths, {
         providerId: skillProviderId,

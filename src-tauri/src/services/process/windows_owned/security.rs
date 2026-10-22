@@ -330,7 +330,7 @@ pub(super) struct Profile {
 }
 /// The AppContainer profile name of one attempt.
 fn profile_name(id: Uuid) -> String {
-    format!("Distill.Owned.{}", id.simple())
+    format!("Flock.Owned.{}", id.simple())
 }
 
 impl Profile {

@@ -228,7 +228,7 @@ describe("MCP management", () => {
     };
     mocks.checkMcpConnection.mockImplementation(async () => {
       mocks.listMcpDiagnostics.mockResolvedValue({
-        "distill:demo": diagnostic,
+        "flock:demo": diagnostic,
       });
       return diagnostic;
     });
@@ -246,7 +246,7 @@ describe("MCP management", () => {
       await screen.findByText("Server requires authentication"),
     ).toBeInTheDocument();
     expect(mocks.checkMcpConnection).toHaveBeenCalledWith(
-      "distill:demo",
+      "flock:demo",
       [],
       expect.objectContaining({ uri: "https://example.com/mcp" }),
     );

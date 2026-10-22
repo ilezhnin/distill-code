@@ -5,7 +5,7 @@ import { useProviderModelCacheStore } from "@/features/providers/stores/provider
 
 import type { ModelOption } from "@/features/chat/types";
 
-import type { WaveStep } from "./distillWave";
+import type { WaveStep } from "./flockWave";
 import {
   checkWaveStepRunSettings,
   planWaveStepRunSettings,

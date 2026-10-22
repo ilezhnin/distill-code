@@ -4,7 +4,7 @@ Settings > Providers shows every provider in the same setup and usage section.
 Claude Code and Codex use managed account profiles; Grok and Kimi keep their
 native CLI authorization and feed the same plan, quota, and credit presentation.
 Install/update and sign-in controls live in the provider's section. Add each
-subscription account in Distill and complete its initial browser authorization once. API accounts
+subscription account in Flock and complete its initial browser authorization once. API accounts
 accept a separate key. Switching uses that account's saved credentials; it does
 not sign out another account. The provider CLI refreshes OAuth credentials.
 Revoked authorization still requires a new sign-in.
@@ -23,7 +23,7 @@ editing or removal, and the reported identity is shown only once.
 Manage accounts only in Settings > Providers: select a provider default for new
 chats and configure automatic switching there. Chat composers have no account
 selector or account-management dialog. Concurrent chats can use different
-accounts. An automatic switch preserves the Distill transcript and selected
+accounts. An automatic switch preserves the Flock transcript and selected
 model; native CLI session state does not move between accounts.
 
 ## Limits and automatic switching
@@ -37,7 +37,7 @@ sign-in shows its browser instruction and cancellation action without quota
 errors caused by the temporary credential lock.
 Codex signs in through its native app-server account protocol and uses the
 provider's hosted completion page. Finishing sign-in no longer leaves the
-browser on a short-lived localhost success page. Distill waits for the matching
+browser on a short-lived localhost success page. Flock waits for the matching
 login ID, verifies saved authorization, and reaps the account process before
 allowing another attempt. OAuth URLs and provider error details are not logged
 or sent to the renderer.
@@ -47,7 +47,7 @@ It shows reported subscription, quota windows, reset times, account identity,
 reset-credit inventory, and freshness. Missing provider telemetry is displayed
 as unknown, never as an unlimited allowance. API-key accounts do not expose a
 subscription quota meter. Claude's `get_usage` reply omits reset grants, so
-Distill reads quota and `cedar_ember` grants together through the native CLI's
+Flock reads quota and `cedar_ember` grants together through the native CLI's
 first-party usage endpoint. Full and five-hour grants show their availability
 and expiry; missing telemetry stays unknown. Failed reads retain the last known
 values as stale. A 429 pauses usage requests for at least one minute, increasing
@@ -116,7 +116,7 @@ run on credits. Benchmark turns may only within the credit limit set in
 Settings > Benchmarks; judges never do. A provider refusal outranks the
 credit balance it last reported.
 
-When every eligible account is exhausted, the message stays queued. Distill
+When every eligible account is exhausted, the message stays queued. Flock
 waits for the earliest time at which an account's blocking windows have all
 reset. Unknown reset times are polled again. A manual account change or fresh
 available quota wakes the queue. A partially executed turn is never replayed
@@ -136,9 +136,9 @@ fresh telemetry. Automatic routing continues to require fresh quota data.
 
 ## Storage and protocol
 
-`<DISTILL_ROOT>/provider-accounts/index.json` stores account IDs, labels, provider
+`provider-accounts/index.json` in the Flock folder stores account IDs, labels, provider
 defaults and routing preferences. Each managed UUID has a separate home in this
-directory. The provider runtime installed by Distill owns its OAuth token lifecycle. Windows account
+directory. The provider runtime installed by Flock owns its OAuth token lifecycle. Windows account
 directories are restricted to the current user and SYSTEM; API keys use Windows
 DPAPI. Credentials are not returned to renderer stores or included in chat
 metadata. Keep this directory private when copying or backing up a data root.
@@ -149,9 +149,9 @@ Inherited credentials from a different account are removed for managed entries.
 Updating credentials or removing an account is blocked while it runs a turn.
 
 Benchmark sessions in the dedicated WSL sandbox run on leases of the selected
-account's sign-in in Distill: a copy of its current grant without a refresh
+account's sign-in in Flock: a copy of its current grant without a refresh
 token, staged for each session (see
-[benchmark operations](benchmark-operations.md)). Distill is the only place an
+[benchmark operations](benchmark-operations.md)). Flock is the only place an
 account signs in and the only process that refreshes its grant, so a sandbox
 session spends the same allowance under the same sign-in, and dispatch reads
 the same account status for it as for chats: a quota rejection in the sandbox
@@ -160,7 +160,7 @@ blocks the account in Settings too. Owned sessions retain their frozen account.
 Benchmarks run Codex on the same account home, and Codex loads that home into
 every thread. A Codex account is benchmarked only while its home holds no
 `AGENTS.md`, `AGENTS.override.md`, `hooks.json` or `hooks/` and its
-`config.toml` sets nothing but the `cli_auth_credentials_store` Distill writes;
+`config.toml` sets nothing but the `cli_auth_credentials_store` Flock writes;
 otherwise its benchmark rows say why they are unavailable. Chats are unaffected.
 
 There is no system CLI account or fallback to credentials from another app.
@@ -178,24 +178,24 @@ benchmark session in the sandbox runs on a lease of the user's Grok CLI
 sign-in: its access token, issue and expiry times and identity (`key`,
 `auth_mode`, `create_time`, `expires_at`, `user_id`, `email`), with no refresh
 or other token, staged for that session alone, so it can never rotate the
-sign-in the user's own Grok keeps. Distill reads the user's `auth.json` and
+sign-in the user's own Grok keeps. Flock reads the user's `auth.json` and
 never writes it; when a session needs the sign-in to last longer, a short
 Grok process on Windows renews it the CLI's own way (see
 [benchmark operations](benchmark-operations.md)). A Kimi benchmark session runs
 on Kimi's own sandbox sign-in, never a copy of the user's Kimi home. The v2 account
-index drops the old external-login entries while retaining saved Distill
+index drops the old external-login entries while retaining saved Flock
 accounts, their credentials and routing preferences. The database migration
 clears external account references without changing transcripts. Selecting a
 connected account resumes these chats through transcript transfer. Importing
 native CLI session state and any authorization needed for that import are
-separate from connecting a Distill account.
+separate from connecting a Flock account.
 
 Codex status and manual reset use its native app-server account APIs. Claude
 status uses the pinned CLI's `initialize` control request with
 hooks, tools, MCP and session persistence disabled. Neither telemetry adapter
 sends prompts or starts model inference. The CLI determines effective billing
 and refreshes expired or rejected OAuth credentials through `get_usage`, including
-accounts idle between uses. Distill asks for that refresh within the CLI's own
+accounts idle between uses. Flock asks for that refresh within the CLI's own
 five-minute margin before expiry, so a token cannot lapse during the probe, and
 checks the token before a usage request. The account requires sign-in only on
 positive evidence: no saved refresh token, the CLI reporting it signed out, or

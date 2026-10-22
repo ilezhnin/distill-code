@@ -31,7 +31,7 @@ import {
   preparePersonaHandoff,
   type PersonaHandoffClaim,
 } from "./acpPersonaHandoff";
-import { getDistillctlPreamble } from "@/features/distillctl/appPreamble";
+import { getFlockctlPreamble } from "@/features/flockctl/appPreamble";
 import { sessionStyleGuidelinesPrompt } from "@/features/chat/lib/sessionSettings";
 import { INTERACTION_NORMS_PREAMBLE } from "@/shared/api/interactionNorms";
 import { logSessionId, perfLog } from "@/shared/lib/perfLog";
@@ -173,14 +173,14 @@ async function acpSendMessageNow(
   // ACP agents expose no system-prompt channel, so the persona and the app
   // context are handed off in-band on the first prompt under that agent.
   // See acpPersonaHandoff.
-  const [distillctlPreamble, styleGuidelines] = await Promise.all([
-    getDistillctlPreamble(sessionId),
+  const [flockctlPreamble, styleGuidelines] = await Promise.all([
+    getFlockctlPreamble(sessionId),
     sessionStyleGuidelinesPrompt(sessionId),
   ]);
   const appPreamble = [
     INTERACTION_NORMS_PREAMBLE,
     styleGuidelines,
-    distillctlPreamble,
+    flockctlPreamble,
   ]
     .filter((part): part is string => Boolean(part?.trim()))
     .join("\n\n");

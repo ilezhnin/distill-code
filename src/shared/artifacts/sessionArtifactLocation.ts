@@ -1,13 +1,13 @@
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
-import { getDistillRoot } from "@/shared/api/distillStore";
+import { getFlockRoot } from "@/shared/api/flockStore";
 import { resolvePath } from "@/shared/api/pathResolver";
 import { ensureDirectory } from "@/shared/api/system";
 
-export const ARTIFACT_ROOT_STORAGE_KEY = "distill:artifact-root-path";
-export const ARTIFACT_ROOT_CHANGED_EVENT = "distill:artifact-root-path-changed";
-/** Generated files land under the Distill folder, beside projects and memory. */
+export const ARTIFACT_ROOT_STORAGE_KEY = "flock:artifact-root-path";
+export const ARTIFACT_ROOT_CHANGED_EVENT = "flock:artifact-root-path-changed";
+/** Generated files land under the Flock folder, beside projects and memory. */
 export const DEFAULT_ARTIFACT_ROOT_FOLDER_NAME = "artifacts";
-const FALLBACK_DISTILL_ROOT_FOLDER_NAME = ".distill";
+const FALLBACK_FLOCK_ROOT_FOLDER_NAME = ".flock";
 
 export interface SessionArtifactLocationOptions {
   artifactRootOverride?: string | null;
@@ -29,7 +29,7 @@ function hasTauriRuntime(): boolean {
 }
 
 function fallbackDefaultArtifactRootPath(): string {
-  return `~/${FALLBACK_DISTILL_ROOT_FOLDER_NAME}/${DEFAULT_ARTIFACT_ROOT_FOLDER_NAME}`;
+  return `~/${FALLBACK_FLOCK_ROOT_FOLDER_NAME}/${DEFAULT_ARTIFACT_ROOT_FOLDER_NAME}`;
 }
 
 export async function defaultArtifactRootPath(): Promise<string> {
@@ -38,14 +38,14 @@ export async function defaultArtifactRootPath(): Promise<string> {
   }
 
   try {
-    const distillRoot = (await getDistillRoot())?.root?.trim();
+    const flockRoot = (await getFlockRoot())?.root?.trim();
     return (
       await resolvePath({
-        parts: distillRoot
-          ? [distillRoot, DEFAULT_ARTIFACT_ROOT_FOLDER_NAME]
+        parts: flockRoot
+          ? [flockRoot, DEFAULT_ARTIFACT_ROOT_FOLDER_NAME]
           : [
               "~",
-              FALLBACK_DISTILL_ROOT_FOLDER_NAME,
+              FALLBACK_FLOCK_ROOT_FOLDER_NAME,
               DEFAULT_ARTIFACT_ROOT_FOLDER_NAME,
             ],
       })

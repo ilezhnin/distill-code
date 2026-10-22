@@ -496,7 +496,7 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
         empty.state = AccountState::Disabled;
         return empty;
     }
-    // A CLI sign-in has no Distill-held credentials or usage source.
+    // A CLI sign-in has no Flock-held credentials or usage source.
     if provider_accounts::is_cli_login_account(&account.provider_id, &account.id) {
         return empty;
     }
@@ -1001,7 +1001,7 @@ pub(crate) async fn renew_app_grant(
         "claude-acp" if natural => claude::refresh_in_window(app, account).await,
         "claude-acp" => claude::renew_grant(app, account).await,
         "codex-acp" => codex::refresh_grant(app, account).await,
-        _ => Err("Distill does not renew this provider's sign-in".into()),
+        _ => Err("Flock does not renew this provider's sign-in".into()),
     }
 }
 

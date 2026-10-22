@@ -7,7 +7,7 @@
 //   - `name` and `description` fields
 //   - an `avatar` ref in `app-avatar:<id>` or `agent-avatar:<id>` form so the
 //     renderer can warm it
-//   - `metadata.distillBundled: true` so updates/re-seeds behave like the other
+//   - `metadata.flockBundled: true` so updates/re-seeds behave like the other
 //     bundled agents
 //
 // Run via pnpm exec: `pnpm exec tsx scripts/validate-bundled-agents.ts [path...]`
@@ -21,6 +21,14 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---(?:\n|$)/;
+// The ownership marker a shipped agent must carry, and the keys builds under
+// the app's earlier names wrote it as. The runtime accepts the old keys on an
+// installed copy, but a shipped manifest must use the current one: the app
+// rewrites an installed copy to the current key at startup, so a shipped copy
+// under an old key would differ from its install on every launch and be
+// reinstalled every time.
+const BUNDLED_MARKER_KEY = "flockBundled";
+const RETIRED_BUNDLED_MARKER_KEYS = ["distillBundled", "berdBundled"] as const;
 const APP_AVATAR_REF_RE = /^app-avatar:[a-z0-9][a-z0-9_-]{0,63}$/;
 const AGENT_AVATAR_REF_RE = /^agent-avatar:([a-z0-9][a-z0-9_-]{0,63})$/;
 const AVATAR_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"] as const;
@@ -35,7 +43,7 @@ interface BundledAgentFrontmatter {
   good_for?: unknown;
   vibes?: unknown;
   avatar?: unknown;
-  metadata?: { distillBundled?: unknown; [key: string]: unknown };
+  metadata?: { flockBundled?: unknown; [key: string]: unknown };
 }
 
 const USAGE =
@@ -158,10 +166,15 @@ export function validateBundledAgent(
     );
   }
 
-  if (frontmatter.metadata?.distillBundled !== true) {
+  if (frontmatter.metadata?.[BUNDLED_MARKER_KEY] !== true) {
+    const retired = RETIRED_BUNDLED_MARKER_KEYS.find(
+      (key) => frontmatter.metadata?.[key] === true,
+    );
     errors.push(
       error(
-        "frontmatter must set `metadata.distillBundled: true` so the agent is treated as bundled",
+        retired
+          ? `frontmatter marks the agent with the retired key \`metadata.${retired}\`; a shipped agent must set \`metadata.${BUNDLED_MARKER_KEY}: true\` (the app rewrites installed copies to that key, so a shipped copy under the old one would be reinstalled on every launch)`
+          : `frontmatter must set \`metadata.${BUNDLED_MARKER_KEY}: true\` so the agent is treated as bundled`,
         filePath,
       ),
     );

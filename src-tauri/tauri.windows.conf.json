@@ -3,7 +3,7 @@
   "app": {
     "windows": [
       {
-        "title": "Distill",
+        "title": "Levocat Flock",
         "width": 800,
         "height": 600,
         "minWidth": 608,
@@ -18,7 +18,7 @@
   },
   "bundle": {
     "targets": ["nsis"],
-    "externalBin": ["binaries/distillctl", "binaries/distill-monitor"],
+    "externalBin": ["binaries/flockctl", "binaries/flock-monitor"],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper",

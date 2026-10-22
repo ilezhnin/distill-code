@@ -29,7 +29,7 @@ import {
 } from "./conductorDocuments";
 import { notePersistFailure } from "./persistHealth";
 
-export const CONDUCTOR_GRAPH_STORAGE_KEY = "distill:conductor-graph";
+export const CONDUCTOR_GRAPH_STORAGE_KEY = "flock:conductor-graph";
 
 interface PersistedConductorGraph {
   version: 1;

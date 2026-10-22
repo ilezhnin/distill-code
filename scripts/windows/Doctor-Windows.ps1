@@ -7,7 +7,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-DistillRepoRoot)
+Set-Location (Get-FlockRepoRoot)
 Update-SessionPathFromRegistry
 
 $script:Failures = 0
@@ -48,7 +48,7 @@ function Check-Command {
     return $source
 }
 
-Write-WindowsDevSection "Distill Windows doctor"
+Write-WindowsDevSection "Flock Windows doctor"
 
 $prereqs = Get-WindowsPrerequisiteSnapshot
 

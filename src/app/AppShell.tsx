@@ -128,7 +128,7 @@ import {
   type ArchiveCleanupPolicy,
   MUTATION_DEADLINE_MARGIN_MS,
   useRegisterAppNavigationController,
-} from "@/features/distillctl/navigation";
+} from "@/features/flockctl/navigation";
 import { AgentBuilderLeaveDraftDialog } from "@/features/agents/ui/AgentBuilderLeaveDraftDialog";
 import { AppShellLayout } from "./ui/AppShellLayout";
 import { AppShellContent } from "./ui/AppShellContent";
@@ -285,14 +285,14 @@ interface ArchiveChatOptions {
   /**
    * Stop the chat's terminals once it is archived. Operator-initiated
    * archives only: the stop is unrecoverable (unarchive restores no shell),
-   * so an agent driving distillctl must never trigger it.
+   * so an agent driving flockctl must never trigger it.
    */
   stopTerminals?: boolean;
 }
 
 const APP_NAVIGATION_HISTORY_LIMIT = 50;
 const DESIGN_SYSTEM_INSPECTOR_VISIBLE_STORAGE_KEY =
-  "distill:design-system-inspector-visible:v2";
+  "flock:design-system-inspector-visible:v2";
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 const GLOBAL_COMPOSER_HANDOFF_MS = 620;
 const GLOBAL_COMPOSER_ROUTE_SWAP_DELAY_MS = 220;
@@ -3164,7 +3164,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         // Only an operator-initiated archive may do that. Killing a dev
         // server, a build or a migration is unrecoverable — unarchiving
         // restores nothing — so it needs the person who can judge the loss.
-        // distillctl's `session archive` reaches this same function, is declared
+        // flockctl's `session archive` reaches this same function, is declared
         // `destructive: false`, and its help promises it never discards local
         // work; it therefore archives without the stop and refuses outright
         // while the chat still has live shells.

@@ -5,7 +5,7 @@ import {
   type NotificationSoundId,
 } from "@/shared/notifications/notificationSounds";
 
-const STORAGE_KEY = "distill:notifications";
+const STORAGE_KEY = "flock:notifications";
 
 export interface NotificationPrefs {
   enabled: boolean;

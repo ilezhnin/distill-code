@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::services::distro_bundle::DistroBundle;
+use crate::services::upstream_names;
 
 const DISTRO_AGENTS_DIR_NAME: &str = "agents";
-const MARKER_FILE_NAME: &str = ".distill-bundled-agents.json";
+const MARKER_FILE_NAME: &str = ".flock-bundled-agents.json";
 static INSTALL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -23,18 +24,15 @@ struct SeedMarker {
     seeded_files: BTreeSet<String>,
 }
 
+/// Only the `metadata` block matters, read as a map so the ownership marker
+/// is recognised under every name the app has written it by
+/// (`upstream_names::metadata_marks_bundled`).
 #[derive(Deserialize)]
 struct AgentFrontmatter {
-    metadata: Option<AgentMetadata>,
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-#[derive(Deserialize)]
-struct AgentMetadata {
-    #[serde(rename = "distillBundled")]
-    distill_bundled: Option<bool>,
-}
-
-/// Installs the distro's starter agents into `target_root`: the Distill
+/// Installs the distro's starter agents into `target_root`: the Flock
 /// root's `agents` folder (an E2E run's own in isolation). There is no other
 /// destination; nothing is installed into a folder other tools keep.
 pub fn seed_bundled_agents(
@@ -181,8 +179,7 @@ fn is_installed_bundled_agent(agent_file: &Path) -> Result<bool, String> {
     Ok(agent_frontmatter(&contents)
         .and_then(|frontmatter| yaml_serde::from_str::<AgentFrontmatter>(frontmatter).ok())
         .and_then(|frontmatter| frontmatter.metadata)
-        .map(|metadata| metadata.distill_bundled.unwrap_or(false))
-        .unwrap_or(false))
+        .is_some_and(|metadata| upstream_names::metadata_marks_bundled(&metadata)))
 }
 
 fn files_are_equal(left: &Path, right: &Path) -> Result<bool, String> {
@@ -229,7 +226,7 @@ fn install_agent_file(source: &Path, target: &Path) -> Result<(), String> {
         fs::read(source).map_err(|err| format!("Failed to read '{}': {err}", source.display()))?;
     let sequence = INSTALL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp_path = parent.join(format!(
-        ".distill-agent-install-{}-{sequence}.tmp",
+        ".flock-agent-install-{}-{sequence}.tmp",
         std::process::id()
     ));
     let install_result = (|| -> Result<(), String> {
@@ -344,7 +341,7 @@ mod tests {
         write_agent(
             source.path(),
             "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nBuild carefully.",
+            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  flockBundled: true\n---\nBuild carefully.",
         );
 
         seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
@@ -363,7 +360,7 @@ mod tests {
         write_agent(
             source.path(),
             "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nBundled.",
+            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  flockBundled: true\n---\nBundled.",
         );
         write_agent(
             target.path(),
@@ -393,7 +390,7 @@ mod tests {
         write_agent(
             source.path(),
             "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  distillBundled: true\n---\nBundled.",
+            "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  flockBundled: true\n---\nBundled.",
         );
         fs::create_dir_all(target.path()).unwrap();
         fs::write(target.path().join("builderbot.md"), [0xff]).unwrap();
@@ -410,6 +407,35 @@ mod tests {
         assert_eq!(second_result.seeded_count, 0);
     }
 
+    /// A starter agent a build under an earlier name installed carries that
+    /// name's marker. `upstream_names::adopt` rewrites it at startup, but a
+    /// copy it has not reached is still the app's own: updated, not left
+    /// alone as the user's and not installed beside it twice.
+    #[test]
+    fn a_seeded_agent_marked_by_an_earlier_build_is_updated() {
+        for key in upstream_names::OLD_BUNDLED_KEYS {
+            assert_ne!(*key, upstream_names::BUNDLED_KEY);
+            let source = tempdir().unwrap();
+            let target = tempdir().unwrap();
+            let bundled = "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  flockBundled: true\n---\nWrite to the Flock folder.";
+            write_agent(source.path(), "builderbot.md", bundled);
+            seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
+            write_agent(
+                target.path(),
+                "builderbot.md",
+                &format!("---\nname: Builderbot\ndescription: Agent\nmetadata:\n  {key}: true\n---\nWrite to the old folder."),
+            );
+
+            let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
+
+            assert_eq!(result.seeded_count, 1, "{key}");
+            assert_eq!(
+                fs::read_to_string(target.path().join("builderbot.md")).unwrap(),
+                bundled
+            );
+        }
+    }
+
     /// A starter agent installed from a Windows checkout carries CRLF line
     /// endings; it is still recognised as the app's own and updated, while a
     /// CRLF file without the marker stays the user's.
@@ -417,15 +443,15 @@ mod tests {
     fn a_seeded_agent_with_crlf_line_endings_is_updated() {
         let source = tempdir().unwrap();
         let target = tempdir().unwrap();
-        let bundled = "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nWrite to ~/.distill/agents.";
+        let bundled = "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  flockBundled: true\n---\nWrite to ~/.distill/agents.";
         write_agent(source.path(), "builderbot.md", bundled);
         write_agent(
             source.path(),
             "scout.md",
-            "---\nname: Scout\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nLook.",
+            "---\nname: Scout\ndescription: Agent\nmetadata:\n  flockBundled: true\n---\nLook.",
         );
         seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
-        let old = "---\r\nname: Builderbot\r\ndescription: Agent\r\nmetadata:\r\n  distillBundled: true\r\n---\r\nWrite to ~/.agents/agents.\r\n";
+        let old = "---\r\nname: Builderbot\r\ndescription: Agent\r\nmetadata:\r\n  flockBundled: true\r\n---\r\nWrite to ~/.agents/agents.\r\n";
         write_agent(target.path(), "builderbot.md", old);
         let own = "---\r\nname: Scout\r\ndescription: Mine\r\n---\r\nMine.\r\n";
         write_agent(target.path(), "scout.md", own);
@@ -443,16 +469,16 @@ mod tests {
         );
     }
 
-    /// The starter agents land in the Distill root's `agents`, and nothing is
+    /// The starter agents land in the Flock root's `agents`, and nothing is
     /// created in the home folder the root sits in.
     #[test]
-    fn bundled_agents_install_under_the_distill_root() {
+    fn bundled_agents_install_under_the_flock_root() {
         let distro = tempdir().unwrap();
         let home = tempdir().unwrap();
         write_agent(
             &distro.path().join("agents"),
             "scout.md",
-            "---\nname: Scout\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nLook around.",
+            "---\nname: Scout\ndescription: Agent\nmetadata:\n  flockBundled: true\n---\nLook around.",
         );
         let bundle = DistroBundle {
             root_dir: distro.path().to_path_buf(),

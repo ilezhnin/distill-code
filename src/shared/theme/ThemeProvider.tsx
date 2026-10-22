@@ -122,7 +122,7 @@ function applyResolvedMode(isDark: boolean) {
  * user-data folder. Every other storage reader in the tree guards for that;
  * these did not, and a throw here (during render, and in the write effects)
  * took the whole app to the error screen although all persistent data lives in
- * the Distill folder and would have worked.
+ * the Flock folder and would have worked.
  */
 function readStoredValue(key: string): string | null {
   try {

@@ -1,4 +1,4 @@
-const HOME_SESSION_STORAGE_KEY = "distill:home-session-id";
+const HOME_SESSION_STORAGE_KEY = "flock:home-session-id";
 
 export function loadStoredHomeSessionId(): string | null {
   if (typeof window === "undefined") {

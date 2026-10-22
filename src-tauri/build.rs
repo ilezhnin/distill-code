@@ -6,12 +6,12 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/32x32.png");
     println!("cargo:rerun-if-changed=icons/128x128.png");
     println!("cargo:rerun-if-changed=icons/128x128@2x.png");
-    println!("cargo:rerun-if-env-changed=DISTILL_APP_VERSION");
+    println!("cargo:rerun-if-env-changed=FLOCK_APP_VERSION");
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
 
-    let app_version = std::env::var("DISTILL_APP_VERSION")
-        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
-    println!("cargo:rustc-env=DISTILL_BUILD_VERSION={app_version}");
+    let app_version =
+        std::env::var("FLOCK_APP_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
+    println!("cargo:rustc-env=FLOCK_BUILD_VERSION={app_version}");
 
     tauri_build::build()
 }

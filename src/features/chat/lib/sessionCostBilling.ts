@@ -8,7 +8,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * ACP `usage_update.cost` is list-price USD unless the bridge marks it billed.
- * Distill never infers invoices from currency or a subscription bar.
+ * Flock never infers invoices from currency or a subscription bar.
  */
 export function sessionCostBillingForAmount(
   amount: number | null | undefined,
