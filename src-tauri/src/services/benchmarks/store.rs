@@ -2316,8 +2316,12 @@ mod tests {
         directory.register(&store.pool);
         let entries = store.catalog_entries().await.unwrap();
         assert!(!entries.iter().any(|e| e.id == "seed-anthropic-fable-5-1"));
-        // Four kept Anthropic rows, fourteen vendor rows, two estimates.
-        assert_eq!(entries.len(), 4 + 14 + 2);
+        // Four kept Anthropic rows, fourteen vendor rows, two estimates, and
+        // the two Sonnet rows of the dated context correction.
+        assert_eq!(entries.len(), 4 + 14 + 2 + 2);
+        assert!(entries
+            .iter()
+            .any(|e| e.id == "seed-anthropic-sonnet-5-2026-10-22"));
         assert!(entries.iter().any(|e| e.id == "seed-moonshot-k3"));
         assert!(entries
             .iter()
@@ -2328,13 +2332,13 @@ mod tests {
             .await
             .unwrap();
         let again = store.catalog_entries().await.unwrap();
-        assert_eq!(again.len(), 19);
+        assert_eq!(again.len(), 21);
         assert!(!again.iter().any(|e| e.id == "seed-xai-grok-4-5"));
         // A new catalog gets every set.
         let fresh_directory = crate::test_support::TempRoot::new();
         let fresh = Store::open(fresh_directory.path()).await.unwrap();
         fresh_directory.register(&fresh.pool);
-        assert_eq!(fresh.catalog_entries().await.unwrap().len(), 5 + 14 + 2);
+        assert_eq!(fresh.catalog_entries().await.unwrap().len(), 5 + 14 + 2 + 2);
         directory.close().await;
         fresh_directory.close().await;
     }
