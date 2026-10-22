@@ -1565,6 +1565,48 @@
   animation-name: text-shimmer-continuous;
 }
 
+/* ── Working row ──────────────────────────────────────────────────────────
+   A table row whose subject is being worked on (a model under measurement)
+   shows a golden light sweeping along it instead of a spinner and a label:
+   readable from across the room and taking no room of its own. The gradient
+   rides on the row's own background, so the cells keep their layout and the
+   hover tint still shows through. Under reduced motion the sweep stands
+   still as a faint tint fading from the leading edge. */
+[data-slot="table-row"][data-working="true"] {
+  background-image: linear-gradient(
+    100deg,
+    transparent 38%,
+    color-mix(in oklab, var(--chart-1) 12%, transparent) 46%,
+    color-mix(in oklab, var(--chart-1) 26%, transparent) 50%,
+    color-mix(in oklab, var(--chart-1) 12%, transparent) 54%,
+    transparent 62%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: row-sheen 2.8s linear infinite;
+}
+
+@keyframes row-sheen {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="table-row"][data-working="true"] {
+    animation: none;
+    background-image: linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--chart-1) 16%, transparent),
+      transparent 55%
+    );
+    background-size: 100% 100%;
+  }
+}
+
 /* ── Reasoning-effort track ───────────────────────────────────────────────
    The composer's effort widget reads as a slider: a rail with a fill that
    runs to the selected stop. Ultracode is the synthetic top stop, so it gets

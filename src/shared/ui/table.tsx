@@ -47,10 +47,20 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
   );
 }
 
-function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
+interface TableRowProps extends React.ComponentProps<"tr"> {
+  /**
+   * While true, a golden light sweeps along the row: work on its subject is
+   * going on. It replaces a spinner and a label and takes no room; name the
+   * state for assistive technology in the row's own content.
+   */
+  working?: boolean;
+}
+
+function TableRow({ className, working, ...props }: TableRowProps) {
   return (
     <tr
       data-slot="table-row"
+      data-working={working ? "true" : undefined}
       className={cn(
         "hover:bg-muted/50 data-[state=selected]:bg-muted border-b transition-colors",
         className,

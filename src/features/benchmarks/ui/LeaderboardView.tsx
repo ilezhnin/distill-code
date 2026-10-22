@@ -13,7 +13,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/shared/ui/table";
-import { Spinner } from "@/shared/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import {
   modelNameKey,
@@ -239,12 +238,12 @@ export function LeaderboardView({
       {entry.rank ?? "–"}
     </TableCell>
   );
-  const modelCell = (entry: RankedRow) => {
-    const activity = modelActivity(
-      modelOf(entry.row),
-      runs,
-      cohort?.versionIds,
-    );
+  const activityOf = (entry: RankedRow) =>
+    modelActivity(modelOf(entry.row), runs, cohort?.versionIds);
+  const modelCell = (
+    entry: RankedRow,
+    activity: ReturnType<typeof modelActivity>,
+  ) => {
     const attention = activity.attention;
     return (
       <TableCell className={cn("min-w-72", pinned("left-10"))}>
@@ -268,12 +267,13 @@ export function LeaderboardView({
               <StateBadge state={entry.row.status} />
             </div>
           ) : null}
-          {activity.open > 0 ? (
-            <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-              {activity.running > 0 ? (
-                <Spinner decorative className="size-3 text-chart-1" />
-              ) : null}
-              {t(activity.running > 0 ? "activity.running" : "activity.left")}
+          {/* A running model's row carries the sweeping light (see `row`);
+              the words stay for assistive technology only. */}
+          {activity.running > 0 ? (
+            <span className="sr-only">{t("activity.running")}</span>
+          ) : activity.open > 0 ? (
+            <div className="mt-1 text-xs text-muted-foreground tabular-nums">
+              {t("activity.left")}
             </div>
           ) : null}
         </ModelIdentity>
@@ -320,22 +320,26 @@ export function LeaderboardView({
       </Button>
     </TableCell>
   );
-  const row = (entry: RankedRow, cells: ReactNode) => (
-    <MotionRow
-      key={modelKey(entry.row.configuration)}
-      layout="position"
-      transition={transition}
-      className="cursor-pointer"
-      onClick={() => onOpen(modelKey(entry.row.configuration))}
-    >
-      {rankCell(entry)}
-      {modelCell(entry)}
-      {cells}
-      {fullyTestedCell(entry)}
-      {factCells(entry)}
-      {detailsCell(entry)}
-    </MotionRow>
-  );
+  const row = (entry: RankedRow, cells: ReactNode) => {
+    const activity = activityOf(entry);
+    return (
+      <MotionRow
+        key={modelKey(entry.row.configuration)}
+        layout="position"
+        transition={transition}
+        className="cursor-pointer"
+        working={activity.running > 0}
+        onClick={() => onOpen(modelKey(entry.row.configuration))}
+      >
+        {rankCell(entry)}
+        {modelCell(entry, activity)}
+        {cells}
+        {fullyTestedCell(entry)}
+        {factCells(entry)}
+        {detailsCell(entry)}
+      </MotionRow>
+    );
+  };
   return (
     <section className="space-y-4">
       {/* Boards on the left; the model filter, the view switch and the page
