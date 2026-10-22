@@ -13,6 +13,9 @@ pub const MOONSHOT_PRICING: &str = "https://platform.kimi.ai/docs/pricing/chat";
 /// 2026-10-02T12:00:00Z: the day the seed sources were read, at noon so every
 /// time zone shows the same date.
 const SEED_CHECKED_AT: i64 = 1_790_942_400_000;
+/// 2026-10-22 00:00 UTC: the Sonnet context sizes checked against the models
+/// overview after the 2026-10-02 seed left Sonnet 5's unknown.
+const ANTHROPIC_CONTEXT_CHECKED_AT: i64 = 1_792_627_200_000;
 /// 2026-10-03T12:00:00Z: the day the OpenAI, xAI and Moonshot sources were read.
 const VENDOR_SEEDS_CHECKED_AT: i64 = 1_791_028_800_000;
 /// 2026-10-05T12:00:00Z: the day the estimates for unpriced models were set.
@@ -91,7 +94,39 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
         ("xai-2026-10-03", xai_seeds()),
         ("moonshot-2026-10-03", moonshot_seeds()),
         ("estimates-2026-10-05", estimate_seeds()),
+        ("anthropic-2026-10-22", anthropic_context_seeds()),
     ]
+}
+
+/// The Sonnet rows checked again on 2026-10-22: the 2026-10-02 seed left
+/// Sonnet 5's context unknown, and the models overview lists 1M for both
+/// Sonnet 5 and Sonnet 5.5. Prices unchanged. Sonnet 5.5 comes last, so it
+/// wins the tie its name shares with "sonnet 5" by creation order.
+fn anthropic_context_seeds() -> Vec<CatalogEntry> {
+    let rows = [
+        ("sonnet-5", "sonnet 5", "Claude Sonnet 5"),
+        ("sonnet-5-5", "sonnet 5.5", "Claude Sonnet 5.5"),
+    ];
+    rows.into_iter()
+        .zip(0i64..)
+        .map(|((slug, needle, name), position)| CatalogEntry {
+            id: format!("seed-anthropic-{slug}-2026-10-22"),
+            kind: "model".into(),
+            provider_id: None,
+            needle: needle.into(),
+            display_name: Some(name.into()),
+            vendor: Some("Anthropic".into()),
+            input_per_million: Some(2.0),
+            output_per_million: Some(10.0),
+            cache_read_per_million: Some(0.20),
+            cache_write_per_million: Some(2.5),
+            context_tokens: Some(1_000_000),
+            effective_from: ANTHROPIC_CONTEXT_CHECKED_AT,
+            checked_at: ANTHROPIC_CONTEXT_CHECKED_AT,
+            source: format!("{ANTHROPIC_PRICING} ; {ANTHROPIC_MODELS}"),
+            created_at: ANTHROPIC_CONTEXT_CHECKED_AT + position,
+        })
+        .collect()
 }
 
 /// Models no vendor prices, priced as their nearest published sibling so a
@@ -478,12 +513,17 @@ mod tests {
                 "openai-2026-10-03",
                 "xai-2026-10-03",
                 "moonshot-2026-10-03",
-                "estimates-2026-10-05"
+                "estimates-2026-10-05",
+                "anthropic-2026-10-22"
             ]
         );
         let seeds = seeds();
         assert_eq!(seeds.len(), 5);
         assert_eq!(sets[0].1.len(), 5);
+        for seed in anthropic_context_seeds() {
+            validate(&seed).unwrap();
+            assert_eq!(seed.effective_from, seed.checked_at);
+        }
         for seed in &seeds {
             validate(seed).unwrap();
             assert!(seed.source.contains("platform.claude.com"));
@@ -651,5 +691,43 @@ mod tests {
         for seed in estimate_seeds() {
             validate(&seed).unwrap();
         }
+    }
+
+    /// The 2026-10-02 seed left Sonnet 5's context unknown; the dated
+    /// correction supplies it, and Sonnet 5.5 keeps resolving to its own row
+    /// although its name contains "sonnet 5".
+    #[test]
+    fn the_sonnet_context_correction_resolves_each_sonnet_to_its_own_row() {
+        let entries: Vec<CatalogEntry> = seed_sets()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        let sonnet_5 = Configuration {
+            id: "sonnet-5".into(),
+            provider_id: "claude-acp".into(),
+            account_id: None,
+            model_id: "claude-sonnet-5".into(),
+            effort: Some("low".into()),
+            fast_mode: None,
+            billing_mode: "subscription".into(),
+            execution_profile: "native_text".into(),
+            inventory_revision: None,
+            model_name: Some("Claude Sonnet 5".into()),
+        };
+        let before = resolve(&entries, &sonnet_5, SEED_CHECKED_AT).unwrap();
+        assert_eq!(before.id, "seed-anthropic-sonnet-5");
+        assert_eq!(before.context_tokens, None);
+        let after = resolve(&entries, &sonnet_5, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
+        assert_eq!(after.id, "seed-anthropic-sonnet-5-2026-10-22");
+        assert_eq!(after.context_tokens, Some(1_000_000));
+        assert_eq!(after.output_per_million, before.output_per_million);
+        let sonnet_5_5 = Configuration {
+            model_id: "claude-sonnet-5-5".into(),
+            model_name: Some("Claude Sonnet 5.5".into()),
+            ..sonnet_5
+        };
+        let entry = resolve(&entries, &sonnet_5_5, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-anthropic-sonnet-5-5-2026-10-22");
+        assert_eq!(entry.display_name.as_deref(), Some("Claude Sonnet 5.5"));
     }
 }
