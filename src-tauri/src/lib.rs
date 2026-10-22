@@ -544,16 +544,23 @@ pub(crate) mod test_support {
         pub(crate) async fn close(mut self) {
             let pools = std::mem::take(self.pools.get_mut().unwrap());
             for pool in pools {
-                pool.close().await;
-                // A connection released just before is still on its way back
-                // to the pool; that task closes it now that the pool is closed.
-                // Closing the last connection checkpoints the WAL into the
-                // database file on sqlx's worker thread, disk work that a
-                // loaded CI runner can stretch past 10 s (10-19: Windows CI,
-                // 650 s of tests in parallel); a database a task really holds
-                // still fails here, only later.
+                // A connection released just before is still on its way back:
+                // sqlx 0.8 pings it on release after its closed check, and on
+                // a loaded machine the ping outlasts `close`, so `release`
+                // parks the connection in the idle queue of the closed pool,
+                // where nothing closes it (`close` itself returned early: it
+                // over-releases a permit per idle connection it closes). Every
+                // `close` drains that queue, so close until the pool is empty.
+                // Closing the last connection checkpoints the WAL on sqlx's
+                // worker thread, which a loaded CI runner can stretch past
+                // 10 s; a database a task really holds still fails here, only
+                // later.
                 let closed = tokio::time::timeout(Duration::from_secs(120), async {
-                    while pool.size() > 0 {
+                    loop {
+                        pool.close().await;
+                        if pool.size() == 0 {
+                            break;
+                        }
                         tokio::time::sleep(Duration::from_millis(1)).await;
                     }
                 })
