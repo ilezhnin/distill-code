@@ -186,9 +186,12 @@ the split was built.
 - `[1m]` is a context lane, not an effort: `opus[1m]`, `claude-fable-5[1m]`
   and `claude-fable-5-1[1m]` are whole ids and are never split.
 
-## September 22 harness update
+## Harness pins: snapshot of 2026-09-22
 
-The managed pins and their complete install graphs move together:
+The current managed pins live in `acp-tools.lock.json` and the managed Node
+runtime in `node-runtime.lock.json`; this section records the state that the
+September 2026 rework was verified against. At that point the managed pins and
+their complete install graphs moved together:
 Claude ACP **0.81.0** (Claude Agent SDK **0.3.280**) and Codex ACP **1.13.0**
 (Codex CLI **0.155.1**), with ACP SDK **1.5.0** in the renderer. Grok CLI
 **1.0.40** is managed by its own installer.

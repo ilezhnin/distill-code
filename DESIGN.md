@@ -122,7 +122,7 @@ components:
 
 This file documents the actual Distill design-system source in [globals.css](src/shared/styles/globals.css), especially the `:root` semantic tokens and the Tailwind `@theme inline` aliases. The frontmatter lists the Tailwind-facing tokens agents should use in component code, such as `text-foreground`, `bg-card`, `border-border`, and `text-muted-foreground`. The prose explains the lower-level CSS variable chain behind them.
 
-The current implementation provides useful product bones: semantic color tokens, shared UI primitives, a persistent sidebar, compact top bar, and a strong chat composer pattern. This document is not a blanket endorsement of every current surface. The Automations feature UI is explicitly excluded as design precedent because it did not receive the same craft pass.
+The current implementation provides useful product bones: semantic color tokens, shared UI primitives, a persistent sidebar, compact top bar, and a strong chat composer pattern. This document is not a blanket endorsement of every current surface.
 
 The product should reject the PRODUCT.md anti-references directly: not a generic chatbot wrapper, not a dark terminal skin, not a dashboard stuffed with metrics, not a marketing site wearing product chrome, not novelty-first AI visuals, not oversized decorative cards, not vague "assistant magic" copy, and not a pile of disconnected settings pages.
 
@@ -174,7 +174,7 @@ The source palette is a semantic token system backed by a gray scale and small s
 
 **The Theme Provider Rule.** `ThemeProvider` may apply light/dark mode, density, and the explicit primary color override. It should not generate or overwrite the full shadcn token palette at runtime.
 
-**The Raw-CSS Token Rule.** Some surfaces cannot be styled with a utility class on an element: pseudo-elements (`::selection`, `::-webkit-scrollbar-thumb`), the CSS Custom Highlight API, filters, and opacities. These keep a `:root`/dark semantic token (with both light and dark values) and are consumed with `var(...)` directly in `globals.css`. Do not bridge them into `@theme inline`, because no utility class could use the generated color. See [Tokens Consumed In Raw CSS](/docs/color-token-mapping.md#tokens-consumed-in-raw-css).
+**The Raw-CSS Token Rule.** Some surfaces cannot be styled with a utility class on an element: pseudo-elements (`::selection`, `::-webkit-scrollbar-thumb`), the CSS Custom Highlight API, filters, and opacities. These keep a `:root`/dark semantic token (with both light and dark values) and are consumed with `var(...)` directly in `globals.css`. Do not bridge them into `@theme inline`, because no utility class could use the generated color. See [Tokens Consumed In Raw CSS](docs/color-token-mapping.md#tokens-consumed-in-raw-css).
 
 **The State Color Rule.** Red, green, blue, and yellow are for state, not decoration. If a color does not communicate status or selected context, remove it.
 

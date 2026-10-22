@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ilezhnin/distill-code/security/advisories/new
+    about: Report privately. Do not open a public issue for a security problem.
+  - name: Documentation
+    url: https://github.com/ilezhnin/distill-code/blob/main/docs/README.md
+    about: Setup, providers, waves, benchmarks and routing, contributor guides.
+  - name: Levocat Flock on the web
+    url: https://www.levocat.com/flock/
+    about: What the project is and why it exists.

@@ -42,7 +42,8 @@ more than one if the question spans topics.
 ## Scope
 
 This skill is about Distill the app — not about any one harness running inside
-a session (`claude-acp`, `codex-acp`, `grok-acp`, `copilot-acp`, `amp-acp`). A question about the app around the harness (where a
+a session (`claude-acp`, `codex-acp`, `grok-acp`, `kimi-acp`, `zai-acp`,
+`copilot-acp`, `amp-acp`). A question about the app around the harness (where a
 setting lives, how a session started, how to export a chat, how to file a
 Distill bug) is in scope. A question about a specific harness's own behavior,
 output, or errors is not — treat that as harness-specific and say so rather
@@ -89,12 +90,16 @@ be a provider problem needs both):
 
 ## Working With Bundled Builder Skills
 
-- If the user wants to create, edit, or inspect an agent/persona, use or
-  recommend the `agent-builder` skill.
-- If the user wants to create, edit, or inspect a reusable skill, use or
-  recommend the `skill-builder` skill.
-- Do not duplicate those workflows inside this skill or its references. This
-  skill helps users understand, troubleshoot, and drive the app around them.
+- If the user wants to create, edit, or inspect an agent/persona and an
+  `agent-builder` skill is installed, use or recommend it; otherwise point the
+  user at the agent editor in the app.
+- If the user wants to create, edit, or inspect a reusable skill and a
+  `skill-builder` skill is installed, use or recommend it; otherwise point the
+  user at the skills page in the app.
+- The app ships only this skill and `distill-monitor`; builder skills are the
+  user's own. Do not duplicate their workflows inside this skill or its
+  references. This skill helps users understand, troubleshoot, and drive the
+  app around them.
 
 ## Source Of Truth
 

@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in the app, a wave, a benchmark run, or the CLI does not behave as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Keep private material out of it: no credentials, account exports, conversations, or benchmark task contents.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: From Settings, or the `version` field in `package.json` of your checkout plus the commit.
+      placeholder: 0.6.2 (main @ 5a7f973c)
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      description: The harness and model in use when it happened, if relevant.
+      placeholder: Claude Code, claude-sonnet-5-5, medium effort
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a project and start a conductor chat.
+        2. Ask for ...
+        3. The second wave ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Exact error text, a screenshot, or the relevant lines from the transcript side panel.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat and composer
+        - Conductor and waves
+        - Agents and skills
+        - Providers and sign-in
+        - Benchmarks and routing
+        - Memory and projects
+        - Windows setup, build or installer
+        - distillctl or distill-monitor
+        - Other

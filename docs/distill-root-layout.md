@@ -31,7 +31,7 @@ of skills, agents, chats, projects or memory.
 | `settings.json` | Global application preferences |
 | `sessions/agent-host.db` | Session records and chat history |
 | `projects/` | Registered project records |
-| `agents/` | Agent definitions: the starter agents Distill installs and the user's own |
+| `agents/` | Agent definitions: the user's own agents, one Markdown file each |
 | `skills/` | Skills: the built-in skills Distill installs and the user's own |
 | `state/` | Message queues, usage history and other application state |
 | `provider-accounts/` | Saved Claude and Codex account metadata and isolated credential homes |
@@ -110,5 +110,5 @@ home under `provider-accounts/`, without falling back to another application's
 credentials. Native CLI history import is a separate operation. See
 [Provider accounts](provider-accounts.md).
 
-The `distro/` catalog supplies generic built-in skills and starter agents. Personal
-definitions remain user-managed and are not copied into the app distribution.
+The `distro/` catalog supplies the generic built-in skills. Agents are
+user-managed definitions and are not copied into the app distribution.

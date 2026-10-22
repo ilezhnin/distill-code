@@ -1,10 +1,15 @@
 # AGENTS.md
 
-Guidelines for agents working on Distill.
+Guidelines for people and agents working on Levocat Flock.
 
-Distill is a Windows desktop workspace for orchestrating AI agents, built with
-Tauri, React, TypeScript, and Rust. It combines chats, projects, reusable roles
-and skills, conductor workflows, memory, and benchmarks.
+Levocat Flock is a Windows desktop development environment where models from
+different providers work as a team, built with Tauri, React, TypeScript, and
+Rust. It combines chats, projects, reusable roles and skills, conductor waves,
+memory, and benchmarks. The code base still carries the project's earlier name,
+Distill, in its window title, tools, data root, and protocol blocks; see the
+[note on names](docs/README.md#a-note-on-names). The product texts are
+[README.md](README.md) and [PRODUCT.md](PRODUCT.md); the
+[documentation index](docs/README.md) maps every guide.
 
 ## Working rules
 

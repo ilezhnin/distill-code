@@ -1,6 +1,8 @@
 # Assistive UX
 
-Date: 2026-06-08
+Status: design note from 2026-06-08. It records the intended pattern and
+vocabulary; check the current UI and source before treating any example here
+as shipped behavior.
 
 ## Summary
 

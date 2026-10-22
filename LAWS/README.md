@@ -32,3 +32,12 @@ Agents and contributors MUST read the relevant files in this directory before
 planning, implementing, or reviewing behavior changes. Pull requests that change
 observable behavior MUST identify the affected laws and MUST update the code,
 tests, or laws so they agree.
+
+## The laws
+
+| File | Contract |
+| --- | --- |
+| [AGENTS.md](AGENTS.md) | Invoking agents: what an agent needs before it can run. |
+| [CHAT.md](CHAT.md) | Composer queues and session dispatch: ordering, readiness, and failed dispatches. |
+| [MEMORY.md](MEMORY.md) | Memory, the operator's record: sovereignty, who may write, and what is never thrown away. |
+| [WAVES.md](WAVES.md) | Waves, the conductor's contract: plans, reports, verdicts, and transparency. |
