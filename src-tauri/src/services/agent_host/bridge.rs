@@ -583,6 +583,9 @@ fn apply_env(command: &mut std::process::Command, spec: &HarnessSpec, env: &Spaw
     for key in spec.env_remove {
         command.env_remove(key);
     }
+    for (key, value) in spec.env {
+        command.env(key, value);
+    }
     // `RUST_LOG` configures Flock's own log. Handed down, it turns a
     // Rust-built bridge (grok) into an INFO firehose whose stderr lands in
     // flock.log and rotates it every few minutes, taking crash history

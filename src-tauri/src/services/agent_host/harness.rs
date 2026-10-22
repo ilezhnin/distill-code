@@ -60,6 +60,8 @@ pub struct HarnessSpec {
     pub args: &'static [&'static str],
     /// Environment variables stripped before spawning.
     pub env_remove: &'static [&'static str],
+    /// Environment variables set for the bridge, after the account's own.
+    pub env: &'static [(&'static str, &'static str)],
     /// Flock agent mode → the bridge's ACP session mode id.
     pub modes: &'static [(&'static str, &'static str)],
     /// What Flock knows about this harness's models beyond the probe.
@@ -68,6 +70,23 @@ pub struct HarnessSpec {
     /// given model, for harnesses with `opens_on_model` rows.
     pub session_model_meta: Option<fn(&str) -> Value>,
 }
+
+/// The Grok CLI's switches for what it imports from Claude Code's and
+/// Codex's folders, all off: a Flock session takes its context from the app.
+const GROK_COMPAT_IMPORTS_OFF: &[(&str, &str)] = &[
+    ("GROK_CLAUDE_SKILLS_ENABLED", "0"),
+    ("GROK_CLAUDE_AGENTS_ENABLED", "0"),
+    ("GROK_CLAUDE_RULES_ENABLED", "0"),
+    ("GROK_CLAUDE_HOOKS_ENABLED", "0"),
+    ("GROK_CLAUDE_MCPS_ENABLED", "0"),
+    ("GROK_CLAUDE_SESSIONS_ENABLED", "0"),
+    ("GROK_CODEX_SKILLS_ENABLED", "0"),
+    ("GROK_CODEX_AGENTS_ENABLED", "0"),
+    ("GROK_CODEX_RULES_ENABLED", "0"),
+    ("GROK_CODEX_HOOKS_ENABLED", "0"),
+    ("GROK_CODEX_MCPS_ENABLED", "0"),
+    ("GROK_CODEX_SESSIONS_ENABLED", "0"),
+];
 
 /// claude-agent-acp hands `_meta.claudeCode.options` to the Claude Agent SDK.
 fn claude_session_model_meta(model_id: &str) -> Value {
@@ -91,6 +110,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         args: &[],
         // Prevent nested-session detection inside the wrapped Claude Code.
         env_remove: &["CLAUDECODE"],
+        env: &[],
         modes: &[
             ("auto", "bypassPermissions"),
             ("approve", "default"),
@@ -230,6 +250,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         command: "codex-acp",
         args: &[],
         env_remove: &[],
+        env: &[],
         modes: &[
             ("auto", "agent-full-access"),
             ("approve", "read-only"),
@@ -248,6 +269,12 @@ pub const HARNESSES: &[HarnessSpec] = &[
         command: "grok",
         args: &["agent", "stdio"],
         env_remove: &[],
+        // Grok's CLI imports skills, agents, rules, hooks, MCP servers and
+        // sessions from Claude Code's and Codex's folders for compatibility,
+        // an agent profile notwithstanding. A Flock session gets its context
+        // and its MCP servers from the app and the Flock folder, so every
+        // such import is off; the CLI's own `config.toml` still applies.
+        env: GROK_COMPAT_IMPORTS_OFF,
         modes: &[],
         // codex-acp, grok-acp, copilot-acp and amp-acp describe their own
         // models well enough: every row the bridge lists is probed.
@@ -261,6 +288,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         command: "kimi",
         args: &["acp"],
         env_remove: &[],
+        env: &[],
         // Kimi's engine uses auto for unattended operation and yolo for
         // routine approvals while retaining questions and sensitive-action gates.
         modes: &[
@@ -279,6 +307,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         command: "opencode",
         args: &["acp"],
         env_remove: &[],
+        env: &[],
         modes: &[
             ("auto", "flock-auto"),
             ("approve", "build"),
@@ -295,6 +324,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         command: "copilot",
         args: &["--acp"],
         env_remove: &[],
+        env: &[],
         modes: &[
             ("auto", "agent"),
             ("approve", "agent"),
@@ -313,6 +343,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         command: "amp-acp",
         args: &[],
         env_remove: &[],
+        env: &[],
         modes: &[
             ("auto", "bypass"),
             ("approve", "default"),
@@ -342,15 +373,12 @@ pub fn bridge_mode(spec: &HarnessSpec, agent_mode: &str) -> Option<&'static str>
 /// `_meta` every session on the harness opens with, whatever model it is
 /// opened on; `None` where the bridge's defaults are the session's.
 ///
-/// Grok's CLI loads MCP servers from its own configuration and, for Claude
-/// Code compatibility, from `~/.claude.json` and `.mcp.json`, so a default
-/// session would carry every server the user's other tools hold, OAuth ones
-/// included (a server such as Trello then answers `AuthRequired` and the
-/// CLI's worker for it quits on every session). The app sends the servers it
-/// manages in `mcpServers` itself, so the session opens on an agent
-/// profile that inherits none. The profile is an agent definition and needs
-/// its `name`: without one the CLI falls back to its default agent and the
-/// inheritance setting is lost.
+/// The app sends the MCP servers it manages in `mcpServers` itself, so a
+/// Grok session opens on an agent profile that inherits none from a parent
+/// agent; the imports from other tools' configuration are off in the
+/// bridge's environment (see the harness's `env`). The profile is an agent
+/// definition and needs its `name`: without one the CLI falls back to its
+/// default agent and the inheritance setting is lost.
 pub fn session_base_meta(harness_id: &str) -> Option<Value> {
     match harness_id {
         "grok-acp" => Some(json!({ "agentProfile": {
@@ -618,6 +646,18 @@ mod tests {
         assert_eq!(profile["mcpInheritance"], "none");
         assert_eq!(probe_session_meta("grok-acp"), Some(base.clone()));
         assert_eq!(session_base_meta("codex-acp"), None);
+        // The CLI's imports from Claude Code's and Codex's folders are off.
+        let grok = harness("grok-acp").unwrap();
+        assert_eq!(grok.env.len(), 12);
+        for tool in ["CLAUDE", "CODEX"] {
+            for part in ["SKILLS", "AGENTS", "RULES", "HOOKS", "MCPS", "SESSIONS"] {
+                let switch = format!("GROK_{tool}_{part}_ENABLED");
+                assert!(
+                    grok.env.iter().any(|(k, v)| *k == switch && *v == "0"),
+                    "{switch}"
+                );
+            }
+        }
         let merged = merge_session_meta(Some(base.clone()), Some(&json!({ "model": "grok-4.7" })));
         assert_eq!(
             merged.as_ref().unwrap()["agentProfile"],
