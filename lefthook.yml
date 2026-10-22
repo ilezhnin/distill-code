@@ -1,19 +1,20 @@
 # Git hooks, run through lefthook.
 # See: https://github.com/evilmartians/lefthook
+#
+# The hooks are quick guards only. The validation gate is the fork's CI: a
+# change is committed and pushed at once, and the push is done when its CI
+# run is green; a red run is fixed with another commit. `just ci` runs the
+# same gate locally when a change warrants it.
 
 pre-commit:
   commands:
     benchmark-privacy:
       run: node scripts/hooks/benchmark-privacy.mjs --staged
-    validate-commit:
-      run: sh scripts/hooks/validate-commit.sh
 
 pre-merge-commit:
   commands:
     benchmark-privacy:
       run: node scripts/hooks/benchmark-privacy.mjs --staged
-    validate-merge:
-      run: sh scripts/hooks/validate-commit.sh
 
 # Hooks check without rewriting or staging files. A missing tool or failed
 # check blocks the operation; fix the environment instead of deferring to CI.
@@ -25,16 +26,10 @@ commit-msg:
       run: sh scripts/hooks/no-ai-attribution.sh {1}
 
 pre-push:
-  parallel: true
   commands:
     private-history:
       # Plain sh like no-ai-attribution: a GUI client's trimmed PATH, or a
-      # local override that skips the heavy checks, must not skip this one.
-      # It reads the refs being pushed from Git on stdin.
+      # local override, must not skip this one. It reads the refs being
+      # pushed from Git on stdin.
       run: sh scripts/hooks/private-history-guard.sh "{2}"
-      use_stdin: true
-    validate-push:
-      # The full gate, unless every pushed tree already passed it at commit:
-      # validate-tree.sh records those in the common Git directory.
-      run: sh scripts/hooks/validate-push.sh
       use_stdin: true

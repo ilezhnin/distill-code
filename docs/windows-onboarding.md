@@ -116,14 +116,16 @@ Node runtime pinned by `node-runtime.lock.json`.
 
 ## Before committing
 
-Run `just ci` on the final changes. The commit and merge-commit hooks enforce
-the full gate, and the pre-push hook reruns it only for a pushed tree that no
-commit hook on this machine validated: frozen-lockfile installation, dependency audits,
-frontend checks and unit tests, the
+Run the focused checks for the change (`just check`, the affected tests,
+`just tauri-check` for Rust), commit and push at once, then watch the fork's
+CI run for the pushed commit: it runs the complete gate (frozen-lockfile
+installation, dependency audits, frontend checks and unit tests, the
 production build, transcript Playwright tests, native Rust checks and tests,
-and Windows script tests. Missing tools or failed checks block the operation.
+and Windows script tests). The change is done only when that run is green; a
+red run is fixed with another commit. The same gate runs locally as `just ci`
+when a change warrants it before the push.
 
-The additional validation prerequisites are:
+The prerequisites for a local `just ci` are:
 
 ```powershell
 cargo install cargo-audit --version 0.22.2 --locked
@@ -136,13 +138,13 @@ take several minutes and reuses normal build caches. A successful local run
 does not guarantee identical timing on GitHub's macOS runners or account for
 security advisories published later.
 
-Format before staging (`just fmt`). The commit hook checks that tracked files
-match the staged tree and that no non-ignored untracked files can influence the
-tests. It checks the tree again after validation and lists the validated tree
-in `.git/flock-validated-trees`. It never stashes, rewrites, or stages files.
-Use a separate worktree if unrelated changes are present.
-Remove obsolete skip entries from `lefthook-local.yml` or `lefthook.local.yml`;
-agents must not bypass validation with local overrides or `--no-verify`.
+Format before staging (`just fmt`). The hooks are quick guards (benchmark
+privacy on the staged files, commit attribution, private history on push);
+they never stash, rewrite, or stage files. The local gate scripts under
+`scripts/hooks/` (`validate-tree.sh` and its callers) remain available for a
+manual `just ci` of a clean tree. Remove obsolete skip entries from
+`lefthook-local.yml` or `lefthook.local.yml`; agents must not bypass the hooks
+with local overrides or `--no-verify`.
 
 ## Where Build State Lives
 
