@@ -3488,8 +3488,10 @@ impl Inner {
     ) -> Result<(Arc<Bridge>, String, Value), Value> {
         let bridge = self.ensure_account_bridge(spec.id, account_id).await?;
         let mut params = json!({ "cwd": cwd, "mcpServers": mcp_servers });
-        if let Some(meta) = open_meta {
-            params["_meta"] = meta.clone();
+        if let Some(meta) =
+            harness::merge_session_meta(harness::session_base_meta(spec.id), open_meta)
+        {
+            params["_meta"] = meta;
         }
         let result = bridge.request("session/new", params).await?;
         let bridge_session_id = protocol::session_id(&result)

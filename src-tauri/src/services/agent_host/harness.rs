@@ -339,6 +339,29 @@ pub fn bridge_mode(spec: &HarnessSpec, agent_mode: &str) -> Option<&'static str>
         .map(|(_, bridge_mode)| *bridge_mode)
 }
 
+/// `_meta` every session on the harness opens with, whatever model it is
+/// opened on; `None` where the bridge's defaults are the session's.
+///
+/// Grok's CLI loads MCP servers from its own configuration and, for Claude
+/// Code compatibility, from `~/.claude.json` and `.mcp.json`, so a default
+/// session would carry every server the user's other tools hold, OAuth ones
+/// included (a server such as Trello then answers `AuthRequired` and the
+/// CLI's worker for it quits on every session). The app sends the servers it
+/// manages in `mcpServers` itself, so the session opens on an agent
+/// profile that inherits none. The profile is an agent definition and needs
+/// its `name`: without one the CLI falls back to its default agent and the
+/// inheritance setting is lost.
+pub fn session_base_meta(harness_id: &str) -> Option<Value> {
+    match harness_id {
+        "grok-acp" => Some(json!({ "agentProfile": {
+            "name": "flock-session",
+            "description": "A Levocat Flock session: the app supplies the MCP servers",
+            "mcpInheritance": "none"
+        } })),
+        _ => None,
+    }
+}
+
 /// `_meta` for the throwaway session the model probe opens. Claude Code's
 /// bridge writes no transcript at all for a session it is told not to persist
 /// — not even a project directory — which is what lets the probe open one
@@ -348,8 +371,25 @@ pub fn probe_session_meta(harness_id: &str) -> Option<Value> {
         CLAUDE_HARNESS => Some(json!({ "claudeCode": { "options": {
             "persistSession": false, "mcpServers": {}, "strictMcpConfig": true
         } } })),
-        "grok-acp" => Some(json!({ "agentProfile": { "mcpInheritance": "none" } })),
-        _ => None,
+        _ => session_base_meta(harness_id),
+    }
+}
+
+/// `base` with `overlay`'s keys merged in, one level deep: a session's base
+/// meta with the meta that opens it on a model.
+pub fn merge_session_meta(base: Option<Value>, overlay: Option<&Value>) -> Option<Value> {
+    match (base, overlay) {
+        (None, None) => None,
+        (Some(base), None) => Some(base),
+        (None, Some(overlay)) => Some(overlay.clone()),
+        (Some(mut base), Some(overlay)) => {
+            if let (Some(target), Some(source)) = (base.as_object_mut(), overlay.as_object()) {
+                for (key, value) in source {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            Some(base)
+        }
     }
 }
 
@@ -565,6 +605,27 @@ pub fn session_model_meta(spec: &HarnessSpec, model_id: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every Grok session, the model probe's included, opens on a named
+    /// profile that inherits no MCP server from the CLI's own or Claude
+    /// Code's configuration; the model meta merges over it.
+    #[test]
+    fn grok_sessions_open_on_a_named_profile_that_inherits_no_mcp_server() {
+        let base = session_base_meta("grok-acp").unwrap();
+        let profile = &base["agentProfile"];
+        let name = profile["name"].as_str().unwrap();
+        assert!(!name.is_empty() && name == name.to_lowercase());
+        assert_eq!(profile["mcpInheritance"], "none");
+        assert_eq!(probe_session_meta("grok-acp"), Some(base.clone()));
+        assert_eq!(session_base_meta("codex-acp"), None);
+        let merged = merge_session_meta(Some(base.clone()), Some(&json!({ "model": "grok-4.7" })));
+        assert_eq!(
+            merged.as_ref().unwrap()["agentProfile"],
+            base["agentProfile"]
+        );
+        assert_eq!(merged.unwrap()["model"], "grok-4.7");
+        assert_eq!(merge_session_meta(None, None), None);
+    }
 
     #[test]
     fn kimi_uses_native_acp_modes_and_live_model_capabilities() {
