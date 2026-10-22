@@ -51,7 +51,13 @@ export function isListedUsageProvider(
   readiness: AgentProviderReadiness | undefined,
   signedInBefore: boolean,
 ): boolean {
-  if (readiness === "ready") return true;
+  // A ready harness with nothing signed in has no usage to show: the bar
+  // lists a provider only once an account exists or was connected before.
+  if (readiness === "ready") {
+    return (
+      provider.accountId != null || hasUsageData(provider) || signedInBefore
+    );
+  }
   if (readiness === "not_ready") return signedInBefore;
   return isProviderVisible(provider);
 }

@@ -62,7 +62,17 @@ describe("catalog provider participation", () => {
       [],
       new Map([[future.id, "ready"]]),
     );
-    expect(isListedUsageProvider(connected, "ready", false)).toBe(true);
+    // Installed and ready, but nothing signed in: no account, no usage, no
+    // earlier connection, so the bar has nothing to report for it.
+    expect(isListedUsageProvider(connected, "ready", false)).toBe(false);
+    expect(
+      isListedUsageProvider(
+        { ...connected, accountId: "acct-1" },
+        "ready",
+        false,
+      ),
+    ).toBe(true);
+    expect(isListedUsageProvider(connected, "ready", true)).toBe(true);
   });
 
   it("uses monthly coding constraints alongside shorter Kimi quota windows", () => {

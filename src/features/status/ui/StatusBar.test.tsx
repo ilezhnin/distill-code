@@ -77,6 +77,9 @@ it("opens provider settings from the empty bar without starting any setup", asyn
 
 it("keeps refresh for existing providers without offering bulk setup", async () => {
   readiness.set("claude-acp", "ready");
+  // A ready harness is listed once it has been connected; the bar never
+  // shows a sign-in that was never completed.
+  recordReadyProviders(new Set(["claude-acp"]), 1);
   const refresh = vi
     .spyOn(useProviderRateLimitsStore.getState(), "refresh")
     .mockResolvedValue();

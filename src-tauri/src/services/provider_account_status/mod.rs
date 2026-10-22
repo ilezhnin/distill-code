@@ -30,7 +30,9 @@ use crate::services::provider_accounts::{self, ConnectionFlow, ProviderAccount, 
 /// reads against the account, so one read per account per few minutes is
 /// plenty; an explicit refresh still re-reads.
 const CACHE_MS: i64 = 5 * 60_000;
-const STALE_MS: i64 = 120_000;
+/// A status older than this is shown as stale. It must outlast the cache
+/// window, or every account looks stale between two scheduled reads.
+const STALE_MS: i64 = 2 * CACHE_MS;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Bound allocation while reading, including a provider that never sends a newline.
