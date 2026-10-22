@@ -2866,6 +2866,7 @@ export const designSystemComponentManifest = [
       "TableHead",
       "TableHeader",
       "TableRow",
+      "TableRowActivity",
     ],
     slots: [
       "table",
