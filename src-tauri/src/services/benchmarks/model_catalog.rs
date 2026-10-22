@@ -169,7 +169,7 @@ fn context_seeds_2026_10_22() -> Vec<CatalogEntry> {
             "GLM-5.3-Flash",
             [Some(0.15), Some(0.50), Some(0.03), None],
             1_000_000,
-            ZAI_GLM_5_3_FLASH,
+            &format!("{ZAI_GLM_5_3_FLASH} ; {ZAI_PRICING}"),
             2,
         ),
     ]
