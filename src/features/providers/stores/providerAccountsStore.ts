@@ -310,6 +310,9 @@ export const useProviderAccountsStore = create<ProviderAccountsState>(
   }),
 );
 
+/** Interval of the shared usage poll; the host answers from its cache inside it. */
+export const PROVIDER_ACCOUNT_POLL_MS = 5 * 60_000;
+
 let monitorStarted = false;
 
 export function startProviderAccountsMonitor() {
@@ -333,11 +336,20 @@ export function startProviderAccountsMonitor() {
     refresh();
   };
   void attach();
-  window.setInterval(() => {
-    // Each poll is a request per account, and a hidden window has nobody
-    // looking at its usage. Focus catches up.
-    if (document.hidden) return;
+  // One usage read per account every few minutes is enough: usage windows
+  // move by the hour, every screen reads this one store, and each provider
+  // counts usage reads against the account. A hidden window has nobody
+  // looking at its usage; focus catches up only once the interval has passed.
+  let lastPollAt = Date.now();
+  const poll = () => {
+    lastPollAt = Date.now();
     refresh();
-  }, 60_000);
-  window.addEventListener("focus", refresh);
+  };
+  window.setInterval(() => {
+    if (document.hidden) return;
+    poll();
+  }, PROVIDER_ACCOUNT_POLL_MS);
+  window.addEventListener("focus", () => {
+    if (Date.now() - lastPollAt >= PROVIDER_ACCOUNT_POLL_MS) poll();
+  });
 }

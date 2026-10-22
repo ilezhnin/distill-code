@@ -25,7 +25,11 @@ use tokio::sync::Mutex;
 
 use crate::services::provider_accounts::{self, ConnectionFlow, ProviderAccount, Telemetry};
 
-const CACHE_MS: i64 = 60_000;
+/// How long a read status answers every caller without a new provider
+/// request. Usage windows move by the hour, and each provider counts usage
+/// reads against the account, so one read per account per few minutes is
+/// plenty; an explicit refresh still re-reads.
+const CACHE_MS: i64 = 5 * 60_000;
 const STALE_MS: i64 = 120_000;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 

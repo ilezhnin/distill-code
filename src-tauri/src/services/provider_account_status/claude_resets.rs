@@ -98,12 +98,16 @@ pub(super) fn record_usage_result(
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     match result {
-        Err(RequestError::RateLimited(seconds)) => Err(RequestError::RateLimited(
-            backoff
+        Err(RequestError::RateLimited(seconds)) => {
+            let paused = backoff
                 .entry(account_id.into())
                 .or_default()
-                .defer(now, seconds),
-        )),
+                .defer(now, seconds);
+            log::warn!(
+                "[account-status] the provider rate-limited the usage read of account {account_id} (Retry-After {seconds} s); usage reads pause for {paused} s"
+            );
+            Err(RequestError::RateLimited(paused))
+        }
         Ok(usage) => {
             backoff.remove(account_id);
             Ok(usage)
