@@ -402,6 +402,21 @@ pub(crate) async fn account_status_after_turn(
 
 /// Reads every account's status: the accounts Flock stores and the CLI
 /// sign-in identity of every provider whose CLI keeps its own.
+/// The host owns the usage schedule: one read per account every `CACHE_MS`
+/// for as long as the app runs, plus whatever the operator asks for by hand.
+/// Every other reader (the settings cards, the status bar, dispatch and the
+/// benchmark seats) takes the cached snapshot the reads leave behind.
+pub fn start_schedule(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(CACHE_MS as u64)).await;
+            if let Err(error) = fetch_snapshot(&app, false).await {
+                log::warn!("[account-status] the scheduled usage read failed: {error}");
+            }
+        }
+    });
+}
+
 pub async fn fetch_snapshot(
     app: &AppHandle,
     force: bool,

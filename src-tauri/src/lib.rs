@@ -201,6 +201,7 @@ pub fn run() {
             app.manage(services::benchmarks::BenchmarkState::default());
             app.manage(commands::agent_setup::AgentSetupRegistry::default());
             app.manage(services::provider_account_status::ProviderAccountStatusState::default());
+            services::provider_account_status::start_schedule(app.handle().clone());
 
             if services::flock_root::adoption_enabled(
                 app.try_state::<services::e2e_mode::E2eMode>().is_some(),
