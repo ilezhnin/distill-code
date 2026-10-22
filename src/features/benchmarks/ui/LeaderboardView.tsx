@@ -267,16 +267,15 @@ export function LeaderboardView({
               <StateBadge state={entry.row.status} />
             </div>
           ) : null}
-          {/* A running or paused model's row carries the sweeping light (see
-              `row`); the words stay for assistive technology only. */}
+          {/* A model with a run going or paused carries the sweeping light
+              on its row (see `row`); the words stay for assistive technology
+              only. */}
           {activity.running > 0 ? (
             <span className="sr-only">{t("activity.running")}</span>
-          ) : activity.open === 0 && activity.paused > 0 ? (
-            <span className="sr-only">{t("activity.paused")}</span>
           ) : activity.open > 0 ? (
-            <div className="mt-1 text-xs text-muted-foreground tabular-nums">
-              {t("activity.left")}
-            </div>
+            <span className="sr-only">{t("activity.left")}</span>
+          ) : activity.paused > 0 ? (
+            <span className="sr-only">{t("activity.paused")}</span>
           ) : null}
         </ModelIdentity>
       </TableCell>
@@ -331,9 +330,9 @@ export function LeaderboardView({
         transition={transition}
         className="cursor-pointer"
         activity={
-          activity.running > 0
+          activity.open > 0
             ? "working"
-            : activity.open === 0 && activity.paused > 0
+            : activity.paused > 0
               ? "paused"
               : undefined
         }

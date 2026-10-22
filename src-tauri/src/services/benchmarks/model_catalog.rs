@@ -107,7 +107,9 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
 /// `k3-256k` is the 256K window of the same model and price, listed after
 /// the K3 row so it wins their shared needle) and Z.ai's GLM-5.3-Flash
 /// (1M context per its model page, priced per the Z.ai pricing page: cache
-/// writes are a limited-time free tier there, so left unknown).
+/// writes are a limited-time free tier there, so left unknown). Corrections
+/// of the vendor seeds, effective from their date, so every measurement
+/// shows the context.
 fn context_seeds_2026_10_22() -> Vec<CatalogEntry> {
     let row = |slug: &str,
                provider: &str,
@@ -130,7 +132,7 @@ fn context_seeds_2026_10_22() -> Vec<CatalogEntry> {
             cache_read_per_million: prices[2],
             cache_write_per_million: prices[3],
             context_tokens: Some(context),
-            effective_from: ANTHROPIC_CONTEXT_CHECKED_AT,
+            effective_from: VENDOR_SEEDS_CHECKED_AT,
             checked_at: ANTHROPIC_CONTEXT_CHECKED_AT,
             source: source.into(),
             created_at: ANTHROPIC_CONTEXT_CHECKED_AT + position,
@@ -175,8 +177,10 @@ fn context_seeds_2026_10_22() -> Vec<CatalogEntry> {
 
 /// The Sonnet rows checked again on 2026-10-22: the 2026-10-02 seed left
 /// Sonnet 5's context unknown, and the models overview lists 1M for both
-/// Sonnet 5 and Sonnet 5.5. Prices unchanged. Sonnet 5.5 comes last, so it
-/// wins the tie its name shares with "sonnet 5" by creation order.
+/// Sonnet 5 and Sonnet 5.5. Prices unchanged. A correction of the seed, not
+/// a change at the vendor, so it applies from the seed's own date to every
+/// measurement; created later, it wins the ties of that date. Sonnet 5.5
+/// comes last, so it also wins the tie its name shares with "sonnet 5".
 fn anthropic_context_seeds() -> Vec<CatalogEntry> {
     let rows = [
         ("sonnet-5", "sonnet 5", "Claude Sonnet 5"),
@@ -196,7 +200,7 @@ fn anthropic_context_seeds() -> Vec<CatalogEntry> {
             cache_read_per_million: Some(0.20),
             cache_write_per_million: Some(2.5),
             context_tokens: Some(1_000_000),
-            effective_from: ANTHROPIC_CONTEXT_CHECKED_AT,
+            effective_from: SEED_CHECKED_AT,
             checked_at: ANTHROPIC_CONTEXT_CHECKED_AT,
             source: format!("{ANTHROPIC_PRICING} ; {ANTHROPIC_MODELS}"),
             created_at: ANTHROPIC_CONTEXT_CHECKED_AT + position,
@@ -602,7 +606,7 @@ mod tests {
         assert_eq!(sets[0].1.len(), 5);
         for seed in anthropic_context_seeds() {
             validate(&seed).unwrap();
-            assert_eq!(seed.effective_from, seed.checked_at);
+            assert_eq!(seed.effective_from, SEED_CHECKED_AT);
         }
         for seed in &seeds {
             validate(seed).unwrap();
@@ -773,9 +777,9 @@ mod tests {
         }
     }
 
-    /// The 2026-10-02 seed left Sonnet 5's context unknown; the dated
-    /// correction supplies it, and Sonnet 5.5 keeps resolving to its own row
-    /// although its name contains "sonnet 5".
+    /// The 2026-10-02 seed left Sonnet 5's context unknown; the correction
+    /// supplies it from the seed's date on, and Sonnet 5.5 keeps resolving to
+    /// its own row although its name contains "sonnet 5".
     #[test]
     fn the_sonnet_context_correction_resolves_each_sonnet_to_its_own_row() {
         let entries: Vec<CatalogEntry> = seed_sets()
@@ -794,13 +798,18 @@ mod tests {
             inventory_revision: None,
             model_name: Some("Claude Sonnet 5".into()),
         };
-        let before = resolve(&entries, &sonnet_5, SEED_CHECKED_AT).unwrap();
-        assert_eq!(before.id, "seed-anthropic-sonnet-5");
-        assert_eq!(before.context_tokens, None);
-        let after = resolve(&entries, &sonnet_5, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
-        assert_eq!(after.id, "seed-anthropic-sonnet-5-2026-10-22");
-        assert_eq!(after.context_tokens, Some(1_000_000));
-        assert_eq!(after.output_per_million, before.output_per_million);
+        // The correction applies to every measurement, the earliest included.
+        let seeded = seeds()
+            .into_iter()
+            .find(|s| s.id == "seed-anthropic-sonnet-5")
+            .unwrap();
+        assert_eq!(seeded.context_tokens, None);
+        for at in [SEED_CHECKED_AT, ANTHROPIC_CONTEXT_CHECKED_AT] {
+            let after = resolve(&entries, &sonnet_5, at).unwrap();
+            assert_eq!(after.id, "seed-anthropic-sonnet-5-2026-10-22");
+            assert_eq!(after.context_tokens, Some(1_000_000));
+            assert_eq!(after.output_per_million, seeded.output_per_million);
+        }
         let sonnet_5_5 = Configuration {
             model_id: "claude-sonnet-5-5".into(),
             model_name: Some("Claude Sonnet 5.5".into()),
@@ -823,7 +832,7 @@ mod tests {
             model_name: Some("K3".into()),
             ..k3()
         };
-        let entry = resolve(&entries, &k3, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
+        let entry = resolve(&entries, &k3, VENDOR_SEEDS_CHECKED_AT).unwrap();
         assert_eq!(entry.id, "seed-moonshot-k3-2026-10-22");
         assert_eq!(entry.context_tokens, Some(1_000_000));
         let window = Configuration {
