@@ -1,11 +1,16 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, Pause, Play, X } from "lucide-react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { Badge } from "@/shared/ui/badge";
+import { Button, type ButtonFeedbackState } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import { Spinner } from "@/shared/ui/spinner";
+import { benchmarkApi } from "../api/benchmarks";
 import {
+  benchmarkKeys,
   modelNameKey,
   useModelNames,
   useWorkflowCampaigns,
@@ -15,6 +20,7 @@ import {
   activeRuns,
   activeCampaigns,
   campaignIdForRun,
+  pausedRuns,
   runProgress,
 } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
@@ -27,6 +33,9 @@ import { BenchmarkWorkflowProgress } from "./BenchmarkWorkflowProgress";
 
 /** The models one run names before the rest are counted. */
 const SHOWN_MODELS = 3;
+
+/** Run states a Resume takes up again. */
+const RESUMABLE = new Set(["paused", "needs_attention", "planned"]);
 
 /**
  * Runs that dispatch, each with the models it is working on and its progress,
@@ -51,11 +60,34 @@ export function BenchmarkActivity({
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
   const names = useModelNames();
+  const client = useQueryClient();
+  // The run being steered from its row and how its control is doing; the
+  // control shows the failure itself, since the row has no line for one.
+  const [steering, setSteering] = useState<{
+    runId: string;
+    state: ButtonFeedbackState;
+  } | null>(null);
+  const steer = async (
+    runId: string,
+    act: (id: string) => Promise<unknown>,
+  ) => {
+    setSteering({ runId, state: "loading" });
+    try {
+      await act(runId);
+      setSteering(null);
+      void client.invalidateQueries({ queryKey: benchmarkKeys });
+    } catch {
+      setSteering({ runId, state: "error" });
+    }
+  };
+  const feedbackFor = (runId: string): ButtonFeedbackState =>
+    steering?.runId === runId ? steering.state : "idle";
   const campaigns = activeCampaigns(useWorkflowCampaigns().data ?? []).filter(
     (campaign) =>
       runs.some((run) => campaignIdForRun(run) === campaign.plan.id),
   );
-  const active = activeRuns(runs);
+  // A paused run keeps its row, so it can be taken up again from here.
+  const active = [...activeRuns(runs), ...pausedRuns(runs)];
   const stalled = attentionFor
     ? modelActivity(
         {
@@ -144,66 +176,119 @@ export function BenchmarkActivity({
         .map((run) => {
           const { settled, total } = runProgress([run]);
           const models = workingModels(run);
+          const feedback = feedbackFor(run.id);
+          const busy = feedback === "loading";
+          const resumable = RESUMABLE.has(run.state);
           return (
-            <button
+            <div
               key={run.id}
-              type="button"
-              className="flex w-full flex-col gap-2 rounded-lg border border-border px-3 py-2 text-left transition-colors hover:bg-muted/50"
-              onClick={() => onOpenRun(run.id)}
+              className="flex w-full items-center gap-2 rounded-lg border border-border pr-2 transition-colors hover:bg-muted/50"
             >
-              <span className="flex w-full flex-wrap items-center gap-3">
-                {run.state === "running" ? (
-                  <Spinner
-                    decorative
-                    className="size-4 shrink-0 text-chart-1"
-                  />
-                ) : (
-                  <StateBadge state={run.state} />
-                )}
-                <span className="flex min-w-0 items-center gap-3">
-                  {models.slice(0, SHOWN_MODELS).map((entry) => {
-                    const effort = explicitEffort(entry.effort);
-                    return (
-                      <span
-                        key={entry.id}
-                        className="flex min-w-0 items-center gap-1.5"
-                      >
-                        <span className="shrink-0">
-                          {getProviderIcon(entry.providerId, "size-4")}
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 flex-col gap-2 px-3 py-2 text-left"
+                onClick={() => onOpenRun(run.id)}
+              >
+                <span className="flex w-full flex-wrap items-center gap-3">
+                  {run.state === "running" ? (
+                    <Spinner
+                      decorative
+                      className="size-4 shrink-0 text-chart-1"
+                    />
+                  ) : (
+                    <StateBadge state={run.state} />
+                  )}
+                  <span className="flex min-w-0 items-center gap-3">
+                    {models.slice(0, SHOWN_MODELS).map((entry) => {
+                      const effort = explicitEffort(entry.effort);
+                      return (
+                        <span
+                          key={entry.id}
+                          className="flex min-w-0 items-center gap-1.5"
+                        >
+                          <span className="shrink-0">
+                            {getProviderIcon(entry.providerId, "size-4")}
+                          </span>
+                          <span className="truncate text-sm font-medium">
+                            {modelDisplayName(
+                              entry,
+                              names.get(modelNameKey(entry)),
+                            )}
+                          </span>
+                          {effort ? (
+                            <Badge variant="outline">{effort}</Badge>
+                          ) : null}
+                          {entry.fastMode ? (
+                            <Badge variant="outline">{t("fastMode")}</Badge>
+                          ) : null}
                         </span>
-                        <span className="truncate text-sm font-medium">
-                          {modelDisplayName(
-                            entry,
-                            names.get(modelNameKey(entry)),
-                          )}
-                        </span>
-                        {effort ? (
-                          <Badge variant="outline">{effort}</Badge>
-                        ) : null}
-                        {entry.fastMode ? (
-                          <Badge variant="outline">{t("fastMode")}</Badge>
-                        ) : null}
+                      );
+                    })}
+                    {models.length > SHOWN_MODELS ? (
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {t("activity.more", {
+                          count: models.length - SHOWN_MODELS,
+                        })}
                       </span>
-                    );
-                  })}
-                  {models.length > SHOWN_MODELS ? (
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {t("activity.more", {
-                        count: models.length - SHOWN_MODELS,
-                      })}
-                    </span>
-                  ) : null}
+                    ) : null}
+                  </span>
+                  <span className="shrink-0 text-sm tabular-nums">
+                    {t("activity.progress", { settled, total })}
+                  </span>
+                  <Progress
+                    value={total === 0 ? 0 : (settled / total) * 100}
+                    aria-label={t("runs.progressLabel")}
+                    className="h-1.5 w-32 shrink-0"
+                  />
                 </span>
-                <span className="shrink-0 text-sm tabular-nums">
-                  {t("activity.progress", { settled, total })}
-                </span>
-                <Progress
-                  value={total === 0 ? 0 : (settled / total) * 100}
-                  aria-label={t("runs.progressLabel")}
-                  className="h-1.5 w-32 shrink-0"
-                />
+              </button>
+              {/* Steering without opening the run: Pause while it runs,
+                  Resume once it stands, and Cancel always last. */}
+              <span className="flex shrink-0 items-center gap-1">
+                {resumable ? (
+                  <Button
+                    type="button"
+                    variant="subtle"
+                    size="icon-xs"
+                    aria-label={t("actions.resume")}
+                    tooltip={t("actions.resume")}
+                    feedbackState={feedback}
+                    loadingVisual="spinner"
+                    errorLabel={<X aria-hidden="true" />}
+                    onClick={() => void steer(run.id, benchmarkApi.resumeRun)}
+                  >
+                    <Play aria-hidden="true" />
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="subtle"
+                    size="icon-xs"
+                    aria-label={t("actions.pause")}
+                    tooltip={t("actions.pause")}
+                    disabled={run.state !== "running"}
+                    feedbackState={feedback}
+                    loadingVisual="spinner"
+                    errorLabel={<X aria-hidden="true" />}
+                    onClick={() => void steer(run.id, benchmarkApi.pauseRun)}
+                  >
+                    <Pause aria-hidden="true" />
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  destructive
+                  size="icon-xs"
+                  aria-label={t("actions.cancelRun")}
+                  tooltip={t("actions.cancelRun")}
+                  disabled={busy || run.state === "cancelling"}
+                  onClick={() => void steer(run.id, benchmarkApi.cancelRun)}
+                >
+                  <X aria-hidden="true" />
+                </Button>
               </span>
-            </button>
+            </div>
           );
         })}
       {stalled.map((run) => (

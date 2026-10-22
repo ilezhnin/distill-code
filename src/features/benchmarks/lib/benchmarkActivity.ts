@@ -60,6 +60,11 @@ export function activeRuns(runs: RunSummary[]): RunSummary[] {
   );
 }
 
+/** Runs the operator paused, which a Resume takes up again. */
+export function pausedRuns(runs: RunSummary[]): RunSummary[] {
+  return runs.filter((run) => !run.request.preview && run.state === "paused");
+}
+
 /** Runs that stopped on their own and wait for the operator. */
 export function stalledRuns(runs: RunSummary[]): RunSummary[] {
   return runs.filter(

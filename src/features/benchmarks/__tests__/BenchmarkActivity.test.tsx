@@ -1,10 +1,15 @@
 import {
+  act,
   cleanup,
   fireEvent,
-  render,
+  render as renderBare,
+  type RenderOptions,
   screen,
   within,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RunSummary } from "../types";
 import { BenchmarkActivity } from "../ui/BenchmarkActivity";
@@ -14,10 +19,31 @@ import type { WorkflowCampaign } from "../lib/workflowCampaign";
 const campaignState = vi.hoisted(() => ({ data: [] as WorkflowCampaign[] }));
 
 vi.mock("../hooks/useBenchmarks", () => ({
+  benchmarkKeys: ["benchmarks"],
   modelNameKey: (entry: { modelId: string }) => entry.modelId,
   useModelNames: () => new Map([["model-1", "Model One"]]),
   useWorkflowCampaigns: () => campaignState,
 }));
+
+const api = vi.hoisted(() => ({
+  pauseRun: vi.fn(async () => ({})),
+  resumeRun: vi.fn(async () => ({})),
+  cancelRun: vi.fn(async () => ({})),
+}));
+
+vi.mock("../api/benchmarks", () => ({ benchmarkApi: api }));
+
+function Providers({ children }: { children: ReactNode }) {
+  return (
+    <QueryClientProvider client={new QueryClient()}>
+      {children}
+    </QueryClientProvider>
+  );
+}
+
+/** The strip steers runs through the query client, so every render has one. */
+const render = (ui: ReactElement, options?: RenderOptions) =>
+  renderBare(ui, { wrapper: Providers, ...options });
 
 const many = [1, 2, 3, 4, 5].map((n) => ({
   ...configuration,
@@ -33,7 +59,8 @@ function show(run: Partial<RunSummary>) {
       onOpenRun={vi.fn()}
     />,
   );
-  return within(screen.getByRole("button"));
+  // The row opens the run; its controls follow it.
+  return within(screen.getAllByRole("button")[0]);
 }
 
 afterEach(() => {
@@ -270,7 +297,10 @@ it("keeps one row per run when two runs measure the same model", () => {
       onOpenRun={vi.fn()}
     />,
   );
-  const rows = screen.getAllByRole("button");
+  // The rows that open a run; their steering controls name no model.
+  const rows = screen
+    .getAllByRole("button")
+    .filter((button) => within(button).queryByText("Model One"));
   expect(rows).toHaveLength(2);
   for (const row of rows)
     expect(within(row).getAllByText("Model One")).toHaveLength(1);
@@ -301,4 +331,38 @@ it("names each model of a matrix once across its execution profiles", () => {
   expect(row.getAllByText("Model One")).toHaveLength(1);
   expect(row.getAllByText("model-2")).toHaveLength(1);
   expect(row.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+});
+
+it("pauses, resumes and cancels a run from its row without opening it", async () => {
+  const onOpenRun = vi.fn();
+  const { rerender } = render(
+    <BenchmarkActivity
+      runs={[{ ...runSummary, state: "running" }]}
+      onOpenRun={onOpenRun}
+    />,
+  );
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+  });
+  expect(api.pauseRun).toHaveBeenCalledExactlyOnceWith(runSummary.id);
+  expect(onOpenRun).not.toHaveBeenCalled();
+  rerender(
+    <BenchmarkActivity
+      runs={[{ ...runSummary, state: "paused" }]}
+      onOpenRun={onOpenRun}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  });
+  expect(api.resumeRun).toHaveBeenCalledExactlyOnceWith(runSummary.id);
+  // Cancel is always the last control.
+  const buttons = screen.getAllByRole("button");
+  const cancel = buttons[buttons.length - 1];
+  expect(cancel).toHaveAccessibleName("Cancel run");
+  await act(async () => {
+    fireEvent.click(cancel);
+  });
+  expect(api.cancelRun).toHaveBeenCalledExactlyOnceWith(runSummary.id);
 });
