@@ -9,6 +9,9 @@ pub const ANTHROPIC_MODELS: &str = "https://platform.claude.com/docs/en/models/o
 pub const OPENAI_PRICING: &str = "https://developers.openai.com/api/docs/pricing";
 pub const XAI_MODELS: &str = "https://docs.x.ai/docs/models";
 pub const MOONSHOT_PRICING: &str = "https://platform.kimi.ai/docs/pricing/chat";
+pub const MOONSHOT_MODELS: &str = "https://platform.kimi.ai/docs/guide/models";
+pub const ZAI_PRICING: &str = "https://docs.z.ai/guides/overview/pricing";
+pub const ZAI_GLM_5_3_FLASH: &str = "https://docs.z.ai/guides/llm/glm-5.3-flash";
 
 /// 2026-10-02T12:00:00Z: the day the seed sources were read, at noon so every
 /// time zone shows the same date.
@@ -95,6 +98,78 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
         ("moonshot-2026-10-03", moonshot_seeds()),
         ("estimates-2026-10-05", estimate_seeds()),
         ("anthropic-2026-10-22", anthropic_context_seeds()),
+        ("contexts-2026-10-22", context_seeds_2026_10_22()),
+    ]
+}
+
+/// Rows checked on 2026-10-22 for models the board showed without a
+/// context: Kimi K3 (1M per the models guide; the Kimi Code CLI's
+/// `k3-256k` is the 256K window of the same model and price, listed after
+/// the K3 row so it wins their shared needle) and Z.ai's GLM-5.3-Flash
+/// (1M context per its model page, priced per the Z.ai pricing page: cache
+/// writes are a limited-time free tier there, so left unknown).
+fn context_seeds_2026_10_22() -> Vec<CatalogEntry> {
+    let row = |slug: &str,
+               provider: &str,
+               vendor: &str,
+               needle: &str,
+               name: &str,
+               prices: [Option<f64>; 4],
+               context: u64,
+               source: &str,
+               position: i64| {
+        CatalogEntry {
+            id: format!("seed-{slug}-2026-10-22"),
+            kind: "model".into(),
+            provider_id: Some(provider.into()),
+            needle: needle.into(),
+            display_name: Some(name.into()),
+            vendor: Some(vendor.into()),
+            input_per_million: prices[0],
+            output_per_million: prices[1],
+            cache_read_per_million: prices[2],
+            cache_write_per_million: prices[3],
+            context_tokens: Some(context),
+            effective_from: ANTHROPIC_CONTEXT_CHECKED_AT,
+            checked_at: ANTHROPIC_CONTEXT_CHECKED_AT,
+            source: source.into(),
+            created_at: ANTHROPIC_CONTEXT_CHECKED_AT + position,
+        }
+    };
+    vec![
+        row(
+            "moonshot-k3",
+            "kimi-acp",
+            "Moonshot AI",
+            "kimi-code/k3",
+            "Kimi K3",
+            [Some(3.0), Some(15.0), Some(0.3), Some(3.0)],
+            1_000_000,
+            MOONSHOT_MODELS,
+            0,
+        ),
+        row(
+            "moonshot-k3-256k",
+            "kimi-acp",
+            "Moonshot AI",
+            "kimi-code/k3-256k",
+            "Kimi K3 (256K)",
+            [Some(3.0), Some(15.0), Some(0.3), Some(3.0)],
+            262_144,
+            MOONSHOT_MODELS,
+            1,
+        ),
+        row(
+            "zai-glm-5-3-flash",
+            "zai-acp",
+            "Z.ai",
+            "glm-5.3-flash",
+            "GLM-5.3-Flash",
+            [Some(0.15), Some(0.50), Some(0.03), None],
+            1_000_000,
+            ZAI_GLM_5_3_FLASH,
+            2,
+        ),
     ]
 }
 
@@ -514,9 +589,14 @@ mod tests {
                 "xai-2026-10-03",
                 "moonshot-2026-10-03",
                 "estimates-2026-10-05",
-                "anthropic-2026-10-22"
+                "anthropic-2026-10-22",
+                "contexts-2026-10-22"
             ]
         );
+        for seed in context_seeds_2026_10_22() {
+            validate(&seed).unwrap();
+            assert!(seed.source.starts_with("https://"), "{}", seed.id);
+        }
         let seeds = seeds();
         assert_eq!(seeds.len(), 5);
         assert_eq!(sets[0].1.len(), 5);
@@ -729,5 +809,40 @@ mod tests {
         let entry = resolve(&entries, &sonnet_5_5, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
         assert_eq!(entry.id, "seed-anthropic-sonnet-5-5-2026-10-22");
         assert_eq!(entry.display_name.as_deref(), Some("Claude Sonnet 5.5"));
+    }
+
+    /// The K3 rows share a needle: the 256K window resolves to its own row,
+    /// the plain K3 to the 1M one, and GLM-5.3-Flash gets a priced row.
+    #[test]
+    fn the_context_correction_resolves_k3_windows_and_glm_flash() {
+        let entries: Vec<CatalogEntry> = seed_sets()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        let k3 = Configuration {
+            model_name: Some("K3".into()),
+            ..k3()
+        };
+        let entry = resolve(&entries, &k3, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-moonshot-k3-2026-10-22");
+        assert_eq!(entry.context_tokens, Some(1_000_000));
+        let window = Configuration {
+            model_id: "kimi-code/k3-256k".into(),
+            model_name: Some("K3-256k".into()),
+            ..k3.clone()
+        };
+        let entry = resolve(&entries, &window, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-moonshot-k3-256k-2026-10-22");
+        assert_eq!(entry.context_tokens, Some(262_144));
+        let flash = Configuration {
+            provider_id: "zai-acp".into(),
+            model_id: "zai-coding-plan/glm-5.3-flash".into(),
+            model_name: Some("Z.AI Coding Plan/GLM-5.3-Flash".into()),
+            ..k3
+        };
+        let entry = resolve(&entries, &flash, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-zai-glm-5-3-flash-2026-10-22");
+        assert_eq!(entry.context_tokens, Some(1_000_000));
+        assert_eq!(entry.output_per_million, Some(0.5));
     }
 }
