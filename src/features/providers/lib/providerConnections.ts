@@ -66,12 +66,17 @@ export function recordReadyProviders(
  * account is still saved. A not-ready provider with one is a real account
  * that signed out or expired. Without one it is a setup that only installed
  * the CLI or saved an account before its browser sign-in was abandoned. A
- * provider whose CLI keeps the sign-in always lists that sign-in.
+ * provider whose CLI keeps the sign-in lists that sign-in only when Flock can
+ * read its usage: a CLI signed in on the machine whose limits Flock cannot
+ * see is no account of Flock's to show.
  */
 export function hasCompletedSignIn(
   providerId: string,
   model: ProviderAccountModel | undefined,
 ): boolean {
+  if (model && !model.reportsUsage) {
+    return false;
+  }
   if (model && model.connection !== "cli" && model.accounts.length === 0) {
     return false;
   }

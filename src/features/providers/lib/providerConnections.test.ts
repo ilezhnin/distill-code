@@ -37,12 +37,12 @@ function stored(
   };
 }
 
-function cli(providerId: string): ProviderAccountModel {
+function cli(providerId: string, reportsUsage = true): ProviderAccountModel {
   return {
     providerId,
     connection: "cli",
     accountLimit: 1,
-    reportsUsage: false,
+    reportsUsage,
     supportsSignOut: false,
     accounts: [{ ...account(providerId), id: `cli-login-${providerId}` }],
     defaultAccountId: `cli-login-${providerId}`,
@@ -67,6 +67,16 @@ describe("hasCompletedSignIn", () => {
     expect(hasCompletedSignIn("grok-acp", cli("grok-acp"))).toBe(true);
     // Before the model has loaded, the record alone decides.
     expect(hasCompletedSignIn("grok-acp", undefined)).toBe(true);
+  });
+
+  it("is false for a CLI signed in on the machine whose usage Flock cannot read", () => {
+    // Copilot's CLI is ready, so it was noted as connected; Flock reads no
+    // usage for it, so the usage bar has nothing of its own to show.
+    recordReadyProviders(new Set(["copilot-acp"]), 1);
+    expect(hasCompletedSignIn("copilot-acp", cli("copilot-acp", false))).toBe(
+      false,
+    );
+    expect(hasCompletedSignIn("copilot-acp", undefined)).toBe(true);
   });
 
   it("is false for a saved account whose browser sign-in was abandoned", () => {
