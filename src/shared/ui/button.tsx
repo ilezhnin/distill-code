@@ -54,8 +54,35 @@ const buttonVariants = cva(
         true: "",
         false: "",
       },
+      tone: {
+        none: "",
+        warning: "",
+        success: "",
+      },
     },
     compoundVariants: [
+      {
+        variant: "subtle",
+        tone: "warning",
+        className:
+          "bg-warning/15 text-warning hover:bg-warning/25 hover:text-warning",
+      },
+      {
+        variant: "subtle",
+        tone: "success",
+        className:
+          "bg-success/15 text-success hover:bg-success/25 hover:text-success",
+      },
+      {
+        variant: "ghost",
+        tone: "warning",
+        className: "text-warning hover:bg-warning/10 hover:text-warning",
+      },
+      {
+        variant: "ghost",
+        tone: "success",
+        className: "text-success hover:bg-success/10 hover:text-success",
+      },
       {
         variant: "primary",
         destructive: true,
@@ -126,6 +153,7 @@ const buttonVariants = cva(
       size: "default",
       destructive: false,
       flush: false,
+      tone: "none",
     },
   },
 );
@@ -278,8 +306,21 @@ export function isButtonDestructiveEmphasis(
   return (DESTRUCTIVE_EMPHASES as readonly string[]).includes(variant);
 }
 
+/** Variants that support a tone. */
+const TONED_EMPHASES = ["subtle", "ghost"] as const;
+
+export type ButtonTone = "warning" | "success";
+
 export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
-  Omit<ButtonCvaProps, "destructive" | "flush"> & {
+  Omit<ButtonCvaProps, "destructive" | "flush" | "tone"> & {
+    /**
+     * A state the control stands for, in its color: `warning` (amber) for
+     * a control that holds or pauses, `success` (green) for one that goes
+     * or resumes. Only meaningful on subtle and ghost; other variants
+     * ignore it (dev builds warn). Not an intent flag: a destructive
+     * control stays destructive.
+     */
+    tone?: ButtonTone;
     /**
      * Danger intent. Recolors the emphasis recipe with destructive tokens:
      * primary = red fill, outline = red border + red text, subtle = red
@@ -322,6 +363,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       size,
       destructive,
       flush,
+      tone,
       asChild = false,
       leftIcon,
       rightIcon,
@@ -351,6 +393,17 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     if (import.meta.env.DEV && destructive && !resolvedDestructive) {
       console.warn(
         `Button: the destructive flag is only supported on ${DESTRUCTIVE_EMPHASES.join(
+          ", ",
+        )} variants; it is ignored on variant="${resolvedEmphasis}".`,
+      );
+    }
+    const resolvedTone =
+      tone && (TONED_EMPHASES as readonly string[]).includes(resolvedEmphasis)
+        ? tone
+        : "none";
+    if (import.meta.env.DEV && tone && resolvedTone === "none") {
+      console.warn(
+        `Button: the tone is only supported on ${TONED_EMPHASES.join(
           ", ",
         )} variants; it is ignored on variant="${resolvedEmphasis}".`,
       );
@@ -517,6 +570,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           props: {
             destructive: resolvedDestructive,
             flush: resolvedFlush,
+            tone: resolvedTone,
             asChild,
             disabled: resolvedDisabled,
             leftIcon: Boolean(resolvedLeftIcon),

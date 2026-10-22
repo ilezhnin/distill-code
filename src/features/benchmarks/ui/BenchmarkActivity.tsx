@@ -195,7 +195,7 @@ export function BenchmarkActivity({
                       decorative
                       className="size-4 shrink-0 text-chart-1"
                     />
-                  ) : (
+                  ) : run.state === "paused" ? null : (
                     <StateBadge state={run.state} />
                   )}
                   <span className="flex min-w-0 items-center gap-3">
@@ -249,6 +249,7 @@ export function BenchmarkActivity({
                   <Button
                     type="button"
                     variant="subtle"
+                    tone="success"
                     size="icon-xs"
                     aria-label={t("actions.resume")}
                     tooltip={t("actions.resume")}
@@ -263,6 +264,7 @@ export function BenchmarkActivity({
                   <Button
                     type="button"
                     variant="subtle"
+                    tone="warning"
                     size="icon-xs"
                     aria-label={t("actions.pause")}
                     tooltip={t("actions.pause")}

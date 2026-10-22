@@ -50,7 +50,12 @@ export function isListedUsageProvider(
   provider: ProviderRateLimits,
   readiness: AgentProviderReadiness | undefined,
   signedInBefore: boolean,
+  reportsUsage = true,
 ): boolean {
+  // A usage bar lists usage: a provider whose adapter reports none (its
+  // CLI keeps the sign-in and the limits) has no row here, whatever the
+  // host's status read for it returned.
+  if (!reportsUsage) return false;
   // A ready harness with nothing signed in has no usage to show: the bar
   // lists a provider only once an account exists or was connected before.
   if (readiness === "ready") {

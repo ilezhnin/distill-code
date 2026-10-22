@@ -73,6 +73,16 @@ describe("catalog provider participation", () => {
       ),
     ).toBe(true);
     expect(isListedUsageProvider(connected, "ready", true)).toBe(true);
+    // A provider whose adapter reports no usage has no row, even with the
+    // account row the host's status read produced for it.
+    expect(
+      isListedUsageProvider(
+        { ...connected, accountId: "acct-1" },
+        "ready",
+        true,
+        false,
+      ),
+    ).toBe(false);
   });
 
   it("uses monthly coding constraints alongside shorter Kimi quota windows", () => {

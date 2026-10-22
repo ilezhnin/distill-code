@@ -71,6 +71,7 @@ export function StatusBar() {
       provider,
       agentReadiness.get(provider.provider),
       hasCompletedSignIn(provider.provider, providerModels[provider.provider]),
+      providerModels[provider.provider]?.reportsUsage ?? true,
     ),
   );
   const isEmpty = visibleProviders.length === 0;
