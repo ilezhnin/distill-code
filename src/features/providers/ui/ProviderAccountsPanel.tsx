@@ -31,54 +31,70 @@ import {
   useProviderAccountsStore,
 } from "../stores/providerAccountsStore";
 import {
-  MANAGED_ACCOUNT_PROVIDERS,
   consumeProviderAccountReset,
   type AccountResetOutcome,
   type ProviderAccount,
+  type ProviderAccountAuthMethod,
+  type ProviderAccountModel,
+  type ProviderAccountState,
+  type ProviderConnectionFlow,
 } from "../api/providerAccounts";
+import type { AgentProviderReadiness } from "../hooks/useAgentProviderStatus";
 import {
   canUseAccountReset,
   earliestAccountReset,
   resetCountdown,
 } from "../lib/providerAccountStatus";
-import {
-  ProviderAccountDetails,
-  ProviderUsageDetails,
-} from "./ProviderAccountDetails";
+import { ProviderAccountDetails } from "./ProviderAccountDetails";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { providerDisplayName as providerLabel } from "../providerCatalog";
-import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 
+/**
+ * The model of a provider the host has not listed: the shape every card
+ * renders from, with nothing in it yet.
+ */
+function emptyModel(providerId: string): ProviderAccountModel {
+  return {
+    providerId,
+    connection: "browser_or_api_key",
+    accountLimit: null,
+    reportsUsage: false,
+    supportsSignOut: true,
+    accounts: [],
+    defaultAccountId: null,
+    automaticSwitching: false,
+  };
+}
+
+/**
+ * Settings > AI providers: one card per provider, every card of the same
+ * structure, rendered from the account model the host lists.
+ */
 export function ProviderAccountsPanel({
   renderProviderHeader,
   onRefresh,
-  providerIds = MANAGED_ACCOUNT_PROVIDERS,
-  connectedProviders = [],
+  providerIds,
+  readiness,
 }: {
   renderProviderHeader?: (providerId: string) => ReactNode;
   onRefresh?: () => void;
+  /** The providers to show, in order; every listed provider by default. */
   providerIds?: readonly string[];
-  connectedProviders?: readonly string[];
+  /** The harness probe's word, for a sign-in no status adapter reports on. */
+  readiness?: ReadonlyMap<string, AgentProviderReadiness>;
 }) {
   const { t } = useTranslation("settings");
   const { formatDate } = useLocaleFormatting();
-  const accounts = useProviderAccountsStore((state) => state.accounts);
+  const listed = useProviderAccountsStore((state) => state.providers);
   const statuses = useProviderAccountsStore((state) => state.statuses);
   const loaded = useProviderAccountsStore((state) => state.loaded);
   const refreshing = useProviderAccountsStore((state) => state.refreshing);
-  const usageRefreshing = useProviderRateLimitsStore(
-    (state) => state.isRefreshing,
-  );
-  const fetchTimes = useProviderRateLimitsStore(
-    (state) => state.fetchedAtByProvider,
-  );
   const error = useProviderAccountsStore((state) => state.error);
   const [addingFor, setAddingFor] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
   const lastCheckedAt = Math.max(
     0,
-    ...accounts.map((account) => statuses[account.id]?.lastAttemptAt ?? 0),
-    ...providerIds.map((id) => fetchTimes[id] ?? 0),
+    ...Object.values(statuses).map((status) => status.lastAttemptAt ?? 0),
   );
   useEffect(() => {
     startProviderAccountsMonitor();
@@ -87,8 +103,8 @@ export function ProviderAccountsPanel({
   }, []);
   const providers = [
     ...new Set([
-      ...providerIds,
-      ...accounts.map((account) => account.providerId),
+      ...(providerIds ?? []),
+      ...listed.map((model) => model.providerId),
     ]),
   ];
 
@@ -115,15 +131,13 @@ export function ProviderAccountsPanel({
             variant="outline"
             size="xs"
             leftIcon={<RefreshCw />}
-            disabled={refreshing || usageRefreshing}
+            disabled={refreshing}
             onClick={() => {
-              void useProviderRateLimitsStore.getState().refresh();
+              void useProviderAccountsStore.getState().refresh(true);
               onRefresh?.();
             }}
           >
-            {refreshing || usageRefreshing
-              ? t("accounts.refreshing")
-              : t("accounts.refresh")}
+            {refreshing ? t("accounts.refreshing") : t("accounts.refresh")}
           </Button>
         </div>
       </div>
@@ -136,19 +150,23 @@ export function ProviderAccountsPanel({
         <p className="text-xs text-muted-foreground">{t("accounts.loading")}</p>
       ) : (
         providers.map((providerId) => (
-          <ProviderAccountGroup
+          <ProviderCard
             key={providerId}
             providerId={providerId}
             now={now}
             onAdd={() => setAddingFor(providerId)}
             header={renderProviderHeader?.(providerId)}
-            connected={connectedProviders.includes(providerId)}
+            harnessReadiness={readiness?.get(providerId)}
           />
         ))
       )}
       {addingFor ? (
         <AccountConnectionDialog
           providerId={addingFor}
+          connection={
+            useProviderAccountsStore.getState().providersById[addingFor]
+              ?.connection ?? "browser_or_api_key"
+          }
           onClose={() => setAddingFor(null)}
         />
       ) : null}
@@ -156,39 +174,35 @@ export function ProviderAccountsPanel({
   );
 }
 
-function ProviderAccountGroup({
+function ProviderCard({
   providerId,
   now,
   onAdd,
   header,
-  connected,
+  harnessReadiness,
 }: {
   providerId: string;
   now: number;
   onAdd: () => void;
   header?: ReactNode;
-  connected: boolean;
+  harnessReadiness?: AgentProviderReadiness;
 }) {
   const { t } = useTranslation("settings");
   const { formatDate } = useLocaleFormatting();
-  const accounts = useProviderAccountsStore((state) => state.accounts);
+  const model =
+    useProviderAccountsStore((state) => state.providersById[providerId]) ??
+    emptyModel(providerId);
   const statuses = useProviderAccountsStore((state) => state.statuses);
-  const automaticSwitching = useProviderAccountsStore(
-    (state) => state.automaticSwitching[providerId] ?? false,
-  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const managed = MANAGED_ACCOUNT_PROVIDERS.some((id) => id === providerId);
-  const usage = useProviderRateLimitsStore((state) =>
-    state.snapshot?.providers.find(
-      (provider) => provider.provider === providerId,
-    ),
-  );
-  const providerAccounts = accounts.filter(
-    (account) => account.providerId === providerId,
-  );
-  const resetAt = automaticSwitching
-    ? earliestAccountReset(providerAccounts, statuses, now)
+  const name = providerLabel(providerId);
+  // A provider that holds one sign-in has nothing to switch between and no
+  // room for another account until that sign-in is signed out.
+  const single = model.accountLimit === 1;
+  const full =
+    model.accountLimit != null && model.accounts.length >= model.accountLimit;
+  const resetAt = model.automaticSwitching
+    ? earliestAccountReset(model.accounts, statuses, now)
     : null;
   const setRouting = async (enabled: boolean) => {
     setSaving(true);
@@ -203,53 +217,55 @@ function ProviderAccountGroup({
   };
   return (
     <section
-      aria-label={providerLabel(providerId)}
+      aria-label={name}
       className="space-y-3 rounded-md border border-border p-4"
     >
       {header ?? (
         <div className="flex items-center gap-3">
           {getProviderIcon(providerId, "size-6")}
-          <h4 className="text-sm font-medium">{providerLabel(providerId)}</h4>
+          <h4 className="text-sm font-medium">{name}</h4>
         </div>
       )}
-      {managed ? (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-4">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    id={`automatic-${providerId}`}
-                    aria-label={t("accounts.autoSwitchLabel", {
-                      provider: providerLabel(providerId),
-                    })}
-                    checked={automaticSwitching}
-                    disabled={saving}
-                    onCheckedChange={(checked) => void setRouting(checked)}
-                  />
-                  <Label
-                    htmlFor={`automatic-${providerId}`}
-                    className="text-xs text-muted-foreground"
-                  >
-                    {t("accounts.autoSwitch")}
-                  </Label>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                {t("accounts.autoSwitchDescription")}
-              </TooltipContent>
-            </Tooltip>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            leftIcon={<Plus />}
-            onClick={onAdd}
-          >
-            {t("accounts.add")}
-          </Button>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-2">
+              <Switch
+                id={`automatic-${providerId}`}
+                aria-label={t("accounts.autoSwitchLabel", { provider: name })}
+                checked={model.automaticSwitching}
+                disabled={saving || single}
+                onCheckedChange={(checked) => void setRouting(checked)}
+              />
+              <Label
+                htmlFor={`automatic-${providerId}`}
+                className="text-xs text-muted-foreground"
+              >
+                {t("accounts.autoSwitch")}
+              </Label>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            {single
+              ? t("accounts.singleSignIn", { provider: name })
+              : t("accounts.autoSwitchDescription")}
+          </TooltipContent>
+        </Tooltip>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          leftIcon={<Plus />}
+          disabled={full}
+          onClick={onAdd}
+        >
+          {t("accounts.add")}
+        </Button>
+      </div>
+      {single ? (
+        <p className="text-xs text-muted-foreground">
+          {t("accounts.singleSignIn", { provider: name })}
+        </p>
       ) : null}
       {resetAt ? (
         <p role="status" className="text-xs text-muted-foreground">
@@ -267,52 +283,52 @@ function ProviderAccountGroup({
           {error}
         </p>
       ) : null}
-      {managed ? (
-        <div className="divide-y divide-border border-t border-border">
-          {!providerAccounts.length ? (
-            <p className="py-4 text-xs text-muted-foreground">
-              {t("accounts.empty")}
-            </p>
-          ) : null}
-          {providerAccounts.map((account) => (
-            <AccountCard key={account.id} account={account} now={now} />
-          ))}
-        </div>
-      ) : connected || usage?.configured ? (
-        <article
-          className="space-y-3 border-t border-border pt-4"
-          aria-label={usage?.accountLabel ?? providerLabel(providerId)}
-        >
-          {usage?.accountLabel ? (
-            <h4 className="text-sm font-medium">{usage.accountLabel}</h4>
-          ) : null}
-          <ProviderUsageDetails
+      <div className="divide-y divide-border border-t border-border">
+        {!model.accounts.length ? (
+          <p className="py-4 text-xs text-muted-foreground">
+            {t("accounts.empty")}
+          </p>
+        ) : null}
+        {model.accounts.map((account) => (
+          <AccountRow
+            key={account.id}
+            account={account}
+            model={model}
             now={now}
-            usage={
-              usage ?? {
-                provider: providerId,
-                configured: true,
-                status: "ok",
-                error: null,
-                session: null,
-                weekly: null,
-                monthly: null,
-                updatedAt: 0,
-              }
-            }
+            harnessReadiness={harnessReadiness}
           />
-        </article>
-      ) : null}
+        ))}
+      </div>
     </section>
   );
 }
 
-function AccountCard({
+/**
+ * The state an account row paints. A status adapter's word stands; a CLI
+ * sign-in no adapter reports on (Copilot, Amp) takes the harness probe's.
+ */
+function rowState(
+  model: ProviderAccountModel,
+  state: ProviderAccountState | undefined,
+  harnessReadiness: AgentProviderReadiness | undefined,
+): ProviderAccountState | undefined {
+  if (state !== undefined && state !== "unknown") return state;
+  if (model.connection !== "cli") return state;
+  if (harnessReadiness === "ready") return "ready";
+  if (harnessReadiness === "not_ready") return "needs_auth";
+  return state;
+}
+
+function AccountRow({
   account,
+  model,
   now,
+  harnessReadiness,
 }: {
   account: ProviderAccount;
+  model: ProviderAccountModel;
   now: number;
+  harnessReadiness?: AgentProviderReadiness;
 }) {
   const { t } = useTranslation("settings");
   const { formatDate } = useLocaleFormatting();
@@ -322,9 +338,7 @@ function AccountCard({
   const auth = useProviderAccountsStore(
     (state) => state.authStates[account.id],
   );
-  const isDefault = useProviderAccountsStore(
-    (state) => state.defaults[account.providerId] === account.id,
-  );
+  const isDefault = model.defaultAccountId === account.id;
   const sessionCount = useChatSessionStore(
     (state) =>
       state.sessions.filter(
@@ -353,11 +367,12 @@ function AccountCard({
       setBusy(false);
     }
   };
+  const cli = model.connection === "cli";
+  const state = rowState(model, status?.state, harnessReadiness);
   const authenticating = auth?.status === "running";
-  const hasAuthenticatedStatus =
-    status?.state === "ready" || status?.state === "limited";
+  const hasAuthenticatedStatus = state === "ready" || state === "limited";
   const needsSignIn =
-    status?.state === "needs_auth" ||
+    state === "needs_auth" ||
     (!hasAuthenticatedStatus &&
       (auth?.status === "needs_auth" || auth?.status === "error"));
   const canReset =
@@ -367,6 +382,10 @@ function AccountCard({
     canUseAccountReset(status, now);
   const showDefaultReset = canReset && !status?.resetTokens?.credits?.length;
   const displayName = status?.accountLabel || account.label;
+  const signIn = () => {
+    if (account.authMethod === "api_key" && !cli) setConnecting(true);
+    else void useProviderAccountsStore.getState().authenticate(account.id);
+  };
   return (
     <article className="space-y-3 py-4" aria-label={displayName}>
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -413,38 +432,36 @@ function AccountCard({
             </Button>
           ) : null}
           {authenticating ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              disabled={busy}
-              onClick={() =>
-                void run(() =>
-                  useProviderAccountsStore
-                    .getState()
-                    .cancelAuthentication(account.id),
-                )
-              }
-            >
-              {t("accounts.cancelSignIn")}
-            </Button>
-          ) : needsSignIn || !status ? (
+            // A CLI's own sign-in runs to its end; only a browser sign-in
+            // Flock started can be cancelled here.
+            cli ? null : (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={busy}
+                onClick={() =>
+                  void run(() =>
+                    useProviderAccountsStore
+                      .getState()
+                      .cancelAuthentication(account.id),
+                  )
+                }
+              >
+                {t("accounts.cancelSignIn")}
+              </Button>
+            )
+          ) : needsSignIn || state === undefined ? (
             <Button
               type="button"
               variant="outline"
               size="xs"
               disabled={authenticating || busy}
-              onClick={() => {
-                if (account.authMethod === "api_key") setConnecting(true);
-                else
-                  void useProviderAccountsStore
-                    .getState()
-                    .authenticate(account.id);
-              }}
+              onClick={signIn}
             >
               {t("accounts.signIn")}
             </Button>
-          ) : (
+          ) : model.supportsSignOut ? (
             <Button
               type="button"
               variant="ghost"
@@ -458,13 +475,14 @@ function AccountCard({
             >
               {t("accounts.signOut")}
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
       {!needsSignIn && !authenticating ? (
         <ProviderAccountDetails
           account={account}
           status={status}
+          state={state}
           now={now}
           resetDisabled={busy || authenticating || !account.enabled}
           onUseReset={(credit) => {
@@ -480,21 +498,19 @@ function AccountCard({
       ) : null}
       {showDefaultReset ? (
         <div className="flex flex-wrap items-center gap-2">
-          {showDefaultReset ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              disabled={busy}
-              onClick={() => {
-                setError(null);
-                setResetOutcome(null);
-                setResetRequest({ key: crypto.randomUUID() });
-              }}
-            >
-              {t("accounts.useReset")}
-            </Button>
-          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={busy}
+            onClick={() => {
+              setError(null);
+              setResetOutcome(null);
+              setResetRequest({ key: crypto.randomUUID() });
+            }}
+          >
+            {t("accounts.useReset")}
+          </Button>
         </div>
       ) : null}
       {authenticating ? (
@@ -521,6 +537,7 @@ function AccountCard({
       {connecting ? (
         <AccountConnectionDialog
           providerId={account.providerId}
+          connection={model.connection}
           account={account}
           onClose={() => setConnecting(false)}
         />
@@ -577,21 +594,29 @@ function AccountCard({
   );
 }
 
+/** The connection types a flow offers, the first being the default. */
+function connectionMethods(
+  connection: ProviderConnectionFlow,
+): ProviderAccountAuthMethod[] {
+  return connection === "api_key" ? ["api_key"] : ["oauth", "api_key"];
+}
+
 function AccountConnectionDialog({
   providerId,
+  connection,
   account,
   onClose,
 }: {
   providerId: string;
+  connection: ProviderConnectionFlow;
   account?: ProviderAccount;
   onClose: () => void;
 }) {
   const { t } = useTranslation("settings");
+  const methods = connectionMethods(connection);
   const [label, setLabel] = useState(account?.label ?? "");
-  const [method, setMethod] = useState<"oauth" | "api_key">(
-    providerId === "zai-acp" || account?.authMethod === "api_key"
-      ? "api_key"
-      : "oauth",
+  const [method, setMethod] = useState<ProviderAccountAuthMethod>(
+    account?.authMethod ?? methods[0],
   );
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -641,11 +666,10 @@ function AccountConnectionDialog({
             })}
           </DialogTitle>
           <DialogDescription>
-            {t(
-              providerId === "zai-acp"
-                ? "accounts.zaiDescription"
-                : "accounts.addDescription",
-            )}
+            {t([
+              `accounts.connect.${providerId}.description`,
+              "accounts.addDescription",
+            ])}
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
@@ -671,7 +695,7 @@ function AccountConnectionDialog({
               <Select
                 value={method}
                 onValueChange={(value) => {
-                  setMethod(value as "oauth" | "api_key");
+                  setMethod(value as ProviderAccountAuthMethod);
                   setApiKey("");
                 }}
               >
@@ -679,14 +703,11 @@ function AccountConnectionDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {providerId !== "zai-acp" ? (
-                    <SelectItem value="oauth">
-                      {t("accounts.methods.oauth")}
+                  {methods.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {t(`accounts.methods.${option}`)}
                     </SelectItem>
-                  ) : null}
-                  <SelectItem value="api_key">
-                    {t("accounts.methods.api_key")}
-                  </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -704,11 +725,10 @@ function AccountConnectionDialog({
                 onChange={(event) => setApiKey(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                {t(
-                  providerId === "zai-acp"
-                    ? "accounts.zaiBillingHint"
-                    : "accounts.apiBillingHint",
-                )}
+                {t([
+                  `accounts.connect.${providerId}.keyHint`,
+                  "accounts.apiBillingHint",
+                ])}
               </p>
             </div>
           ) : null}

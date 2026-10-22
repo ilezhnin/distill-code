@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { ProviderAccount } from "../api/providerAccounts";
+import type {
+  ProviderAccount,
+  ProviderAccountModel,
+} from "../api/providerAccounts";
 import {
   hasCompletedSignIn,
   recordReadyProviders,
@@ -18,6 +21,35 @@ function account(providerId: string): ProviderAccount {
   };
 }
 
+function stored(
+  providerId: string,
+  accounts: ProviderAccount[],
+): ProviderAccountModel {
+  return {
+    providerId,
+    connection: "browser_or_api_key",
+    accountLimit: null,
+    reportsUsage: true,
+    supportsSignOut: true,
+    accounts,
+    defaultAccountId: accounts[0]?.id ?? null,
+    automaticSwitching: false,
+  };
+}
+
+function cli(providerId: string): ProviderAccountModel {
+  return {
+    providerId,
+    connection: "cli",
+    accountLimit: 1,
+    reportsUsage: false,
+    supportsSignOut: false,
+    accounts: [{ ...account(providerId), id: `cli-login-${providerId}` }],
+    defaultAccountId: `cli-login-${providerId}`,
+    automaticSwitching: false,
+  };
+}
+
 beforeEach(() => {
   window.localStorage.clear();
 });
@@ -26,30 +58,38 @@ describe("hasCompletedSignIn", () => {
   it("is false for a CLI an abandoned setup installed but never signed in", () => {
     // Doctor sees the installed CLI, but it was never ready here.
     recordReadyProviders(new Set(["grok-acp"]), 1);
-    expect(hasCompletedSignIn("copilot-acp", [])).toBe(false);
+    expect(hasCompletedSignIn("copilot-acp", cli("copilot-acp"))).toBe(false);
   });
 
   it("is true for a CLI that signed in here and has since signed out", () => {
     recordReadyProviders(new Set(["grok-acp"]), 1);
     recordReadyProviders(new Set(), 2);
-    expect(hasCompletedSignIn("grok-acp", [])).toBe(true);
+    expect(hasCompletedSignIn("grok-acp", cli("grok-acp"))).toBe(true);
+    // Before the model has loaded, the record alone decides.
+    expect(hasCompletedSignIn("grok-acp", undefined)).toBe(true);
   });
 
   it("is false for a saved account whose browser sign-in was abandoned", () => {
     // Adding an OAuth account saves it before the browser sign-in; an
     // abandoned sign-in leaves the account without ever being connected.
-    expect(hasCompletedSignIn("claude-acp", [account("claude-acp")])).toBe(
-      false,
-    );
+    expect(
+      hasCompletedSignIn(
+        "claude-acp",
+        stored("claude-acp", [account("claude-acp")]),
+      ),
+    ).toBe(false);
   });
 
   it("needs a saved account for providers whose accounts Flock keeps", () => {
     recordReadyProviders(new Set(["claude-acp"]), 1);
     recordReadyProviders(new Set(), 2);
-    expect(hasCompletedSignIn("claude-acp", [account("claude-acp")])).toBe(
-      true,
-    );
-    expect(hasCompletedSignIn("claude-acp", [account("codex-acp")])).toBe(
+    expect(
+      hasCompletedSignIn(
+        "claude-acp",
+        stored("claude-acp", [account("claude-acp")]),
+      ),
+    ).toBe(true);
+    expect(hasCompletedSignIn("claude-acp", stored("claude-acp", []))).toBe(
       false,
     );
   });

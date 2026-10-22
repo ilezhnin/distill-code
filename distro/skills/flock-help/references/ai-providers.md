@@ -11,10 +11,10 @@ accounts have separate storage, and quota limits remain unknown when unavailable
 
 ## Kimi Code
 
-In Settings > AI providers, install Kimi Code and choose Sign in. Flock runs
-the official `@moonshot-ai/kimi-code` CLI (`kimi login`); follow the verification
-URL and device code in the setup output to authorize your Kimi account in a
-browser. The CLI owns credentials under `~/.kimi-code` (or `KIMI_CODE_HOME`).
+In Settings > AI providers, install Kimi Code and choose Sign in on its
+account row. Flock runs the official `@moonshot-ai/kimi-code` CLI
+(`kimi login`); follow the verification URL and device code in the setup
+output to authorize your Kimi account in a browser. The CLI owns credentials under `~/.kimi-code` (or `KIMI_CODE_HOME`).
 Flock verifies readiness and signs out through ACP without reading tokens.
 Google accounts may be redirected from kimi.com to kimi.ai by Kimi's sign-in
 page. Complete the same device authorization flow there; do not restart login

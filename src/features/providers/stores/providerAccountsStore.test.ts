@@ -49,6 +49,18 @@ const account: ProviderAccount = {
   updatedAt: now,
 };
 const snapshot: ProviderAccountsSnapshot = {
+  providers: [
+    {
+      providerId: "codex-acp",
+      connection: "browser_or_api_key",
+      accountLimit: null,
+      reportsUsage: true,
+      supportsSignOut: true,
+      accounts: [account],
+      defaultAccountId: account.id,
+      automaticSwitching: false,
+    },
+  ],
   accounts: [account],
   defaults: { "codex-acp": account.id },
   automaticSwitching: { "codex-acp": false },
@@ -275,6 +287,7 @@ describe("providerAccountsStore", () => {
     );
     const pending = useProviderAccountsStore.getState().refresh();
     mocks.remove.mockResolvedValue({
+      providers: [],
       accounts: [],
       defaults: {},
       automaticSwitching: {},

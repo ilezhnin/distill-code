@@ -213,6 +213,20 @@ pub struct SetupPlan {
     bundled_bridge: bool,
 }
 
+impl SetupPlan {
+    /// The plan of a CLI sign-in or sign-out started from the account
+    /// model: nothing to install or update, and the harness binary is
+    /// probed afterwards like every curated harness has one.
+    pub(crate) fn account_action() -> Self {
+        Self {
+            install_fix_type: None,
+            update_fix_types: Vec::new(),
+            verify_install: true,
+            bundled_bridge: false,
+        }
+    }
+}
+
 /// Managed Tauri state: `providerId -> SetupOperation`. Keying by provider lets
 /// installs across different providers run concurrently. The spawned task owns
 /// an `Arc` clone so it keeps writing after `start_agent_setup` returns.
@@ -792,7 +806,7 @@ pub fn start_agent_setup(
     let app = app_handle.clone();
     let provider_for_task = provider_id.clone();
     tauri::async_runtime::spawn(async move {
-        run_setup(app, registry, provider_for_task, action, plan).await;
+        let _ = run_setup(app, registry, provider_for_task, action, plan).await;
     });
     snapshot
 }
@@ -809,6 +823,25 @@ pub fn clear_agent_setup_status(registry: State<'_, AgentSetupRegistry>, provide
     registry.remove(&provider_id);
 }
 
+/// Runs `action` for `provider_id` to completion on the caller's task,
+/// under the same registry entry the provider card observes. The account
+/// commands run a CLI sign-in and sign-out this way, so their result is
+/// theirs to report; a chain already running for the provider is refused.
+pub(crate) async fn run_setup_now(
+    app: &AppHandle,
+    provider_id: &str,
+    action: SetupAction,
+    plan: SetupPlan,
+) -> Result<(), String> {
+    let registry = app.state::<AgentSetupRegistry>().inner().clone();
+    let (started, snapshot) = registry.begin(provider_id, action);
+    emit_state(app, provider_id, &snapshot);
+    if !started {
+        return Err("Setup for this provider is still running; wait for it to finish".into());
+    }
+    run_setup(app.clone(), registry, provider_id.to_string(), action, plan).await
+}
+
 /// Run the whole chain to completion, then write the terminal status. `auth`
 /// takes the small sign-in branch; `logout` clears credentials; `install`/
 /// `update` share the plan-driven install-loop + updates + verify chain.
@@ -818,7 +851,7 @@ async fn run_setup(
     provider_id: String,
     action: SetupAction,
     plan: SetupPlan,
-) {
+) -> Result<(), String> {
     let result = match action {
         SetupAction::Auth => run_auth(&app, &registry, &provider_id, &plan).await,
         SetupAction::Logout => run_logout(&app, &registry, &provider_id).await,
@@ -840,6 +873,7 @@ async fn run_setup(
             }
         }
     });
+    result
 }
 
 /// Mirror of the former in-card `runInstall`: install-loop (seeded by the plan,
@@ -923,7 +957,9 @@ async fn run_logout_command(
     registry: &AgentSetupRegistry,
     provider_id: &str,
 ) -> Result<(), String> {
-    if provider_id == "kimi-acp" {
+    if crate::services::provider_accounts::spec(provider_id).is_some_and(|spec| {
+        spec.cli_sign_out == crate::services::provider_accounts::CliSignOut::KimiAcp
+    }) {
         set_phase(app, registry, provider_id, SetupPhase::SigningOut);
         return crate::services::agent_host::kimi::logout(
             managed_acp_tools::provider_env(app).await,

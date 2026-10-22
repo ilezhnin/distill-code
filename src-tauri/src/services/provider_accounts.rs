@@ -168,8 +168,148 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// How a provider's accounts are connected. It names the flow the app already
+/// runs for the provider; the flow itself is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionFlow {
+    /// A browser sign-in of the provider's CLI into a private home Flock
+    /// keeps for the account, or a saved API key (Claude Code, Codex).
+    BrowserOrApiKey,
+    /// A saved API key only (Z.ai Coding Plan).
+    ApiKey,
+    /// The harness CLI keeps one sign-in of its own (Grok, Kimi Code,
+    /// Copilot, Amp). Flock names it, runs the CLI's own sign-in and
+    /// sign-out, and never holds its credentials.
+    Cli,
+}
+
+/// Where the status adapter reads an account's sign-in state and usage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Telemetry {
+    Claude,
+    Codex,
+    Zai,
+    Grok,
+    Kimi,
+    /// No usage source. The harness's own sign-in probe in the doctor report
+    /// is the only word on its sign-in state.
+    None,
+}
+
+/// How a CLI sign-in is ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CliSignOut {
+    /// The harness CLI has no sign-out Flock can run.
+    None,
+    /// A shell command run through agent setup.
+    Command(&'static str),
+    /// Kimi's ACP logout method.
+    KimiAcp,
+}
+
+/// One provider's place in the account model: the same fields for every
+/// harness, with the differences between them as data.
+pub struct ProviderSpec {
+    pub id: &'static str,
+    pub connection: ConnectionFlow,
+    /// The most accounts the provider can hold, or `None` for any number.
+    pub account_limit: Option<u32>,
+    /// Whether the status adapter reports plan and usage windows.
+    pub reports_usage: bool,
+    pub telemetry: Telemetry,
+    /// The label of the CLI sign-in identity (`ConnectionFlow::Cli` only).
+    pub cli_label: &'static str,
+    pub cli_sign_out: CliSignOut,
+}
+
+impl ProviderSpec {
+    /// Whether Flock stores this provider's accounts, as opposed to naming
+    /// the one sign-in its CLI keeps.
+    pub fn stores_accounts(&self) -> bool {
+        self.connection != ConnectionFlow::Cli
+    }
+
+    /// Whether Flock can sign an account of this provider out.
+    pub fn supports_sign_out(&self) -> bool {
+        self.stores_accounts() || self.cli_sign_out != CliSignOut::None
+    }
+}
+
+/// Every harness the app runs, in catalog order.
+pub const PROVIDERS: &[ProviderSpec] = &[
+    ProviderSpec {
+        id: "claude-acp",
+        connection: ConnectionFlow::BrowserOrApiKey,
+        account_limit: None,
+        reports_usage: true,
+        telemetry: Telemetry::Claude,
+        cli_label: "",
+        cli_sign_out: CliSignOut::None,
+    },
+    ProviderSpec {
+        id: "codex-acp",
+        connection: ConnectionFlow::BrowserOrApiKey,
+        account_limit: None,
+        reports_usage: true,
+        telemetry: Telemetry::Codex,
+        cli_label: "",
+        cli_sign_out: CliSignOut::None,
+    },
+    ProviderSpec {
+        id: "grok-acp",
+        connection: ConnectionFlow::Cli,
+        account_limit: Some(1),
+        reports_usage: true,
+        telemetry: Telemetry::Grok,
+        cli_label: "Grok CLI sign-in",
+        cli_sign_out: CliSignOut::Command("grok logout"),
+    },
+    ProviderSpec {
+        id: "kimi-acp",
+        connection: ConnectionFlow::Cli,
+        account_limit: Some(1),
+        reports_usage: true,
+        telemetry: Telemetry::Kimi,
+        cli_label: "Kimi Code sign-in",
+        cli_sign_out: CliSignOut::KimiAcp,
+    },
+    ProviderSpec {
+        id: "zai-acp",
+        connection: ConnectionFlow::ApiKey,
+        account_limit: None,
+        reports_usage: true,
+        telemetry: Telemetry::Zai,
+        cli_label: "",
+        cli_sign_out: CliSignOut::None,
+    },
+    ProviderSpec {
+        id: "copilot-acp",
+        connection: ConnectionFlow::Cli,
+        account_limit: Some(1),
+        reports_usage: false,
+        telemetry: Telemetry::None,
+        cli_label: "Copilot CLI sign-in",
+        cli_sign_out: CliSignOut::None,
+    },
+    ProviderSpec {
+        id: "amp-acp",
+        connection: ConnectionFlow::Cli,
+        account_limit: Some(1),
+        reports_usage: false,
+        telemetry: Telemetry::None,
+        cli_label: "Amp CLI sign-in",
+        cli_sign_out: CliSignOut::None,
+    },
+];
+
+pub fn spec(provider_id: &str) -> Option<&'static ProviderSpec> {
+    PROVIDERS.iter().find(|spec| spec.id == provider_id)
+}
+
+/// Whether Flock stores this provider's accounts (Claude Code, Codex, Z.ai).
 pub fn supports_managed_accounts(provider_id: &str) -> bool {
-    matches!(provider_id, "codex-acp" | "claude-acp" | "zai-acp")
+    spec(provider_id).is_some_and(ProviderSpec::stores_accounts)
 }
 
 /// How use of `account` is billed, as benchmark configurations record it:
@@ -177,19 +317,21 @@ pub fn supports_managed_accounts(provider_id: &str) -> bool {
 /// only endpoint Flock gives it is the plan's (`zai::CODING_ENDPOINT`),
 /// with no fallback to the separately billed API.
 pub fn billing_mode(account: &ProviderAccount) -> &'static str {
-    if account.auth_method == AuthMethod::ApiKey && account.provider_id != "zai-acp" {
+    let plan_key =
+        spec(&account.provider_id).is_some_and(|spec| spec.connection == ConnectionFlow::ApiKey);
+    if account.auth_method == AuthMethod::ApiKey && !plan_key {
         "api"
     } else {
         "subscription"
     }
 }
 
-/// Providers whose own CLI keeps the sign-in (Grok, Kimi). Flock names that
-/// sign-in with a fixed identity so benchmark configurations, routes and
-/// activity can refer to it; it is never stored, and chats keep using the CLI
-/// without an account.
+/// Providers whose own CLI keeps the sign-in. Flock names that sign-in with
+/// a fixed identity so Settings, benchmark configurations, routes and
+/// activity can refer to it; it is never stored, and chats keep using the
+/// CLI without an account.
 pub fn uses_cli_login(provider_id: &str) -> bool {
-    matches!(provider_id, "grok-acp" | "kimi-acp")
+    spec(provider_id).is_some_and(|spec| spec.connection == ConnectionFlow::Cli)
 }
 
 const CLI_LOGIN_PREFIX: &str = "cli-login-";
@@ -212,15 +354,16 @@ fn cli_login_account_as(
     grok_auth_method: fn() -> AuthMethod,
 ) -> Option<ProviderAccount> {
     let provider_id = account_id.strip_prefix(CLI_LOGIN_PREFIX)?;
-    let (label, auth_method) = match provider_id {
-        "grok-acp" => ("Grok CLI sign-in", grok_auth_method()),
-        "kimi-acp" => ("Kimi Code sign-in", AuthMethod::OAuth),
-        _ => return None,
+    let spec = spec(provider_id).filter(|spec| spec.connection == ConnectionFlow::Cli)?;
+    let auth_method = if spec.telemetry == Telemetry::Grok {
+        grok_auth_method()
+    } else {
+        AuthMethod::OAuth
     };
     Some(ProviderAccount {
         id: account_id.into(),
         provider_id: provider_id.into(),
-        label: label.into(),
+        label: spec.cli_label.into(),
         auth_method,
         enabled: true,
         auto_switch: false,
@@ -232,7 +375,7 @@ fn cli_login_account_as(
 /// Grok signs in with its own session, or with `XAI_API_KEY` when it has
 /// none. Without either an attempt fails at sign-in, not here.
 fn grok_cli_auth_method() -> AuthMethod {
-    use super::provider_rate_limits::grok::{read_grok_auth_session, GrokAuthReadResult};
+    use super::provider_account_status::grok::{read_grok_auth_session, GrokAuthReadResult};
     if !matches!(read_grok_auth_session(), GrokAuthReadResult::Ok(_))
         && super::shell_env::user_env_var("XAI_API_KEY").is_some_and(|key| !key.trim().is_empty())
     {
@@ -242,13 +385,94 @@ fn grok_cli_auth_method() -> AuthMethod {
     }
 }
 
+/// One provider as Settings shows it: its connection flow and limits as
+/// data, and its accounts as a list, whether Flock stores them or the
+/// provider's CLI keeps the one sign-in the list names.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAccountModel {
+    pub provider_id: String,
+    pub connection: ConnectionFlow,
+    pub account_limit: Option<u32>,
+    pub reports_usage: bool,
+    pub supports_sign_out: bool,
+    pub accounts: Vec<ProviderAccount>,
+    pub default_account_id: Option<String>,
+    pub automatic_switching: bool,
+}
+
+/// Every provider's model, with the flat account list, defaults and routing
+/// the renderer's other readers use.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAccountsView {
+    pub providers: Vec<ProviderAccountModel>,
+    pub accounts: Vec<ProviderAccount>,
+    pub defaults: HashMap<String, String>,
+    pub automatic_switching: HashMap<String, bool>,
+}
+
+pub fn view(app: &AppHandle) -> Result<ProviderAccountsView, String> {
+    Ok(view_from(snapshot(app)?, grok_cli_auth_method))
+}
+
+fn view_from(
+    stored: ProviderAccountsSnapshot,
+    grok_auth_method: fn() -> AuthMethod,
+) -> ProviderAccountsView {
+    let mut view = ProviderAccountsView::default();
+    for spec in PROVIDERS {
+        let (accounts, default_account_id, automatic_switching) = if spec.stores_accounts() {
+            (
+                stored
+                    .accounts
+                    .iter()
+                    .filter(|account| account.provider_id == spec.id)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                stored.defaults.get(spec.id).cloned(),
+                stored
+                    .automatic_switching
+                    .get(spec.id)
+                    .copied()
+                    .unwrap_or(false),
+            )
+        } else {
+            let identity = cli_login_account_id(spec.id)
+                .and_then(|id| cli_login_account_as(&id, grok_auth_method))
+                .expect("every CLI provider names its sign-in");
+            let id = identity.id.clone();
+            (vec![identity], Some(id), false)
+        };
+        if let Some(id) = &default_account_id {
+            view.defaults.insert(spec.id.into(), id.clone());
+        }
+        view.automatic_switching
+            .insert(spec.id.into(), automatic_switching);
+        view.accounts.extend(accounts.iter().cloned());
+        view.providers.push(ProviderAccountModel {
+            provider_id: spec.id.into(),
+            connection: spec.connection,
+            account_limit: spec.account_limit,
+            reports_usage: spec.reports_usage,
+            supports_sign_out: spec.supports_sign_out(),
+            accounts,
+            default_account_id,
+            automatic_switching,
+        });
+    }
+    view
+}
+
 fn validate_provider(provider_id: &str) -> Result<(), String> {
-    if supports_managed_accounts(provider_id) {
-        Ok(())
-    } else {
-        Err(format!(
+    match spec(provider_id) {
+        Some(spec) if spec.stores_accounts() => Ok(()),
+        Some(_) => Err(format!(
+            "'{provider_id}' keeps its sign-in in its own CLI; Flock stores no accounts for it"
+        )),
+        None => Err(format!(
             "Multiple accounts are not supported for '{provider_id}'"
-        ))
+        )),
     }
 }
 
@@ -341,7 +565,11 @@ fn read_store(root: &Path) -> Result<ProviderAccountsSnapshot, String> {
         account.enabled = true;
         account.auto_switch = true;
     }
-    for provider in ["codex-acp", "claude-acp", "zai-acp"] {
+    for provider in PROVIDERS
+        .iter()
+        .filter(|spec| spec.stores_accounts())
+        .map(|spec| spec.id)
+    {
         if let Some(first) = snapshot
             .accounts
             .iter()
@@ -709,7 +937,9 @@ fn add_account_at(
     api_key: Option<String>,
 ) -> Result<ProviderAccount, String> {
     validate_provider(&provider_id)?;
-    if provider_id == "zai-acp" && auth_method != AuthMethod::ApiKey {
+    if spec(&provider_id).is_some_and(|spec| spec.connection == ConnectionFlow::ApiKey)
+        && auth_method != AuthMethod::ApiKey
+    {
         return Err("Z.ai Coding Plan requires a Z.ai API key".into());
     }
     if auth_method == AuthMethod::OAuth && api_key.is_some() {
@@ -1623,14 +1853,24 @@ mod tests {
             cli_login_for(kimi, "grok-acp"),
             Err("Account belongs to a different provider".into())
         );
-        // Managed providers have no CLI identity; their ids go to the store.
+        // Stored providers have no CLI identity; their ids go to the store.
         for id in [
             "cli-login-codex-acp",
             "cli-login-claude-acp",
+            "cli-login-zai-acp",
             "cli-login-",
             "kimi-acp",
         ] {
             assert!(cli_login_account(id).is_none(), "{id}");
+        }
+        // Copilot and Amp keep one CLI sign-in too; it is named the same way.
+        for (id, label) in [
+            ("cli-login-copilot-acp", "Copilot CLI sign-in"),
+            ("cli-login-amp-acp", "Amp CLI sign-in"),
+        ] {
+            let identity = cli_login_account(id).unwrap();
+            assert_eq!(identity.label, label);
+            assert_eq!(identity.auth_method, AuthMethod::OAuth);
         }
         assert_eq!(
             cli_login_account_id("grok-acp").as_deref(),
@@ -1697,9 +1937,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_accounts_unchanged_for_grok_and_kimi() {
+    fn the_store_never_holds_a_cli_sign_in() {
         let root = tempfile::tempdir().unwrap();
-        for provider in ["grok-acp", "kimi-acp"] {
+        for provider in ["grok-acp", "kimi-acp", "copilot-acp", "amp-acp"] {
             assert!(!supports_managed_accounts(provider));
             assert!(uses_cli_login(provider));
             assert!(add_account_at(
@@ -1712,13 +1952,112 @@ mod tests {
             .is_err());
             let snapshot = read_store(root.path()).unwrap();
             assert!(resolve_from(&snapshot, provider, None).is_err());
-            // The identity never enters the stored snapshot Settings lists.
+            // The identity never enters the stored snapshot.
             assert!(snapshot.accounts.is_empty());
             assert!(!snapshot.defaults.contains_key(provider));
         }
-        for provider in ["codex-acp", "claude-acp"] {
+        for provider in ["codex-acp", "claude-acp", "zai-acp"] {
             assert!(supports_managed_accounts(provider));
             assert!(!uses_cli_login(provider));
         }
+    }
+
+    /// Every harness is one entry of the same shape, with its differences as
+    /// data: the flow it connects with, how many accounts it can hold, and
+    /// whether it reports usage or can be signed out.
+    #[test]
+    fn every_harness_has_one_spec_of_the_same_shape() {
+        assert_eq!(
+            PROVIDERS.iter().map(|spec| spec.id).collect::<Vec<_>>(),
+            [
+                "claude-acp",
+                "codex-acp",
+                "grok-acp",
+                "kimi-acp",
+                "zai-acp",
+                "copilot-acp",
+                "amp-acp"
+            ]
+        );
+        for spec in PROVIDERS {
+            assert_eq!(
+                spec.stores_accounts(),
+                spec.connection != ConnectionFlow::Cli
+            );
+            assert_eq!(spec.account_limit.is_some(), !spec.stores_accounts());
+            assert_eq!(spec.cli_label.is_empty(), spec.stores_accounts());
+            assert_eq!(spec.telemetry == Telemetry::None, !spec.reports_usage);
+        }
+        assert_eq!(spec("zai-acp").unwrap().connection, ConnectionFlow::ApiKey);
+        assert!(spec("grok-acp").unwrap().supports_sign_out());
+        assert!(spec("kimi-acp").unwrap().supports_sign_out());
+        assert!(!spec("copilot-acp").unwrap().supports_sign_out());
+        assert!(!spec("amp-acp").unwrap().supports_sign_out());
+        assert!(spec("claude-acp").unwrap().supports_sign_out());
+        assert!(spec("unknown-acp").is_none());
+    }
+
+    /// The view lists every provider: stored accounts with their saved
+    /// default and routing, and one CLI sign-in identity, its own default,
+    /// for a provider whose CLI keeps the sign-in.
+    #[test]
+    fn the_view_lists_every_provider_as_accounts() {
+        let root = tempfile::tempdir().unwrap();
+        let codex = add_account_at(
+            root.path(),
+            "codex-acp".into(),
+            "Personal".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        let mut stored = read_store(root.path()).unwrap();
+        stored.automatic_switching.insert("codex-acp".into(), true);
+        let view = view_from(stored, || AuthMethod::ApiKey);
+        assert_eq!(view.providers.len(), PROVIDERS.len());
+        let model = |id: &str| {
+            view.providers
+                .iter()
+                .find(|model| model.provider_id == id)
+                .unwrap()
+        };
+        let codex_model = model("codex-acp");
+        assert_eq!(codex_model.accounts, vec![codex.clone()]);
+        assert_eq!(
+            codex_model.default_account_id.as_deref(),
+            Some(codex.id.as_str())
+        );
+        assert!(codex_model.automatic_switching);
+        assert_eq!(codex_model.account_limit, None);
+        let claude_model = model("claude-acp");
+        assert!(claude_model.accounts.is_empty());
+        assert_eq!(claude_model.default_account_id, None);
+        assert!(!claude_model.automatic_switching);
+        let grok_model = model("grok-acp");
+        assert_eq!(grok_model.connection, ConnectionFlow::Cli);
+        assert_eq!(grok_model.account_limit, Some(1));
+        assert_eq!(grok_model.accounts.len(), 1);
+        assert_eq!(grok_model.accounts[0].id, "cli-login-grok-acp");
+        assert_eq!(grok_model.accounts[0].auth_method, AuthMethod::ApiKey);
+        assert_eq!(
+            grok_model.default_account_id.as_deref(),
+            Some("cli-login-grok-acp")
+        );
+        assert!(!grok_model.automatic_switching);
+        assert!(grok_model.supports_sign_out && grok_model.reports_usage);
+        let amp_model = model("amp-acp");
+        assert!(!amp_model.supports_sign_out && !amp_model.reports_usage);
+        assert_eq!(amp_model.accounts[0].auth_method, AuthMethod::OAuth);
+        // The flat lists carry the same accounts and defaults.
+        assert_eq!(view.accounts.len(), 5);
+        assert_eq!(view.defaults["codex-acp"], codex.id);
+        assert_eq!(view.defaults["kimi-acp"], "cli-login-kimi-acp");
+        assert!(!view.defaults.contains_key("claude-acp"));
+        assert!(view.automatic_switching["codex-acp"]);
+        assert!(!view.automatic_switching["grok-acp"]);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["providers"][2]["connection"], "cli");
+        assert_eq!(json["providers"][0]["connection"], "browser_or_api_key");
+        assert_eq!(json["providers"][4]["connection"], "api_key");
     }
 }

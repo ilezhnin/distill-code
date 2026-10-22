@@ -201,3 +201,104 @@ it("names the first models of a matrix and counts the rest", () => {
   // The CLI's "default" is no effort level and is never named as one.
   expect(row.queryByText("default")).not.toBeInTheDocument();
 });
+
+const repository = {
+  ...configuration,
+  id: "config-1-repository",
+  executionProfile: "protected_repository",
+};
+/** A model's run from its page: one configuration per execution profile. */
+const twoProfiles = {
+  ...runSummary.request,
+  configurations: [configuration, repository],
+};
+
+it("names a model once however many execution profiles its run spans", () => {
+  const row = show({
+    request: twoProfiles,
+    attemptCount: 1035,
+    settledCount: 254,
+    cellCount: 345,
+    settledCellCount: 28,
+    openCells: [
+      { configurationId: "config-1", versionId: "version-1", running: true },
+      {
+        configurationId: "config-1-repository",
+        versionId: "version-2",
+        running: true,
+      },
+    ],
+  });
+  expect(row.getAllByText("Model One")).toHaveLength(1);
+  expect(row.getAllByText("high")).toHaveLength(1);
+  expect(row.getAllByText("28 / 345")).toHaveLength(1);
+  expect(row.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+});
+
+it("names a waiting model once while nothing of its run is running", () => {
+  const row = show({
+    request: twoProfiles,
+    attemptCount: 615,
+    settledCount: 0,
+    cellCount: 205,
+    settledCellCount: 0,
+    openCells: [
+      { configurationId: "config-1", versionId: "version-1" },
+      { configurationId: "config-1-repository", versionId: "version-2" },
+    ],
+  });
+  expect(row.getAllByText("Model One")).toHaveLength(1);
+  expect(row.getAllByText("high")).toHaveLength(1);
+  expect(row.getByText("0 / 205")).toBeInTheDocument();
+});
+
+it("keeps one row per run when two runs measure the same model", () => {
+  const twin = (id: string, settledCellCount: number): RunSummary => ({
+    ...runSummary,
+    id,
+    state: "running",
+    request: twoProfiles,
+    cellCount: 345,
+    settledCellCount,
+    openCells: [
+      { configurationId: "config-1", versionId: "version-1", running: true },
+    ],
+  });
+  render(
+    <BenchmarkActivity
+      runs={[twin("run-a", 28), twin("run-b", 0)]}
+      onOpenRun={vi.fn()}
+    />,
+  );
+  const rows = screen.getAllByRole("button");
+  expect(rows).toHaveLength(2);
+  for (const row of rows)
+    expect(within(row).getAllByText("Model One")).toHaveLength(1);
+  expect(screen.getByText("28 / 345")).toBeInTheDocument();
+  expect(screen.getByText("0 / 345")).toBeInTheDocument();
+});
+
+it("names each model of a matrix once across its execution profiles", () => {
+  const second = { ...configuration, id: "config-2", modelId: "model-2" };
+  const configurations = [
+    configuration,
+    repository,
+    second,
+    {
+      ...second,
+      id: "config-2-repository",
+      executionProfile: "protected_repository",
+    },
+  ];
+  const row = show({
+    request: { ...runSummary.request, configurations },
+    openCells: configurations.map((entry) => ({
+      configurationId: entry.id,
+      versionId: "version-1",
+      running: true,
+    })),
+  });
+  expect(row.getAllByText("Model One")).toHaveLength(1);
+  expect(row.getAllByText("model-2")).toHaveLength(1);
+  expect(row.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+});

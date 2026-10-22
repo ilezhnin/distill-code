@@ -16,10 +16,9 @@ import {
   activeCampaigns,
   campaignIdForRun,
   runProgress,
-  workingConfigurations,
 } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
-import { modelActivity, modelKey } from "../lib/benchmarkModels";
+import { modelActivity, modelKey, workingModels } from "../lib/benchmarkModels";
 import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
 import type { LeaderboardRow, RunSummary } from "../types";
@@ -144,7 +143,7 @@ export function BenchmarkActivity({
         .filter((run) => !run.request.workflowPolicy)
         .map((run) => {
           const { settled, total } = runProgress([run]);
-          const models = workingConfigurations(run);
+          const models = workingModels(run);
           return (
             <button
               key={run.id}

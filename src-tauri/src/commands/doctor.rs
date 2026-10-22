@@ -17,7 +17,7 @@ use tokio::time::timeout;
 
 use crate::services::{
     distro_bundle::DistroBundleState, env_key, managed_acp_tools, managed_node, path_env,
-    provider_rate_limits::grok, shell_env,
+    provider_account_status::grok, shell_env,
 };
 
 use crate::commands::runtime_config::{RuntimeConfig, RuntimeConfigState, RuntimeDoctorConfig};
@@ -465,16 +465,21 @@ pub(crate) fn local_agent_fix_command(check_id: &str, fix_type: &FixType) -> Opt
     find_local_fix(&LOCAL_DOCTOR_REGISTRY, check_id, fix_type).map(|fix| fix.command)
 }
 
+/// Whether the CLI sign-in of `provider_id` can be ended by Flock, as the
+/// provider table says. Codex, Claude and Z.ai accounts sign out through
+/// their own account command instead.
 pub(crate) fn provider_supports_logout(provider_id: &str) -> bool {
-    provider_id == "kimi-acp" || provider_logout_command(provider_id).is_some()
+    use crate::services::provider_accounts::{spec, CliSignOut};
+    spec(provider_id).is_some_and(|spec| spec.cli_sign_out != CliSignOut::None)
 }
 
-/// Provider-wide sign-out is only available to single-account integrations.
-/// Codex and Claude use the selected Flock account's sign-out command.
+/// The shell command that ends a CLI sign-in, when the provider table names
+/// one (Grok); Kimi signs out through ACP instead.
 pub(crate) fn provider_logout_command(provider_id: &str) -> Option<&'static str> {
-    match provider_id {
-        "grok-acp" => Some("grok logout"),
-        _ => None,
+    use crate::services::provider_accounts::{spec, CliSignOut};
+    match spec(provider_id)?.cli_sign_out {
+        CliSignOut::Command(command) => Some(command),
+        CliSignOut::None | CliSignOut::KimiAcp => None,
     }
 }
 
@@ -1022,7 +1027,11 @@ async fn windows_override_system_checks(env_vars: &[(String, String)]) -> Vec<do
 pub(crate) fn apply_managed_account_checks(app: &AppHandle, checks: &mut [doctor::DoctorCheck]) {
     use crate::services::provider_accounts;
     let accounts = provider_accounts::snapshot(app);
-    for provider in ["codex-acp", "claude-acp", "zai-acp"] {
+    for provider in provider_accounts::PROVIDERS
+        .iter()
+        .filter(|spec| spec.stores_accounts())
+        .map(|spec| spec.id)
+    {
         let id = crate::commands::agent_setup::crate_check_id(provider);
         let Some(check) = checks.iter_mut().find(|check| check.id == id) else {
             continue;

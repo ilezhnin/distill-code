@@ -1,4 +1,7 @@
-use super::types::RateLimitWindow;
+//! Quota window helpers shared by the status adapters that read a harness's
+//! own usage report (Grok, Kimi).
+
+use super::types::AccountLimitWindow;
 
 pub const SESSION_WINDOW_MINUTES: u32 = 300;
 pub const WEEKLY_WINDOW_MINUTES: u32 = 10_080;
@@ -46,22 +49,26 @@ pub fn parse_reset_timestamp(value: &serde_json::Value) -> Option<i64> {
     }
 }
 
-pub fn reset_description(resets_at: Option<i64>) -> Option<String> {
-    let resets_at = resets_at?;
-    let datetime = chrono::DateTime::from_timestamp_millis(resets_at)?;
-    Some(datetime.to_rfc3339())
-}
-
-pub fn usage_window(
+/// A plan window the account's status lists, or `None` when the provider
+/// reported no usage figure for it: an unknown window is never shown as
+/// unused.
+pub fn limit_window(
+    id: &str,
+    label: &str,
     used_percent: Option<f64>,
     window_minutes: u32,
     resets_at: Option<i64>,
-) -> Option<RateLimitWindow> {
+) -> Option<AccountLimitWindow> {
     let used_percent = used_percent.filter(|value| value.is_finite())?;
-    Some(RateLimitWindow {
-        used_percent: clamp_used_percent(used_percent),
-        window_minutes,
+    Some(AccountLimitWindow {
+        id: id.into(),
+        label: label.into(),
+        used_percent: Some(clamp_used_percent(used_percent)),
+        remaining: None,
         resets_at,
-        reset_description: reset_description(resets_at),
+        window_minutes: Some(window_minutes),
+        model_id: None,
+        covered_by_credits: false,
+        coding: false,
     })
 }

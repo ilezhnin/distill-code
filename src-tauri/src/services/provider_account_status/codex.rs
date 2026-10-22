@@ -341,6 +341,7 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
                 .map(str::to_owned)
                 .or_else(|| (id != "codex").then(|| id.to_owned())),
             covered_by_credits: covered,
+            coding: false,
         });
     }
     if let Some(limit) = bucket
@@ -360,6 +361,7 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
             window_minutes: None,
             model_id: None,
             covered_by_credits: false,
+            coding: false,
         });
     }
     let reached_type = bucket["rateLimitReachedType"].as_str();
@@ -381,6 +383,7 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
             window_minutes: None,
             model_id: None,
             covered_by_credits: false,
+            coding: false,
         });
     }
     if reached_type == Some("rate_limit_reached")
@@ -402,6 +405,7 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
                 .or_else(|| (id != "codex").then(|| id.to_owned())),
             // The plan allowance ran out without a window saying so.
             covered_by_credits: covered,
+            coding: false,
         });
     }
     if let Some(plan) = bucket["planType"].as_str().and_then(plan_label) {

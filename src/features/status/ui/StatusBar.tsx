@@ -29,7 +29,9 @@ import { UsageRosterPanel } from "./UsageRosterPanel";
 export function StatusBar() {
   const { t } = useTranslation("status");
   const { agentReadiness } = useAgentProviderStatus();
-  const accounts = useProviderAccountsStore((state) => state.accounts);
+  const providerModels = useProviderAccountsStore(
+    (state) => state.providersById,
+  );
   const catalog = useProviderCatalogStore((state) => state.entries);
   const snapshot = useProviderRateLimitsStore((state) => state.snapshot);
   const isRefreshing = useProviderRateLimitsStore(
@@ -68,7 +70,7 @@ export function StatusBar() {
     isListedUsageProvider(
       provider,
       agentReadiness.get(provider.provider),
-      hasCompletedSignIn(provider.provider, accounts),
+      hasCompletedSignIn(provider.provider, providerModels[provider.provider]),
     ),
   );
   const isEmpty = visibleProviders.length === 0;

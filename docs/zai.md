@@ -1,10 +1,16 @@
 # Z.ai Coding Plan
 
 Flock runs GLM models through OpenCode's native ACP interface. In Settings >
-Providers, install the Z.ai Coding Plan runtime, choose Add account, and paste
-a key from the [Z.ai API console](https://z.ai/manage-apikey/apikey-list).
-An active GLM Coding Plan is required. A login at chat.z.ai alone does not
-provide this subscription.
+AI providers, install the Z.ai Coding Plan runtime, choose Add account on the
+Z.ai card, and paste a key from the
+[Z.ai API console](https://z.ai/manage-apikey/apikey-list). An active GLM
+Coding Plan is required. A login at chat.z.ai alone does not provide this
+subscription. The Z.ai card is the same card every provider has (see
+[provider accounts](provider-accounts.md)); what sets it apart is data in the
+account model: its connection flow is an API key only, so the Add account
+dialog offers no browser sign-in, and the key is the Coding Plan key, so the
+billing chip reads API key while benchmark configurations record the plan
+as a subscription.
 
 The account uses `https://api.z.ai/api/coding/paas/v4`, the subscription endpoint
 documented in [Z.ai's OpenCode guide](https://docs.z.ai/devpack/tool/opencode).
@@ -28,8 +34,8 @@ Auto mode allows tools, approval mode asks for tools, smart approval allows file
 reads and edits while asking for other tools, and chat mode uses OpenCode's plan
 agent. Sign out clears the saved key while retaining account identity and chats.
 
-The card identifies the connection as GLM Coding Plan. Saving a key does not
-purchase a subscription. Flock reads account quota from Z.ai's
+The account row names the plan as GLM Coding Plan (Lite, Pro or Max, as
+reported). Saving a key does not purchase a subscription. Flock reads account quota from Z.ai's
 `/api/monitor/usage/quota/limit` endpoint with the saved key, following the
 [official usage plugin](https://docs.z.ai/devpack/extension/usage-query-plugin).
 The account card and Usage menu show five-hour and weekly consumption and

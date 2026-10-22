@@ -223,6 +223,7 @@ beforeEach(() => {
     })),
   );
   vi.mocked(listProviderAccounts).mockResolvedValue({
+    providers: [],
     accounts: [
       {
         id: "managed",

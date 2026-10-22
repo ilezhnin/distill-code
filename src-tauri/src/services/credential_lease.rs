@@ -14,7 +14,7 @@
 //! Kimi keeps its own sandbox-only grant (see the benchmark operations
 //! guide); it is never leased.
 use crate::services::agent_host::execution::NativeProvider;
-use crate::services::provider_rate_limits::grok;
+use crate::services::provider_account_status::grok;
 use crate::services::{flock_root, provider_accounts};
 use base64::Engine;
 use serde_json::{json, Map, Value};

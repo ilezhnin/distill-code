@@ -4,7 +4,10 @@
 mod claude;
 mod claude_resets;
 mod codex;
+pub(crate) mod grok;
+mod kimi;
 mod types;
+mod windows;
 mod zai;
 
 pub use types::*;
@@ -20,7 +23,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
 use tokio::sync::Mutex;
 
-use crate::services::provider_accounts::{self, ProviderAccount};
+use crate::services::provider_accounts::{self, ConnectionFlow, ProviderAccount, Telemetry};
 
 const CACHE_MS: i64 = 60_000;
 const STALE_MS: i64 = 120_000;
@@ -174,6 +177,10 @@ fn refresh_needed(status: &ProviderAccountStatus, account: &ProviderAccount, now
 
 pub(super) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    dirs::home_dir()
 }
 
 pub(super) fn timestamp(value: &Value) -> Option<i64> {
@@ -389,11 +396,13 @@ pub(crate) async fn account_status_after_turn(
     account_status(app, account_id).await
 }
 
+/// Reads every account's status: the accounts Flock stores and the CLI
+/// sign-in identity of every provider whose CLI keeps its own.
 pub async fn fetch_snapshot(
     app: &AppHandle,
     force: bool,
 ) -> Result<ProviderAccountStatusSnapshot, String> {
-    let accounts = provider_accounts::snapshot(app)?.accounts;
+    let accounts = provider_accounts::view(app)?.accounts;
     stream::iter(accounts)
         .map(|account| async move { refresh_account(app, &account, force).await })
         .buffer_unordered(4)
@@ -412,7 +421,8 @@ async fn refresh_account(
         .native
         .release_cooldown_for_expired_authorization(
             &account.id,
-            account.provider_id == "claude-acp"
+            provider_accounts::spec(&account.provider_id)
+                .is_some_and(|spec| spec.telemetry == Telemetry::Claude)
                 && account.auth_method == provider_accounts::AuthMethod::OAuth
                 && claude::authorization_needs_refresh(app, account).unwrap_or(false),
         )
@@ -436,7 +446,7 @@ async fn refresh_account(
 }
 
 async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSnapshot, String> {
-    let accounts = provider_accounts::snapshot(app)?.accounts;
+    let accounts = provider_accounts::view(app)?.accounts;
     let state = app.state::<ProviderAccountStatusState>();
     let now = now_ms();
     let mut cache = state.native.cache.lock().await;
@@ -490,19 +500,31 @@ fn merge_refresh(
     status
 }
 
+/// One status read for every provider: the adapter its spec names reads
+/// the account's sign-in state and usage, and the caller keeps the last
+/// known values when that read fails.
 async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAccountStatus {
     let mut empty = ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms());
     if !account.enabled {
         empty.state = AccountState::Disabled;
         return empty;
     }
-    // A CLI sign-in has no Flock-held credentials or usage source.
-    if provider_accounts::is_cli_login_account(&account.provider_id, &account.id) {
+    let Some(spec) = provider_accounts::spec(&account.provider_id) else {
+        return empty;
+    };
+    // An isolated run must never probe the user's own CLI sign-ins merely by
+    // opening the window; stored accounts live in its own run root.
+    if spec.connection == ConnectionFlow::Cli
+        && app
+            .try_state::<crate::services::e2e_mode::E2eMode>()
+            .is_some()
+    {
         return empty;
     }
     if account.auth_method == provider_accounts::AuthMethod::ApiKey
-        && account.provider_id != "zai-acp"
+        && spec.connection == ConnectionFlow::BrowserOrApiKey
     {
+        // A metered key has no plan window; its presence is the whole status.
         empty.subscription = Some("API".into());
         empty.state = match provider_accounts::account_has_credentials(app, account) {
             Ok(true) => AccountState::Ready,
@@ -511,11 +533,13 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
         };
         return empty;
     }
-    let result = match account.provider_id.as_str() {
-        "codex-acp" => codex::fetch(app, account).await,
-        "claude-acp" => claude::fetch(app, account).await,
-        "zai-acp" => zai::fetch(app, account).await,
-        _ => Ok(empty.clone()),
+    let result = match spec.telemetry {
+        Telemetry::Codex => codex::fetch(app, account).await,
+        Telemetry::Claude => claude::fetch(app, account).await,
+        Telemetry::Zai => zai::fetch(app, account).await,
+        Telemetry::Grok => grok::fetch(app, account).await,
+        Telemetry::Kimi => kimi::fetch(app, account).await,
+        Telemetry::None => Ok(empty.clone()),
     };
     let started = empty.last_attempt_at;
     let mut result = result.unwrap_or_else(|error| {
@@ -691,7 +715,9 @@ pub(crate) async fn select_owned_account(
 }
 
 fn api_billed(account: &ProviderAccount, status: Option<&ProviderAccountStatus>) -> bool {
-    if account.provider_id == "zai-acp" {
+    if provider_accounts::spec(&account.provider_id)
+        .is_some_and(|spec| spec.connection == ConnectionFlow::ApiKey)
+    {
         return false;
     }
     account.auth_method == provider_accounts::AuthMethod::ApiKey

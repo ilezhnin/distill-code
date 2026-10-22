@@ -20,12 +20,19 @@ import {
 export function ProviderAccountDetails({
   account,
   status,
+  state = status?.state,
   now,
   onUseReset,
   resetDisabled = false,
 }: {
   account: ProviderAccount;
   status: ProviderAccountStatus | undefined;
+  /**
+   * The account's state when the harness's own probe knows more than the
+   * status adapter: a CLI sign-in with no usage source is judged by the
+   * doctor report.
+   */
+  state?: ProviderAccountStatus["state"];
   now: number;
   onUseReset?: (credit: ProviderAccountResetCredit, label: string) => void;
   resetDisabled?: boolean;
@@ -35,7 +42,7 @@ export function ProviderAccountDetails({
     <ProviderUsageDetails
       usage={usage}
       now={now}
-      state={status?.state}
+      state={state}
       stale={status ? accountStatusIsStale(status, now) : false}
       resetTokens={status?.resetTokens}
       onUseReset={canUseAccountReset(status, now) ? onUseReset : undefined}

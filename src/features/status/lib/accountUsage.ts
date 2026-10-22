@@ -9,14 +9,6 @@ import type {
   UsagePeriod,
 } from "./rateLimitTypes";
 
-export function isManagedUsage(provider: string): boolean {
-  return (
-    provider === "claude-acp" ||
-    provider === "codex-acp" ||
-    provider === "zai-acp"
-  );
-}
-
 /** Shared by account cards, the account picker and the status bar. */
 export function accountUsageFor(
   account: ProviderAccount,
@@ -43,6 +35,7 @@ export function accountUsageFor(
     weekly: null,
     fableWeekly: null,
     monthly: null,
+    codingMonthly: null,
     accountLabel: status?.accountLabel ?? account.label,
     planType: status?.subscription ?? null,
     credits: status?.credits ?? null,
@@ -96,21 +89,28 @@ export function accountUsageFor(
         prior.window = window;
       continue;
     }
-    const key = modelId ? "fableWeekly" : period;
+    const key = modelId
+      ? "fableWeekly"
+      : limit.coding && period === "monthly"
+        ? "codingMonthly"
+        : period;
     if (!usage[key] || window.usedPercent > usage[key].usedPercent)
       usage[key] = window;
   }
   return usage;
 }
 
-/** One telemetry owner per account; the status bar shows its selected default. */
+/**
+ * One telemetry owner per account; the status bar shows each provider's
+ * default account, whether Flock stores it or the provider's CLI keeps it.
+ */
 export function accountUsage(
-  state: ProviderAccountsSnapshot & {
-    statuses: Record<string, ProviderAccountStatus>;
-  },
+  state: Pick<ProviderAccountsSnapshot, "accounts" | "defaults"> &
+    Partial<ProviderAccountsSnapshot> & {
+      statuses: Record<string, ProviderAccountStatus>;
+    },
 ): ProviderRateLimits[] {
   return Object.entries(state.defaults).flatMap(([provider, id]) => {
-    if (!isManagedUsage(provider)) return [];
     const account = state.accounts.find(
       (entry) => entry.id === id && entry.providerId === provider,
     );

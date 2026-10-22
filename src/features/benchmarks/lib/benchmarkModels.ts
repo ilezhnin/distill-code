@@ -4,7 +4,11 @@ import type {
   LeaderboardRow,
   RunSummary,
 } from "../types";
-import { activeRuns, stalledRuns } from "./benchmarkActivity";
+import {
+  activeRuns,
+  stalledRuns,
+  workingConfigurations,
+} from "./benchmarkActivity";
 import { onMovingAlias, rowKey } from "./benchmarkBoards";
 
 /**
@@ -68,6 +72,22 @@ export function reportModels(
       return entry ? [entry] : [];
     });
     return [{ key: model.key, row, configurations }];
+  });
+}
+
+/**
+ * The models `run` works on, each once. A run from a model's page carries
+ * one configuration per execution profile (its text cases on one, its
+ * repository cases on another); they name the same model, so a row that
+ * lists the run's models shows that model once, by the first of them.
+ */
+export function workingModels(run: RunSummary): Configuration[] {
+  const seen = new Set<string>();
+  return workingConfigurations(run).filter((entry) => {
+    const key = modelKey(entry);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

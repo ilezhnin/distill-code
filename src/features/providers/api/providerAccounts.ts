@@ -2,24 +2,46 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ProviderCreditBalance } from "@/features/status/lib/rateLimitTypes";
 
-export const MANAGED_ACCOUNT_PROVIDERS = [
-  "codex-acp",
-  "claude-acp",
-  "zai-acp",
-] as const;
+export type ProviderAccountAuthMethod = "oauth" | "api_key";
+
+/**
+ * How a provider's accounts are connected. It names the flow the app already
+ * runs for the provider: a browser sign-in of its CLI or a saved key for the
+ * accounts Flock stores, or the one sign-in the harness CLI keeps itself.
+ */
+export type ProviderConnectionFlow = "browser_or_api_key" | "api_key" | "cli";
 
 export interface ProviderAccount {
   id: string;
   providerId: string;
   label: string;
-  authMethod: "oauth" | "api_key";
+  authMethod: ProviderAccountAuthMethod;
   enabled: boolean;
   autoSwitch: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
+/**
+ * One provider as Settings shows it: the same fields for every harness, with
+ * the differences between them as data, and its accounts as a list.
+ */
+export interface ProviderAccountModel {
+  providerId: string;
+  connection: ProviderConnectionFlow;
+  /** The most accounts the provider can hold, or null for any number. */
+  accountLimit: number | null;
+  /** Whether the provider's status adapter reports plan and usage windows. */
+  reportsUsage: boolean;
+  /** Whether Flock can sign an account of this provider out. */
+  supportsSignOut: boolean;
+  accounts: ProviderAccount[];
+  defaultAccountId: string | null;
+  automaticSwitching: boolean;
+}
+
 export interface ProviderAccountsSnapshot {
+  providers: ProviderAccountModel[];
   accounts: ProviderAccount[];
   defaults: Record<string, string>;
   automaticSwitching: Record<string, boolean>;
@@ -35,6 +57,8 @@ export interface ProviderAccountLimit {
   modelId: string | null;
   /** The account's credits keep it usable once this plan window is spent. */
   coveredByCredits?: boolean;
+  /** A monthly window that meters coding use alone (Kimi Code). */
+  coding?: boolean;
 }
 
 export interface ProviderAccountResetCredit {
@@ -47,10 +71,18 @@ export interface ProviderAccountResetCredit {
   description: string | null;
 }
 
+export type ProviderAccountState =
+  | "ready"
+  | "limited"
+  | "needs_auth"
+  | "unknown"
+  | "error"
+  | "disabled";
+
 export interface ProviderAccountStatus {
   accountId: string;
   providerId: string;
-  state: "ready" | "limited" | "needs_auth" | "unknown" | "error" | "disabled";
+  state: ProviderAccountState;
   subscription: string | null;
   accountLabel: string | null;
   limits: ProviderAccountLimit[];
@@ -85,7 +117,7 @@ export interface ProviderAccountAuthState {
 export interface AddProviderAccount {
   providerId: string;
   label: string;
-  authMethod: "oauth" | "api_key";
+  authMethod: ProviderAccountAuthMethod;
   apiKey?: string;
 }
 

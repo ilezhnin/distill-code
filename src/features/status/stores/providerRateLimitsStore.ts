@@ -1,8 +1,10 @@
 import { create } from "zustand";
-import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
+import {
+  startProviderAccountsMonitor,
+  useProviderAccountsStore,
+} from "@/features/providers/stores/providerAccountsStore";
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
-import { getProviderRateLimits } from "../api/providerRateLimits";
-import { accountUsage, isManagedUsage } from "../lib/accountUsage";
+import { accountUsage } from "../lib/accountUsage";
 import type {
   ProviderRateLimitSnapshot,
   ProviderRateLimits,
@@ -12,9 +14,6 @@ import {
   STATUS_BAR_EMPTY_CTA_DISMISSED_KEY,
   STATUS_BAR_USAGE_MODE_KEY,
 } from "../lib/rateLimitTypes";
-import { hasUsageData } from "../lib/rateLimitWindows";
-
-const POLL_MS = 2 * 60 * 1000;
 
 function readUsageMode(): StatusBarUsageMode {
   if (typeof window === "undefined") return "verbose";
@@ -31,48 +30,9 @@ function readEmptyCtaDismissed(): boolean {
   );
 }
 
-export function mergeStale(
-  previous: ProviderRateLimits[] | undefined,
-  next: ProviderRateLimits[],
-): ProviderRateLimits[] {
-  if (!previous) return next;
-  const previousById = new Map(
-    previous.map((provider) => [provider.provider, provider]),
-  );
-  return next.map((provider) => {
-    const prior = previousById.get(provider.provider);
-    if (
-      !prior ||
-      prior.accountId !== provider.accountId ||
-      (!hasUsageData(prior) && !prior.credits?.length)
-    )
-      return provider;
-    // Managed accounts own stale retention too. An authoritative empty
-    // snapshot (for example OAuth -> API billing) must clear old windows.
-    if (isManagedUsage(provider.provider) && provider.accountId)
-      return provider;
-    if (hasUsageData(provider) || provider.status === "ok") return provider;
-    // A dead or expired sign-in is not a blip: keep the error, drop the
-    // previous windows so the roster offers Sign in instead of stale usage.
-    if (!provider.configured) return provider;
-    return {
-      ...provider,
-      session: provider.session ?? prior.session,
-      weekly: provider.weekly ?? prior.weekly,
-      fableWeekly: provider.fableWeekly ?? prior.fableWeekly,
-      monthly: provider.monthly ?? prior.monthly,
-      codingMonthly: provider.codingMonthly ?? prior.codingMonthly,
-      accountLabel: provider.accountLabel ?? prior.accountLabel,
-      planType: provider.planType ?? prior.planType,
-      credits: provider.credits ?? prior.credits,
-      error: provider.error ?? prior.error,
-    };
-  });
-}
-
 /**
- * Deep equality for the plain data a fetch returns, where a missing field and
- * an `undefined` one mean the same thing (`mergeStale` spreads both kinds).
+ * Deep equality for the plain data a status read returns, where a missing
+ * field and an `undefined` one mean the same thing.
  */
 function sameUsageValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
@@ -97,7 +57,7 @@ function sameUsageValue(left: unknown, right: unknown): boolean {
 }
 
 /**
- * Whether a fetched provider says what the one already shown says. The fetch
+ * Whether a provider's usage says what the one already shown says. The read
  * time is left out: it is new on every poll even when nothing else is.
  */
 function sameProviderUsage(
@@ -111,13 +71,13 @@ function sameProviderUsage(
 }
 
 /**
- * The fetched providers, reusing each object already shown whose usage did
+ * The providers' usage, reusing each object already shown whose usage did
  * not change, and the previous array itself when none did.
  *
  * Every poll used to hand subscribers new objects, so the status bar, each
  * `useAgentProviderStatus` consumer and the new-chat session preparation
- * recomputed every two minutes with nothing to show for it. A kept object
- * keeps the fetch time it came with; the time of the latest fetch lives in
+ * recomputed every minute with nothing to show for it. A kept object keeps
+ * the read time it came with; the time of the latest read lives in
  * `fetchedAtByProvider`, which only the details panel reads.
  */
 export function keepUnchangedProviders(
@@ -142,60 +102,46 @@ export function keepUnchangedProviders(
 }
 
 interface ProviderRateLimitsState {
+  /** Every provider's default account as the status bar shows it. */
   snapshot: ProviderRateLimitSnapshot | null;
-  /** When each provider was last fetched, for the "updated … ago" line. */
+  /** When each provider's status was last read, for the "updated … ago" line. */
   fetchedAtByProvider: Record<string, number>;
   isRefreshing: boolean;
   error: string | null;
   usageMode: StatusBarUsageMode;
   emptyCtaDismissed: boolean;
+  /** Reads every account's status again, reusing a read already in flight. */
   load: () => Promise<void>;
+  /** Forces a new status read for every account. */
   refresh: () => Promise<void>;
   setUsageMode: (mode: StatusBarUsageMode) => void;
   dismissEmptyCta: () => void;
 }
 
-let pollTimer: number | null = null;
-let removeVisibilityListener: (() => void) | null = null;
 let removeAccountListener: (() => void) | null = null;
-let inFlight: Promise<void> | null = null;
 let refreshInFlight: Promise<void> | null = null;
-/**
- * When the last fetch settled. A window coming back into view fetches at once
- * only when the ticks it skipped while hidden left this more than a poll old.
- */
-let lastFetchSettledAt = 0;
 
-function composeUsage(
-  previous: ProviderRateLimitSnapshot | null,
-  snapshot: ProviderRateLimitSnapshot,
-  previousFetchTimes: Record<string, number> = {},
-) {
-  const merged = mergeStale(previous?.providers, [
-    ...snapshot.providers.filter(
-      (provider) => !isManagedUsage(provider.provider),
-    ),
-    ...accountUsage(useProviderAccountsStore.getState()),
-  ]);
-  const providers = keepUnchangedProviders(previous?.providers, merged);
+/**
+ * The status-bar view of the account model: one entry per provider, its
+ * default account's status, whether Flock stores that account or the
+ * provider's CLI keeps the one sign-in the model names.
+ */
+function composeUsage(previous: ProviderRateLimitSnapshot | null) {
+  const usage = accountUsage(useProviderAccountsStore.getState());
+  const providers = keepUnchangedProviders(previous?.providers, usage);
   return {
     snapshot:
       previous && providers === previous.providers
         ? previous
-        : { ...snapshot, providers },
+        : { providers, updatedAt: Date.now() },
     fetchedAtByProvider: Object.fromEntries(
-      merged.map((provider) => [
-        provider.provider,
-        snapshot === previous && !isManagedUsage(provider.provider)
-          ? (previousFetchTimes[provider.provider] ?? provider.updatedAt)
-          : provider.updatedAt,
-      ]),
+      usage.map((provider) => [provider.provider, provider.updatedAt]),
     ),
   };
 }
 
 export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
-  (set, get) => ({
+  (set) => ({
     snapshot: null,
     fetchedAtByProvider: {},
     isRefreshing: false,
@@ -204,52 +150,27 @@ export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
     emptyCtaDismissed: readEmptyCtaDismissed(),
 
     load: async () => {
-      if (inFlight) {
-        await inFlight;
-        return;
-      }
       set({ isRefreshing: true });
-      inFlight = (async () => {
-        try {
-          const snapshot = await getProviderRateLimits();
-          set((state) => ({
-            ...composeUsage(state.snapshot, snapshot),
-            error: null,
-          }));
-        } catch (error) {
-          set({
-            error: error instanceof Error ? error.message : String(error),
-          });
-        } finally {
-          lastFetchSettledAt = Date.now();
-          set({ isRefreshing: refreshInFlight !== null });
-        }
-      })().finally(() => {
-        inFlight = null;
-      });
-      await inFlight;
+      try {
+        await useProviderAccountsStore.getState().refresh();
+        set({ error: useProviderAccountsStore.getState().error });
+      } finally {
+        set({ isRefreshing: refreshInFlight !== null });
+      }
     },
 
     refresh: async () => {
       if (refreshInFlight) return refreshInFlight;
       set({ isRefreshing: true });
-      refreshInFlight = Promise.all([
-        get().load(),
-        useProviderAccountsStore.getState().refresh(true),
-      ])
+      refreshInFlight = useProviderAccountsStore
+        .getState()
+        .refresh(true)
         .then(() => {
-          const previous = get().snapshot;
-          set(
-            composeUsage(
-              previous,
-              previous ?? { providers: [], updatedAt: Date.now() },
-              get().fetchedAtByProvider,
-            ),
-          );
+          set({ error: useProviderAccountsStore.getState().error });
         })
         .finally(() => {
           refreshInFlight = null;
-          set({ isRefreshing: inFlight !== null });
+          set({ isRefreshing: false });
         });
       await refreshInFlight;
     },
@@ -270,15 +191,16 @@ export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
   }),
 );
 
+/**
+ * Keeps the status-bar view current: the account monitor polls every
+ * account's status (and pauses while the window is hidden), and every
+ * change to the accounts, their defaults or statuses recomposes the view.
+ */
 export function startProviderRateLimitPolling(): () => void {
   removeAccountListener?.();
   const syncAccounts = () => {
     useProviderRateLimitsStore.setState((state) =>
-      composeUsage(
-        state.snapshot,
-        state.snapshot ?? { providers: [], updatedAt: Date.now() },
-        state.fetchedAtByProvider,
-      ),
+      composeUsage(state.snapshot),
     );
   };
   removeAccountListener = useProviderAccountsStore.subscribe(
@@ -292,32 +214,8 @@ export function startProviderRateLimitPolling(): () => void {
     },
   );
   syncAccounts();
-  void useProviderRateLimitsStore.getState().load();
-  if (pollTimer != null) {
-    window.clearInterval(pollTimer);
-  }
-  removeVisibilityListener?.();
-  pollTimer = window.setInterval(() => {
-    // Each tick is an HTTP request per provider, and a hidden window has
-    // nobody looking at its status bar. Coming back into view catches up.
-    if (document.hidden) return;
-    void useProviderRateLimitsStore.getState().load();
-  }, POLL_MS);
-  const handleVisibilityChange = () => {
-    if (document.hidden || Date.now() - lastFetchSettledAt < POLL_MS) return;
-    void useProviderRateLimitsStore.getState().load();
-  };
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-  removeVisibilityListener = () => {
-    document.removeEventListener("visibilitychange", handleVisibilityChange);
-  };
+  startProviderAccountsMonitor();
   return () => {
-    if (pollTimer != null) {
-      window.clearInterval(pollTimer);
-      pollTimer = null;
-    }
-    removeVisibilityListener?.();
-    removeVisibilityListener = null;
     removeAccountListener?.();
     removeAccountListener = null;
   };

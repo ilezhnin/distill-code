@@ -1,27 +1,53 @@
 # Provider accounts
 
-Settings > Providers shows every provider in the same setup and usage section.
-Claude Code and Codex use managed account profiles; Grok and Kimi keep their
-native CLI authorization and feed the same plan, quota, and credit presentation.
-Install/update and sign-in controls live in the provider's section. Add each
-subscription account in Flock and complete its initial browser authorization once. API accounts
-accept a separate key. Switching uses that account's saved credentials; it does
-not sign out another account. The provider CLI refreshes OAuth credentials.
-Revoked authorization still requires a new sign-in.
+Settings > AI providers shows one card per harness, and every card has the
+same structure: the harness header (icon, name, description, install or
+update state), the Auto-switch accounts switch and the Add account button,
+and one row per account with its identity, Default chip, billing chip, plan,
+usage windows with reset times, and its own Sign in or Sign out. The host
+lists every provider in one account model (`list_provider_accounts`), and the
+differences between providers are fields of that model, not separate
+screens:
+
+| Provider | Connection | Accounts | Usage reported | Sign out |
+| --- | --- | --- | --- | --- |
+| Claude Code, Codex | browser sign-in of the CLI, or an API key | any number, stored by Flock | yes | yes |
+| Z.ai | an API key (the Coding Plan key) | any number, stored by Flock | yes | yes |
+| Grok, Kimi Code | the CLI's own sign-in | one, named by Flock | yes | yes |
+| Copilot, Amp | the CLI's own sign-in | one, named by Flock | not reported | no sign-out flow |
+
+Claude Code, Codex and Z.ai accounts are stored by Flock. Add each
+subscription account in Flock and complete its initial browser authorization
+once. API accounts accept a separate key. Switching uses that account's saved
+credentials; it does not sign out another account. The provider CLI refreshes
+OAuth credentials. Revoked authorization still requires a new sign-in.
+
+Grok, Kimi Code, Copilot and Amp keep one sign-in in their own CLI. Flock
+names that sign-in as the provider's one account (`cli-login-<provider>`),
+shows it as the only row of the card, and runs the CLI's own sign-in and
+sign-out from that row (`grok login --oauth` and `grok logout`, `kimi login`
+and Kimi's ACP logout, `copilot login`, `amp login`), with the CLI's streamed
+output in the card header as before. Flock never holds these credentials.
+Because the CLI holds one sign-in, the card's switch and Add account button
+are disabled and the card says why; sign out of the sign-in to connect
+another. A harness without a sign-out flow (Copilot, Amp) offers none, and
+a harness without a usage source shows "Usage limits not reported" rather
+than a claim.
 Adding a subscription with the same name under the same provider reuses its
 existing connection, ignoring surrounding whitespace and letter case. This
 also resumes an unfinished sign-in without creating another account card or
 replacing the account's saved credentials and chat references.
 
-Each connected profile offers Sign out. Subscription accounts use the
+Each connected account offers Sign out. Stored subscription accounts use the
 official logout command in that account's private home; API accounts clear only
-their saved credentials. Sign-out keeps account IDs, defaults, and chat history,
-then shows Sign in on the same profile. Busy accounts reject credential changes.
-Signing back into an API account requires a new key. Account cards do not offer
-editing or removal, and the reported identity is shown only once.
+their saved credentials; a CLI sign-in runs the CLI's own sign-out. Sign-out
+keeps account IDs, defaults, and chat history, then shows Sign in on the same
+row. Busy accounts reject credential changes. Signing back into an API account
+requires a new key. Account rows do not offer editing or removal, and the
+reported identity is shown only once.
 
-Manage accounts only in Settings > Providers: select a provider default for new
-chats and configure automatic switching there. Chat composers have no account
+Manage accounts only in Settings > AI providers: select a provider default for
+new chats and configure automatic switching there. Chat composers have no account
 selector or account-management dialog. Concurrent chats can use different
 accounts. An automatic switch preserves the Flock transcript and selected
 model; native CLI session state does not move between accounts.
@@ -85,9 +111,14 @@ extra-usage wallet. Optional profile failure does not discard valid Kimi quotas.
 Missing balances do not become zero. Grants do not count as blocking subscription
 quotas, and reset actions appear only where a provider supports them.
 
-Settings reuses the existing native usage poller for Grok and Kimi and the
-account monitor for Claude and Codex. One refresh action updates both, with one
-last-checked timestamp beside it. No provider section starts another poller.
+One account monitor reads every account's status, whether Flock stores the
+account or the provider's CLI keeps it: Claude and Codex through their native
+account protocols, Z.ai through its quota endpoint, Grok through its CLI's
+billing endpoint, Kimi through the CLI's authenticated local API. The status
+bar shows each provider's default account from that same read. One refresh
+action updates everything, with one last-checked timestamp beside it. No
+provider section starts another poller, and an isolated E2E run never
+probes the machine's own CLI sign-ins.
 
 Account cards and status details share the same usage
 projection and quota row component. Reported durations identify the five-hour,
@@ -96,8 +127,9 @@ Only reported windows appear. The status bar selects the provider's default
 account from the account monitor, without fetching a separate quota snapshot.
 
 Automatic switching is controlled by one compact switch in each provider's
-header. It applies to all saved accounts in that group; individual accounts have
-no enable or inclusion switches. Legacy account-level opt-outs are cleared when
+card. It applies to all saved accounts in that group; individual accounts have
+no enable or inclusion switches. A provider whose CLI keeps one sign-in has
+nothing to switch between, so its switch stays off and disabled. Legacy account-level opt-outs are cleared when
 the account index is read, while each provider's saved switch stays unchanged.
 The current account remains selected while usable. A quota failure can select
 another available account for the same provider and billing mode; a subscription
@@ -164,18 +196,21 @@ every thread. A Codex account is benchmarked only while its home holds no
 otherwise its benchmark rows say why they are unavailable. Chats are unaffected.
 
 There is no system CLI account or fallback to credentials from another app.
-Both providers use the same account flow and isolated storage.
+Every stored provider uses the same account flow and isolated storage.
 
-Grok and Kimi have no managed accounts; their CLI keeps the sign-in. Benchmarks
-still need an account id to key configurations, bridge routes and account
-activity, so each of these providers has one fixed CLI sign-in identity,
-`cli-login-grok-acp` and `cli-login-kimi-acp`. It is never stored, never
-appears in Settings, and has no home, key file or usage source of its own:
-the account environment for it is the shell environment unchanged. Chats keep
-running on the CLI without an account, and their activity counts as the
-identity's activity, since both share one sign-in and one allowance. A Grok
-benchmark session in the sandbox runs on a lease of the user's Grok CLI
-sign-in: its access token, issue and expiry times and identity (`key`,
+Grok, Kimi Code, Copilot and Amp store no accounts; their CLI keeps the
+sign-in. Flock names it with one fixed CLI sign-in identity per provider,
+`cli-login-<provider>`, so Settings can show it as the provider's one account
+and benchmarks can key configurations, bridge routes and account activity by
+it. The identity is never stored and has no home or key file of its own: the
+account environment for it is the shell environment unchanged. Its status
+comes from the provider's own usage source where one exists (Grok's billing
+endpoint, Kimi's local API); Copilot and Amp have none, so their row reports
+no usage and takes its sign-in state from the harness probe in the doctor
+report. Chats keep running on the CLI without an account, and their activity
+counts as the identity's activity, since both share one sign-in and one
+allowance. A Grok benchmark session in the sandbox runs on a lease of the
+user's Grok CLI sign-in: its access token, issue and expiry times and identity (`key`,
 `auth_mode`, `create_time`, `expires_at`, `user_id`, `email`), with no refresh
 or other token, staged for that session alone, so it can never rotate the
 sign-in the user's own Grok keeps. Flock reads the user's `auth.json` and

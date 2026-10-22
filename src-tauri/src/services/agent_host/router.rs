@@ -38,8 +38,8 @@ use super::store::{ForkBoundary, MessageSide, SessionRecord, SessionStore, Sessi
 use super::text_execution;
 use crate::services::credential_lease;
 use crate::services::managed_acp_tools;
+use crate::services::provider_account_status::grok;
 use crate::services::provider_accounts;
-use crate::services::provider_rate_limits::grok;
 
 /// Each account gets an isolated bridge, including when native session IDs match.
 pub(super) fn account_route_key(harness: &str, account_id: Option<&str>) -> String {

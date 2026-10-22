@@ -2338,7 +2338,7 @@ fn evaluation_failure_outcome(error: &BenchmarkError) -> &'static str {
 /// user's environment keeps its renewal window narrower than a turn needs
 /// (see [`grok::cli_renewal_window_ms`]).
 ///
-/// [`grok::cli_renewal_window_ms`]: crate::services::provider_rate_limits::grok::cli_renewal_window_ms
+/// [`grok::cli_renewal_window_ms`]: crate::services::provider_account_status::grok::cli_renewal_window_ms
 const SIGN_IN_WAIT_REASON: &str = "The Grok sign-in expires too soon for this test, and GROK_AUTH_EARLY_INVALIDATION_SECS in your environment lets the Grok CLI renew it only later; the run continues on its own once it does";
 /// How soon a Grok turn that waits for another to leave the sign-in asks
 /// again.
@@ -9333,7 +9333,7 @@ impl ExecutionBackend for FakeBackend {
                     self.busy_sign_in_after.store(0, Ordering::SeqCst);
                     return Err(BenchmarkError::new(
                         SIGN_IN_WAIT,
-                        crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
+                        crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY,
                     ));
                 }
             }
@@ -9362,7 +9362,7 @@ impl ExecutionBackend for FakeBackend {
             if take(&self.busy_sign_ins) {
                 return Err(BenchmarkError::new(
                     SIGN_IN_WAIT,
-                    crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY,
+                    crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY,
                 ));
             }
             if take(&self.busy_accounts) {
@@ -13683,7 +13683,7 @@ mod tests {
         assert_eq!(waiting.phase, "pending");
         assert_eq!(
             waiting.reason.as_deref(),
-            Some(crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY)
+            Some(crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY)
         );
         let until = provider_hold(&run.id, "fake").expect("a short hold");
         assert!(until <= now() + SIGN_IN_RETRY_MS);

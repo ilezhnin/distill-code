@@ -5,7 +5,7 @@
 use super::tests::{serial_request, setup};
 use super::unstarted_admission_tests::workflow_request;
 use super::*;
-use crate::services::provider_rate_limits::grok::BENCHMARK_BRIDGE_BUSY;
+use crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY;
 use std::sync::atomic::Ordering;
 
 fn release(run: &str) {

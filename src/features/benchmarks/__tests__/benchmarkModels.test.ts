@@ -5,7 +5,9 @@ import {
   modelActivity,
   modelKey,
   reportModels,
+  workingModels,
 } from "../lib/benchmarkModels";
+import type { Configuration, RunSummary } from "../types";
 import { configuration, leaderboardRow, runSummary } from "./fixtures";
 
 describe("leaderboard model identities", () => {
@@ -221,5 +223,87 @@ describe("leaderboard model identities", () => {
     expect(
       modelActivity(measured, [{ ...legacy, openCells: [] }]).attention,
     ).toEqual([]);
+  });
+});
+
+describe("working models", () => {
+  const repository = {
+    ...configuration,
+    id: "config-1-repository",
+    executionProfile: "protected_repository",
+  };
+  const other = { ...configuration, id: "config-2", modelId: "model-2" };
+  const otherRepository = {
+    ...other,
+    id: "config-2-repository",
+    executionProfile: "protected_repository",
+  };
+  const low = { ...configuration, id: "config-1-low", effort: "low" };
+  const run = (
+    configurations: Configuration[],
+    openCells: RunSummary["openCells"],
+  ): RunSummary => ({
+    ...runSummary,
+    state: "running",
+    request: { ...runSummary.request, configurations },
+    openCells,
+  });
+  const cell = (configurationId: string, running = false) => ({
+    configurationId,
+    versionId: "version-1",
+    ...(running ? { running } : {}),
+  });
+  const ids = (summary: RunSummary) =>
+    workingModels(summary).map((entry) => entry.id);
+
+  it("names a model once however many execution profiles its run spans", () => {
+    // Its text and repository configurations both running: one model.
+    expect(
+      ids(
+        run(
+          [configuration, repository],
+          [cell("config-1", true), cell("config-1-repository", true)],
+        ),
+      ),
+    ).toEqual(["config-1"]);
+    // Nothing running with tests left on both profiles (a usage-limit
+    // wait, the gap between two tests): still one.
+    expect(
+      ids(
+        run(
+          [configuration, repository],
+          [cell("config-1"), cell("config-1-repository")],
+        ),
+      ),
+    ).toEqual(["config-1"]);
+    // Only the repository profile running: that configuration stands for
+    // the model.
+    expect(
+      ids(
+        run(
+          [configuration, repository],
+          [cell("config-1"), cell("config-1-repository", true)],
+        ),
+      ),
+    ).toEqual(["config-1-repository"]);
+    // An older summary lists no open cells: every requested model, once.
+    expect(ids(run([configuration, repository], undefined))).toEqual([
+      "config-1",
+    ]);
+  });
+
+  it("lists each model of a matrix once, in request order, and keeps efforts apart", () => {
+    const configurations = [
+      configuration,
+      repository,
+      other,
+      otherRepository,
+      low,
+    ];
+    const summary = run(
+      configurations,
+      configurations.map((entry) => cell(entry.id, true)),
+    );
+    expect(ids(summary)).toEqual(["config-1", "config-2", "config-1-low"]);
   });
 });

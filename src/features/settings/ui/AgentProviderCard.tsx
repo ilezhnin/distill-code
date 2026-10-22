@@ -520,10 +520,15 @@ export function AgentProviderCard({
     const action = operation?.action;
     switch (action) {
       case "auth":
-        handleAuth();
-        return;
       case "logout":
-        handleLogout();
+        // A sign-in or sign-out the account row started is retried there;
+        // the header only clears what the chain left behind.
+        if (!supportsAuth) {
+          clearSetupStatus(provider.id);
+          return;
+        }
+        if (action === "auth") handleAuth();
+        else handleLogout();
         return;
       case "update":
         handleUpdate();

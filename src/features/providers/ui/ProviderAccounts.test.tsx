@@ -36,6 +36,7 @@ vi.mock("../stores/providerAccountsStore", async (importOriginal) => ({
   startProviderAccountsMonitor: vi.fn(),
 }));
 import { useProviderAccountsStore } from "../stores/providerAccountsStore";
+import { providerModelState, providerModels } from "@/test/providerModels";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useAccountQuotaWaitStore } from "@/features/chat/lib/accountQuotaWait";
@@ -227,15 +228,31 @@ describe("account plan and credit display", () => {
   });
 });
 
+/**
+ * Puts `accounts` in the store the way the host lists them: the models of
+ * every provider named, with each account under its provider.
+ */
+function setAccounts(
+  providerIds: string[],
+  saved: ProviderAccount[],
+  defaults: Record<string, string> = {},
+) {
+  useProviderAccountsStore.setState(
+    providerModelState(providerModels(providerIds, saved, defaults)),
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   useChatStore.setState({ sessionStateById: {} });
   useAccountQuotaWaitStore.setState({ waits: {} });
   mocks.refresh.mockResolvedValue(undefined);
   useProviderAccountsStore.setState({
-    accounts,
-    defaults: { "codex-acp": "personal" },
-    automaticSwitching: {},
+    ...providerModelState(
+      providerModels(["codex-acp", "claude-acp", "zai-acp"], accounts, {
+        "codex-acp": "personal",
+      }),
+    ),
     statuses: { personal: status("personal"), work: status("work") },
     loaded: true,
     refreshing: false,
@@ -325,11 +342,8 @@ describe("account surfaces", () => {
     "Codex",
     "Claude Code",
   ])("starts an empty %s group through subscription sign-in", async (provider) => {
-    useProviderAccountsStore.setState({
-      accounts: [],
-      defaults: {},
-      statuses: {},
-    });
+    setAccounts(["codex-acp", "claude-acp"], []);
+    useProviderAccountsStore.setState({ statuses: {} });
     const providerId = provider === "Codex" ? "codex-acp" : "claude-acp";
     mocks.add.mockResolvedValueOnce({ ...accounts[0], providerId });
     render(<ProviderAccountsPanel />);
@@ -391,6 +405,13 @@ describe("account surfaces", () => {
         automaticSwitching: {
           ...state.automaticSwitching,
           [providerId]: enabled,
+        },
+        providersById: {
+          ...state.providersById,
+          [providerId]: {
+            ...state.providersById[providerId],
+            automaticSwitching: enabled,
+          },
         },
       }));
     });
@@ -562,8 +583,8 @@ describe("account surfaces", () => {
   });
 
   it("offers the same subscription sign-in for every signed-out account", () => {
+    setAccounts(["codex-acp"], [accounts[0]]);
     useProviderAccountsStore.setState({
-      accounts: [accounts[0]],
       statuses: { personal: { ...status("personal"), state: "needs_auth" } },
     });
     render(<ProviderAccountsPanel />);
@@ -591,10 +612,11 @@ describe("account surfaces", () => {
   });
 
   it("shows a reported identity once and signs an API profile back in with a new key", async () => {
+    setAccounts(
+      ["codex-acp"],
+      [{ ...accounts[0], label: "person@example.test", authMethod: "api_key" }],
+    );
     useProviderAccountsStore.setState({
-      accounts: [
-        { ...accounts[0], label: "person@example.test", authMethod: "api_key" },
-      ],
       statuses: {
         personal: {
           ...status("personal"),
@@ -743,10 +765,8 @@ describe("account surfaces", () => {
       stale,
       error: stale ? "Claude usage is temporarily rate limited" : null,
     };
-    useProviderAccountsStore.setState({
-      accounts: [{ ...accounts[0], providerId: "claude-acp" }],
-      statuses: { personal: claudeStatus },
-    });
+    setAccounts(["claude-acp"], [{ ...accounts[0], providerId: "claude-acp" }]);
+    useProviderAccountsStore.setState({ statuses: { personal: claudeStatus } });
     mocks.reset
       .mockRejectedValueOnce(new Error("Connection lost"))
       .mockResolvedValueOnce({ outcome: "alreadyRedeemed" });
@@ -907,6 +927,215 @@ describe("account surfaces", () => {
     expect(useChatSessionStore.getState().getSession("chat")?.accountId).toBe(
       "personal",
     );
+  });
+
+  it("renders every connection flow as the same card: header, switch, add, rows", () => {
+    const providerIds = [
+      "claude-acp",
+      "codex-acp",
+      "grok-acp",
+      "kimi-acp",
+      "zai-acp",
+      "copilot-acp",
+      "amp-acp",
+    ];
+    const zai: ProviderAccount = {
+      ...accounts[0],
+      id: "glm",
+      providerId: "zai-acp",
+      label: "GLM plan",
+      authMethod: "api_key",
+    };
+    setAccounts(providerIds, [...accounts, zai], { "codex-acp": "personal" });
+    useProviderAccountsStore.setState({
+      statuses: {
+        personal: status("personal"),
+        work: status("work"),
+        glm: {
+          ...status("glm"),
+          providerId: "zai-acp",
+          accountLabel: "person@example.test",
+          subscription: "GLM Coding Plan Lite",
+          limits: [
+            {
+              id: "zai:TOKENS_LIMIT:0",
+              label: "5-hour",
+              usedPercent: 0,
+              remaining: null,
+              resetsAt: now + 3_600_000,
+              windowMinutes: 300,
+              modelId: null,
+            },
+          ],
+        },
+        "cli-login-grok-acp": {
+          ...status("cli-login-grok-acp"),
+          providerId: "grok-acp",
+          accountLabel: "person@example.test",
+          subscription: null,
+          limits: [
+            {
+              id: "grok:weekly",
+              label: "Weekly",
+              usedPercent: 57,
+              remaining: null,
+              resetsAt: now + 4 * 86_400_000,
+              windowMinutes: 10_080,
+              modelId: null,
+            },
+          ],
+        },
+        "cli-login-kimi-acp": {
+          ...status("cli-login-kimi-acp"),
+          providerId: "kimi-acp",
+          state: "needs_auth",
+          error: "Kimi Code sign-in could not be renewed. Sign in again.",
+        },
+        "cli-login-amp-acp": {
+          ...status("cli-login-amp-acp"),
+          providerId: "amp-acp",
+          state: "unknown",
+          subscription: null,
+        },
+      },
+    });
+    render(
+      <ProviderAccountsPanel
+        providerIds={providerIds}
+        readiness={
+          new Map([
+            ["amp-acp", "ready"],
+            ["copilot-acp", "not_ready"],
+          ])
+        }
+      />,
+    );
+    const groups = screen.getAllByRole("region", { name: /./ });
+    // The panel itself and one card per provider, in the order given.
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual([
+      "Accounts and limits",
+      "Claude Code",
+      "Codex",
+      "Grok",
+      "Kimi Code",
+      "Z.ai",
+      "Copilot",
+      "Amp",
+    ]);
+    const card = (name: string) => within(screen.getByRole("region", { name }));
+    // Every card has the same controls.
+    for (const name of [
+      "Claude Code",
+      "Codex",
+      "Grok",
+      "Kimi Code",
+      "Z.ai",
+      "Copilot",
+      "Amp",
+    ]) {
+      expect(card(name).getByRole("switch")).toBeInTheDocument();
+      expect(
+        card(name).getByRole("button", { name: "Add account" }),
+      ).toBeInTheDocument();
+    }
+    // Stored providers: rows per saved account; the toggle and Add work.
+    expect(card("Codex").getAllByRole("article")).toHaveLength(2);
+    expect(card("Codex").getByRole("switch")).toBeEnabled();
+    expect(
+      card("Codex").getByRole("button", { name: "Add account" }),
+    ).toBeEnabled();
+    expect(card("Claude Code").queryAllByRole("article")).toHaveLength(0);
+    expect(
+      card("Claude Code").getByText("No saved accounts for this provider."),
+    ).toBeInTheDocument();
+    const glmRow = within(card("Z.ai").getByRole("article"));
+    expect(glmRow.getByText("person@example.test")).toBeInTheDocument();
+    expect(glmRow.getByText("API key")).toBeInTheDocument();
+    expect(glmRow.getByText("Default")).toBeInTheDocument();
+    expect(glmRow.getByText("Plan: GLM Coding Plan Lite")).toBeInTheDocument();
+    expect(glmRow.getByText("5 hours")).toBeInTheDocument();
+    expect(glmRow.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    // A CLI provider: one row for its sign-in, the toggle and Add disabled
+    // because it holds one sign-in, and the reason said once.
+    const grokRow = within(card("Grok").getByRole("article"));
+    expect(grokRow.getByText("person@example.test")).toBeInTheDocument();
+    expect(grokRow.getByText("Default")).toBeInTheDocument();
+    expect(grokRow.getByText("Subscription")).toBeInTheDocument();
+    expect(grokRow.getByText("Plan: Not reported")).toBeInTheDocument();
+    expect(grokRow.getByText("Weekly")).toBeInTheDocument();
+    expect(grokRow.getByText("57% used")).toBeInTheDocument();
+    expect(grokRow.getByText(/^Resets in/)).toBeInTheDocument();
+    expect(grokRow.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    expect(grokRow.queryByRole("button", { name: "Set default" })).toBeNull();
+    expect(card("Grok").getByRole("switch")).toBeDisabled();
+    expect(
+      card("Grok").getByRole("button", { name: "Add account" }),
+    ).toBeDisabled();
+    expect(
+      card("Grok").getByText(/Grok keeps one sign-in/),
+    ).toBeInTheDocument();
+    // A signed-out CLI sign-in offers Sign in on its row, and no usage.
+    const kimiRow = within(card("Kimi Code").getByRole("article"));
+    expect(kimiRow.getByRole("button", { name: "Sign in" })).toBeEnabled();
+    expect(kimiRow.queryByRole("button", { name: "Sign out" })).toBeNull();
+    expect(kimiRow.queryByText(/used/)).toBeNull();
+    // No usage source: the harness probe decides, usage stays unreported,
+    // and a harness without a sign-out flow offers none.
+    const ampRow = within(card("Amp").getByRole("article"));
+    expect(ampRow.getByText("Usage limits not reported")).toBeInTheDocument();
+    expect(ampRow.getByText("Plan: Not reported")).toBeInTheDocument();
+    expect(ampRow.queryByText("Status unknown")).toBeNull();
+    expect(ampRow.queryByRole("button", { name: "Sign out" })).toBeNull();
+    expect(ampRow.queryByRole("button", { name: "Sign in" })).toBeNull();
+    const copilotRow = within(card("Copilot").getByRole("article"));
+    expect(copilotRow.getByRole("button", { name: "Sign in" })).toBeEnabled();
+    expect(copilotRow.queryByText("Usage limits not reported")).toBeNull();
+  });
+
+  it("signs a CLI sign-in in and out through the account row without a cancel", () => {
+    setAccounts(["grok-acp"], []);
+    useProviderAccountsStore.setState({
+      statuses: {
+        "cli-login-grok-acp": {
+          ...status("cli-login-grok-acp"),
+          providerId: "grok-acp",
+          state: "needs_auth",
+        },
+      },
+    });
+    const { rerender } = render(
+      <ProviderAccountsPanel providerIds={["grok-acp"]} />,
+    );
+    const row = screen.getByRole("article");
+    fireEvent.click(within(row).getByRole("button", { name: "Sign in" }));
+    expect(mocks.authenticate).toHaveBeenCalledWith("cli-login-grok-acp");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    useProviderAccountsStore.setState({
+      authStates: {
+        "cli-login-grok-acp": {
+          accountId: "cli-login-grok-acp",
+          status: "running",
+          message: "",
+        },
+      },
+    });
+    rerender(<ProviderAccountsPanel providerIds={["grok-acp"]} />);
+    expect(screen.queryByRole("button", { name: "Cancel sign-in" })).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Complete sign-in in your browser",
+    );
+    useProviderAccountsStore.setState({
+      authStates: {},
+      statuses: {
+        "cli-login-grok-acp": {
+          ...status("cli-login-grok-acp"),
+          providerId: "grok-acp",
+        },
+      },
+    });
+    rerender(<ProviderAccountsPanel providerIds={["grok-acp"]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(mocks.signOut).toHaveBeenCalledWith("cli-login-grok-acp");
   });
 
   it("keeps account status available during a turn while disabling account changes", () => {

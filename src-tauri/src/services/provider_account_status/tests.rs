@@ -50,6 +50,7 @@ fn status(id: &str, used: f64, reset: i64) -> ProviderAccountStatus {
         window_minutes: Some(300),
         model_id: None,
         covered_by_credits: false,
+        coding: false,
     });
     status
 }

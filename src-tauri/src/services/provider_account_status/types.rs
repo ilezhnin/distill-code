@@ -1,5 +1,17 @@
-pub use crate::services::provider_rate_limits::CreditBalance;
 use serde::{Deserialize, Serialize};
+
+/// Display-only balances. Currency amounts are in major units; expiry is epoch milliseconds.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditBalance {
+    pub id: String,
+    pub label: String,
+    pub balance: Option<String>,
+    pub total: Option<String>,
+    pub currency: Option<String>,
+    pub expires_at: Option<i64>,
+    pub unlimited: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +39,10 @@ pub struct AccountLimitWindow {
     /// as the provider's own app does. A spending allowance never is.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub covered_by_credits: bool,
+    /// A monthly window that meters coding use alone, beside the account's
+    /// whole monthly window (Kimi Code).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub coding: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

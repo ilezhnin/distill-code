@@ -1,13 +1,20 @@
+//! The Grok CLI's own sign-in, which Flock names `cli-login-grok-acp`: its
+//! session file, how long a benchmark may lean on it, and the subscription
+//! usage its billing endpoint reports for the account's status.
+
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::Value;
+use tauri::AppHandle;
 
-use super::types::{AgentPlatformId, ProviderRateLimitStatus, ProviderRateLimits};
+use super::types::*;
 use super::windows::{
-    parse_reset_timestamp, usage_window, MONTHLY_WINDOW_MINUTES, WEEKLY_WINDOW_MINUTES,
+    limit_window, parse_reset_timestamp, MONTHLY_WINDOW_MINUTES, WEEKLY_WINDOW_MINUTES,
 };
-use super::{home_dir, now_ms, result};
+use super::{home_dir, now_ms};
+use crate::services::provider_accounts::{AuthMethod, ProviderAccount};
 
 const GROK_CLI_PROXY_BASE: &str = "https://cli-chat-proxy.grok.com/v1";
 const GROK_CLI_AUTH_HEADER: &str = "xai-grok-cli";
@@ -262,7 +269,7 @@ fn billing_config(data: &Value) -> Option<&Value> {
     })
 }
 
-fn map_weekly_credits(config: &Value) -> Option<super::types::RateLimitWindow> {
+fn map_weekly_credits(config: &Value) -> Option<AccountLimitWindow> {
     let period = config.get("currentPeriod");
     let period_type = period
         .and_then(|value| value.get("type"))
@@ -288,14 +295,16 @@ fn map_weekly_credits(config: &Value) -> Option<super::types::RateLimitWindow> {
     let period_end = period
         .and_then(|value| value.get("end"))
         .or_else(|| config.get("billingPeriodEnd"));
-    usage_window(
+    limit_window(
+        "grok:weekly",
+        "Weekly",
         used_percent,
         WEEKLY_WINDOW_MINUTES,
         period_end.and_then(parse_reset_timestamp),
     )
 }
 
-fn map_monthly_usage(config: &Value) -> Option<super::types::RateLimitWindow> {
+fn map_monthly_usage(config: &Value) -> Option<AccountLimitWindow> {
     let limit = money_val(config.get("monthlyLimit"))?;
     let used = money_val(config.get("used"))?;
     if limit <= 0.0 {
@@ -305,7 +314,9 @@ fn map_monthly_usage(config: &Value) -> Option<super::types::RateLimitWindow> {
         .get("currentPeriod")
         .and_then(|value| value.get("end"))
         .or_else(|| config.get("billingPeriodEnd"));
-    usage_window(
+    limit_window(
+        "grok:monthly",
+        "Monthly",
         Some((used / limit) * 100.0),
         MONTHLY_WINDOW_MINUTES,
         period_end.and_then(parse_reset_timestamp),
@@ -334,160 +345,186 @@ fn billing_base() -> String {
         .unwrap_or_else(|| GROK_CLI_PROXY_BASE.to_string())
 }
 
+/// Why a billing read gave no usage: a sign-in Grok no longer accepts, or a
+/// read that failed for a passing reason.
+enum BillingFailure {
+    Unauthorized(String),
+    Failed(String),
+}
+
+fn compact_error_body(body: &str) -> String {
+    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX: usize = 280;
+    let count = collapsed.chars().count();
+    if count <= MAX {
+        collapsed
+    } else {
+        let mut out: String = collapsed.chars().take(MAX).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// The error body is kept (truncated) so a revoked token is distinguishable
+/// from a missing one; it must not say "rate limit", which readers would
+/// paint as Limited.
+fn format_unauthorized_usage_error(status: u16, body: &str) -> String {
+    let snippet = compact_error_body(body);
+    if snippet.is_empty() {
+        format!("Grok usage request unauthorized (HTTP {status})")
+    } else {
+        format!("Grok usage request unauthorized (HTTP {status}): {snippet}")
+    }
+}
+
 async fn fetch_billing_json(
     client: &reqwest::Client,
     url: &str,
     session: &GrokAuthSession,
-) -> Result<Value, ProviderRateLimits> {
+) -> Result<Value, BillingFailure> {
     let response = apply_session_headers(client.get(url), session)
         .send()
         .await
-        .map_err(|error| {
-            grok_error(session, format!("Grok usage request failed: {error}"), true)
-        })?;
+        .map_err(|error| BillingFailure::Failed(format!("Grok usage request failed: {error}")))?;
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(super::unauthorized_from_response(
-            AgentPlatformId::Grok,
-            "Grok",
-            status,
-            response,
-            session.email.clone(),
-        )
-        .await);
-    }
-    if !status.is_success() {
-        return Err(grok_error(
-            session,
-            format!("Grok usage request failed (HTTP {status})"),
-            true,
+        let body = response.text().await.unwrap_or_default();
+        return Err(BillingFailure::Unauthorized(
+            format_unauthorized_usage_error(status.as_u16(), &body),
         ));
     }
+    if !status.is_success() {
+        return Err(BillingFailure::Failed(format!(
+            "Grok usage request failed (HTTP {status})"
+        )));
+    }
     response.json().await.map_err(|error| {
-        grok_error(
-            session,
-            format!("Grok usage response was invalid: {error}"),
-            true,
-        )
+        BillingFailure::Failed(format!("Grok usage response was invalid: {error}"))
     })
 }
 
-fn grok_error(session: &GrokAuthSession, error: String, configured: bool) -> ProviderRateLimits {
-    ProviderRateLimits {
-        configured,
-        account_label: session.email.clone(),
-        ..result(
-            AgentPlatformId::Grok,
-            ProviderRateLimitStatus::Error,
-            Some(error),
-        )
-    }
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The status of the Grok CLI sign-in: whether its session is one Grok still
+/// accepts, and the weekly or monthly subscription usage its billing
+/// endpoint reports. A failed read is an error (the caller keeps the last
+/// known values); a rejected session needs a sign-in.
+pub(super) async fn fetch(
+    app: &AppHandle,
+    account: &ProviderAccount,
+) -> Result<ProviderAccountStatus, String> {
+    let _ = app;
+    let client = reqwest::Client::builder()
+        .timeout(FETCH_TIMEOUT)
+        .build()
+        .map_err(|error| format!("Failed to build the Grok usage client: {error}"))?;
+    Ok(
+        fetch_with(account, read_grok_auth_session(), |session| async move {
+            let base = billing_base();
+            let credits =
+                fetch_billing_json(&client, &format!("{base}/billing?format=credits"), &session)
+                    .await?;
+            let Some(config) = billing_config(&credits).cloned() else {
+                return Ok(BillingUsage::default());
+            };
+            if let Some(weekly) = map_weekly_credits(&config) {
+                return Ok(BillingUsage {
+                    windows: vec![weekly],
+                    tier: tier(&config),
+                });
+            }
+            let fallback =
+                fetch_billing_json(&client, &format!("{base}/billing"), &session).await?;
+            let monthly = map_monthly_usage(billing_config(&fallback).unwrap_or(&fallback));
+            Ok(BillingUsage {
+                windows: monthly.into_iter().collect(),
+                tier: tier(&config),
+            })
+        })
+        .await,
+    )
 }
 
-/// An expired sign-in is a sign-in, not a failed refresh: `configured: false`
-/// is what the roster reads as "offer Sign in". It stays an `Error` rather than
-/// the `Unavailable` a missing login returns, because the status bar hides an
-/// unavailable, unconfigured provider — and this account needs its Sign in row.
-fn expired_sign_in_result(session: &GrokAuthSession) -> ProviderRateLimits {
-    ProviderRateLimits {
-        account_label: session.email.clone(),
-        ..result(
-            AgentPlatformId::Grok,
-            ProviderRateLimitStatus::Error,
-            Some("Grok sign-in expired — sign in to Grok again".to_string()),
-        )
-    }
+/// What the billing endpoint reported: the usage windows it names and the
+/// subscription tier, either of which it may leave out.
+#[derive(Default)]
+struct BillingUsage {
+    windows: Vec<AccountLimitWindow>,
+    tier: Option<String>,
 }
 
-fn billing_usage_result(
-    session: &GrokAuthSession,
-    weekly: Option<super::types::RateLimitWindow>,
-    monthly: Option<super::types::RateLimitWindow>,
-    config: &Value,
-) -> ProviderRateLimits {
-    let tier = config
+fn tier(config: &Value) -> Option<String> {
+    config
         .get("subscriptionTier")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let account = session
-        .email
-        .clone()
-        .or_else(|| session.user_id.clone())
-        .unwrap_or_else(|| "Grok account".to_string());
-    ProviderRateLimits {
-        provider: AgentPlatformId::Grok,
-        session: None,
-        weekly,
-        fable_weekly: None,
-        monthly,
-        coding_monthly: None,
-        plan_type: tier.map(ToOwned::to_owned),
-        account_label: Some(account),
-        credits: None,
-        updated_at: now_ms(),
-        error: None,
-        status: ProviderRateLimitStatus::Ok,
-        configured: true,
-    }
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
-pub async fn fetch_grok_rate_limits(client: &reqwest::Client) -> ProviderRateLimits {
-    match read_grok_auth_session() {
-        GrokAuthReadResult::Missing => result(
-            AgentPlatformId::Grok,
-            ProviderRateLimitStatus::Unavailable,
-            Some("Not signed in to Grok — run grok login".to_string()),
-        ),
-        GrokAuthReadResult::Error(error) => result(
-            AgentPlatformId::Grok,
-            ProviderRateLimitStatus::Error,
-            Some(error),
-        ),
-        GrokAuthReadResult::Ok(session) => {
-            if !is_grok_access_token_fresh(&session) {
-                return expired_sign_in_result(&session);
+async fn fetch_with<F, Fut>(
+    account: &ProviderAccount,
+    auth: GrokAuthReadResult,
+    billing: F,
+) -> ProviderAccountStatus
+where
+    F: FnOnce(GrokAuthSession) -> Fut,
+    Fut: std::future::Future<Output = Result<BillingUsage, BillingFailure>>,
+{
+    let mut status = ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms());
+    let session = match auth {
+        GrokAuthReadResult::Missing => {
+            if account.auth_method == AuthMethod::ApiKey {
+                // `XAI_API_KEY` signs Grok in without a session; its use is
+                // metered, with no plan window to report.
+                status.subscription = Some("API".into());
+                status.state = AccountState::Ready;
+            } else {
+                status.state = AccountState::NeedsAuth;
+                status.error = Some("Not signed in to Grok".into());
             }
-            let base = billing_base();
-            let credits_url = format!("{base}/billing?format=credits");
-            let default_url = format!("{base}/billing");
-            let credits = match fetch_billing_json(client, &credits_url, &session).await {
-                Ok(value) => value,
-                Err(error) => return error,
+            return status;
+        }
+        GrokAuthReadResult::Error(error) => {
+            status.state = AccountState::Error;
+            status.stale = true;
+            status.error = Some(error);
+            return status;
+        }
+        GrokAuthReadResult::Ok(session) => session,
+    };
+    status.account_label = session.email.clone().or_else(|| session.user_id.clone());
+    if !is_grok_access_token_fresh(&session) {
+        status.state = AccountState::NeedsAuth;
+        status.error = Some("Grok sign-in expired — sign in to Grok again".into());
+        return status;
+    }
+    match billing(session).await {
+        Ok(usage) => {
+            status.subscription = usage.tier;
+            status.state = if usage
+                .windows
+                .iter()
+                .any(|window| window.used_percent.is_some_and(|used| used >= 100.0))
+            {
+                AccountState::Limited
+            } else {
+                AccountState::Ready
             };
-            let Some(config) = billing_config(&credits).cloned() else {
-                return ProviderRateLimits {
-                    configured: true,
-                    account_label: session.email.clone(),
-                    ..result(
-                        AgentPlatformId::Grok,
-                        ProviderRateLimitStatus::Unavailable,
-                        Some("Grok billing response did not include config".to_string()),
-                    )
-                };
-            };
-            if let Some(weekly) = map_weekly_credits(&config) {
-                return billing_usage_result(&session, Some(weekly), None, &config);
-            }
-            let fallback = match fetch_billing_json(client, &default_url, &session).await {
-                Ok(value) => value,
-                Err(error) => return error,
-            };
-            let monthly_config = billing_config(&fallback).unwrap_or(&fallback);
-            if let Some(monthly) = map_monthly_usage(monthly_config) {
-                return billing_usage_result(&session, None, Some(monthly), &config);
-            }
-            ProviderRateLimits {
-                configured: true,
-                account_label: session.email.clone(),
-                ..result(
-                    AgentPlatformId::Grok,
-                    ProviderRateLimitStatus::Unavailable,
-                    Some("Grok billing response did not include credit usage".to_string()),
-                )
-            }
+            status.limits = usage.windows;
+            status.last_updated_at = now_ms();
+        }
+        Err(BillingFailure::Unauthorized(error)) => {
+            status.state = AccountState::NeedsAuth;
+            status.error = Some(error);
+        }
+        Err(BillingFailure::Failed(error)) => {
+            status.state = AccountState::Error;
+            status.stale = true;
+            status.error = Some(error);
         }
     }
+    status
 }
 
 #[cfg(test)]
@@ -503,19 +540,130 @@ mod tests {
         }
     }
 
-    #[test]
-    fn expired_sign_in_is_reported_as_a_sign_in_not_a_failed_refresh() {
-        // The roster offers Sign in for an error with no usage windows that is
-        // not configured; a configured error reads as "Refresh failed".
-        let expired = expired_sign_in_result(&session(Some(now_ms() - 60_000)));
-        assert!(matches!(expired.status, ProviderRateLimitStatus::Error));
-        assert!(!expired.configured);
-        assert!(expired.session.is_none() && expired.weekly.is_none() && expired.monthly.is_none());
+    fn cli_account(auth_method: AuthMethod) -> ProviderAccount {
+        ProviderAccount {
+            id: "cli-login-grok-acp".into(),
+            provider_id: "grok-acp".into(),
+            label: "Grok CLI sign-in".into(),
+            auth_method,
+            enabled: true,
+            auto_switch: false,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    async fn status_for(
+        auth: GrokAuthReadResult,
+        billing: Result<BillingUsage, BillingFailure>,
+    ) -> ProviderAccountStatus {
+        fetch_with(
+            &cli_account(AuthMethod::OAuth),
+            auth,
+            |_| async move { billing },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn expired_sign_in_is_a_sign_in_not_a_failed_refresh() {
+        let expired = status_for(
+            GrokAuthReadResult::Ok(session(Some(now_ms() - 60_000))),
+            Ok(BillingUsage::default()),
+        )
+        .await;
+        assert_eq!(expired.state, AccountState::NeedsAuth);
+        assert!(expired.limits.is_empty());
         assert_eq!(expired.account_label.as_deref(), Some("dev@example.com"));
         assert!(!expired
             .error
+            .clone()
             .unwrap_or_default()
             .contains("test-access-token"));
+        assert!(!expired.stale);
+    }
+
+    #[tokio::test]
+    async fn a_missing_session_needs_sign_in_unless_an_api_key_signs_grok_in() {
+        let missing = status_for(GrokAuthReadResult::Missing, Ok(BillingUsage::default())).await;
+        assert_eq!(missing.state, AccountState::NeedsAuth);
+        let keyed = fetch_with(
+            &cli_account(AuthMethod::ApiKey),
+            GrokAuthReadResult::Missing,
+            |_| async { Ok(BillingUsage::default()) },
+        )
+        .await;
+        assert_eq!(keyed.state, AccountState::Ready);
+        assert_eq!(keyed.subscription.as_deref(), Some("API"));
+        assert!(keyed.limits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reported_usage_becomes_plan_windows_and_a_rejection_needs_sign_in() {
+        let fresh = || GrokAuthReadResult::Ok(session(Some(now_ms() + 3_600_000)));
+        let weekly = limit_window(
+            "grok:weekly",
+            "Weekly",
+            Some(57.0),
+            WEEKLY_WINDOW_MINUTES,
+            None,
+        )
+        .unwrap();
+        let ready = status_for(
+            fresh(),
+            Ok(BillingUsage {
+                windows: vec![weekly.clone()],
+                tier: Some("SuperGrok".into()),
+            }),
+        )
+        .await;
+        assert_eq!(ready.state, AccountState::Ready);
+        assert_eq!(ready.subscription.as_deref(), Some("SuperGrok"));
+        assert_eq!(ready.limits, vec![weekly.clone()]);
+        assert_eq!(ready.account_label.as_deref(), Some("dev@example.com"));
+        let mut spent = weekly;
+        spent.used_percent = Some(100.0);
+        let limited = status_for(
+            fresh(),
+            Ok(BillingUsage {
+                windows: vec![spent],
+                tier: None,
+            }),
+        )
+        .await;
+        assert_eq!(limited.state, AccountState::Limited);
+        // No usage in the reply is not a failure: the sign-in stands.
+        let unreported = status_for(fresh(), Ok(BillingUsage::default())).await;
+        assert_eq!(unreported.state, AccountState::Ready);
+        assert!(unreported.limits.is_empty() && unreported.error.is_none());
+        let rejected = status_for(
+            fresh(),
+            Err(BillingFailure::Unauthorized(
+                format_unauthorized_usage_error(401, r#"{ "error": { "code": "token_revoked" } }"#),
+            )),
+        )
+        .await;
+        assert_eq!(rejected.state, AccountState::NeedsAuth);
+        let error = rejected.error.unwrap();
+        assert!(error.contains("401") && error.contains("token_revoked"));
+        assert!(!error.to_lowercase().contains("rate limit"));
+        let failed = status_for(
+            fresh(),
+            Err(BillingFailure::Failed(
+                "Grok usage request failed (HTTP 500)".into(),
+            )),
+        )
+        .await;
+        assert_eq!(failed.state, AccountState::Error);
+        assert!(failed.stale);
+    }
+
+    #[test]
+    fn unauthorized_error_truncates_a_long_body() {
+        let error = format_unauthorized_usage_error(403, &"x".repeat(400));
+        assert!(error.contains("HTTP 403"));
+        assert!(error.ends_with('…'));
+        assert!(error.len() < 400);
     }
 
     #[test]

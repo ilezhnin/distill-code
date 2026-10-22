@@ -12,7 +12,6 @@ import { SettingsPage } from "@/shared/ui/SettingsPage";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type { ProviderDisplayInfo } from "@/shared/types/providers";
 import { ProviderAccountsPanel } from "@/features/providers/ui/ProviderAccountsPanel";
-import { MANAGED_ACCOUNT_PROVIDERS } from "@/features/providers/api/providerAccounts";
 
 interface ProvidersSettingsProps {
   onStartTroubleshootingChat?: (
@@ -64,21 +63,19 @@ export function ProvidersSettings({
     <SettingsPage>
       <ProviderAccountsPanel
         providerIds={agents.map((agent) => agent.id)}
-        connectedProviders={agents
-          .filter((agent) => agentReadiness.get(agent.id) === "ready")
-          .map((agent) => agent.id)}
+        readiness={agentReadiness}
         onRefresh={rerunAgentStatus}
         renderProviderHeader={(providerId) => {
           const provider = agents.find((agent) => agent.id === providerId);
-          const managed = MANAGED_ACCOUNT_PROVIDERS.some(
-            (id) => id === providerId,
-          );
+          // The header carries the harness: icon, name, description and its
+          // install or update state. Sign-in and sign-out belong to the
+          // account rows below it, for every provider alike.
           return provider ? (
             <AgentProviderCard
               provider={{
                 ...provider,
-                supportsAuth: !managed && provider.supportsAuth,
-                supportsLogout: !managed && provider.supportsLogout,
+                supportsAuth: false,
+                supportsLogout: false,
               }}
               readiness={agentReadiness.get(providerId)}
               versionCheck={agentChecks.get(providerId)}

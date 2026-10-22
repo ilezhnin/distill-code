@@ -192,6 +192,7 @@ pub(super) fn map_usage(
             window_minutes: minutes,
             model_id: None,
             covered_by_credits: false,
+            coding: false,
         });
     }
     if status.limits.is_empty() {

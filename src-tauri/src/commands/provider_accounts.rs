@@ -1,8 +1,8 @@
 //! Authentication commands run only in the selected account's environment.
 //! Secrets are neither emitted nor returned; sign-out preserves chat history.
 
-use crate::services::{env_key, managed_acp_tools, provider_accounts};
-use provider_accounts::{AuthMethod, ProviderAccount, ProviderAccountsSnapshot};
+use crate::services::{env_key, managed_acp_tools, provider_account_status, provider_accounts};
+use provider_accounts::{AuthMethod, ProviderAccount, ProviderAccountsView};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -37,8 +37,8 @@ fn changed(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub fn list_provider_accounts(app: AppHandle) -> Result<ProviderAccountsSnapshot, String> {
-    provider_accounts::snapshot(&app)
+pub fn list_provider_accounts(app: AppHandle) -> Result<ProviderAccountsView, String> {
+    provider_accounts::view(&app)
 }
 
 #[tauri::command]
@@ -78,13 +78,13 @@ pub async fn update_provider_account(
 pub async fn remove_provider_account(
     app: AppHandle,
     account_id: String,
-) -> Result<ProviderAccountsSnapshot, String> {
+) -> Result<ProviderAccountsView, String> {
     let _guard = provider_accounts::begin_account_change(&account_id)?;
     prepare_change(&app, &account_id).await?;
-    let result = provider_accounts::remove_account(&app, &account_id)?;
+    provider_accounts::remove_account(&app, &account_id)?;
     drop(_guard);
     changed(&app);
-    Ok(result)
+    provider_accounts::view(&app)
 }
 
 #[tauri::command]
@@ -92,10 +92,10 @@ pub fn set_default_provider_account(
     app: AppHandle,
     provider_id: String,
     account_id: String,
-) -> Result<ProviderAccountsSnapshot, String> {
-    let result = provider_accounts::set_default(&app, &provider_id, &account_id)?;
+) -> Result<ProviderAccountsView, String> {
+    provider_accounts::set_default(&app, &provider_id, &account_id)?;
     changed(&app);
-    Ok(result)
+    provider_accounts::view(&app)
 }
 
 #[tauri::command]
@@ -103,10 +103,10 @@ pub fn set_provider_account_routing(
     app: AppHandle,
     provider_id: String,
     automatic_switching: bool,
-) -> Result<ProviderAccountsSnapshot, String> {
-    let result = provider_accounts::set_routing(&app, &provider_id, automatic_switching)?;
+) -> Result<ProviderAccountsView, String> {
+    provider_accounts::set_routing(&app, &provider_id, automatic_switching)?;
     changed(&app);
-    Ok(result)
+    provider_accounts::view(&app)
 }
 
 struct LoginGuard {
@@ -305,9 +305,81 @@ fn logout_args(provider: &str) -> &'static [&'static str] {
     }
 }
 
+/// Ends a CLI sign-in the way its harness does (`grok logout`, Kimi's ACP
+/// logout), through the setup chain the provider card observes, and tells
+/// the account model the identity now needs a sign-in.
+async fn sign_out_cli_login(app: &AppHandle, account: &ProviderAccount) -> Result<(), String> {
+    crate::commands::agent_setup::run_setup_now(
+        app,
+        &account.provider_id,
+        crate::commands::agent_setup::SetupAction::Logout,
+        crate::commands::agent_setup::SetupPlan::account_action(),
+    )
+    .await?;
+    provider_account_status::record_signed_out(app, account).await;
+    let _ = app.emit(
+        "provider-account-auth-state",
+        ProviderAccountAuthResult {
+            account_id: account.id.clone(),
+            attempt_id: None,
+            status: "needs_auth".into(),
+            message: String::new(),
+        },
+    );
+    changed(app);
+    Ok(())
+}
+
+/// Starts the harness's own sign-in (`grok login --oauth`, `kimi login`,
+/// `copilot login`, `amp login`) through the setup chain, whose streamed
+/// output the provider card shows, and reports the outcome like a stored
+/// account's browser sign-in.
+async fn sign_in_cli_login(
+    app: &AppHandle,
+    account: &ProviderAccount,
+    attempt_id: Option<String>,
+) -> Result<ProviderAccountAuthResult, String> {
+    let _ = app.emit(
+        "provider-account-auth-state",
+        ProviderAccountAuthResult {
+            account_id: account.id.clone(),
+            attempt_id: attempt_id.clone(),
+            status: "running".into(),
+            message: "Complete the sign-in in your browser".into(),
+        },
+    );
+    let outcome = crate::commands::agent_setup::run_setup_now(
+        app,
+        &account.provider_id,
+        crate::commands::agent_setup::SetupAction::Auth,
+        crate::commands::agent_setup::SetupPlan::account_action(),
+    )
+    .await;
+    provider_account_status::invalidate(app, &account.id).await;
+    let (status, message) = match outcome {
+        Ok(()) => (
+            "authenticated",
+            "Authorization is saved by the provider's CLI.".to_owned(),
+        ),
+        Err(message) => ("needs_auth", message),
+    };
+    let result = ProviderAccountAuthResult {
+        account_id: account.id.clone(),
+        attempt_id,
+        status: status.into(),
+        message,
+    };
+    let _ = app.emit("provider-account-auth-state", &result);
+    changed(app);
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn sign_out_provider_account(app: AppHandle, account_id: String) -> Result<(), String> {
     let account = provider_accounts::account(&app, &account_id)?;
+    if provider_accounts::uses_cli_login(&account.provider_id) {
+        return sign_out_cli_login(&app, &account).await;
+    }
     let _login_guard = LoginGuard::acquire(&account.provider_id, None, None)?;
     // Resolve the isolated environment before acquiring the mutation guard:
     // ordinary consumers cannot request credentials while a change is active.
@@ -411,6 +483,9 @@ pub async fn authenticate_provider_account(
     let account = provider_accounts::account(&app, &account_id)?;
     if !account.enabled {
         return Err("Enable this account before signing in".into());
+    }
+    if provider_accounts::uses_cli_login(&account.provider_id) {
+        return sign_in_cli_login(&app, &account, attempt_id).await;
     }
     if account.auth_method == AuthMethod::ApiKey {
         if !provider_accounts::account_has_credentials(&app, &account)? {

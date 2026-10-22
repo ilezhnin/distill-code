@@ -4,14 +4,10 @@ import { useDoctorReport } from "@/shared/api/useDoctorReport";
 import { crateCheckIdToProviderId } from "@/features/providers/lib/agentIdMap";
 import { recordReadyProviders } from "@/features/providers/lib/providerConnections";
 import { getCatalogEntry } from "@/features/providers/providerCatalog";
-import { getProviderUsageStatusKind } from "@/features/status/lib/rateLimitFormatters";
-import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
-import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { useProviderAccountsStore } from "../stores/providerAccountsStore";
-import { MANAGED_ACCOUNT_PROVIDERS } from "../api/providerAccounts";
 import { accountIsConnected } from "../lib/providerAccountStatus";
 import type {
-  ProviderAccount,
+  ProviderAccountModel,
   ProviderAccountStatus,
 } from "../api/providerAccounts";
 
@@ -98,36 +94,6 @@ export function readinessFromReport(
   return readiness;
 }
 
-/**
- * Doctor `login status` can stay "signed in" after the account's tokens are
- * revoked. Usage 401/403 is the live signal: that harness is not ready, so
- * Settings drops the green tick and offers Sign in. Other harnesses are
- * left alone. A missing install still wins.
- */
-export function applyUsageAuthReadiness(
-  readiness: Map<string, AgentProviderReadiness>,
-  usage: readonly ProviderRateLimits[] | undefined,
-): Map<string, AgentProviderReadiness> {
-  if (!usage || usage.length === 0) {
-    return readiness;
-  }
-  let next: Map<string, AgentProviderReadiness> | null = null;
-  for (const provider of usage) {
-    if (getProviderUsageStatusKind(provider) !== "sign-in") {
-      continue;
-    }
-    const current = readiness.get(provider.provider);
-    if (current === "not_installed" || current === "not_ready") {
-      continue;
-    }
-    if (!next) {
-      next = new Map(readiness);
-    }
-    next.set(provider.provider, "not_ready");
-  }
-  return next ?? readiness;
-}
-
 // Index the agent checks by frontend provider id, so cards can read their
 // version/install-source readout from the same shared report.
 function checksByProviderId(report: DoctorReport): Map<string, DoctorCheck> {
@@ -151,48 +117,52 @@ function readyIdsFromReadiness(
 
 const EMPTY_READINESS = new Map<string, AgentProviderReadiness>();
 
-export function applyManagedAccountReadiness(
+/**
+ * The account model's word on an installed provider: ready while one of its
+ * accounts is connected, not ready while none is. A provider whose accounts
+ * Flock stores is ready only through a connected account. A provider whose
+ * CLI keeps the sign-in is judged by its account status once the status
+ * adapter has reported a state; until then, or where no adapter reports
+ * one (Copilot, Amp), the harness probe in the doctor report stands.
+ */
+export function applyAccountReadiness(
   readiness: Map<string, AgentProviderReadiness>,
-  accounts: ProviderAccount[],
+  providers: Record<string, ProviderAccountModel>,
   statuses: Record<string, ProviderAccountStatus>,
 ): Map<string, AgentProviderReadiness> {
   let next = readiness;
-  for (const providerId of MANAGED_ACCOUNT_PROVIDERS) {
-    const installed = readiness.get(providerId);
+  for (const model of Object.values(providers)) {
+    const installed = readiness.get(model.providerId);
     if (!installed || installed === "not_installed") continue;
-    const connected = accounts.some(
-      (account) =>
-        account.providerId === providerId &&
-        account.enabled &&
-        accountIsConnected(statuses[account.id]),
+    const reported = model.accounts.some((account) => {
+      const state = statuses[account.id]?.state;
+      return state !== undefined && state !== "unknown";
+    });
+    if (model.connection === "cli" && !reported) continue;
+    const connected = model.accounts.some(
+      (account) => account.enabled && accountIsConnected(statuses[account.id]),
     );
     const status = connected ? "ready" : "not_ready";
     if (installed === status) continue;
     if (next === readiness) next = new Map(readiness);
-    next.set(providerId, status);
+    next.set(model.providerId, status);
   }
   return next;
 }
 
 export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const query = useDoctorReport();
-  const accounts = useProviderAccountsStore((state) => state.accounts);
+  const providers = useProviderAccountsStore((state) => state.providersById);
   const statuses = useProviderAccountsStore((state) => state.statuses);
-  const usageProviders = useProviderRateLimitsStore(
-    (state) => state.snapshot?.providers,
-  );
 
   const agentReadiness = useMemo(
     () =>
-      applyManagedAccountReadiness(
-        applyUsageAuthReadiness(
-          query.data ? readinessFromReport(query.data) : EMPTY_READINESS,
-          usageProviders,
-        ),
-        accounts,
+      applyAccountReadiness(
+        query.data ? readinessFromReport(query.data) : EMPTY_READINESS,
+        providers,
         statuses,
       ),
-    [query.data, usageProviders, accounts, statuses],
+    [query.data, providers, statuses],
   );
 
   const readyAgentIds = useMemo(
@@ -217,12 +187,9 @@ export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const refresh = useCallback(async () => {
     const result = await refetch();
     const accountState = useProviderAccountsStore.getState();
-    return applyManagedAccountReadiness(
-      applyUsageAuthReadiness(
-        result.data ? readinessFromReport(result.data) : EMPTY_READINESS,
-        useProviderRateLimitsStore.getState().snapshot?.providers,
-      ),
-      accountState.accounts,
+    return applyAccountReadiness(
+      result.data ? readinessFromReport(result.data) : EMPTY_READINESS,
+      accountState.providersById,
       accountState.statuses,
     );
   }, [refetch]);

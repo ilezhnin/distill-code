@@ -3,6 +3,8 @@ import * as api from "../api/providerAccounts";
 import { useProviderModelCacheStore } from "./providerModelCacheStore";
 
 interface ProviderAccountsState extends api.ProviderAccountsSnapshot {
+  /** Every provider's model by id, as the host lists them. */
+  providersById: Record<string, api.ProviderAccountModel>;
   statuses: Record<string, api.ProviderAccountStatus>;
   authStates: Record<string, api.ProviderAccountAuthState>;
   loaded: boolean;
@@ -31,6 +33,9 @@ function acceptRegistry(snapshot: api.ProviderAccountsSnapshot) {
   const ids = new Set(snapshot.accounts.map((account) => account.id));
   useProviderAccountsStore.setState((state) => ({
     ...snapshot,
+    providersById: Object.fromEntries(
+      snapshot.providers.map((provider) => [provider.providerId, provider]),
+    ),
     loaded: true,
     statuses: Object.fromEntries(
       Object.entries(state.statuses).filter(([id]) => ids.has(id)),
@@ -70,6 +75,26 @@ function acceptStatuses(snapshot: api.ProviderAccountStatuses) {
   });
 }
 
+/** The provider models with `account` listed under its provider. */
+function withAccount(
+  providersById: Record<string, api.ProviderAccountModel>,
+  account: api.ProviderAccount,
+): Record<string, api.ProviderAccountModel> {
+  const model = providersById[account.providerId];
+  if (!model) return providersById;
+  return {
+    ...providersById,
+    [account.providerId]: {
+      ...model,
+      accounts: [
+        ...model.accounts.filter((entry) => entry.id !== account.id),
+        account,
+      ],
+      defaultAccountId: model.defaultAccountId ?? account.id,
+    },
+  };
+}
+
 function acceptAuthState(auth: api.ProviderAccountAuthState) {
   useProviderAccountsStore.setState((state) => {
     const current = state.authStates[auth.accountId];
@@ -87,6 +112,8 @@ function acceptAuthState(auth: api.ProviderAccountAuthState) {
 // This store mirrors backend metadata. Credentials never enter a persisted store.
 export const useProviderAccountsStore = create<ProviderAccountsState>(
   (set, get) => ({
+    providers: [],
+    providersById: {},
     accounts: [],
     defaults: {},
     automaticSwitching: {},
@@ -156,6 +183,7 @@ export const useProviderAccountsStore = create<ProviderAccountsState>(
           ...state.accounts.filter((entry) => entry.id !== account.id),
           account,
         ],
+        providersById: withAccount(state.providersById, account),
       }));
       void get().refresh(true);
       return account;
@@ -305,6 +333,11 @@ export function startProviderAccountsMonitor() {
     refresh();
   };
   void attach();
-  window.setInterval(refresh, 60_000);
+  window.setInterval(() => {
+    // Each poll is a request per account, and a hidden window has nobody
+    // looking at its usage. Focus catches up.
+    if (document.hidden) return;
+    refresh();
+  }, 60_000);
   window.addEventListener("focus", refresh);
 }

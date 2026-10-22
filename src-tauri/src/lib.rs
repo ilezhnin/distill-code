@@ -436,7 +436,6 @@ pub fn run() {
             commands::agent_setup::start_agent_setup,
             commands::agent_setup::list_agent_setup_status,
             commands::agent_setup::clear_agent_setup_status,
-            commands::provider_rate_limits::get_provider_rate_limits,
             commands::provider_accounts::list_provider_accounts,
             commands::provider_accounts::add_provider_account,
             commands::provider_accounts::update_provider_account,
