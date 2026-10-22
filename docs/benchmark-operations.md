@@ -727,15 +727,16 @@ until its verdict. Planning labs, whose checks time planners on budgets of
 seconds, and judged renderings keep their slot until the verdict. A
 timing-sensitive check (every planning lab's, and any case whose definition
 sets `environment.timingSensitive: true`) starts only while the measured use
-leaves its whole two-CPU ceiling free, and while it runs no new CPU-heavy job
-(repository session, check, paired check or browser run) starts; the running
-ones go on, and the hold ends with the check, at the latest at its own time
-limit (keep timing-sensitive checks short: the hold covers the whole
-sandbox). Its rule counts the measured use beside the running timed jobs,
-plus those jobs and the sessions too new to show in the samples at their
-ceilings (every ceiling while there is no sample), and a timing check refused
-for its ceiling or waiting for another
-keeps its CPUs from new attempts. Its evaluation records the
+leaves its whole two-CPU ceiling free, and one runs at a time: a second
+waits for the first. While it runs it keeps that ceiling: another CPU-heavy
+job (repository session, check, paired check or browser run) starts beside
+it only while the measured host load, less the jobs too new to show in it
+and less the held ceiling, still leaves the new job its own ceiling; the
+hold ends with the check, at the latest at its own time limit. Its rule
+counts the measured use beside the running timed jobs, plus those jobs and
+the sessions too new to show in the samples at their ceilings (every ceiling
+while there is no sample), and a timing check refused for its ceiling or
+waiting for another keeps its CPUs from new attempts. Its evaluation records the
 admission it started under (`details.admission`: the measured sandbox, guest
 and outside CPU, the capacity and the competing jobs), so a planning result
 can be audited later. `heavy-cap` is an emergency knob, off by default, that no

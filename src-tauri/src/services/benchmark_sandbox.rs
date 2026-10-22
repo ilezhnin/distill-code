@@ -141,8 +141,8 @@ pub struct Admission {
     /// Set on a later workflow step's session, admitted ahead of new attempts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuing: Option<bool>,
-    /// Set on a timing-sensitive check: no new CPU-heavy job started beside
-    /// it, and it started with its whole ceiling free.
+    /// Set on a timing-sensitive check: it started with its whole ceiling
+    /// free and kept that ceiling while it ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<bool>,
     /// CPUs the whole guest worked and the host ran outside the VM over the
@@ -2643,8 +2643,8 @@ pub(crate) async fn check(id: &str, argv: &[String], seconds: u64) -> io::Result
         .map(|(output, _)| output)
 }
 
-/// [`check`] for a timing-sensitive check: while it runs no new CPU-heavy job
-/// starts in the sandbox, and it starts only with its whole ceiling free.
+/// [`check`] for a timing-sensitive check: it starts only with its whole
+/// ceiling free, one at a time, and keeps that ceiling while it runs.
 /// Returns the admission record, the load it started under.
 pub(crate) async fn check_timed(
     id: &str,

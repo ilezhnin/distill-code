@@ -1275,15 +1275,16 @@ def host_busy_smoothed(observed):
     return sum(value for _, value in ring) / len(ring) if ring else None
 
 
-def admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, continuing, timing):
+def admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, continuing, timing, reserved=0):
     """Admission of a CPU-heavy job by the host's measured load (see
-    LOAD_LINE). Returns how it was admitted or raises the refusal."""
+    LOAD_LINE). `reserved` is the ceiling the running timing-sensitive check
+    keeps for itself. Returns how it was admitted or raises the refusal."""
     logical = os.cpu_count() or 1
     now = time.time()
     fresh = [row for row in heavy if now - row.get('admitted', now) < LOAD_SETTLE]
     fresh_cpus = sum(row['cpu'] for row in fresh)
     TRACE.update(hostCpuSmoothed=round(smoothed, 3), loadLine=LOAD_LINE, freshHeavy=len(fresh),
-                 freshCpus=fresh_cpus, logicalCpus=logical)
+                 freshCpus=fresh_cpus, logicalCpus=logical, reservedCpus=reserved)
     # A timing-sensitive check times what it checks: it starts only when the
     # measured load, and the jobs too new to show in it at their ceilings,
     # leave its whole ceiling free.
@@ -1297,6 +1298,16 @@ def admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, cont
     if smoothed >= LOAD_LINE:
         raise refused(f'the measured host CPU load ({smoothed:.0%}) is at or above the {LOAD_LINE:.0%} line',
                       'cpu', cpu)
+    # Beside a timing-sensitive check, the measured load less the jobs too
+    # new to show in it and less the check's whole ceiling (its own use is in
+    # the samples already, so the hold errs on the check's side) must still
+    # leave this job its ceiling.
+    if reserved:
+        free = (1 - smoothed) * logical - fresh_cpus - reserved
+        TRACE['freeCpus'] = round(free, 2)
+        if free < cpu:
+            raise refused(f'a timing-sensitive check keeps its {reserved} CPUs, and the measured host load '
+                          f'leaves {free:.1f} free CPUs beside them, not the {cpu} this job needs', 'cpu', cpu)
     if len(fresh) >= RAMP_MAX:
         raise refused(f'{len(fresh)} CPU-heavy jobs started in the last {LOAD_SETTLE} s and do not show '
                       'in the measured load yet', 'cpu', cpu)
@@ -1377,18 +1388,19 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
         if cap is not None and len(heavy) + (1 if kept_cpus else 0) >= cap:
             raise refused('the operator caps CPU-heavy benchmark jobs at ' + str(cap), 'cpu', cpu)
         # A timing-sensitive check times what it checks (a planning lab's
-        # planner on a budget of seconds). While one runs no new CPU-heavy job
-        # starts beside it, the running ones go on, and the hold ends with
-        # its lease; one starts only while the measured use leaves its whole
-        # ceiling free.
-        if any(row.get('timing') for row in active):
-            # A timing check waiting behind another keeps its CPUs from new
-            # attempts meanwhile, as a check refused CPUs does.
-            raise refused('a timing-sensitive check runs, and CPU-heavy jobs start after it',
-                          'cpu' if timing else None, cpu if timing else 0)
+        # planner on a budget of seconds). One runs at a time: a second waits
+        # for it and keeps its CPUs from new attempts meanwhile, as a check
+        # refused CPUs does. The running one keeps its whole ceiling: another
+        # CPU-heavy job starts beside it only while the measured load, with
+        # that ceiling held back, still leaves the new job's own ceiling free.
+        # A timing check itself starts only with its whole ceiling free.
+        reserved = sum(row['cpu'] for row in active if row.get('timing'))
+        if reserved and timing:
+            raise refused('a timing-sensitive check runs, and another starts after it', 'cpu', cpu)
         smoothed = host_busy_smoothed(observed)
         if smoothed is not None:
-            admitted_by = admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, continuing, timing)
+            admitted_by = admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, continuing, timing,
+                                        reserved)
         else:
             # No gate sample in the window: the summed-ceilings rule.
             reserve = CHECK_CPUS if kind in ATTEMPTS else 0

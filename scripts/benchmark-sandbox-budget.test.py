@@ -1047,37 +1047,53 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(BlockingIOError, 'at or above the 70% line'):
             self.reserve('repository', 'fictional-sixth')
 
-    def test_a_timing_sensitive_check_runs_with_no_new_cpu_heavy_job_beside_it(self):
-        # A planning lab times its planner on budgets of seconds: while its
-        # check runs, no new CPU-heavy job starts, the running ones go on,
-        # and the hold ends with the check's lease. Light jobs still start.
+    def test_a_timing_sensitive_check_keeps_its_ceiling_and_other_jobs_start_by_load(self):
+        # A planning lab times its planner on budgets of seconds: one such
+        # check runs at a time and keeps its whole ceiling. Another CPU-heavy
+        # job starts beside it only while the measured load, with that
+        # ceiling held back, still leaves the job its own; light jobs start
+        # regardless, and the hold ends with the check's lease.
         self.roomy()
-        self.learn(repository=budget.GIB, check=budget.GIB)
+        self.learn(repository=budget.GIB, check=budget.GIB, browser=budget.GIB, pair=budget.GIB)
         self.measure(1.0)
         self.reserve('repository', 'fictional-running')
         self.settle()
+        deadline = int(time.time() * 1000) + 60000
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            budget.reserve('check', 'fictional-planning', int(time.time() * 1000) + 60000, self.gate(), 0,
-                           False, False, True)
+            budget.reserve('check', 'fictional-planning', deadline, self.gate(), 0, False, False, True)
         answer = json.loads(output.getvalue())
         # Its admission records the load it started under, for a later audit.
         self.assertTrue(answer['admission']['timing'])
         self.assertEqual(answer['admission']['sandboxCpu'], 1.0)
         self.assertIn('cpuCapacity', answer['admission'])
-        for kind in ('repository', 'check', 'browser', 'pair'):
-            with self.assertRaisesRegex(BlockingIOError, 'timing-sensitive check runs'):
-                self.reserve(kind, f'fictional-new-{kind}')
-        with self.assertRaisesRegex(BlockingIOError, 'timing-sensitive check runs'):
-            self.reserve('repository', 'fictional-step', continuing=True)
+        # A second timing check waits for the first and keeps its CPUs from
+        # new attempts meanwhile.
+        with self.assertRaisesRegex(BlockingIOError, 'timing-sensitive check runs, and another starts after it'):
+            budget.reserve('check', 'fictional-planning-second', deadline, self.gate(), 0, False, False, True)
+        self.assertEqual(budget.kept_room('repository', budget.peaks())[1], budget.CHECK_CPUS)
+        (budget.STATE / 'priority.json').unlink(missing_ok=True)
+        # At 60 % host load 6.4 CPUs are free; the check's 2 held back leave
+        # 4.4: a session (2) and a browser run (1) start, and a paired check
+        # (2) no longer fits beside the two jobs too new to show in the load.
+        self.settle()
+        self.load(0.6)
+        self.reserve('repository', 'fictional-beside')
+        self.reserve('browser', 'fictional-browser')
+        with self.assertRaisesRegex(BlockingIOError, "keeps its 2 CPUs, and the measured host load leaves 1.4 free CPUs"):
+            self.reserve('pair', 'fictional-pair')
         self.reserve('text', 'fictional-text')
         self.reserve('prep', 'fictional-prep')
+        # A workflow's later step is admitted the same way.
+        self.settle()
+        self.reserve('repository', 'fictional-step', continuing=True)
+        # Once the check's lease ends, nothing is held back.
         budget.release(answer['token'])
-        self.reserve('repository', 'fictional-after')
+        self.settle()
+        self.assertEqual(budget.admit_by_load('pair', 2, [], 0.6, 0, None, None, False, False), 'load')
         # Only a check can be one.
         with self.assertRaisesRegex(RuntimeError, 'only a check'):
-            budget.reserve('repository', 'fictional-timed', int(time.time() * 1000) + 60000, self.gate(), 0,
-                           False, False, True)
+            budget.reserve('repository', 'fictional-timed', deadline, self.gate(), 0, False, False, True)
 
     def test_a_timing_sensitive_check_starts_only_with_its_whole_ceiling_free(self):
         # The measured use must leave its two CPUs free beside the running

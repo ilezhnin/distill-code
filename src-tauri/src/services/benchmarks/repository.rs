@@ -855,7 +855,7 @@ async fn patch(dir: &Path, max_bytes: usize) -> Result<String> {
 
 /// Whether a case's check times what it checks: a planning lab's planner on
 /// budgets of seconds, or a definition whose environment says so with
-/// `timingSensitive: true`. Its check runs with no new CPU-heavy job beside it.
+/// `timingSensitive: true`. Its check keeps its whole CPU ceiling while it runs.
 fn timing_sensitive(manifest: &BenchmarkDraft) -> bool {
     manifest.work_class_id == "planning"
         || manifest
@@ -1048,7 +1048,7 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
                 details,
             ));
         }
-        // A timing-sensitive check runs with no new CPU-heavy job beside it,
+        // A timing-sensitive check keeps its whole CPU ceiling while it runs,
         // and its evaluation keeps the load it started under for an audit.
         let checked = if timing_sensitive(manifest) {
             sandbox::check_timed(&id, &check.command, check.timeout_seconds)

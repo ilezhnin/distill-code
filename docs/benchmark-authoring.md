@@ -276,8 +276,9 @@ cancellation and cleanup as part of evaluator qualification.
 
 A repository case whose check times what it checks (a planner on budgets of
 seconds) sets `environment.timingSensitive: true`; planning-class cases are
-treated so without it. Its check then runs with no new CPU-heavy job starting
-beside it (see benchmark operations).
+treated so without it. Its check then keeps its whole CPU ceiling for itself
+while it runs, and other CPU-heavy jobs start beside it only as the measured
+load allows (see benchmark operations).
 
 Without a frozen panel, a rendering's judges come from the judge pool: the
 owner's list of models and efforts (`judgePool` in the benchmark settings
