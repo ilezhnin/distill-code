@@ -8,6 +8,7 @@ import {
   activeRuns,
   stalledRuns,
   workingConfigurations,
+  pausedRuns,
 } from "./benchmarkActivity";
 import { onMovingAlias, rowKey } from "./benchmarkBoards";
 
@@ -99,23 +100,31 @@ export function modelActivity(
 ) {
   let open = 0;
   let running = 0;
+  let paused = 0;
   let newest: RunSummary | null = null;
-  for (const run of activeRuns(runs)) {
+  const ownCells = (run: RunSummary) => {
     const ids = new Set(
       run.request.configurations
         .filter((entry) => modelKey(entry) === model.key)
         .map((entry) => entry.id),
     );
-    for (const cell of run.openCells ?? []) {
-      if (!ids.has(cell.configurationId)) continue;
+    return (run.openCells ?? []).filter((cell) =>
+      ids.has(cell.configurationId),
+    );
+  };
+  for (const run of activeRuns(runs)) {
+    for (const cell of ownCells(run)) {
       open += 1;
       if (cell.running) running += 1;
       if (!newest || run.createdAt > newest.createdAt) newest = run;
     }
   }
+  // Cells of the model's paused runs: measured again once the run resumes.
+  for (const run of pausedRuns(runs)) paused += ownCells(run).length;
   return {
     open,
     running,
+    paused,
     runId: newest?.id ?? null,
     attention: stalledRuns(runs)
       .filter((run) => {

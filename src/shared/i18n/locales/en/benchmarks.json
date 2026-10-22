@@ -437,6 +437,7 @@
     "sidebar": "{{settled}} of {{total}} tests settled",
     "left": "Waiting",
     "running": "Running",
+    "paused": "Paused",
     "campaign": "Workflow comparison",
     "campaignCreated": "Created {{date}}",
     "campaignProgress": "{{settled}} / {{total}} workflows settled",

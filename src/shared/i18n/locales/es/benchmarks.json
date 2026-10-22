@@ -437,6 +437,7 @@
     "sidebar": "{{settled}} de {{total}} pruebas resueltas",
     "left": "En espera",
     "running": "En curso",
+    "paused": "En pausa",
     "campaign": "Comparación de flujos",
     "campaignCreated": "Creada el {{date}}",
     "campaignProgress": "{{settled}} / {{total}} flujos terminados",

@@ -1565,25 +1565,33 @@
   animation-name: text-shimmer-continuous;
 }
 
-/* ── Working row ──────────────────────────────────────────────────────────
+/* ── Row activity ─────────────────────────────────────────────────────────
    A table row whose subject is being worked on (a model under measurement)
    shows a golden light sweeping along it instead of a spinner and a label:
-   readable from across the room and taking no room of its own. The gradient
-   rides on the row's own background, so the cells keep their layout and the
-   hover tint still shows through. Under reduced motion the sweep stands
-   still as a faint tint fading from the leading edge. */
-[data-slot="table-row"][data-working="true"] {
+   readable from across the room and taking no room of its own. A row whose
+   work stands paused shows the same light in silver, fainter and slower, so
+   the two states read apart at a glance. The gradient rides on the row's
+   own background, so the cells keep their layout and the hover tint still
+   shows through. Under reduced motion the sweep stands still as a faint
+   tint fading from the leading edge. */
+[data-slot="table-row"][data-activity] {
+  --row-activity-color: var(--chart-1);
   background-image: linear-gradient(
     100deg,
     transparent 38%,
-    color-mix(in oklab, var(--chart-1) 12%, transparent) 46%,
-    color-mix(in oklab, var(--chart-1) 26%, transparent) 50%,
-    color-mix(in oklab, var(--chart-1) 12%, transparent) 54%,
+    color-mix(in oklab, var(--row-activity-color) 12%, transparent) 46%,
+    color-mix(in oklab, var(--row-activity-color) 26%, transparent) 50%,
+    color-mix(in oklab, var(--row-activity-color) 12%, transparent) 54%,
     transparent 62%
   );
   background-size: 220% 100%;
   background-repeat: no-repeat;
   animation: row-sheen 2.8s linear infinite;
+}
+
+[data-slot="table-row"][data-activity="paused"] {
+  --row-activity-color: var(--muted-foreground);
+  animation-duration: 6s;
 }
 
 @keyframes row-sheen {
@@ -1596,11 +1604,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-slot="table-row"][data-working="true"] {
+  [data-slot="table-row"][data-activity] {
     animation: none;
     background-image: linear-gradient(
       90deg,
-      color-mix(in oklab, var(--chart-1) 16%, transparent),
+      color-mix(in oklab, var(--row-activity-color) 16%, transparent),
       transparent 55%
     );
     background-size: 100% 100%;

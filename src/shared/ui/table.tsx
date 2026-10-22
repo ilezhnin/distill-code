@@ -47,20 +47,25 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
   );
 }
 
+/** What is going on with a row's subject, shown as a light along the row. */
+export type TableRowActivity = "working" | "paused";
+
 interface TableRowProps extends React.ComponentProps<"tr"> {
   /**
-   * While true, a golden light sweeps along the row: work on its subject is
-   * going on. It replaces a spinner and a label and takes no room; name the
-   * state for assistive technology in the row's own content.
+   * A light sweeping along the row stands for the state of its subject:
+   * golden and lively while work on it goes on (`working`), silver and
+   * slow while that work stands paused (`paused`). It replaces a spinner
+   * and a label and takes no room; name the state for assistive technology
+   * in the row's own content.
    */
-  working?: boolean;
+  activity?: TableRowActivity;
 }
 
-function TableRow({ className, working, ...props }: TableRowProps) {
+function TableRow({ className, activity, ...props }: TableRowProps) {
   return (
     <tr
       data-slot="table-row"
-      data-working={working ? "true" : undefined}
+      data-activity={activity}
       className={cn(
         "hover:bg-muted/50 data-[state=selected]:bg-muted border-b transition-colors",
         className,
