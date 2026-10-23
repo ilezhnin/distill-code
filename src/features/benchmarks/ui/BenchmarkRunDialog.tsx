@@ -139,6 +139,7 @@ export function BenchmarkRunDialog({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [renewingPolicy, setRenewingPolicy] = useState(false);
   // Managed accounts, and for a provider whose CLI keeps its own sign-in the
   // fixed identity that names it.
   const managedAccounts = (id: string) =>
@@ -168,7 +169,16 @@ export function BenchmarkRunDialog({
     enabled: Boolean(providerId) && !capabilities.isPending,
     staleTime: 30_000,
   });
-  const models = modelChoices(inventory.data ?? []);
+  const inventoryFailure = inventory.error
+    ? benchmarkErrorMessage(inventory.error)
+    : (inventory.data?.find(
+        (entry) =>
+          !entry.available && entry.reason?.includes("Linux text policy proof"),
+      )?.reason ?? null);
+  const policyCheckMissing = inventoryFailure?.includes(
+    "Linux text policy proof",
+  );
+  const models = modelChoices(inventory.error ? [] : (inventory.data ?? []));
   const model = models[Number(modelIndex)];
   // The CLI's "default" names no level, so it is never offered: a model that
   // lists levels runs at one of them, and only a model without an effort
@@ -304,6 +314,31 @@ export function BenchmarkRunDialog({
     setEffort(null);
     setFastMode(false);
   };
+  const renewPolicy = () =>
+    operate(async () => {
+      setRenewingPolicy(true);
+      try {
+        await benchmarkApi.renewPolicyCheck(providerId);
+        await client.invalidateQueries({
+          queryKey: [...benchmarkKeys, "inventory", providerId],
+          refetchType: "none",
+        });
+        const refreshed = await inventory.refetch({ throwOnError: true });
+        const refreshedInventory = refreshed.data;
+        if (refreshedInventory) {
+          setSelections((previous) =>
+            previous.map((entry) =>
+              entry.configuration.providerId === providerId &&
+              entry.configuration.accountId === selectedAccount
+                ? { ...entry, inventory: refreshedInventory }
+                : entry,
+            ),
+          );
+        }
+      } finally {
+        setRenewingPolicy(false);
+      }
+    });
   const budgetField = (
     key: "repetitions" | "maxExecutions",
     value: number,
@@ -346,6 +381,7 @@ export function BenchmarkRunDialog({
                   <SelectField
                     id={id}
                     value={providerId || "none"}
+                    disabled={busy}
                     onChange={(value) => {
                       setProviderId(value === "none" ? "" : value);
                       setAccountId("none");
@@ -364,6 +400,7 @@ export function BenchmarkRunDialog({
                   <SelectField
                     id={id}
                     value={selectedAccount}
+                    disabled={busy}
                     onChange={(value) => {
                       setAccountId(value);
                       setModelIndex("none");
@@ -396,6 +433,7 @@ export function BenchmarkRunDialog({
                     <SelectField
                       id={id}
                       value={modelIndex}
+                      disabled={busy}
                       onChange={(value) => {
                         setModelIndex(value);
                         const chosen = models[Number(value)];
@@ -440,11 +478,49 @@ export function BenchmarkRunDialog({
             {providerId && inventory.isPending ? (
               <BenchmarkEmpty title={t("loading")} compact />
             ) : null}
-            {inventory.error ? (
+            {inventoryFailure ? (
               <BenchmarkAlert
-                tone={isRefusal(inventory.error) ? "warning" : "error"}
+                tone={
+                  policyCheckMissing || isRefusal(inventory.error)
+                    ? "warning"
+                    : "error"
+                }
               >
-                {benchmarkErrorMessage(inventory.error)}
+                <p>
+                  {t(
+                    policyCheckMissing
+                      ? "modelRun.policyCheckMissing"
+                      : "modelRun.availabilityFailed",
+                  )}
+                </p>
+                <details>
+                  <summary>{t("detail.technical")}</summary>
+                  <p>{inventoryFailure}</p>
+                </details>
+                {policyCheckMissing ? (
+                  <p>{t("modelRun.policyCheckHelp")}</p>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="alert"
+                  size="xs"
+                  disabled={inventory.isFetching || busy}
+                  onClick={() =>
+                    void (policyCheckMissing
+                      ? renewPolicy()
+                      : inventory.refetch())
+                  }
+                >
+                  {t(
+                    renewingPolicy
+                      ? "modelRun.policyCheckRenewing"
+                      : policyCheckMissing
+                        ? "modelRun.policyCheckRenew"
+                        : inventory.isFetching
+                          ? "modelRun.readinessChecking"
+                          : "modelRun.readinessRetry",
+                  )}
+                </Button>
               </BenchmarkAlert>
             ) : null}
             {model && !model.available ? (

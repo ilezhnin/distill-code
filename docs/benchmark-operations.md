@@ -100,10 +100,11 @@ node scripts/benchmark-sandbox.mjs install-tool zai
 ```
 
 Run qualification for the providers you use after installing their pinned Linux
-tools. When a model's run dialog reports an expired sandbox check, choose
-**Update sandbox check** there. The app runs the bundled offline suite for that
-provider, verifies the runtime before and after it, installs a receipt only on
-success, and refreshes availability. It needs neither a source checkout nor a
+tools. When **Run benchmarks** or a model's run dialog reports an expired sandbox
+check, choose **Update sandbox check** there. The app runs the bundled offline
+suite for that provider, verifies the runtime before and after it, installs a
+receipt only on success, and refreshes the model list and availability, keeping
+the selected tests and run settings. It needs neither a source checkout nor a
 host Node installation. Existing attempts and results stay intact; the operator
 starts or continues the run separately. A failed check leaves dispatch blocked
 and can be retried in the same dialog. This renews policy verification, not

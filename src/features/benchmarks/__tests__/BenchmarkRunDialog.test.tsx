@@ -29,17 +29,20 @@ vi.mock("@/features/providers/api/providerAccounts", () => ({
 }));
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: String,
+  isRefusal: () => false,
   benchmarkApi: {
     getCapabilities: vi.fn(),
     getInventory: vi.fn(),
     previewRun: vi.fn(),
     startRun: vi.fn(),
     providerDataUse: vi.fn(),
+    renewPolicyCheck: vi.fn(),
   },
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockReset();
   Element.prototype.scrollIntoView = vi.fn();
   Element.prototype.hasPointerCapture = vi.fn(() => false);
   vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([
@@ -78,6 +81,130 @@ beforeEach(() => {
   ]);
 });
 afterEach(cleanup);
+
+const stalePolicy =
+  "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe";
+
+it.each([
+  "error",
+  "unavailable",
+])("renews Kimi's sandbox from the batch dialog after an inventory %s and preserves the plan", async (failureKind) => {
+  const user = userEvent.setup();
+  const kimi: InventoryModel = {
+    configuration: {
+      ...configuration,
+      providerId: "kimi-acp",
+      accountId: "cli-login-kimi-acp",
+    },
+    name: "Kimi test model",
+    efforts: [],
+    supportsFastMode: false,
+    available: true,
+    reason: null,
+  };
+  vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([
+    {
+      providerId: "kimi-acp",
+      executionProfile: "native_text",
+      supported: true,
+      reason: "Verified",
+      cliAccountId: "cli-login-kimi-acp",
+    },
+  ]);
+  if (failureKind === "error") {
+    vi.mocked(benchmarkApi.getInventory).mockRejectedValue(stalePolicy);
+  } else {
+    vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+      { ...kimi, available: false, reason: stalePolicy },
+    ]);
+  }
+  let finish: () => void = () => {};
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(await screen.findByRole("option", { name: "Kimi Code" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Update sandbox check" }),
+  );
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledWith("kimi-acp");
+  expect(screen.getByRole("combobox", { name: "Provider" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([kimi]);
+  finish();
+  await waitFor(() =>
+    expect(
+      screen.queryByText(
+        "The sandbox check must be renewed for this version of Flock.",
+      ),
+    ).not.toBeInTheDocument(),
+  );
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  await user.click(screen.getByRole("option", { name: "Kimi test model" }));
+  expect(screen.getByText("1 of 1 selected")).toBeInTheDocument();
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Start batch" }));
+  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(benchmarkApi.startRun).mock.calls[0][0]).toMatchObject({
+    versionIds: ["version-1"],
+    repetitions: 3,
+    configurations: [
+      { providerId: "kimi-acp", accountId: "cli-login-kimi-acp" },
+    ],
+  });
+});
+
+it("keeps a failed sandbox renewal blocked and allows a retry", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(stalePolicy);
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockRejectedValue(
+    "Sandbox check failed",
+  );
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Update sandbox check" }),
+  );
+  expect(await screen.findByText("Sandbox check failed")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
+  await user.click(
+    screen.getByRole("button", { name: "Update sandbox check" }),
+  );
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledTimes(2);
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
 
 it("shows the plan check's refusal and starts nothing", async () => {
   const user = userEvent.setup();
