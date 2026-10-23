@@ -182,7 +182,7 @@ export function LeaderboardView({
     [rows, chosen],
   );
   const ranked = useMemo(() => rankRows(visible, board), [visible, board]);
-  // Every model is listed by the selected board's score, including preliminary scores.
+  // Ranked models lead by score; unranked models follow by completed tests.
   const listed = ranked;
   // Ranks are placed over every row; only the rendered list is paged. A list
   // that shrank (another board ranks fewer rows) shows its last page.

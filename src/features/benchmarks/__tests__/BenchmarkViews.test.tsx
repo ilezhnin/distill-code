@@ -2738,7 +2738,7 @@ describe("leaderboard fully tested", () => {
     return { rowOf, cell };
   }
 
-  it("ranks only fully tested rows and lists partial scores muted below them", () => {
+  it("ranks fully tested rows first, then orders muted partial rows by completed tests", () => {
     const { rowOf, cell } = board();
     const order = screen
       .getAllByRole("row")
@@ -2746,6 +2746,11 @@ describe("leaderboard fully tested", () => {
       .map((row) => within(row).getAllByRole("cell")[0].textContent);
     // Higher partial scores still follow the one ranked row.
     expect(order).toEqual(["1", "–", "–"]);
+    expect(screen.getAllByRole("row").slice(1)).toEqual([
+      rowOf("alpha"),
+      rowOf("beta"),
+      rowOf("gamma"),
+    ]);
     expect(within(rowOf("alpha")).getByText("700")).not.toHaveClass(
       "text-muted-foreground",
     );

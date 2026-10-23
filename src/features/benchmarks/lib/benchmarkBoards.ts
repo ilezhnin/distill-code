@@ -129,18 +129,23 @@ export function configurationKey(configuration: Configuration): string {
 }
 
 /**
- * Display every row by this board's points, with missing scores last.
+ * Display ranked rows by points, then unranked rows by completed suite cases.
  * Only comparable rows receive a rank; preliminary scores never earn a place.
  */
 export function rankRows(rows: LeaderboardRow[], board: Board): RankedRow[] {
   // Only a fully tested row ranks, so the ranked rows come first and the
-  // partial scores follow below them, each group by its points.
+  // partial scores follow by completion count, breaking ties by points.
   const rankable = (entry: { row: LeaderboardRow; points: number | null }) =>
     entry.row.status === "comparable" && entry.points != null;
   const entries = rows
     .map((row) => ({ row, points: board.points(row) }))
     .sort((a, b) => {
       if (rankable(a) !== rankable(b)) return rankable(a) ? -1 : 1;
+      if (!rankable(a)) {
+        const completionOrder =
+          (b.row.suiteComplete ?? 0) - (a.row.suiteComplete ?? 0);
+        if (completionOrder !== 0) return completionOrder;
+      }
       if (a.points == null) return b.points == null ? 0 : 1;
       if (b.points == null) return -1;
       return b.points - a.points;
