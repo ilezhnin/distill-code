@@ -110,6 +110,57 @@ describe("blind benchmark review", () => {
     catalog([visualDefinition]);
   });
 
+  it("localizes safe discovery diagnostics in visible pending-review evidence", async () => {
+    catalog([definition]);
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...attempt,
+      outcome: "pending_review",
+      evaluations: [],
+      reason:
+        "No judge panel: 1 eligible judge(s), at least 2 are required. Judge availability: Claude: local text policy verification required.",
+    });
+    showEvidence();
+    expect(
+      await screen.findByText(
+        "Cannot assemble a judge panel: 1 available, 2 required. Claude: local text policy verification is required. Run the isolated policy check before judging.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Judge availability:/)).not.toBeInTheDocument();
+  });
+
+  it("keeps discovery provider labels hidden during blind review", async () => {
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...visualAttempt,
+      outcome: "pending_review",
+      reason:
+        "No judge panel: 1 eligible judge(s), at least 2 are required. Judge availability: Claude: local text policy verification required.",
+    });
+    showEvidence();
+    await screen.findByText("Score contrast and legible labels from 0 to 1.");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("Claude");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(
+      "text policy verification",
+    );
+  });
+
+  it.each([
+    "No judge panel: 1 eligible judge(s), at least 2 are required. A judge rejected this request; recovery needs another calibrated judge from the pool",
+    "No judge panel: 1 eligible judge(s), at least 2 are required. Invented historical detail.",
+    "Frozen judge settings, billing or runtime changed; no replacement was selected. Invented recorded detail.",
+    "Critical checks unresolved: invented check still lacks evidence.",
+    "Judge returned no valid score sheet: invented schema rejection.",
+  ])("preserves unrelated pending-review evidence details: %s", async (reason) => {
+    catalog([definition]);
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...attempt,
+      outcome: "pending_review",
+      evaluations: [],
+      reason,
+    });
+    showEvidence();
+    expect(await screen.findByText(reason)).toBeInTheDocument();
+  });
+
   it("shows recorded critical conditions and quotes as text, including abstentions", async () => {
     catalog([definition]);
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({

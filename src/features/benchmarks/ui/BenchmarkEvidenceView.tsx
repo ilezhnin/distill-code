@@ -28,6 +28,7 @@ import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys, useBenchmarkVersion } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
+import { judgePanelEvidenceLabel } from "../lib/benchmarkRunIssues";
 import {
   authoredByCandidate,
   hasEvaluatedOutcome,
@@ -347,7 +348,9 @@ export function BenchmarkEvidenceView({
               </div>
               {attempt.reason ? (
                 <p className="col-span-full text-xs text-muted-foreground">
-                  {attempt.reason}
+                  {attempt.outcome === "pending_review"
+                    ? judgePanelEvidenceLabel(t, attempt.reason)
+                    : attempt.reason}
                 </p>
               ) : null}
             </dl>

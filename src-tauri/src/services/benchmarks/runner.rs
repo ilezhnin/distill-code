@@ -115,6 +115,161 @@ struct JudgeOffers {
     /// spent. Eligibility is still checked against the calibrated pool.
     quota: Vec<(i64, InventoryModel)>,
     deferred: Option<BenchmarkError>,
+    diagnostics: Vec<JudgeDiscoveryIssue>,
+}
+
+/// Discovery diagnostics carry no provider output into a saved attempt. The
+/// order chooses the most actionable local cause when several accounts fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum JudgeDiscoveryCause {
+    TextPolicyProofRequired,
+    CapabilityUnavailable,
+    InventoryUnavailable,
+}
+
+impl JudgeDiscoveryCause {
+    fn from_error(error: &BenchmarkError) -> Option<Self> {
+        if unstarted_refusal(error) {
+            return None;
+        }
+        if error.code != "capability_missing" {
+            return Some(Self::InventoryUnavailable);
+        }
+        // The local helper's fixed refusal may arrive inside the host's own
+        // capability wrapper. Never recognize a phrase inside arbitrary output.
+        const PROOF: &str = "Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe";
+        let mut message = error.message.trim();
+        for _ in 0..2 {
+            if let Some(inner) = message.strip_prefix("capability_missing:") {
+                message = inner.trim();
+            }
+        }
+        Some(if message == PROOF {
+            Self::TextPolicyProofRequired
+        } else {
+            Self::CapabilityUnavailable
+        })
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::TextPolicyProofRequired => "local text policy verification required",
+            Self::CapabilityUnavailable => "benchmark runtime unavailable",
+            Self::InventoryUnavailable => "model inventory unavailable",
+        }
+    }
+}
+
+struct JudgeDiscoveryIssue {
+    provider: NativeProvider,
+    // Used only to filter the pool's allowed accounts; never serialized.
+    account: Option<String>,
+    model: Option<String>,
+    cause: JudgeDiscoveryCause,
+}
+
+impl JudgeDiscoveryIssue {
+    fn from_error(provider: &str, account: Option<&str>, error: &BenchmarkError) -> Option<Self> {
+        Some(Self {
+            provider: NativeProvider::for_harness(provider)?,
+            account: account.map(str::to_owned),
+            model: None,
+            cause: JudgeDiscoveryCause::from_error(error)?,
+        })
+    }
+
+    fn from_model(model: &InventoryModel) -> Option<Self> {
+        if model.available || model.configuration.execution_profile != "native_text" {
+            return None;
+        }
+        let error =
+            host_error(model.reason.clone().unwrap_or_else(|| {
+                "capability_missing: Native text runtime is unavailable".into()
+            }));
+        let mut issue = Self::from_error(
+            &model.configuration.provider_id,
+            model.configuration.account_id.as_deref(),
+            &error,
+        )?;
+        issue.model = Some(model.configuration.model_id.clone());
+        Some(issue)
+    }
+}
+
+/// No wire contract or extra evidence: only a short panel's existing reason
+/// receives these bounded, fixed diagnostics. Selection still uses the seats.
+struct DiscoveredJudgePanel {
+    seats: Vec<Configuration>,
+    diagnostics: Vec<(NativeProvider, JudgeDiscoveryCause)>,
+}
+
+impl DiscoveredJudgePanel {
+    fn fixed(seats: Vec<Configuration>) -> Self {
+        Self {
+            seats,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn discovered(
+        seats: Vec<Configuration>,
+        issues: Vec<JudgeDiscoveryIssue>,
+        pool: &[super::judge_pool::Entry],
+    ) -> Self {
+        if seats.len() >= MIN_JUDGES {
+            return Self::fixed(seats);
+        }
+        let diagnostics = NativeProvider::ALL
+            .iter()
+            .filter_map(|&provider| {
+                issues
+                    .iter()
+                    .filter(|issue| {
+                        issue.provider == provider
+                            && pool.iter().any(|entry| {
+                                entry.provider_id == provider.harness_id()
+                                    && entry.sits_on(issue.account.as_deref())
+                                    && issue.model.as_ref().is_none_or(|model| {
+                                        concrete_model(&entry.provider_id, &entry.model_id)
+                                            .is_some_and(|eligible| {
+                                                concrete_model(&entry.provider_id, model).as_deref()
+                                                    == Some(eligible.as_str())
+                                            })
+                                    })
+                            })
+                    })
+                    .map(|issue| issue.cause)
+                    .min()
+                    .map(|cause| (provider, cause))
+            })
+            .collect();
+        Self { seats, diagnostics }
+    }
+
+    fn issue(&self, rejected: bool) -> Option<String> {
+        let mut issue = panel_issue(&self.seats)?;
+        if rejected {
+            issue.push_str(". A judge rejected this request; recovery needs another calibrated judge from the pool");
+        }
+        if !self.diagnostics.is_empty() {
+            let causes = self
+                .diagnostics
+                .iter()
+                .map(|(provider, cause)| {
+                    let label = match provider {
+                        NativeProvider::Claude => "Claude",
+                        NativeProvider::Codex => "Codex",
+                        NativeProvider::Grok => "Grok",
+                        NativeProvider::Kimi => "Kimi",
+                        NativeProvider::Zai => "Z.ai",
+                    };
+                    format!("{label}: {}", cause.label())
+                })
+                .collect::<Vec<_>>();
+            issue.push_str(&format!(". Judge availability: {}.", causes.join("; ")));
+        }
+        Some(issue)
+    }
 }
 
 fn quota_seats(
@@ -3335,11 +3490,11 @@ impl NativeBackend {
         attempt: &Attempt,
         draft: &BenchmarkDraft,
         rejected: &[judge_recovery::Rejection],
-    ) -> Result<Vec<Configuration>> {
+    ) -> Result<DiscoveredJudgePanel> {
         let contributing = super::workflow::judge_candidates(store, attempt).await?;
         let candidates: Vec<_> = contributing.iter().collect();
         if let Some(panel) = super::judge_panel::frozen(draft, &candidates)? {
-            return Ok(panel);
+            return Ok(DiscoveredJudgePanel::fixed(panel));
         }
         let textual = text_judged(draft);
         let pool = super::judge_pool::seatable(&store.root, textual).await?;
@@ -3353,6 +3508,7 @@ impl NativeBackend {
             )
             .await?;
         let deferred = offered.deferred;
+        let diagnostics = offered.diagnostics;
         let quota = quota_seats(&pool, offered.quota, rejected);
         let offered = super::judge_pool::seat_rows(&pool, offered.rows);
         let seats: Vec<String> = offered
@@ -3395,7 +3551,8 @@ impl NativeBackend {
                 .join(", "),
             seats.join(", ")
         );
-        resolve_quota_panel(panel, &candidates, draft, quota, deferred)
+        let panel = resolve_quota_panel(panel, &candidates, draft, quota, deferred)?;
+        Ok(DiscoveredJudgePanel::discovered(panel, diagnostics, &pool))
     }
 
     /// Every enabled account's available native text models of the providers
@@ -3424,6 +3581,7 @@ impl NativeBackend {
         let mut offered = Vec::new();
         let mut quota = Vec::new();
         let mut deferred = None;
+        let mut diagnostics = Vec::new();
         for account in &accounts {
             let limited_until = if let Some(until) = exhausted_until(run, &account.id) {
                 Some(until)
@@ -3474,6 +3632,11 @@ impl NativeBackend {
                     if unstarted_refusal(&error) {
                         deferred = Some(error.clone());
                     }
+                    diagnostics.extend(JudgeDiscoveryIssue::from_error(
+                        &account.provider_id,
+                        Some(&account.id),
+                        &error,
+                    ));
                     log::info!(
                         "[benchmarks] judge panel for {subject} skips account {}: its model list failed: {}",
                         account.id,
@@ -3483,6 +3646,7 @@ impl NativeBackend {
                 }
             };
             for model in models {
+                diagnostics.extend(JudgeDiscoveryIssue::from_model(&model));
                 if model.available && model.configuration.execution_profile == "native_text" {
                     if let Some(until) = limited_until {
                         quota.push((until, model));
@@ -3506,6 +3670,7 @@ impl NativeBackend {
             rows: offered,
             quota,
             deferred,
+            diagnostics,
         })
     }
 
@@ -4100,13 +4265,17 @@ impl NativeBackend {
             }
             None => {
                 // A calibration seats its one judge; a panel needs two.
-                let panel = match &evidence {
-                    JudgeEvidence::Calibration { judge, .. } => vec![judge.as_ref().clone()],
+                let discovered = match &evidence {
+                    JudgeEvidence::Calibration { judge, .. } => {
+                        DiscoveredJudgePanel::fixed(vec![judge.as_ref().clone()])
+                    }
                     _ => {
                         self.judge_panel(store, &attempt, &version.manifest, &rejected)
                             .await?
                     }
                 };
+                let issue = discovered.issue(!rejected.is_empty());
+                let panel = discovered.seats;
                 // A panel that seats a candidate's lab or own model is marked,
                 // a frozen one's seats too, so boards can show or leave out
                 // its scores.
@@ -4122,14 +4291,10 @@ impl NativeBackend {
                         )
                     }
                 };
-                if let Some(issue) = panel_issue(&panel)
-                    .filter(|_| !matches!(evidence, JudgeEvidence::Calibration { .. }))
+                if let Some(issue) =
+                    issue.filter(|_| !matches!(evidence, JudgeEvidence::Calibration { .. }))
                 {
-                    attempt.reason = Some(if rejected.is_empty() {
-                        issue
-                    } else {
-                        format!("{issue}. A judge rejected this request; recovery needs another calibrated judge from the pool")
-                    });
+                    attempt.reason = Some(issue);
                     return Ok(attempt);
                 }
                 if !self.judges_idle(&panel).await? {
@@ -9970,6 +10135,9 @@ mod quota_resource_tests;
 
 #[cfg(test)]
 mod judge_quota_tests;
+
+#[cfg(test)]
+mod judge_discovery_diagnostics_tests;
 
 #[cfg(test)]
 mod evaluation_admission_tests;
