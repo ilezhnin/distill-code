@@ -1080,6 +1080,135 @@ describe("benchmark authoring and saved evidence", () => {
     client.clear();
   });
 
+  it("keeps unchanged cards quiet across evidence navigation while live results still update", async () => {
+    const secondVersion = {
+      ...definition.versions[0],
+      id: "version-2",
+      manifest: { ...draft, name: "Second transformation" },
+    };
+    catalog([
+      { ...definition, versions: [...definition.versions, secondVersion] },
+    ]);
+    const secondAttempt = {
+      ...attempt,
+      id: "attempt-2",
+      versionId: "version-2",
+    };
+    const row = leaderboardRow({
+      scoredVersionIds: ["version-1", "version-2"],
+      attemptIds: [attempt.id, secondAttempt.id],
+    });
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort: { ...cohort, versionIds: row.scoredVersionIds },
+      rows: [row],
+    });
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
+    const summaries = [
+      { ...attemptSummary, score: 1 },
+      {
+        ...attemptSummary,
+        id: secondAttempt.id,
+        versionId: "version-2",
+        score: 1,
+      },
+    ];
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(summaries);
+    vi.mocked(benchmarkApi.getEvidence).mockImplementation(async (id) =>
+      id === secondAttempt.id ? secondAttempt : attempt,
+    );
+    vi.mocked(benchmarkApi.getRun).mockResolvedValue({
+      ...run,
+      attempts: [attempt, secondAttempt],
+    });
+    const initialLocation: BenchmarkLocation = {
+      section: "leaderboard",
+      configurationId: rowKey(row),
+    };
+    const navigated = vi.fn();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    function Host({ canonical = false }: { canonical?: boolean }) {
+      const [location, setLocation] = useState(initialLocation);
+      return (
+        <QueryClientProvider client={client}>
+          <BenchmarksView
+            location={
+              canonical
+                ? { ...location, configurationId: modelKey(configuration) }
+                : location
+            }
+            onNavigate={(next) => {
+              navigated(next);
+              setLocation(next);
+            }}
+            onSelectSession={vi.fn()}
+          />
+        </QueryClientProvider>
+      );
+    }
+    const rendered = render(<Host />);
+    const first = await screen.findByRole("button", { name: /^Task 1: / });
+    const second = await screen.findByRole("button", { name: /^Task 2: / });
+    await waitFor(() => {
+      expect(first).toBeEnabled();
+      expect(second).toBeEnabled();
+    });
+    repetitionRenders.mockClear();
+    await userEvent.click(first);
+    await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(benchmarkApi.getEvidence).toHaveBeenCalledWith(attempt.id),
+    );
+    expect(navigated).toHaveBeenLastCalledWith({
+      ...initialLocation,
+      attemptId: attempt.id,
+    });
+    expect(repetitionRenders).not.toHaveBeenCalled();
+
+    // A genuine query update still changes the affected card behind the dialog.
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
+      summaries[0],
+      { ...summaries[1], outcome: "fail", score: 0 },
+    ]);
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["benchmarks", "cells"] });
+    });
+    await waitFor(() =>
+      expect(
+        within(second).getByRole("img", { hidden: true }),
+      ).toHaveAccessibleName(/0 of 1/),
+    );
+    expect(repetitionRenders.mock.calls).toEqual([
+      [["failed", "queued", "queued"]],
+    ]);
+    repetitionRenders.mockClear();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(navigated).toHaveBeenLastCalledWith({
+      ...initialLocation,
+      attemptId: undefined,
+    });
+    expect(repetitionRenders).not.toHaveBeenCalled();
+    // The legacy configuration URL and canonical model URL share this page.
+    // A stable handler must still preserve the newly committed route fields.
+    rendered.rerender(<Host canonical />);
+    await userEvent.click(second);
+    await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(benchmarkApi.getEvidence).toHaveBeenCalledWith(secondAttempt.id),
+    );
+    expect(navigated).toHaveBeenLastCalledWith({
+      ...initialLocation,
+      configurationId: modelKey(configuration),
+      attemptId: secondAttempt.id,
+    });
+    expect(repetitionRenders).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("runs the model page's model from its dialog on today's runtime", async () => {
     const stale = {
       ...configuration,

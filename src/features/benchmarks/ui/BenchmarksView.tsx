@@ -2,7 +2,9 @@ import { poolTaskOrder } from "./BenchmarkTaskGrid";
 import {
   Fragment,
   useCallback,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -179,10 +181,16 @@ export function BenchmarksView({
       ),
   );
   const openedRow = openedModel?.row ?? null;
-  const openEvidence = useCallback(
-    (attemptId: string) => onNavigate({ ...location, attemptId }),
-    [location, onNavigate],
-  );
+  // Opening evidence changes the route, not the cards behind the dialog.
+  // Keep their handler stable while reading the latest committed navigation.
+  const evidenceNavigation = useRef({ location, onNavigate });
+  useLayoutEffect(() => {
+    evidenceNavigation.current = { location, onNavigate };
+  }, [location, onNavigate]);
+  const openEvidence = useCallback((attemptId: string) => {
+    const current = evidenceNavigation.current;
+    current.onNavigate({ ...current.location, attemptId });
+  }, []);
   const openRun = (id: string) => {
     setDialog(null);
     setRunSelection(null);
