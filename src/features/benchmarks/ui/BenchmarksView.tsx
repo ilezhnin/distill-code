@@ -340,6 +340,8 @@ export function BenchmarksView({
                 runs={runs.data ?? []}
                 versions={versions}
                 onEvidence={openEvidence}
+                focusReturn={taskFocusReturn}
+                restoreFocus={!location.attemptId}
                 onRun={(runId) =>
                   guarded(() =>
                     setModelRun({

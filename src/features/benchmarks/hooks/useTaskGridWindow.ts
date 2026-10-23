@@ -45,6 +45,7 @@ export function useTaskGridWindow(
   locale: string,
   focusReturn?: MutableRefObject<TaskGridFocusReturn | null>,
   focusScope?: string,
+  restoreFocus = true,
 ) {
   const gridRef = useRef<HTMLUListElement>(null);
   const [geometry, setGeometry] = useState<Geometry | null>(null);
@@ -284,10 +285,22 @@ export function useTaskGridWindow(
     return () => cancelAnimationFrame(frame);
   });
 
+  const previousFocusScope = useRef(focusScope);
+  useLayoutEffect(() => {
+    const previous = previousFocusScope.current;
+    if (
+      previous !== focusScope &&
+      focusReturn?.current &&
+      focusReturn.current.scope === previous
+    )
+      focusReturn.current = null;
+    previousFocusScope.current = focusScope;
+  }, [focusScope, focusReturn]);
+
   useLayoutEffect(() => {
     const point = focusReturn?.current;
     const grid = gridRef.current;
-    if (!point || point.scope !== focusScope || !grid) return;
+    if (!restoreFocus || !point || point.scope !== focusScope || !grid) return;
     const index = keys.indexOf(point.versionId);
     const item = grid.children[index];
     const button = item?.querySelector("button");
@@ -308,7 +321,7 @@ export function useTaskGridWindow(
       focusReturn.current = null;
     });
     return () => cancelAnimationFrame(frame);
-  }, [keys, focusReturn, focusScope]);
+  }, [keys, focusReturn, focusScope, restoreFocus]);
 
   const pin = useCallback((key: string) => setPinnedKey(key), []);
   const rememberFocus = useCallback(

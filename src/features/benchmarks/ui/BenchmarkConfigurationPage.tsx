@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type MutableRefObject } from "react";
+import type { TaskGridFocusReturn } from "../hooks/useTaskGridWindow";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconPlayerPlay } from "@tabler/icons-react";
@@ -104,6 +105,8 @@ export function BenchmarkConfigurationPage({
   onEvidence,
   onRun,
   onOpenRun,
+  focusReturn,
+  restoreFocus,
 }: {
   row: LeaderboardRow;
   report: LeaderboardReport;
@@ -114,6 +117,8 @@ export function BenchmarkConfigurationPage({
   onRun: (activeRunId: string | null) => void;
   /** Opens an unfinished run that already covers some of the gaps. */
   onOpenRun: (runId: string) => void;
+  focusReturn?: MutableRefObject<TaskGridFocusReturn | null>;
+  restoreFocus?: boolean;
 }) {
   const { t } = useTranslation("benchmarks");
   const releases = useBenchmarkReleases();
@@ -669,7 +674,17 @@ export function BenchmarkConfigurationPage({
       <section className="space-y-4">
         <SectionHeading title={t("grid.title", { cases: cells.length })} />
         <TaskSummary cells={cells} />
-        <TaskGrid cells={cells} onOpen={openCell} />
+        <TaskGrid
+          cells={cells}
+          onOpen={openCell}
+          focusReturn={focusReturn}
+          focusScope={JSON.stringify([
+            "model",
+            key,
+            selected ? pointId(selected.snapshot) : null,
+          ])}
+          restoreFocus={restoreFocus}
+        />
       </section>
     </div>
   );

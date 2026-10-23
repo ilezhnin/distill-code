@@ -337,6 +337,7 @@ export function TaskGrid({
   timing = "generation",
   focusReturn,
   focusScope,
+  restoreFocus,
 }: {
   cells: TaskCell[];
   onOpen: (cell: TaskCell) => void;
@@ -346,6 +347,8 @@ export function TaskGrid({
   timing?: "generation" | "elapsed";
   focusReturn?: MutableRefObject<TaskGridFocusReturn | null>;
   focusScope?: string;
+  /** A persistent model grid waits until its evidence dialog closes. */
+  restoreFocus?: boolean;
 }) {
   // Recalculated history snapshots often contain the same settled cases.
   // Retain a case only when all its data is equal, including evidence IDs
@@ -368,6 +371,7 @@ export function TaskGrid({
     i18n.resolvedLanguage ?? i18n.language,
     focusReturn,
     focusScope,
+    restoreFocus,
   );
   return (
     <ul

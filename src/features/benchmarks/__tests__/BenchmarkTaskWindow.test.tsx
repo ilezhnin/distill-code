@@ -418,7 +418,7 @@ it("cancels a pending focus return when its route scope changes", async () => {
   expect(
     screen.getByRole("button", { name: "Task 41: Invented 40" }),
   ).not.toHaveFocus();
-  expect(focusReturn.current?.scope).toBe("invented-run:model");
+  expect(focusReturn.current).toBeNull();
 });
 
 it("lets user scrolling cancel a responsive anchor immediately", () => {

@@ -1132,18 +1132,20 @@ describe("benchmark authoring and saved evidence", () => {
       const [location, setLocation] = useState(initialLocation);
       return (
         <QueryClientProvider client={client}>
-          <BenchmarksView
-            location={
-              canonical
-                ? { ...location, configurationId: modelKey(configuration) }
-                : location
-            }
-            onNavigate={(next) => {
-              navigated(next);
-              setLocation(next);
-            }}
-            onSelectSession={vi.fn()}
-          />
+          <div style={{ overflowY: "auto" }}>
+            <BenchmarksView
+              location={
+                canonical
+                  ? { ...location, configurationId: modelKey(configuration) }
+                  : location
+              }
+              onNavigate={(next) => {
+                navigated(next);
+                setLocation(next);
+              }}
+              onSelectSession={vi.fn()}
+            />
+          </div>
         </QueryClientProvider>
       );
     }
@@ -1155,7 +1157,10 @@ describe("benchmark authoring and saved evidence", () => {
       expect(second).toBeEnabled();
     });
     repetitionRenders.mockClear();
-    await userEvent.click(first);
+    act(() => second.focus());
+    await userEvent.tab({ shift: true });
+    expect(first).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
     await screen.findByRole("dialog");
     await waitFor(() =>
       expect(benchmarkApi.getEvidence).toHaveBeenCalledWith(attempt.id),
@@ -1191,6 +1196,7 @@ describe("benchmark authoring and saved evidence", () => {
       ...initialLocation,
       attemptId: undefined,
     });
+    await waitFor(() => expect(first).toHaveFocus());
     expect(repetitionRenders).not.toHaveBeenCalled();
     // The legacy configuration URL and canonical model URL share this page.
     // A stable handler must still preserve the newly committed route fields.
@@ -1206,6 +1212,111 @@ describe("benchmark authoring and saved evidence", () => {
       attemptId: secondAttempt.id,
     });
     expect(repetitionRenders).not.toHaveBeenCalled();
+    client.clear();
+  });
+
+  it.each([
+    "model",
+    "section",
+    "point",
+  ] as const)("does not restore a stale model task after its %s scope changes", async (change) => {
+    const row = leaderboardRow();
+    const report = { cohort, rows: [row] };
+    const snapshot: ModelHistoryViewPoint = {
+      id: "invented-point-a",
+      runId: run.id,
+      createdAt: 1_000,
+      recalculatedReport: report,
+      backfilledVersionIds: [],
+      revisedVersionIds: [],
+    };
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue(report);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([snapshot]);
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
+      { ...attemptSummary, score: 1 },
+    ]);
+    const initial: BenchmarkLocation = {
+      section: "leaderboard",
+      configurationId: rowKey(row),
+    };
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    let navigate = (_location: BenchmarkLocation) => {};
+    function Host() {
+      const [location, setLocation] = useState(initial);
+      navigate = setLocation;
+      return (
+        <QueryClientProvider client={client}>
+          <div style={{ overflowY: "auto" }}>
+            <BenchmarksView
+              location={location}
+              onNavigate={setLocation}
+              onSelectSession={vi.fn()}
+            />
+          </div>
+        </QueryClientProvider>
+      );
+    }
+    const view = render(<Host />);
+    if (change === "point") {
+      await waitFor(() =>
+        expect(
+          view.container.querySelector(
+            '[data-history-point="invented-point-a"]',
+          ),
+        ).not.toBeNull(),
+      );
+      const point = view.container.querySelector(
+        '[data-history-point="invented-point-a"]',
+      );
+      if (!point) throw new Error("Missing invented history point");
+      fireEvent.click(point);
+    }
+    const task = await screen.findByRole("button", { name: /^Task 1: / });
+    await waitFor(() => expect(task).toBeEnabled());
+    act(() => task.focus());
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("dialog");
+    if (change === "point") {
+      act(() => {
+        client.setQueriesData({ queryKey: ["benchmarks", "history"] }, [
+          { ...snapshot, id: "invented-point-b", createdAt: 2_000 },
+        ]);
+      });
+      await waitFor(() =>
+        expect(
+          view.container.querySelector(
+            '[data-history-point="invented-point-b"]',
+          ),
+        ).not.toBeNull(),
+      );
+    } else {
+      act(() =>
+        navigate(
+          change === "model"
+            ? {
+                ...initial,
+                configurationId: modelKey(configuration),
+                attemptId: attempt.id,
+              }
+            : { section: "development", attemptId: attempt.id },
+        ),
+      );
+    }
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    if (change === "section") act(() => navigate(initial));
+    const current = await screen.findByRole("button", { name: /^Task 1: / });
+    await act(async () => {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+    });
+    expect(current).not.toHaveFocus();
     client.clear();
   });
 
