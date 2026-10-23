@@ -388,6 +388,15 @@ model = "private"
         annotate_models(&mut rows, &catalog);
         assert_eq!(rows[0]["contextLimit"], 1048576);
         assert!(rows[1]["contextLimit"].is_null());
+        // Both the inventory response and known_models merge the stored
+        // probe with display defaults before the sandbox launch reads it.
+        let rows = harness::merge_inventory("kimi-acp", rows);
+        let rows = harness::merge_inventory("kimi-acp", rows);
+        let merged = rows
+            .iter()
+            .find(|row| row["id"] == "kimi-code/future")
+            .unwrap();
+        assert_eq!(merged["contextLimit"], 1048576);
         let projected = sandbox_catalog(&rows).unwrap();
         let parsed: Value = serde_json::from_str(&projected).unwrap();
         assert_eq!(parsed["kimi-code/future"]["model"], "future");

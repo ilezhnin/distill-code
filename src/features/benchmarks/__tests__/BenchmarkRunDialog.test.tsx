@@ -8,6 +8,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
 import { benchmarkApi } from "../api/benchmarks";
 import type { Capability, InventoryModel } from "../types";
 import { BenchmarkRunDialog } from "../ui/BenchmarkRunDialog";
@@ -111,6 +112,18 @@ it.each([
       cliAccountId: "cli-login-kimi-acp",
     },
   ]);
+  vi.mocked(listProviderAccounts).mockResolvedValueOnce({
+    accounts: [
+      {
+        id: "cli-login-kimi-acp",
+        providerId: "kimi-acp",
+        label: "Kimi Code sign-in",
+        enabled: true,
+      },
+    ],
+    defaults: {},
+    automaticSwitching: {},
+  } as Awaited<ReturnType<typeof listProviderAccounts>>);
   if (failureKind === "error") {
     vi.mocked(benchmarkApi.getInventory).mockRejectedValue(stalePolicy);
   } else {
@@ -141,6 +154,14 @@ it.each([
   );
   await user.click(screen.getByRole("combobox", { name: "Provider" }));
   await user.click(await screen.findByRole("option", { name: "Kimi Code" }));
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  expect(
+    screen.queryByRole("option", { name: "No account" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("option", { name: "Kimi Code sign-in" }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("option", { name: "CLI sign-in" }));
   await user.click(
     await screen.findByRole("button", { name: "Update sandbox check" }),
   );
@@ -150,6 +171,13 @@ it.each([
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue([kimi]);
   finish();
+  await waitFor(() =>
+    expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
+      "kimi-acp",
+      "cli-login-kimi-acp",
+      true,
+    ),
+  );
   await waitFor(() =>
     expect(
       screen.queryByText(
@@ -203,6 +231,58 @@ it("keeps a failed sandbox renewal blocked and allows a retry", async () => {
     screen.getByRole("button", { name: "Update sandbox check" }),
   );
   expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledTimes(2);
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
+it("refreshes the provider catalogue when retrying inventory without renewing policy", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory).mockImplementation(
+    async (_provider, _account, refresh) => {
+      if (!refresh) throw "refresh the shared model catalogue";
+      return [
+        {
+          configuration,
+          name: "Test model",
+          efforts: [],
+          supportsFastMode: false,
+          available: true,
+          reason: null,
+        },
+      ];
+    },
+  );
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  await user.click(screen.getByRole("option", { name: "Test account" }));
+  await user.click(await screen.findByRole("button", { name: "Check again" }));
+  await waitFor(() =>
+    expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
+      "claude-acp",
+      "account-1",
+      true,
+    ),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+  );
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  expect(screen.getByRole("option", { name: "Test model" })).toBeVisible();
+  expect(benchmarkApi.renewPolicyCheck).not.toHaveBeenCalled();
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
 });
 

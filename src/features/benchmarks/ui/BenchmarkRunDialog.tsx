@@ -144,7 +144,8 @@ export function BenchmarkRunDialog({
   // fixed identity that names it.
   const managedAccounts = (id: string) =>
     accounts.data?.accounts.filter(
-      (entry) => entry.providerId === id && entry.enabled,
+      (entry) =>
+        entry.providerId === id && entry.enabled && entry.id !== cliAccount(id),
     ) ?? [];
   const cliAccount = (id: string) =>
     capabilities.data?.find(
@@ -314,6 +315,26 @@ export function BenchmarkRunDialog({
     setEffort(null);
     setFastMode(false);
   };
+  const refreshInventory = async () => {
+    const refreshedInventory = await client.fetchQuery({
+      queryKey: [...benchmarkKeys, "inventory", providerId, selectedAccount],
+      queryFn: () =>
+        benchmarkApi.getInventory(
+          providerId,
+          selectedAccount === "none" ? null : selectedAccount,
+          true,
+        ),
+      staleTime: 0,
+    });
+    setSelections((previous) =>
+      previous.map((entry) =>
+        entry.configuration.providerId === providerId &&
+        entry.configuration.accountId === selectedAccount
+          ? { ...entry, inventory: refreshedInventory }
+          : entry,
+      ),
+    );
+  };
   const renewPolicy = () =>
     operate(async () => {
       setRenewingPolicy(true);
@@ -323,18 +344,7 @@ export function BenchmarkRunDialog({
           queryKey: [...benchmarkKeys, "inventory", providerId],
           refetchType: "none",
         });
-        const refreshed = await inventory.refetch({ throwOnError: true });
-        const refreshedInventory = refreshed.data;
-        if (refreshedInventory) {
-          setSelections((previous) =>
-            previous.map((entry) =>
-              entry.configuration.providerId === providerId &&
-              entry.configuration.accountId === selectedAccount
-                ? { ...entry, inventory: refreshedInventory }
-                : entry,
-            ),
-          );
-        }
+        await refreshInventory();
       } finally {
         setRenewingPolicy(false);
       }
@@ -508,7 +518,7 @@ export function BenchmarkRunDialog({
                   onClick={() =>
                     void (policyCheckMissing
                       ? renewPolicy()
-                      : inventory.refetch())
+                      : operate(refreshInventory))
                   }
                 >
                   {t(

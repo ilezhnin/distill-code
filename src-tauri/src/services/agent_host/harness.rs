@@ -457,6 +457,21 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
         rows.push((order, bridge_row(row, order)));
     }
     rows.sort_by_key(|(order, _)| *order);
+    // Presentation defaults must preserve the public runtime metadata the
+    // probe supplied. Kimi uses its model definition when starting an owned
+    // sandbox session; dropping it makes even a freshly probed list unusable.
+    for (_, row) in &mut rows {
+        if let Some(probed) = probed.iter().find(|probed| probed["id"] == row["id"]) {
+            if let Some(context) = probed.get("contextLimit") {
+                row["contextLimit"] = context.clone();
+            }
+            if harness_id == "kimi-acp" {
+                if let Some(model) = probed.get("kimiModel") {
+                    row["kimiModel"] = model.clone();
+                }
+            }
+        }
+    }
     let newest = rows
         .iter()
         .filter_map(|(_, row)| model_generation(harness_id, row))
