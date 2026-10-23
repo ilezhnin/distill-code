@@ -19,10 +19,21 @@ export function useStagedAppContentLocation(
     renderedLocation.view === "settings" &&
     targetLocation.view === "settings" &&
     !areAppNavigationLocationsEqual(renderedLocation, targetLocation);
+  // Evidence is a dialog over the same benchmark page. Opening or closing it
+  // must not hide that page behind a full-page placeholder and another paint.
+  const isBenchmarkEvidenceChange =
+    renderedLocation.view === "benchmarks" &&
+    targetLocation.view === "benchmarks" &&
+    renderedLocation.section === targetLocation.section &&
+    renderedLocation.configurationId === targetLocation.configurationId &&
+    renderedLocation.benchmarkId === targetLocation.benchmarkId &&
+    renderedLocation.runId === targetLocation.runId &&
+    renderedLocation.attemptId !== targetLocation.attemptId;
   const stageRouteContent =
     targetLocation.view !== "chat" &&
     targetLocation.view !== "home" &&
-    !isSettingsSectionChange;
+    !isSettingsSectionChange &&
+    !isBenchmarkEvidenceChange;
   const visibleRenderedLocation = stageRouteContent
     ? renderedLocation
     : targetLocation;
