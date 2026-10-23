@@ -91,7 +91,7 @@ export type DotState = "queued" | "running" | "passed" | "failed" | "stopped";
 const DOT_TONE: Record<DotState, string> = {
   queued: "bg-muted-foreground/40",
   stopped: "border border-muted-foreground/60",
-  running: "bg-info animate-pulse",
+  running: "bg-info",
   passed: "bg-success",
   failed: "bg-destructive",
 };
@@ -103,9 +103,12 @@ const DOT_TONE: Record<DotState, string> = {
 export function RepetitionDots({
   states,
   className,
+  animate = true,
 }: {
   states: DotState[];
   className?: string;
+  /** A retained unfinished result stays blue while its work is stopped. */
+  animate?: boolean;
 }) {
   const { t } = useTranslation("benchmarks");
   const passes = states.filter((state) => state === "passed").length;
@@ -123,7 +126,11 @@ export function RepetitionDots({
           // biome-ignore lint/suspicious/noArrayIndexKey: dots are positional, the repetition number is their identity
           key={`${state}-${index}`}
           data-dot={state}
-          className={cn("size-2 rounded-full", DOT_TONE[state])}
+          className={cn(
+            "size-2 rounded-full",
+            DOT_TONE[state],
+            state === "running" && animate && "animate-pulse",
+          )}
         />
       ))}
     </span>

@@ -411,7 +411,14 @@ const TaskCard = memo(function TaskCard({
               <span className="font-medium tabular-nums">
                 {t("grid.task", { number: cell.number })}
               </span>
-              <RepetitionDots states={cell.dots} />
+              <RepetitionDots
+                states={cell.dots}
+                animate={
+                  clockAt == null &&
+                  (cell.status?.kind === "running" ||
+                    cell.status?.kind === "judging")
+                }
+              />
             </span>
             {cell.status?.kind === "waiting" ||
             cell.status?.kind === "judging" ||
