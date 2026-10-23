@@ -5335,19 +5335,6 @@ impl ExecutionBackend for NativeBackend {
                     "Cumulative repository collection requires a native root lease",
                 ));
             }
-            let mut cleanup = sandbox::Cleanup(Some(if repository {
-                repository_execution::attempt_id(&turn_owner(&attempt))
-            } else {
-                text_execution::attempt_id(&turn_owner(&attempt))
-            }));
-            if let Some(id) = cleanup.0.as_deref() {
-                // The sandbox's cgroup leaf names no attempt; this line maps it.
-                log::info!(
-                    "[benchmarks] sandbox job session-{id} = attempt {} ({})",
-                    attempt.id,
-                    attempt.configuration.execution_profile
-                );
-            }
             // A later step of a workflow already running finishes on the grant
             // its workflow was admitted with; only new work waits for a
             // renewal that drains the account.
@@ -5397,6 +5384,25 @@ impl ExecutionBackend for NativeBackend {
             }
             busy().await?;
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
+            // Until sign-in, runtime and account readiness succeed, nothing
+            // of this try exists in Linux. Arming cleanup earlier starts an
+            // independent bench-clean for every renewal refusal, so a queue
+            // of untouched cells can exhaust the supervisor process budget.
+            // Arm before the first workspace/session operation instead, so
+            // partial setup, cancellation and paid turns still clean up.
+            let mut cleanup = sandbox::Cleanup(Some(if repository {
+                repository_execution::attempt_id(&turn_owner(&attempt))
+            } else {
+                text_execution::attempt_id(&turn_owner(&attempt))
+            }));
+            if let Some(id) = cleanup.0.as_deref() {
+                // The sandbox's cgroup leaf names no attempt; this line maps it.
+                log::info!(
+                    "[benchmarks] sandbox job session-{id} = attempt {} ({})",
+                    attempt.id,
+                    attempt.configuration.execution_profile
+                );
+            }
             if let Some(id) = cleanup.0.clone().filter(|_| repository) {
                 // Asked before the verify and the copy, each a preparation
                 // job: a refused retry prepares nothing, and the check made
