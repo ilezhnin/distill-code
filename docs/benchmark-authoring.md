@@ -301,11 +301,15 @@ under an hour old it is not listed again, and up to twelve hours old it still
 seats the judge when a refresh is refused, as the sandbox refuses a listing
 under load. If no recent listing is available and local resource admission
 refuses discovery, an otherwise incomplete panel waits with the resource queue.
-A local resource refusal parks new generations, evaluations and judges for
-two minutes. Already admitted jobs continue; a completed job wakes the queue
-early. One candidate probes admission after either event, and successes widen
-preparation until the available capacity is filled. Another refusal parks the
-queue again, without cycling through its cells. The saved answer is kept,
+A local resource refusal parks its preparation lane for two minutes. Native
+repository and browser checks use one lane; candidates, judges and local answer
+comparisons use the other. A queued or running checker cannot occupy the other
+lane, and a check stops counting as preparation once its native workload has
+actually been admitted. Both lanes obey the same native CPU, memory and timing
+limits. Already admitted jobs continue; a completed job can wake either lane
+early. One job probes admission after either event, and successes widen
+preparation until the available capacity is filled. Another refusal parks its
+lane again, without cycling through its cells. The saved answer is kept,
 including in no-replay runs;
 temporary discovery failures do not mean the judge is unavailable. A rendering
 gets one calibrated judge per lab (Anthropic, OpenAI

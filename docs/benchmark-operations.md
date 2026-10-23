@@ -760,6 +760,14 @@ and outside CPU, the capacity and the competing jobs), so a planning result
 can be audited later. `heavy-cap` is an emergency knob, off by default, that no
 plan sets.
 
+After a restart, receipt recovery and local checking run as managed flights,
+one recovered attempt per store at a time. A slow recovered check does not stop
+eligible candidates or judge panels from being dispatched. It retains its
+sealed output, follows the same sandbox admission rules and responds to run
+cancellation; a planning check still holds its configuration's seat. Recovery
+never regenerates the candidate answer, and restoring an unfinished judge panel
+continues to follow the run's retry policy and frozen panel evidence.
+
 Each attempt records the conditions its candidate session was admitted under,
 as `sandboxAdmission` on the attempt and in its sealed evidence: the admission
 policy and any operator cap, the jobs already running by class, the memory

@@ -61,6 +61,11 @@ async fn a_renewal_wait_holds_a_cell_of_a_run_without_automatic_retry() {
     assert!(until <= now() + SIGN_IN_RETRY_MS);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     release(&run.id);
+    // Simulate the same expiry in both the in-memory provider hold and the
+    // durable cell deadline, which must survive losing the in-memory hold.
+    let mut expired = cell.clone();
+    expired.wait_until = Some(now() - 1);
+    service.store.save_attempt(&expired).await.unwrap();
     for _ in 0..3 {
         service.tick().await.unwrap();
     }
@@ -93,6 +98,9 @@ async fn a_workflow_waiting_for_a_renewal_at_its_first_step_starts_afresh() {
         assert!(root.workflow_steps.is_empty());
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
         release(&run.id);
+        let mut expired = root.clone();
+        expired.wait_until = Some(now() - 1);
+        service.store.save_attempt(&expired).await.unwrap();
         for _ in 0..3 {
             service.tick().await.unwrap();
         }

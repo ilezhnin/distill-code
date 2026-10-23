@@ -1397,6 +1397,7 @@ pub(crate) async fn invoke_reserved_bounded(
     cap: usize,
     timeout: Duration,
 ) -> io::Result<Output> {
+    observe_workload_admission(reservation.class);
     let mut out = invoke_raw(program, args, input, cap, timeout, Some(reservation)).await?;
     // The run's supervisor prints its receipt as the last stderr line; a
     // helper from an earlier build, or a run cut short, needs the call.
@@ -1434,6 +1435,36 @@ pub(crate) async fn invoke_reserved_bounded(
         out.candidate_limit = Some(limit.to_owned());
     }
     Ok(out)
+}
+
+tokio::task_local! {
+    /// An evaluator's observer belongs only to its async call, never a
+    /// concurrent check, provider turn or later use of the same worker.
+    static WORKLOAD_ADMISSION: Box<dyn Fn() + Send + Sync>;
+}
+
+/// Observe substantive evaluator admission without changing the broker's
+/// resource checks or its queue. Preparation/copy helpers do not establish
+/// that the actual checker or browser has obtained its own lease.
+pub(crate) async fn with_workload_admission<F: std::future::Future>(
+    admitted: impl Fn() + Send + Sync + 'static,
+    evaluate: F,
+) -> F::Output {
+    WORKLOAD_ADMISSION.scope(Box::new(admitted), evaluate).await
+}
+
+fn observe_workload_admission(class: ResourceClass) {
+    if matches!(
+        class,
+        ResourceClass::Check | ResourceClass::PairedCheck | ResourceClass::Browser
+    ) {
+        let _ = WORKLOAD_ADMISSION.try_with(|admitted| admitted());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_workload_admission(class: ResourceClass) {
+    observe_workload_admission(class);
 }
 
 /// What the broker kept for a session job whose own memory ceiling killed a

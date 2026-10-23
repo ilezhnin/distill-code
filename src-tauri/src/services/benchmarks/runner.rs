@@ -7329,6 +7329,20 @@ pub(super) fn public_task_prompt(draft: &super::learned::PublicTask) -> Result<S
     }
     Ok(prompt)
 }
+/// Only isolated checks need the evaluator preparation lane. Local answer
+/// comparisons and rubric validation share the candidate/judge lane, so a
+/// queued native checker cannot delay an already available local verdict.
+fn evaluation_preparation_scope(scope: &str, draft: &BenchmarkDraft) -> String {
+    if matches!(
+        draft.evaluator.kind.as_str(),
+        "javascript" | "browser" | "repository"
+    ) {
+        admission_window::evaluation_scope(scope)
+    } else {
+        scope.to_owned()
+    }
+}
+
 pub async fn evaluate(draft: &BenchmarkDraft, output: &str) -> Result<Evaluation> {
     if matches!(draft.evaluator.kind.as_str(), "javascript" | "browser") {
         return super::worker::evaluate(draft, output).await;
@@ -7385,7 +7399,6 @@ impl BenchmarkService {
         }
     }
     async fn tick(self: &Arc<Self>) -> Result<()> {
-        self.housekeeping().await?;
         let mut kept = Instant::now();
         // Attempts and judge panels in flight, each its own task; each settles
         // its own attempt and frees its slot, and the next fill takes the slot
@@ -7395,8 +7408,15 @@ impl BenchmarkService {
         // straight back to the queue waits for the next tick; an attempt put
         // back with a wait starts again once the wait is over.
         let mut tried = std::collections::HashSet::new();
+        // Recovery owns ordinary flights too: a slow local checker must not
+        // stop this loop from dispatching unrelated turns and judge panels.
+        let maintained = self.housekeeping(&mut flights, &mut tried).await;
         // A failed dispatch still lets what already flies land.
-        let dispatched = self.fill(&mut flights, &mut tried).await;
+        let dispatched = if maintained.is_ok() {
+            self.fill(&mut flights, &mut tried).await
+        } else {
+            Ok(())
+        };
         // The tick lasts while anything flies; the next one settles runs left
         // with nothing to do.
         while !flights.is_empty() {
@@ -7410,28 +7430,48 @@ impl BenchmarkService {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
             if flights.is_empty() {
-                break;
+                if maintained.is_ok() {
+                    // Drain the interrupted receipts one at a time before an
+                    // operator resumes their campaign; other work can still
+                    // be filled while each recovered checker runs.
+                    self.recover_interrupted(&mut flights, &mut tried).await?;
+                    if flights.is_empty() {
+                        // Journal the recovered first observations while the
+                        // campaign is still stopped, without dispatching any
+                        // replacement turn or waiting for the next tick.
+                        super::workflow_campaign::tick(self).await?;
+                    }
+                }
+                if flights.is_empty() {
+                    break;
+                }
             }
             // Under nonstop measurement a tick hardly ends, so what starts one
             // also runs on its own clock while it lasts.
-            if kept.elapsed() >= HOUSEKEEPING_EVERY {
+            if maintained.is_ok() && kept.elapsed() >= HOUSEKEEPING_EVERY {
                 kept = Instant::now();
-                if let Err(error) = self.housekeeping().await {
+                if let Err(error) = self.housekeeping(&mut flights, &mut tried).await {
                     log::warn!("[benchmarks] housekeeping paused: {}", error.message);
                 }
             }
-            if let Err(error) = self.fill(&mut flights, &mut tried).await {
-                log::warn!("[benchmarks] dispatch paused: {}", error.message);
+            if maintained.is_ok() {
+                if let Err(error) = self.fill(&mut flights, &mut tried).await {
+                    log::warn!("[benchmarks] dispatch paused: {}", error.message);
+                }
             }
         }
-        dispatched
+        maintained.and(dispatched)
     }
     /// Recovers interrupted attempts, bakes closed windows and admits due
     /// campaign work: at the start of every tick, and every
     /// [`HOUSEKEEPING_EVERY`] within one.
-    async fn housekeeping(self: &Arc<Self>) -> Result<()> {
+    async fn housekeeping(
+        self: &Arc<Self>,
+        flights: &mut tokio::task::JoinSet<()>,
+        tried: &mut std::collections::HashSet<String>,
+    ) -> Result<()> {
         self.store.beat(now()).await?;
-        self.recover_interrupted().await?;
+        self.recover_interrupted(flights, tried).await?;
         self.bake_closed_windows().await?;
         super::campaigns::tick(self).await?;
         super::workflow_campaign::tick(self).await
@@ -7468,119 +7508,232 @@ impl BenchmarkService {
         }
         Ok(())
     }
-    async fn recover_interrupted(&self) -> Result<()> {
+    /// Receipt collection and checking are managed, cancellable flights, not
+    /// housekeeping awaits. A store recovers one receipt at a time while its
+    /// other eligible candidates and panels continue through normal admission.
+    async fn recover_interrupted(
+        self: &Arc<Self>,
+        flights: &mut tokio::task::JoinSet<()>,
+        tried: &mut std::collections::HashSet<String>,
+    ) -> Result<()> {
         let interrupted = sqlx::query_scalar::<_, String>(
             "SELECT data_json FROM attempts WHERE phase='interrupted'",
         )
         .fetch_all(&self.store.pool)
         .await?;
-        let scope = self.store.root.display().to_string();
+        let root_scope = self.store.root.display().to_string();
+        let lane = format!("recovery:{}", root_scope);
         for data in interrupted {
-            let mut a: Attempt = serde_json::from_str(&data)?;
-            // A sealed generation whose evaluation the sandbox refused asks
-            // again once its short pause is over.
-            if a.wait_until.is_some_and(|until| until > now()) {
+            let a: Attempt = serde_json::from_str(&data)?;
+            if a.wait_until.is_some_and(|until| until > now())
+                || (tried.contains(&a.id) && a.wait_until.is_none())
+                || self.active.lock().await.contains_key(&a.id)
+            {
                 continue;
             }
-            if !admission_window::has_room(&scope) {
-                continue;
-            }
-            let request = self.store.run(&a.run_id).await?.request;
+            let run = self.store.run(&a.run_id).await?;
             let version = self.store.version(&a.version_id).await?;
-            let recovered = if version.manifest.workflow.is_some() {
-                super::workflow::recover(self, a.clone(), version.clone()).await?
-            } else {
-                self.backend.recover(&self.store, a.clone()).await?
+            let scope = evaluation_preparation_scope(&root_scope, &version.manifest);
+            let job = format!("evaluation:{}", a.id);
+            let Some(preparing) = admission_window::begin(&scope, &job) else {
+                continue;
             };
-            match recovered {
-                Some(mut restored) => {
-                    // A recovered prefix waits for an explicit resume before another paid step.
-                    if restored.phase == "pending" {
-                        if !request.automatic_retry() {
-                            restored.phase = "terminal".into();
-                            restored.outcome = Some("interrupted".into());
-                            restored.reason = Some("Recovered workflow prefix retained; this run forbids another dispatch after interruption".into());
-                            restored.finished_at = Some(now());
-                        } else if version.manifest.workflow.is_none() {
-                            // Back in the queue, a standalone try takes its
-                            // clock with it, as after any requeue.
-                            drop_collection_clock(&self.store, &mut restored).await?;
-                        }
-                        self.store.save_attempt(&restored).await?;
-                        continue;
-                    }
-                    if restored.outcome.as_deref() == Some("completed") {
-                        match self
-                            .backend
-                            .evaluate_output(
-                                &version.manifest,
-                                restored.output.as_deref().unwrap_or_default(),
-                            )
-                            .await
-                        {
-                            Ok(e) => {
-                                if restored
-                                    .reason
-                                    .as_deref()
-                                    .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
-                                {
-                                    restored.reason = None;
-                                }
-                                restored.wait_until = None;
-                                restored.outcome = Some(e.verdict.clone());
-                                restored.evaluations.push(e);
-                            }
-                            // Nothing graded the sealed generation: it stays
-                            // interrupted, and a later pass asks again without
-                            // recovering the turn again, as long as its run
-                            // goes on. The run waits for it.
-                            Err(e)
-                                if unstarted_refusal(&e)
-                                    && restored.evidence_hash.is_some()
-                                    && !matches!(
-                                        self.store.run_state(&restored.run_id).await?.as_str(),
-                                        "cancelling" | "cancelled"
-                                    ) =>
-                            {
-                                admission_window::refused(&scope, &restored.id);
-                                restored.phase = "interrupted".into();
-                                restored.reason = Some(format!("{EVALUATION_WAIT}: {}", e.message));
-                                restored.wait_until =
-                                    Some(now() + admission_window::RETRY.as_millis() as i64);
-                                self.store.save_attempt(&restored).await?;
-                                self.changed().await;
-                                continue;
-                            }
-                            Err(e) => {
-                                restored.outcome = Some("evaluation_error".into());
-                                restored.reason = Some(e.message);
-                            }
-                        }
-                    }
-                    // A rendering whose panel a restart cut off keeps its paid
-                    // generation and waits for its run's resume, which asks a
-                    // fresh panel; anything else settles here.
-                    if request.automatic_retry() && self.awaits_panel(&restored, &version).await? {
-                        restored.phase = AWAITING_JUDGES.into();
-                        restored.reason = Some(JUDGING_STOPPED.into());
-                    } else {
+            // Planning checks keep the configuration's seat just as a freshly
+            // completed turn does; recovery does not create a new paid turn.
+            let workers = if checks_without_its_seat(&a, &version) {
+                Vec::new()
+            } else {
+                let account = format!(
+                    "{}\u{1f}{}",
+                    a.configuration.provider_id,
+                    a.configuration.account_id.as_deref().unwrap_or_default()
+                );
+                vec![WorkerReservation {
+                    lane: super::analysis::configuration_key(&a.configuration),
+                    account_slots: account_slots(
+                        &run.id,
+                        &quota_scope(&a.configuration),
+                        &pace_key(&self.store, &account),
+                    ),
+                    account,
+                    lane_slots: attempts_at_once(&run.request, &a.configuration) as usize,
+                }]
+            };
+            let Some(cancel) = self
+                .claim_workers(
+                    &run.id,
+                    Seat {
+                        id: &a.id,
+                        lane: &lane,
+                        lane_slots: 1,
+                        account: "",
+                        account_slots: usize::MAX,
+                        model: "",
+                        model_slots: usize::MAX,
+                    },
+                    workers,
+                )
+                .await
+            else {
+                continue;
+            };
+            let id = a.id.clone();
+            tried.insert(id.clone());
+            let service = self.clone();
+            let preparing = Arc::new(preparing.observe());
+            flights.spawn(async move {
+                let result = AssertUnwindSafe(service.recover_one(
+                    a,
+                    &run.request,
+                    &version,
+                    cancel,
+                    &scope,
+                    &job,
+                    preparing.clone(),
+                ))
+                .catch_unwind()
+                .await;
+                // The observer drops on every exit, including a checker panic.
+                drop(preparing);
+                service.finish_flight(&id, &id, result).await;
+            });
+            break;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn recover_one(
+        &self,
+        mut a: Attempt,
+        request: &RunRequest,
+        version: &BenchmarkVersion,
+        mut cancel: watch::Receiver<bool>,
+        scope: &str,
+        job: &str,
+        preparing: Arc<admission_window::ObservedJob>,
+    ) -> Result<()> {
+        let recovered = if version.manifest.workflow.is_some() {
+            super::workflow::recover(self, a.clone(), version.clone()).await?
+        } else {
+            self.backend.recover(&self.store, a.clone()).await?
+        };
+        match recovered {
+            Some(mut restored) => {
+                // A recovered prefix waits for an explicit resume before another paid step.
+                if restored.phase == "pending" {
+                    if !request.automatic_retry() {
                         restored.phase = "terminal".into();
+                        restored.outcome = Some("interrupted".into());
+                        restored.reason = Some("Recovered workflow prefix retained; this run forbids another dispatch after interruption".into());
+                        restored.finished_at = Some(now());
+                    } else if version.manifest.workflow.is_none() {
+                        // Back in the queue, a standalone try takes its
+                        // clock with it, as after any requeue.
+                        drop_collection_clock(&self.store, &mut restored).await?;
                     }
                     self.store.save_attempt(&restored).await?;
-                    self.changed().await;
+                    return Ok(());
                 }
-                None => {
-                    a.phase = "terminal".into();
-                    a.outcome = Some("dispatch_uncertain".into());
-                    a.reason = Some(if request.automatic_retry() {
-                        "Remote acceptance cannot be established after restart; the run continues with its other tests, and this case starts over when the run resumes"
+                if restored.outcome.as_deref() == Some("completed") {
+                    // Save newly recovered output before a fallible checker;
+                    // panic/cancellation cleanup must keep its sealed receipt.
+                    restored.phase = "interrupted".into();
+                    restored.wait_until = None;
+                    self.store.save_attempt(&restored).await?;
+                    if !self.backend.paces_preparation() {
+                        preparing.admitted();
+                    }
+                    let admission = preparing.clone();
+                    let evaluate = sandbox::with_workload_admission(
+                        move || admission.admitted(),
+                        self.backend.evaluate_output(
+                            &version.manifest,
+                            restored.output.as_deref().unwrap_or_default(),
+                        ),
+                    );
+                    let evaluation = if *cancel.borrow() {
+                        Err(BenchmarkError::new(
+                            "cancelled",
+                            "Recovered evaluation cancelled",
+                        ))
                     } else {
-                        "Remote acceptance cannot be established after restart; this run forbids a replacement dispatch and requires operator inspection"
-                    }.into());
-                    a.finished_at = Some(now());
-                    self.store.save_attempt(&a).await?;
-                    self.changed().await;
+                        tokio::select! {
+                            result = evaluate => result,
+                            _ = cancel.changed() => Err(BenchmarkError::new(
+                                "cancelled", "Recovered evaluation cancelled",
+                            )),
+                        }
+                    };
+                    if evaluation.is_ok() {
+                        preparing.admitted();
+                    }
+                    if preparing.finished() {
+                        self.wake.notify_one();
+                    }
+                    match evaluation {
+                        Ok(e) => {
+                            if restored
+                                .reason
+                                .as_deref()
+                                .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
+                            {
+                                restored.reason = None;
+                            }
+                            restored.wait_until = None;
+                            restored.outcome = Some(e.verdict.clone());
+                            restored.evaluations.push(e);
+                        }
+                        // Nothing graded the sealed generation: it stays
+                        // interrupted, and a later pass asks again without
+                        // recovering the turn again, as long as its run
+                        // goes on. The run waits for it.
+                        Err(e)
+                            if unstarted_refusal(&e)
+                                && restored.evidence_hash.is_some()
+                                && !matches!(
+                                    self.store.run_state(&restored.run_id).await?.as_str(),
+                                    "cancelling" | "cancelled"
+                                ) =>
+                        {
+                            admission_window::refused(scope, job);
+                            restored.phase = "interrupted".into();
+                            restored.reason = Some(format!("{EVALUATION_WAIT}: {}", e.message));
+                            restored.wait_until =
+                                Some(now() + admission_window::RETRY.as_millis() as i64);
+                            self.store.save_attempt(&restored).await?;
+                            self.changed().await;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            restored.outcome = Some("evaluation_error".into());
+                            restored.reason = Some(e.message);
+                        }
+                    }
                 }
+                // A rendering whose panel a restart cut off keeps its paid
+                // generation and waits for its run's resume, which asks a
+                // fresh panel; anything else settles here.
+                if request.automatic_retry() && self.awaits_panel(&restored, version).await? {
+                    restored.phase = AWAITING_JUDGES.into();
+                    restored.reason = Some(JUDGING_STOPPED.into());
+                } else {
+                    restored.phase = "terminal".into();
+                }
+                self.store.save_attempt(&restored).await?;
+                self.changed().await;
+            }
+            None => {
+                a.phase = "terminal".into();
+                a.outcome = Some("dispatch_uncertain".into());
+                a.reason = Some(if request.automatic_retry() {
+                    "Remote acceptance cannot be established after restart; the run continues with its other tests, and this case starts over when the run resumes"
+                } else {
+                    "Remote acceptance cannot be established after restart; this run forbids a replacement dispatch and requires operator inspection"
+                }.into());
+                a.finished_at = Some(now());
+                self.store.save_attempt(&a).await?;
+                self.changed().await;
             }
         }
         Ok(())
@@ -7602,9 +7755,10 @@ impl BenchmarkService {
             .flat_map(|run| &run.attempts)
             .filter(|a| {
                 matches!(a.phase.as_str(), "pending" | AWAITING_JUDGES)
-                    && a.reason
-                        .as_deref()
-                        .is_some_and(|reason| reason.starts_with("Waiting for local resources"))
+                    && a.reason.as_deref().is_some_and(|reason| {
+                        reason.starts_with("Waiting for local resources")
+                            && !reason.starts_with(EVALUATION_WAIT)
+                    })
             })
             .filter_map(|a| a.wait_until)
             .max()
@@ -7612,6 +7766,25 @@ impl BenchmarkService {
             .saturating_sub(now())
             .max(0) as u64;
         admission_window::restore(&scope, Duration::from_millis(saved_wait));
+        let evaluation_wait = runs
+            .iter()
+            .flat_map(|run| &run.attempts)
+            .filter(|attempt| {
+                matches!(attempt.phase.as_str(), "collecting" | "interrupted")
+                    && attempt
+                        .reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
+            })
+            .filter_map(|attempt| attempt.wait_until)
+            .max()
+            .unwrap_or_default()
+            .saturating_sub(now())
+            .max(0) as u64;
+        admission_window::restore(
+            &admission_window::evaluation_scope(&scope),
+            Duration::from_millis(evaluation_wait),
+        );
         for run in runs {
             let flying = self.flying(&run.id).await;
             if run.state == "pausing" {
@@ -8872,7 +9045,8 @@ impl BenchmarkService {
         }
         let output = completed.output.clone().unwrap_or_default();
         let mut waited = false;
-        let scope = self.store.root.display().to_string();
+        let scope =
+            evaluation_preparation_scope(&self.store.root.display().to_string(), &version.manifest);
         let job = format!("evaluation:{}", completed.id);
         let evaluation = loop {
             // Waiting never probes or restarts a worker. Cancellation stays
@@ -8897,21 +9071,24 @@ impl BenchmarkService {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             };
+            let preparing = Arc::new(preparing.observe());
             completed.reason = None;
             completed.wait_until = None;
             self.store.save_attempt(&completed).await?;
             self.changed().await;
             if !self.backend.paces_preparation() {
-                admission_window::admitted(&scope, &job);
+                preparing.admitted();
             }
-            match self
-                .backend
-                .evaluate_output(&version.manifest, &output)
-                .await
+            let admission = preparing.clone();
+            match sandbox::with_workload_admission(
+                move || admission.admitted(),
+                self.backend.evaluate_output(&version.manifest, &output),
+            )
+            .await
             {
                 Ok(evaluation) => {
-                    admission_window::admitted(&scope, &job);
-                    if admission_window::finished(&scope, &job) {
+                    preparing.admitted();
+                    if preparing.finished() {
                         self.wake.notify_one();
                     }
                     if completed
@@ -8927,7 +9104,7 @@ impl BenchmarkService {
                 // Nothing graded the paid answer yet: it waits for the sandbox
                 // as long as its run goes on, and is never generated again.
                 Err(error) if unstarted_refusal(&error) && !stop.cancelled() => {
-                    admission_window::finished(&scope, &job);
+                    preparing.finished();
                     if !waited {
                         log::info!(
                             "[benchmarks] {EVALUATION_WAIT} attempt {}: {}",
@@ -8944,7 +9121,7 @@ impl BenchmarkService {
                     drop(preparing);
                 }
                 Err(error) => {
-                    admission_window::finished(&scope, &job);
+                    preparing.finished();
                     completed.outcome = Some(evaluation_failure_outcome(&error).into());
                     completed.reason = Some(error.message);
                     return Ok(completed);
@@ -9678,6 +9855,12 @@ mod execution_limits_tests;
 
 #[cfg(test)]
 mod quota_resource_tests;
+
+#[cfg(test)]
+mod evaluation_admission_tests;
+
+#[cfg(test)]
+mod recovery_evaluation_tests;
 
 #[cfg(test)]
 mod unstarted_admission_tests;
