@@ -387,6 +387,16 @@ export interface HistorySnapshot {
   revisedVersionIds?: string[];
 }
 
+/** The model page's current-pool view; immutable dated reports stay in full history. */
+export interface ModelHistoryViewPoint {
+  id: string;
+  runId: string;
+  createdAt: number;
+  recalculatedReport: LeaderboardReport;
+  backfilledVersionIds: string[];
+  revisedVersionIds: string[];
+}
+
 /** Dated evidence and current-pool recalculations share one candidate query. */
 export function useConfigurationHistory(
   configuration: Configuration,
@@ -405,6 +415,35 @@ export function useConfigurationHistory(
     queryFn: () => benchmarkApi.getHistory(configuration, model),
     staleTime: 60_000,
     // A read takes seconds; a failure is shown at once, with a retry.
+    retry: 0,
+  });
+  return {
+    snapshots: result.data ?? [],
+    loading: result.isPending,
+    error: result.error,
+    reading: result.isFetching,
+    retry: () => void result.refetch(),
+  };
+}
+
+/** Same observation dates as full model history, without unused dated boards. */
+export function useModelHistoryView(configuration: Configuration): {
+  snapshots: ModelHistoryViewPoint[];
+  loading: boolean;
+  error: unknown;
+  reading: boolean;
+  retry: () => void;
+} {
+  const result = useQuery({
+    // Keep history invalidation/throttling while separating the response shapes.
+    queryKey: [
+      ...benchmarkKeys,
+      "history",
+      historyKey(configuration),
+      "model-view",
+    ],
+    queryFn: () => benchmarkApi.getModelHistoryView(configuration),
+    staleTime: 60_000,
     retry: 0,
   });
   return {

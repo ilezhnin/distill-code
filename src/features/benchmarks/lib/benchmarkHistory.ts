@@ -1,4 +1,8 @@
-import type { HistorySnapshot } from "../hooks/useBenchmarks";
+import type {
+  HistorySnapshot,
+  ModelHistoryViewPoint,
+} from "../hooks/useBenchmarks";
+import type { LeaderboardReport } from "../types";
 import { configurationKey } from "./benchmarkBoards";
 import { reportModels } from "./benchmarkModels";
 
@@ -9,13 +13,44 @@ export function historyMeasurements(
   recorded = false,
   model = false,
 ) {
+  return measurements(
+    snapshots,
+    key,
+    (snapshot) =>
+      recorded
+        ? snapshot.report
+        : (snapshot.recalculatedReport ?? snapshot.report),
+    recorded,
+    model,
+  );
+}
+
+/** Model-view points always carry the complete current-pool recalculation. */
+export function modelHistoryMeasurements(
+  snapshots: ModelHistoryViewPoint[],
+  key: string,
+) {
+  return measurements(
+    snapshots,
+    key,
+    (snapshot) => snapshot.recalculatedReport,
+    false,
+    true,
+  );
+}
+
+function measurements<Snapshot extends { backfilledVersionIds?: string[] }>(
+  snapshots: Snapshot[],
+  key: string,
+  reportOf: (snapshot: Snapshot) => LeaderboardReport,
+  recorded: boolean,
+  model: boolean,
+) {
   let previous: string | null = null;
   let measuredBefore: Set<string> | null = null;
   let gap = 0;
   return snapshots.flatMap((snapshot) => {
-    const report = recorded
-      ? snapshot.report
-      : (snapshot.recalculatedReport ?? snapshot.report);
+    const report = reportOf(snapshot);
     const row = model
       ? reportModels(report).find((entry) => entry.key === key)?.row
       : report.rows.find((r) => configurationKey(r.configuration) === key);

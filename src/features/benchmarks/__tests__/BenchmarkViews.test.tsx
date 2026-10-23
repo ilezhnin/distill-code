@@ -1,3 +1,7 @@
+import type {
+  HistorySnapshot,
+  ModelHistoryViewPoint,
+} from "../hooks/useBenchmarks";
 import {
   act,
   cleanup,
@@ -46,6 +50,20 @@ import {
   runSummary,
 } from "./fixtures";
 
+/** Canonical projection of invented full-history fixtures, never a scoring rewrite. */
+function modelHistoryViewFixture(
+  snapshots: HistorySnapshot[],
+): ModelHistoryViewPoint[] {
+  return snapshots.map((snapshot) => ({
+    id: snapshot.id ?? snapshot.runId,
+    runId: snapshot.runId,
+    createdAt: snapshot.createdAt,
+    recalculatedReport: snapshot.recalculatedReport ?? snapshot.report,
+    backfilledVersionIds: snapshot.backfilledVersionIds ?? [],
+    revisedVersionIds: snapshot.revisedVersionIds ?? [],
+  }));
+}
+
 const repetitionRenders = vi.hoisted(() => vi.fn());
 vi.mock("../ui/BenchmarkTestStatus", async (importOriginal) => {
   const original =
@@ -74,7 +92,7 @@ vi.mock("../api/benchmarks", () => ({
     getRun: vi.fn(),
     getEvidence: vi.fn(),
     getLeaderboard: vi.fn(),
-    getHistory: vi.fn().mockResolvedValue([]),
+    getModelHistoryView: vi.fn().mockResolvedValue([]),
     listDesigns: vi.fn(),
     listReleases: vi.fn().mockResolvedValue([]),
     getCaseStats: vi.fn().mockResolvedValue([]),
@@ -737,7 +755,7 @@ describe("benchmark authoring and saved evidence", () => {
     });
   });
   it("lists only the attempts that measured something", async () => {
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
     // attempt-2 is a call the provider refused: kept for its spend, no result.
     const row = leaderboardRow({
@@ -766,7 +784,7 @@ describe("benchmark authoring and saved evidence", () => {
     );
   });
   it("keeps model task totals aligned with eligible current versions", async () => {
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([attemptSummary]);
     const versions = [
       ["version-1", "A measured task"],
@@ -819,7 +837,7 @@ describe("benchmark authoring and saved evidence", () => {
     expect(screen.queryByText("Task 5")).not.toBeInTheDocument();
   });
   it("names the model an alias resolved to on its page, not on every attempt", async () => {
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
       {
         ...attemptSummary,
@@ -860,7 +878,7 @@ describe("benchmark authoring and saved evidence", () => {
     expect(spec("Resolved model")).toHaveTextContent("Not reported");
   });
   it("shows compact metrics without score bars and explains coverage on hover", async () => {
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     const row = leaderboardRow({
       passed: 1,
       scored: 2,
@@ -952,7 +970,7 @@ describe("benchmark authoring and saved evidence", () => {
     );
   });
   it("opens the run dialog, following a run that measures the model now", async () => {
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     const openDialog = vi.fn();
     const openRun = vi.fn();
     const gaps = leaderboardRow({
@@ -1078,7 +1096,7 @@ describe("benchmark authoring and saved evidence", () => {
       rows: [unfinished],
     });
     vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
       {
@@ -1178,7 +1196,7 @@ describe("benchmark authoring and saved evidence", () => {
       ],
     });
     vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getInventory).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
@@ -1966,37 +1984,39 @@ describe("configuration history", () => {
       measuredAt: latestAt,
       missingVersionIds: ["version-1"],
     });
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
-      {
-        id: "old",
-        runId: older.id,
-        createdAt: pointAt,
-        report: { cohort, rows: [olderRow] },
-        recalculatedReport: {
-          cohort,
-          rows: [
-            {
-              ...olderRow,
-              points: 750,
-              quality: 0.75,
-              status: "preliminary",
-              reason:
-                "1/1 current cases; 1 reviewed later; recalculated using today's evidence",
-              // Later review metadata must not move the observation date.
-              measuredAt: Date.UTC(2026, 5, 20, 12),
-            },
-          ],
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue(
+      modelHistoryViewFixture([
+        {
+          id: "old",
+          runId: older.id,
+          createdAt: pointAt,
+          report: { cohort, rows: [olderRow] },
+          recalculatedReport: {
+            cohort,
+            rows: [
+              {
+                ...olderRow,
+                points: 750,
+                quality: 0.75,
+                status: "preliminary",
+                reason:
+                  "1/1 current cases; 1 reviewed later; recalculated using today's evidence",
+                // Later review metadata must not move the observation date.
+                measuredAt: Date.UTC(2026, 5, 20, 12),
+              },
+            ],
+          },
+          backfilledVersionIds: [],
+          revisedVersionIds: ["version-1"],
         },
-        backfilledVersionIds: [],
-        revisedVersionIds: ["version-1"],
-      },
-      {
-        id: "latest",
-        runId: runSummary.id,
-        createdAt: latestAt,
-        report: { cohort, rows: [latestRow] },
-      },
-    ]);
+        {
+          id: "latest",
+          runId: runSummary.id,
+          createdAt: latestAt,
+          report: { cohort, rows: [latestRow] },
+        },
+      ]),
+    );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     const catchUp = vi.fn();
     wrap(
@@ -2058,7 +2078,9 @@ describe("configuration history", () => {
     // newest run not baked yet.
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(catchUp).toHaveBeenCalledWith("run-1");
-    expect(benchmarkApi.getHistory).toHaveBeenCalledWith(configuration, true);
+    expect(benchmarkApi.getModelHistoryView).toHaveBeenCalledWith(
+      configuration,
+    );
     await userEvent.click(
       screen.getByRole("button", { name: "Show current results" }),
     );
@@ -2068,26 +2090,28 @@ describe("configuration history", () => {
   it("omits obsolete observations instead of falling back to a different scoring method", async () => {
     const dated = leaderboardRow({ points: 600, attemptIds: ["attempt-0"] });
     const current = leaderboardRow({ points: 900 });
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
-      {
-        id: "only-recorded",
-        runId: runSummary.id,
-        createdAt: 1_000,
-        report: { cohort, rows: [dated] },
-        // Today's pool has no measured point for this observation.
-        recalculatedReport: {
-          cohort,
-          rows: [{ ...dated, points: null, quality: null }],
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue(
+      modelHistoryViewFixture([
+        {
+          id: "only-recorded",
+          runId: runSummary.id,
+          createdAt: 1_000,
+          report: { cohort, rows: [dated] },
+          // Today's pool has no measured point for this observation.
+          recalculatedReport: {
+            cohort,
+            rows: [{ ...dated, points: null, quality: null }],
+          },
         },
-      },
-      {
-        id: "current-pool",
-        runId: runSummary.id,
-        createdAt: 2_000,
-        report: { cohort, rows: [current] },
-        recalculatedReport: { cohort, rows: [current] },
-      },
-    ]);
+        {
+          id: "current-pool",
+          runId: runSummary.id,
+          createdAt: 2_000,
+          report: { cohort, rows: [current] },
+          recalculatedReport: { cohort, rows: [current] },
+        },
+      ]),
+    );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     wrap(
       <BenchmarkConfigurationPage
@@ -2121,10 +2145,12 @@ describe("configuration history", () => {
       createdAt,
       report: { cohort, rows: [leaderboardRow({ points })] },
     });
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
-      point("earlier:1", 1_000, 400),
-      point(`${runSummary.id}:2000`, 2_000, 500),
-    ]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue(
+      modelHistoryViewFixture([
+        point("earlier:1", 1_000, 400),
+        point(`${runSummary.id}:2000`, 2_000, 500),
+      ]),
+    );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -2150,10 +2176,12 @@ describe("configuration history", () => {
     );
     expect(rating()).toBe("500");
     // The running run's single point moved to its newest settled cell.
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
-      point("earlier:1", 1_000, 400),
-      point(`${runSummary.id}:3000`, 3_000, 700),
-    ]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue(
+      modelHistoryViewFixture([
+        point("earlier:1", 1_000, 400),
+        point(`${runSummary.id}:3000`, 3_000, 700),
+      ]),
+    );
     await act(() => client.invalidateQueries());
     await waitFor(() => expect(rating()).toBe("700"));
     expect(
@@ -2189,26 +2217,28 @@ describe("configuration history", () => {
       scoredVersionIds: ["version-1", "version-2"],
       attemptIds: ["attempt-1", "attempt-2", "attempt-3"],
     });
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
-      {
-        id: "first",
-        runId: "run-0",
-        createdAt: 1_000,
-        report: { cohort, rows: [partial] },
-      },
-      {
-        id: "settling",
-        runId: runSummary.id,
-        createdAt: 1_500,
-        report: { cohort, rows: [settling] },
-      },
-      {
-        id: "whole",
-        runId: runSummary.id,
-        createdAt: 2_000,
-        report: { cohort, rows: [whole] },
-      },
-    ]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue(
+      modelHistoryViewFixture([
+        {
+          id: "first",
+          runId: "run-0",
+          createdAt: 1_000,
+          report: { cohort, rows: [partial] },
+        },
+        {
+          id: "settling",
+          runId: runSummary.id,
+          createdAt: 1_500,
+          report: { cohort, rows: [settling] },
+        },
+        {
+          id: "whole",
+          runId: runSummary.id,
+          createdAt: 2_000,
+          report: { cohort, rows: [whole] },
+        },
+      ]),
+    );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     wrap(
       <BenchmarkConfigurationPage
@@ -2278,7 +2308,7 @@ describe("model page history states", () => {
 
   it("says the history is loading instead of leaving an empty gap", async () => {
     let settle: (points: never[]) => void = () => {};
-    vi.mocked(benchmarkApi.getHistory).mockReturnValue(
+    vi.mocked(benchmarkApi.getModelHistoryView).mockReturnValue(
       new Promise((resolve) => {
         settle = resolve;
       }),
@@ -2296,7 +2326,7 @@ describe("model page history states", () => {
   });
 
   it("says why the history failed and reads it again on request", async () => {
-    vi.mocked(benchmarkApi.getHistory).mockRejectedValueOnce(
+    vi.mocked(benchmarkApi.getModelHistoryView).mockRejectedValueOnce(
       new Error("store busy"),
     );
     page();
@@ -2305,13 +2335,13 @@ describe("model page history states", () => {
         "The rating history could not be read: store busy",
       ),
     ).toBeInTheDocument();
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
-    const reads = vi.mocked(benchmarkApi.getHistory).mock.calls.length;
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
+    const reads = vi.mocked(benchmarkApi.getModelHistoryView).mock.calls.length;
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() =>
       expect(screen.queryByText(/could not be read/)).toBeNull(),
     );
-    expect(vi.mocked(benchmarkApi.getHistory).mock.calls.length).toBe(
+    expect(vi.mocked(benchmarkApi.getModelHistoryView).mock.calls.length).toBe(
       reads + 1,
     );
   });
@@ -2335,20 +2365,22 @@ describe("model page fully tested points", () => {
       suitePlanned: 1,
       suiteComplete: 1,
     });
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
-      {
-        id: "short",
-        runId: "run-0",
-        createdAt: 1_000,
-        report: { cohort, rows: [short] },
-      },
-      {
-        id: "full",
-        runId: runSummary.id,
-        createdAt: 2_000,
-        report: { cohort, rows: [full] },
-      },
-    ]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue(
+      modelHistoryViewFixture([
+        {
+          id: "short",
+          runId: "run-0",
+          createdAt: 1_000,
+          report: { cohort, rows: [short] },
+        },
+        {
+          id: "full",
+          runId: runSummary.id,
+          createdAt: 2_000,
+          report: { cohort, rows: [full] },
+        },
+      ]),
+    );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     wrap(
       <BenchmarkConfigurationPage
@@ -2375,7 +2407,7 @@ describe("model page effort", () => {
 
   function page(effort: string | null) {
     const row = leaderboardRow({ configuration: { ...configuration, effort } });
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     wrap(
       <BenchmarkConfigurationPage
@@ -2554,14 +2586,16 @@ describe("post-run evaluation history", () => {
   it("keeps the current score visible after a later evaluation", async () => {
     const current = leaderboardRow({ points: 900, quality: 0.9 });
     const historical = leaderboardRow({ points: 600, quality: 0.6 });
-    vi.mocked(benchmarkApi.getHistory).mockResolvedValue([
-      {
-        id: "historical",
-        runId: runSummary.id,
-        createdAt: 1000,
-        report: { cohort, rows: [historical] },
-      },
-    ]);
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue(
+      modelHistoryViewFixture([
+        {
+          id: "historical",
+          runId: runSummary.id,
+          createdAt: 1000,
+          report: { cohort, rows: [historical] },
+        },
+      ]),
+    );
     vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listCatalog).mockResolvedValue([]);
     vi.mocked(benchmarkApi.getCandidateObservations).mockResolvedValue([]);
@@ -2583,5 +2617,161 @@ describe("post-run evaluation history", () => {
     expect(
       screen.getByText("Overall rating").nextElementSibling?.textContent,
     ).toBe("900");
+  });
+});
+
+describe("projected model history selection", () => {
+  afterEach(cleanup);
+
+  it("keeps native model standings, pool task order and evidence ids from the selected recalculation", async () => {
+    const versions = [
+      {
+        ...definition.versions[0],
+        manifest: { ...draft, name: "A text case", workClassId: "algorithms" },
+      },
+      {
+        ...definition.versions[0],
+        id: "version-2",
+        manifest: {
+          ...draft,
+          name: "B repository case",
+          workClassId: "debugging",
+        },
+      },
+      {
+        ...definition.versions[0],
+        id: "excluded-case",
+        manifest: {
+          ...draft,
+          name: "Excluded authored case",
+          workClassId: "algorithms",
+        },
+      },
+    ];
+    const text = leaderboardRow({ points: 250 });
+    const repository = leaderboardRow({
+      configuration: {
+        ...configuration,
+        id: "repository-config",
+        executionProfile: "native_repository",
+      },
+      points: 350,
+    });
+    const selectedRow = leaderboardRow({
+      points: 650,
+      scored: 2,
+      planned: 2,
+      complete: 2,
+      suitePlanned: 2,
+      suiteComplete: 2,
+      scoredVersionIds: ["version-1", "version-2"],
+      ownVersionIds: ["excluded-case"],
+      attemptIds: ["refused-b", "historical-b", "historical-a"],
+      resultAttemptIds: ["historical-a", "historical-b"],
+      axes: [codingAxis(400)],
+    });
+    const peer = leaderboardRow({
+      configuration: {
+        ...configuration,
+        id: "peer-config",
+        modelId: "peer-model",
+      },
+      points: 800,
+      axes: [codingAxis(800)],
+    });
+    const recalculatedReport = {
+      cohort: {
+        ...cohort,
+        versionIds: versions.map((version) => version.id),
+        workClasses: ["debugging", "algorithms"],
+      },
+      rows: [text, repository, peer],
+      models: [
+        {
+          key: modelKey(configuration),
+          providerId: configuration.providerId,
+          modelId: configuration.modelId,
+          configurationKeys: [rowKey(text), rowKey(repository)],
+          row: selectedRow,
+        },
+        {
+          key: modelKey(peer.configuration),
+          providerId: peer.configuration.providerId,
+          modelId: peer.configuration.modelId,
+          configurationKeys: [rowKey(peer)],
+          row: peer,
+        },
+      ],
+    };
+    vi.mocked(benchmarkApi.getModelHistoryView).mockResolvedValue([
+      {
+        id: "selected-observation",
+        runId: "historical-run",
+        createdAt: 2_000,
+        recalculatedReport,
+        backfilledVersionIds: ["version-2"],
+        revisedVersionIds: ["version-1"],
+      },
+    ]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
+      { ...attemptSummary, id: "historical-a", runId: "historical-run" },
+      {
+        ...attemptSummary,
+        id: "historical-b",
+        runId: "historical-run",
+        versionId: "version-2",
+      },
+      {
+        ...attemptSummary,
+        id: "refused-b",
+        runId: "historical-run",
+        versionId: "version-2",
+        repetition: 2,
+        outcome: "provider_error",
+      },
+    ]);
+    const current = leaderboardRow({ points: 900 });
+    const inspect = vi.fn();
+    wrap(
+      <BenchmarkConfigurationPage
+        row={current}
+        report={{ cohort, rows: [current] }}
+        runs={[]}
+        versions={versions}
+        onEvidence={inspect}
+        onRun={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: /: 650 points · 1\/2 cases$/ }),
+    );
+    expect(
+      screen.getByText("Overall rating").nextElementSibling,
+    ).toHaveTextContent("650");
+    expect(screen.getByText("Rank").nextElementSibling).toHaveTextContent(
+      /2\s*of\s*2/,
+    );
+    expect(
+      screen.getByText("Fully tested", { selector: "dt" }).nextElementSibling,
+    ).toHaveTextContent("2/2");
+    await waitFor(() =>
+      expect(benchmarkApi.listAttempts).toHaveBeenLastCalledWith({
+        attemptIds: ["refused-b", "historical-b", "historical-a"],
+        limit: 100,
+      }),
+    );
+    const tasks = screen.getAllByRole("button", { name: /^Task \d:/ });
+    expect(tasks.map((task) => task.getAttribute("aria-label"))).toEqual([
+      "Task 1: B repository case",
+      "Task 2: A text case",
+    ]);
+    await userEvent.click(tasks[0]);
+    expect(inspect).toHaveBeenLastCalledWith("historical-b");
+    await userEvent.click(tasks[1]);
+    expect(inspect).toHaveBeenLastCalledWith("historical-a");
+    expect(
+      screen.queryByText("Excluded authored case"),
+    ).not.toBeInTheDocument();
   });
 });

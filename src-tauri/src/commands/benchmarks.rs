@@ -949,6 +949,18 @@ pub async fn benchmark_get_history(
     .await
 }
 #[tauri::command]
+pub async fn benchmark_get_model_history_view(
+    app: AppHandle,
+    configuration: Configuration,
+) -> Result<Vec<ModelHistoryViewPoint>> {
+    let s = service(&app).await?;
+    let key = format!("model-history-view\u{1f}{configuration:?}");
+    shared(&s, key, move |data| {
+        benchmarks::analysis::model_history_view(data, &configuration)
+    })
+    .await
+}
+#[tauri::command]
 pub async fn benchmark_get_usage_ledger(app: AppHandle) -> Result<Vec<UsageLedgerEntry>> {
     let root = crate::services::flock_root::app_root(&app)
         .map_err(|e| BenchmarkError::new("storage_unavailable", e))?;

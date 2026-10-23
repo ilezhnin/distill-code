@@ -1014,6 +1014,18 @@ pub struct HistorySnapshot {
     pub backfilled_version_ids: Vec<String>,
     pub revised_version_ids: Vec<String>,
 }
+/// The model page's current-pool view of the same dated observations. The
+/// complete dated archive remains available through `HistorySnapshot`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelHistoryViewPoint {
+    pub id: String,
+    pub run_id: String,
+    pub created_at: i64,
+    pub recalculated_report: LeaderboardReport,
+    pub backfilled_version_ids: Vec<String>,
+    pub revised_version_ids: Vec<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSample {

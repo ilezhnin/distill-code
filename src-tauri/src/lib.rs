@@ -363,6 +363,7 @@ pub fn run() {
             commands::benchmarks::benchmark_get_capabilities,
             commands::benchmarks::benchmark_get_leaderboard,
             commands::benchmarks::benchmark_get_history,
+            commands::benchmarks::benchmark_get_model_history_view,
             commands::benchmarks::benchmark_get_case_stats,
             commands::benchmarks::benchmark_get_home_advantage,
             commands::benchmarks::benchmark_get_credit_spend,

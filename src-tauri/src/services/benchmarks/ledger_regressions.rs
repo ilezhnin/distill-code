@@ -887,7 +887,7 @@ fn history_work_stops_once_the_shown_points_are_settled() {
     assert_eq!(kept, vec![2, 6]);
 }
 
-fn history_preparation_fixtures() -> Vec<(&'static str, QueryData)> {
+pub(super) fn history_preparation_fixtures() -> Vec<(&'static str, QueryData)> {
     let mut base = super::tests::dataset();
     add_candidate(&mut base, "invented-fast-peer");
     add_candidate(&mut base, "invented-cheap-peer");

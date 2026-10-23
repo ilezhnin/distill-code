@@ -2225,6 +2225,163 @@ fn history_for(
     configuration: &Configuration,
     by_model: bool,
 ) -> Vec<HistorySnapshot> {
+    history_observations(
+        data,
+        configuration,
+        by_model,
+        |key, own, current, at, run_id| {
+            // As the board stood at the run's end, with the model's own cases
+            // counted: a history compares the model with itself.
+            let report = leaderboard_counting(
+                data,
+                &ResultQuery {
+                    as_of: Some(at),
+                    limit: Some(500),
+                    ..Default::default()
+                },
+                OwnCases::Counted,
+            );
+            let (recalculated_report, backfilled_version_ids, revised_version_ids) =
+                recalculated_history_report(data, own, current, run_id, at, by_model);
+            // A run that left the board as it stood, a cancel before any cell
+            // ran, adds no point of its own.
+            let signature = history_row_signature(&report, key, by_model)
+                .or_else(|| history_row_signature(&recalculated_report, key, by_model))?;
+            Some((
+                signature,
+                HistorySnapshot {
+                    id: format!("{run_id}:{at}"),
+                    run_id: run_id.to_owned(),
+                    created_at: at,
+                    report,
+                    recalculated_report,
+                    backfilled_version_ids,
+                    revised_version_ids,
+                },
+            ))
+        },
+    )
+}
+
+fn history_row_signature(report: &LeaderboardReport, key: &str, by_model: bool) -> Option<String> {
+    let row = if by_model {
+        report
+            .models
+            .iter()
+            .find(|model| model.key == key)
+            .map(|model| &model.row)
+    } else {
+        report
+            .rows
+            .iter()
+            .find(|row| leaderboard_key(&row.configuration) == key)
+    }?;
+    Some(
+        serde_json::to_string(&(row.points, &row.attempt_ids, &row.comparison_key, row.cost))
+            .unwrap_or_default(),
+    )
+}
+
+/// These groups bound the rows before ranking, including superseded-only
+/// groups. Filtering the row source is safe only when neither full board can
+/// truncate a row: otherwise a target outside the first 500 would reappear.
+fn history_groups_fit(
+    data: &QueryData,
+    prepared: &PreparedMeasurements<'_>,
+    pool: &[&BenchmarkVersion],
+    at: i64,
+) -> bool {
+    let pool_ids: BTreeSet<&str> = pool.iter().map(|version| version.id.as_str()).collect();
+    let mut configurations = BTreeSet::new();
+    let mut models = BTreeSet::new();
+    for attempt in &data.attempts {
+        if !pool_ids.contains(attempt.version_id.as_str())
+            || !prepared.runs.contains_key(attempt.run_id.as_str())
+            || attempt.finished_at.is_none_or(|finished| finished > at)
+        {
+            continue;
+        }
+        let configuration = ledger_configuration(attempt, &prepared.acknowledged);
+        configurations.insert(leaderboard_key(&configuration));
+        models.insert(model_key(&configuration));
+        if configurations.len() > 500 || models.len() > 500 {
+            return false;
+        }
+    }
+    true
+}
+
+fn dated_model_history_signature(
+    data: &QueryData,
+    key: &str,
+    own: &[&Attempt],
+    at: i64,
+) -> Option<String> {
+    let query = ResultQuery {
+        as_of: Some(at),
+        limit: Some(500),
+        ..Default::default()
+    };
+    let pool = ranked_pool(data, &query);
+    // Peer baselines and review cutoffs always see the full ledger. Only row
+    // materialization can omit peers; filtering QueryData would change points.
+    let prepared = PreparedMeasurements::new(data, &query, &pool);
+    let all;
+    let source = if history_groups_fit(data, &prepared, &pool, at) {
+        own
+    } else {
+        all = data.attempts.iter().collect::<Vec<_>>();
+        &all
+    };
+    let report = leaderboard_prepared(data, &query, source, pool, OwnCases::Counted, &prepared);
+    history_row_signature(&report, key, true)
+}
+
+/// A smaller read for the model page. Observation identity still comes from
+/// the dated board; the UI receives its unchanged current-pool recalculation.
+pub fn model_history_view(
+    data: &QueryData,
+    configuration: &Configuration,
+) -> Vec<ModelHistoryViewPoint> {
+    history_observations(
+        data,
+        configuration,
+        true,
+        |key, own, current, at, run_id| {
+            let dated = dated_model_history_signature(data, key, own, at);
+            let (recalculated_report, backfilled_version_ids, revised_version_ids) =
+                recalculated_history_report(data, own, current, run_id, at, true);
+            let signature =
+                dated.or_else(|| history_row_signature(&recalculated_report, key, true))?;
+            Some((
+                signature,
+                ModelHistoryViewPoint {
+                    id: format!("{run_id}:{at}"),
+                    run_id: run_id.to_owned(),
+                    created_at: at,
+                    recalculated_report,
+                    backfilled_version_ids,
+                    revised_version_ids,
+                },
+            ))
+        },
+    )
+}
+
+/// Both readers use the same eligible events, dates, peer preparation and
+/// consecutive-signature collapse. The observer chooses which reports to keep.
+fn history_observations<T>(
+    data: &QueryData,
+    configuration: &Configuration,
+    by_model: bool,
+    mut observe: impl FnMut(
+        &str,
+        &[&Attempt],
+        &CurrentHistoryPool<'_>,
+        i64,
+        &str,
+    ) -> Option<(String, T)>,
+) -> Vec<T> {
     let identity = if by_model { model_key } else { leaderboard_key };
     let key = identity(configuration);
     let ranked: BTreeSet<&str> = data
@@ -2302,57 +2459,7 @@ fn history_for(
         ids: current,
     };
     newest_observations(events.into_iter().rev(), HISTORY_POINTS, |(at, run_id)| {
-        // As the board stood at the run's end, with the model's own cases
-        // counted: a history compares the model with itself.
-        let report = leaderboard_counting(
-            data,
-            &ResultQuery {
-                as_of: Some(at),
-                limit: Some(500),
-                ..Default::default()
-            },
-            OwnCases::Counted,
-        );
-        let (recalculated_report, backfilled_version_ids, revised_version_ids) =
-            recalculated_history_report(data, &own, &current, run_id, at, by_model);
-        let row = |report: &LeaderboardReport| {
-            let row = if by_model {
-                report
-                    .models
-                    .iter()
-                    .find(|model| model.key == key)
-                    .map(|model| &model.row)
-            } else {
-                report
-                    .rows
-                    .iter()
-                    .find(|row| leaderboard_key(&row.configuration) == key)
-            };
-            row.map(|row| {
-                serde_json::to_string(&(
-                    row.points,
-                    &row.attempt_ids,
-                    &row.comparison_key,
-                    row.cost,
-                ))
-                .unwrap_or_default()
-            })
-        };
-        // A run that left the board as it stood, a cancel before any cell
-        // ran, adds no point of its own.
-        let signature = row(&report).or_else(|| row(&recalculated_report))?;
-        Some((
-            signature,
-            HistorySnapshot {
-                id: format!("{run_id}:{at}"),
-                run_id: run_id.to_owned(),
-                created_at: at,
-                report,
-                recalculated_report,
-                backfilled_version_ids,
-                revised_version_ids,
-            },
-        ))
+        observe(&key, &own, &current, at, run_id)
     })
 }
 
@@ -3757,3 +3864,7 @@ pub(super) mod tests {
 #[cfg(test)]
 #[path = "ledger_regressions.rs"]
 mod ledger_regressions;
+
+#[cfg(test)]
+#[path = "history_view_tests.rs"]
+mod history_view_tests;

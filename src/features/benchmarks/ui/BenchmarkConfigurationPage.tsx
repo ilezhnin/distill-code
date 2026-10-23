@@ -12,10 +12,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import {
   modelNameKey,
-  useConfigurationHistory,
+  useModelHistoryView,
   useModelCatalog,
   useModelNames,
-  type HistorySnapshot,
 } from "../hooks/useBenchmarks";
 import {
   boardShares,
@@ -27,7 +26,7 @@ import { reportModels, modelKey, modelActivity } from "../lib/benchmarkModels";
 import { activeRuns, rowOpenRun } from "../lib/benchmarkActivity";
 import { catchUpCases, requests } from "../lib/benchmarkCatchUp";
 import { effortUnset, explicitEffort } from "../lib/benchmarkEffort";
-import { historyMeasurements } from "../lib/benchmarkHistory";
+import { modelHistoryMeasurements } from "../lib/benchmarkHistory";
 import {
   boardDescription,
   boardTitle,
@@ -84,7 +83,7 @@ function rowOf(report: LeaderboardReport, key: string): LeaderboardRow | null {
 }
 
 /** A history point's identity; older snapshots carry only their run. */
-function pointId(snapshot: HistorySnapshot): string {
+function pointId(snapshot: { id?: string; runId: string }): string {
   return snapshot.id ?? snapshot.runId;
 }
 
@@ -131,9 +130,9 @@ export function BenchmarkConfigurationPage({
   const names = useModelNames();
   const catalog = useModelCatalog();
   const key = modelKey(row.configuration);
-  const history = useConfigurationHistory(row.configuration, true);
+  const history = useModelHistoryView(row.configuration);
   const measurements = useMemo(
-    () => historyMeasurements(history.snapshots, key, false, true),
+    () => modelHistoryMeasurements(history.snapshots, key),
     [history.snapshots, key],
   );
   const chartPoints = useMemo(

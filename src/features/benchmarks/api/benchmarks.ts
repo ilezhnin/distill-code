@@ -1,4 +1,7 @@
-import type { HistorySnapshot } from "../hooks/useBenchmarks";
+import type {
+  HistorySnapshot,
+  ModelHistoryViewPoint,
+} from "../hooks/useBenchmarks";
 import type {
   WorkflowCampaign,
   WorkflowCampaignRequest,
@@ -293,6 +296,10 @@ export const benchmarkApi = {
     invoke<HistorySnapshot[]>("benchmark_get_history", {
       configuration,
       model,
+    }),
+  getModelHistoryView: (configuration: Configuration) =>
+    invoke<ModelHistoryViewPoint[]>("benchmark_get_model_history_view", {
+      configuration,
     }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>
     invoke<RoutingEvidence>("benchmark_get_routing_evidence", { query }),
