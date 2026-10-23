@@ -1789,10 +1789,10 @@
 }
 
 /* ═══════════════════════════════════════════════════════════
-   DOT-GRID — canvas signature treatment.
-   --project-tint composes over base canvas + dot color via color-mix.
+   SOLID CANVAS
+   --project-tint composes over the base canvas via color-mix.
    In project chats, set --project-tint: <hue> on a wrapper to tilt
-   both background and dots together. Default transparent = no change.
+   the background color. Default transparent = no change.
    ═══════════════════════════════════════════════════════════ */
 
 .bg-dot-grid {
@@ -1801,27 +1801,7 @@
     var(--project-tint, transparent) 25%,
     var(--canvas-base)
   );
-  background-image: radial-gradient(
-    circle,
-    color-mix(
-        in oklch,
-        var(--project-tint, transparent) 25%,
-        var(--dot-color-base)
-      )
-      var(--dot-size),
-    transparent var(--dot-size)
-  );
-  background-size: var(--dot-spacing) var(--dot-spacing);
-  background-position: 0 0;
-  background-attachment: fixed;
-  transition:
-    background-color 240ms ease,
-    background-image 240ms ease;
-}
-
-[data-app-shell-root="true"].bg-dot-grid {
-  /* Fixed attachment makes WKWebView repaint newly exposed resize regions late. */
-  background-attachment: scroll;
+  transition: background-color 240ms ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
