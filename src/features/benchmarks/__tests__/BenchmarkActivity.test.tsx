@@ -68,6 +68,19 @@ afterEach(() => {
   campaignState.data = [];
 });
 
+it("keeps judge failures visible while the run continues other tests", () => {
+  const reason = "Judging failed: Invented worker failure";
+  show({ attention: { outcome: "pending_review", reason } });
+  expect(screen.getByTitle(reason)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+});
+
+it("does not label an active run without failures as needing attention", () => {
+  show({ attention: null });
+  expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+});
+
 it("removes a stalled-run banner when its last current case is measured", () => {
   const onOpenRun = vi.fn();
   const stopped = { ...runSummary, state: "needs_attention", openCells: [] };

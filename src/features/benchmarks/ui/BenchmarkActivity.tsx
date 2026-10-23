@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Pause, Play, X } from "lucide-react";
+import { AlertTriangle, ChevronRight, Pause, Play, X } from "lucide-react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { Badge } from "@/shared/ui/badge";
 import { Button, type ButtonFeedbackState } from "@/shared/ui/button";
@@ -40,8 +40,7 @@ const RESUMABLE = new Set(["paused", "needs_attention", "planned"]);
 /**
  * Runs that dispatch, each with the models it is working on and its progress,
  * and, on a model's own page, the line of its runs that wait for the
- * operator. A list page shows a warning on the row it belongs to instead;
- * nothing here names another model's trouble.
+ * operator. Failures remain visible while the run continues other work.
  */
 export function BenchmarkActivity({
   runs,
@@ -241,6 +240,18 @@ export function BenchmarkActivity({
                     className="h-1.5 w-32 shrink-0"
                   />
                 </span>
+                {run.attention ? (
+                  <span
+                    className="flex items-start gap-2 text-xs text-destructive"
+                    title={run.attention.reason}
+                  >
+                    <AlertTriangle
+                      aria-hidden="true"
+                      className="size-3.5 shrink-0"
+                    />
+                    {attentionLabel(t, run)}
+                  </span>
+                ) : null}
               </button>
               {/* Steering without opening the run: Pause while it runs,
                   Resume once it stands, and Cancel always last. */}

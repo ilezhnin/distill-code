@@ -9,10 +9,11 @@ use crate::services::{
     agent_host::{execution::*, repository_execution, text_execution, AgentHost},
     benchmark_sandbox as sandbox, credential_lease,
 };
-use futures_util::future::BoxFuture;
+use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    panic::AssertUnwindSafe,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -41,6 +42,8 @@ pub(super) const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again la
 pub(super) const RENDERER_BUSY: &str =
     "Waiting for local resources to render for the judge panel; evaluate again later";
 const JUDGE_DISCOVERY_WAIT: &str = "Waiting for local resources to judge";
+const JUDGE_ADMISSION_WAIT: &str = "judge_admission_wait";
+const JUDGE_BUSY_RETRY: Duration = Duration::from_secs(5);
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.
 pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
@@ -75,6 +78,17 @@ fn judge_discovery_waiting(attempt: &Attempt) -> bool {
     attempt.reason.as_deref().is_some_and(|reason| {
         reason.starts_with(JUDGE_DISCOVERY_WAIT)
             || reason.starts_with("Waiting for local resources to list judge models")
+    })
+}
+
+/// A full preparation window is not a refusal from the sandbox. It must
+/// never start the shared resource cooldown or discard its admission history.
+fn prepare_judge(scope: &str, job: &str) -> Result<admission_window::Preparing> {
+    admission_window::begin(scope, job).ok_or_else(|| {
+        BenchmarkError::new(
+            JUDGE_ADMISSION_WAIT,
+            "The resource queue is waiting for admission",
+        )
     })
 }
 
@@ -2972,12 +2986,7 @@ impl PanelJudges for NativePanel<'_, '_> {
             }
             let scope = self.store.root.display().to_string();
             let job = format!("judge:{}", self.attempt.id);
-            let _preparing = admission_window::begin(&scope, &job).ok_or_else(|| {
-                BenchmarkError::new(
-                    "resource_busy",
-                    "The resource queue is waiting for admission",
-                )
-            })?;
+            let _preparing = prepare_judge(&scope, &job)?;
             let result = self
                 .backend
                 .ask_judge(
@@ -7320,7 +7329,11 @@ impl BenchmarkService {
         // with nothing to do.
         while !flights.is_empty() {
             tokio::select! {
-                _ = flights.join_next() => {}
+                result = flights.join_next() => {
+                    if let Some(Err(error)) = result {
+                        log::error!("[benchmarks] worker task failed: {error}");
+                    }
+                }
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
@@ -7576,12 +7589,12 @@ impl BenchmarkService {
                         && admission_window::has_room(&scope)
                         && (judge_discovery_waiting(a)
                             || a.wait_until.is_none_or(|until| until <= now()))
-                        // Capacity can return before this tick ends. A panel
-                        // held by the preparation window has no retry deadline
-                        // and must not wait for every other run to drain.
+                        // Temporary waits must resume within a long tick.
+                        // Busy accounts/renderers have a bounded retry time;
+                        // preparation waits follow the shared window instead.
                         && (!tried.contains(&a.id)
                             || a.wait_until.is_some()
-                            || judge_discovery_waiting(a))
+                            || judging_deferred(a))
                 })
                 .map(|a| a.id.clone());
             if let Some(id) = ready_judge {
@@ -7599,11 +7612,10 @@ impl BenchmarkService {
                     tried.insert(id.clone());
                     let (service, run) = (self.clone(), run.clone());
                     flights.spawn(async move {
-                        if let Err(error) = service.resume_judging(&run, &id, cancel).await {
-                            log::warn!("[benchmarks] judging stopped: {}", error.message);
-                        }
-                        service.release(&lane).await;
-                        service.changed().await;
+                        let result = AssertUnwindSafe(service.resume_judging(&run, &id, cancel))
+                            .catch_unwind()
+                            .await;
+                        service.finish_flight(&id, &lane, result).await;
                     });
                 }
             }
@@ -7728,6 +7740,59 @@ impl BenchmarkService {
             self.wake.notify_one();
         }
         admission_window::ended(&scope, id);
+    }
+    /// Every worker exit releases its seat. Unexpected failures preserve the
+    /// latest saved evidence and require inspection, never an automatic replay.
+    async fn finish_flight(&self, id: &str, seat: &str, result: std::thread::Result<Result<()>>) {
+        let result = result.unwrap_or_else(|_| {
+            Err(BenchmarkError::new(
+                "infrastructure_failure",
+                "Benchmark worker panicked; inspect the application log",
+            ))
+        });
+        if let Err(error) = result {
+            log::error!("[benchmarks] worker {id} stopped: {}", error.message);
+            let recorded = async {
+                let mut attempt = self.store.attempt(id).await?;
+                if attempt.phase != "terminal" {
+                    attempt.phase = "terminal".into();
+                    // The last vote may already have landed before the worker
+                    // failed. A completed measurement remains a measurement.
+                    if super::analysis::score(&attempt).is_none() {
+                        let judging = attempt.outcome.as_deref() == Some("pending_review");
+                        if !judging {
+                            attempt.outcome = Some("infrastructure_failure".into());
+                        }
+                        attempt.reason = Some(format!(
+                            "{}: {}",
+                            if judging {
+                                "Judging failed"
+                            } else {
+                                "Benchmark worker failed"
+                            },
+                            error.message
+                        ));
+                    }
+                    attempt.wait_until = None;
+                    attempt.finished_at.get_or_insert_with(now);
+                    self.store.save_attempt(&attempt).await?;
+                }
+                Ok::<_, BenchmarkError>(())
+            }
+            .await;
+            if let Err(error) = recorded {
+                log::error!(
+                    "[benchmarks] could not record worker failure for {id}: {}",
+                    error.message
+                );
+            }
+        }
+        self.release(seat).await;
+        let scope = self.store.root.display().to_string();
+        let job = format!("judge:{id}");
+        admission_window::finished(&scope, &job);
+        admission_window::ended(&scope, &job);
+        self.changed().await;
     }
     /// Hands the lane and account of a finished turn to the next attempt of
     /// its configuration while its sealed answer is checked, so the run's
@@ -8009,20 +8074,16 @@ impl BenchmarkService {
         }
         flights.spawn(async move {
             let _preparing = preparing;
-            if let Err(error) = service
-                .run_attempt(
-                    &run,
-                    a,
-                    Arc::unwrap_or_clone(version),
-                    judge_budget,
-                    cancel_rx,
-                )
-                .await
-            {
-                log::warn!("[benchmarks] attempt stopped: {}", error.message);
-            }
-            service.release(&id).await;
-            service.changed().await;
+            let result = AssertUnwindSafe(service.run_attempt(
+                &run,
+                a,
+                Arc::unwrap_or_clone(version),
+                judge_budget,
+                cancel_rx,
+            ))
+            .catch_unwind()
+            .await;
+            service.finish_flight(&id, &id, result).await;
         });
         Ok(true)
     }
@@ -8883,16 +8944,22 @@ impl BenchmarkService {
                                 attempt = saved;
                             }
                         }
-                        if unstarted_refusal(&error) {
-                            admission_window::refused(&scope, &job);
+                        if unstarted_refusal(&error) || error.code == JUDGE_ADMISSION_WAIT {
+                            if unstarted_refusal(&error) {
+                                admission_window::refused(&scope, &job);
+                            }
                             attempt.reason =
                                 Some(format!("{JUDGE_DISCOVERY_WAIT}: {}", error.message));
-                            attempt.wait_until =
-                                Some(now() + admission_window::RETRY.as_millis() as i64);
+                            let remaining = admission_window::remaining(&scope);
+                            attempt.wait_until = (!remaining.is_zero())
+                                .then(|| now() + remaining.as_millis() as i64);
                         } else {
                             attempt.reason = Some(format!("Judging failed: {}", error.message));
                         }
                     }
+                }
+                if matches!(attempt.reason.as_deref(), Some(JUDGES_BUSY | RENDERER_BUSY)) {
+                    attempt.wait_until = Some(now() + JUDGE_BUSY_RETRY.as_millis() as i64);
                 }
                 mark_phase(&mut attempt, "judgeFinished");
             }
@@ -9059,6 +9126,12 @@ pub struct FakeBackend {
     pub busy_judges: std::sync::atomic::AtomicBool,
     /// The panel fails before it records anything.
     pub fail_judges: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    panic_judges: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    busy_renderer: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    judge_admission_waits: std::sync::atomic::AtomicU64,
     /// Local discovery refusals, before any judge prompt is sent.
     #[cfg(test)]
     judge_listing_refusals: std::sync::atomic::AtomicU64,
@@ -9216,6 +9289,19 @@ impl ExecutionBackend for FakeBackend {
         Box::pin(async move {
             #[cfg(test)]
             if self
+                .judge_admission_waits
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(BenchmarkError::new(
+                    JUDGE_ADMISSION_WAIT,
+                    "Invented preparation contention",
+                ));
+            }
+            #[cfg(test)]
+            if self
                 .judge_listing_refusals
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                     left.checked_sub(1)
@@ -9230,6 +9316,11 @@ impl ExecutionBackend for FakeBackend {
                 .lock()
                 .unwrap()
                 .push(attempt.id.clone());
+            #[cfg(test)]
+            assert!(
+                !self.panic_judges.load(Ordering::SeqCst),
+                "Invented judge panic"
+            );
             if self.fail_judges.load(Ordering::SeqCst) {
                 return Err(BenchmarkError::new("infrastructure_failure", "host down"));
             }
@@ -9242,6 +9333,10 @@ impl ExecutionBackend for FakeBackend {
                 attempt.reason = Some(JUDGING_STOPPED.into());
             } else if self.busy_judges.load(Ordering::SeqCst) {
                 attempt.reason = Some(JUDGES_BUSY.into());
+            }
+            #[cfg(test)]
+            if self.busy_renderer.load(Ordering::SeqCst) {
+                attempt.reason = Some(RENDERER_BUSY.into());
             }
             Ok(attempt)
         })
@@ -15450,6 +15545,9 @@ mod tests {
         assert_eq!(s.store.attempt(id).await.unwrap().phase, AWAITING_JUDGES);
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "running");
         backend.busy_judges.store(false, Ordering::SeqCst);
+        let mut waiting = s.store.attempt(id).await.unwrap();
+        waiting.wait_until = Some(now() - 1);
+        s.store.save_attempt(&waiting).await.unwrap();
         s.tick().await.unwrap();
         let judged = s.store.attempt(id).await.unwrap();
         assert_eq!(judged.phase, "terminal");
@@ -15955,6 +16053,167 @@ mod tests {
         assert_eq!(settled.output, waiting.output);
         assert!(settled.reason.is_none());
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn busy_judges_and_renderers_retry_within_a_long_tick_without_polling() {
+        for reason in [JUDGES_BUSY, RENDERER_BUSY] {
+            let (dir, s, backend) = setup().await;
+            let run = s.start_run(creative_request(&s).await).await.unwrap();
+            let mut waiting = run.attempts[0].clone();
+            waiting.phase = AWAITING_JUDGES.into();
+            waiting.outcome = Some("pending_review".into());
+            waiting.output = Some(creative().evaluator.known_good);
+            waiting.reason = Some(reason.into());
+            // Includes old saved waits that had no deadline and were already
+            // tried in this tick while another run kept it open.
+            s.store.save_attempt(&waiting).await.unwrap();
+            let mut tried = std::collections::HashSet::from([waiting.id.clone()]);
+            let mut flights = tokio::task::JoinSet::new();
+            backend
+                .busy_judges
+                .store(reason == JUDGES_BUSY, Ordering::SeqCst);
+            backend
+                .busy_renderer
+                .store(reason == RENDERER_BUSY, Ordering::SeqCst);
+            s.fill(&mut flights, &mut tried).await.unwrap();
+            assert_eq!(flights.len(), 1, "{reason}");
+            while let Some(result) = flights.join_next().await {
+                result.unwrap();
+            }
+            waiting = s.store.attempt(&waiting.id).await.unwrap();
+            assert_eq!(waiting.phase, AWAITING_JUDGES);
+            assert!(waiting.wait_until.unwrap() > now());
+            s.fill(&mut flights, &mut tried).await.unwrap();
+            assert!(flights.is_empty(), "busy panels must not spin");
+            backend.busy_judges.store(false, Ordering::SeqCst);
+            backend.busy_renderer.store(false, Ordering::SeqCst);
+            waiting.wait_until = Some(now() - 1);
+            s.store.save_attempt(&waiting).await.unwrap();
+            s.fill(&mut flights, &mut tried).await.unwrap();
+            assert_eq!(flights.len(), 1);
+            while let Some(result) = flights.join_next().await {
+                result.unwrap();
+            }
+            let settled = s.store.attempt(&waiting.id).await.unwrap();
+            assert_eq!(settled.phase, "terminal");
+            assert_eq!(settled.output, waiting.output);
+            assert!(settled.reason.is_none());
+            assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(backend.judges.load(Ordering::SeqCst), 2);
+            dir.close().await;
+        }
+    }
+    #[tokio::test]
+    async fn judge_preparation_contention_never_parks_the_resource_queue() {
+        let (dir, s, backend) = setup().await;
+        let scope = s.store.root.display().to_string();
+        let first = prepare_judge(&scope, "judge:invented").unwrap();
+        admission_window::admitted(&scope, "judge:invented");
+        let a = admission_window::begin(&scope, "other-a").unwrap();
+        let b = admission_window::begin(&scope, "other-b").unwrap();
+        admission_window::finished(&scope, "judge:invented");
+        let error = prepare_judge(&scope, "judge:invented").err().unwrap();
+        assert_eq!(error.code, JUDGE_ADMISSION_WAIT);
+        assert!(!unstarted_refusal(&error));
+        drop((first, a, b));
+        assert!(admission_window::has_room(&scope));
+        assert!(admission_window::remaining(&scope).is_zero());
+        // Exercise the caller too: a local wait must not become a global
+        // sandbox refusal when the backend returns it between judge seats.
+        backend.judge_admission_waits.store(1, Ordering::SeqCst);
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let waiting = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(waiting.phase, AWAITING_JUDGES);
+        assert!(judge_discovery_waiting(&waiting));
+        assert!(waiting.wait_until.is_none());
+        assert!(admission_window::remaining(&scope).is_zero());
+        s.tick().await.unwrap();
+        let settled = s.store.attempt(&waiting.id).await.unwrap();
+        assert_eq!(settled.phase, "terminal");
+        assert_eq!(settled.output, waiting.output);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn a_panicking_judge_preserves_evidence_releases_its_lane_and_never_replays() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        let mut waiting = run.attempts[0].clone();
+        waiting.phase = AWAITING_JUDGES.into();
+        waiting.outcome = Some("pending_review".into());
+        waiting.output = Some(creative().evaluator.known_good);
+        waiting.evaluations.push(Evaluation {
+            id: "invented-render-marker".into(),
+            evaluator_revision: "invented".into(),
+            verdict: "rendered".into(),
+            score: None,
+            reason: "Preserved rendering".into(),
+            created_at: now(),
+            provenance: "render".into(),
+            artifacts: vec![],
+            details: Some(json!({"expectedJudges": 3})),
+            judge: None,
+            usage: None,
+        });
+        waiting.evaluations.push(Evaluation {
+            id: "invented-paid-vote".into(),
+            evaluator_revision: "invented".into(),
+            verdict: "scored".into(),
+            score: Some(0.7),
+            reason: "Preserved paid evidence".into(),
+            created_at: now(),
+            provenance: "judge".into(),
+            artifacts: vec![],
+            details: None,
+            judge: None,
+            usage: None,
+        });
+        s.store.save_attempt(&waiting).await.unwrap();
+        backend.panic_judges.store(true, Ordering::SeqCst);
+        s.tick().await.unwrap();
+        assert_eq!(s.flying(&run.id).await, 0);
+        let failed = s.store.attempt(&waiting.id).await.unwrap();
+        assert_eq!(failed.phase, "terminal");
+        assert_eq!(failed.outcome, waiting.outcome);
+        assert_eq!(failed.output, waiting.output);
+        assert_eq!(
+            serde_json::to_value(&failed.evaluations).unwrap(),
+            serde_json::to_value(&waiting.evaluations).unwrap()
+        );
+        assert!(failed.reason.as_deref().unwrap().contains("panicked"));
+        assert!(s.store.runs().await.unwrap()[0].attention.is_some());
+        backend.panic_judges.store(false, Ordering::SeqCst);
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run_state(&run.id).await.unwrap(), "needs_attention");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        // No leaked lane can hold a later pause in 'pausing'.
+        s.store.set_run_state(&run.id, "pausing").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run_state(&run.id).await.unwrap(), "paused");
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn a_panicking_panel_during_generation_keeps_the_sealed_answer() {
+        let (dir, s, backend) = setup().await;
+        backend.panic_judges.store(true, Ordering::SeqCst);
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let failed = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(s.flying(&run.id).await, 0);
+        assert_eq!(failed.phase, "terminal");
+        assert_eq!(failed.outcome.as_deref(), Some("pending_review"));
+        assert!(failed.output.is_some());
+        assert!(failed
+            .evaluations
+            .iter()
+            .any(|e| e.provenance == "objective"));
+        s.tick().await.unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
         dir.close().await;
     }
