@@ -228,7 +228,7 @@ it("separates a current sandbox blocker from saved judging errors and rechecks w
   expect(screen.getByText(failure).closest("details")).not.toHaveAttribute(
     "open",
   );
-  expect(screen.getByRole("button", { name: "Finish run" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start run" })).toBeDisabled();
   expect(
     screen.getByRole("button", { name: /Measure all again/ }),
   ).toBeDisabled();
@@ -246,7 +246,7 @@ it("separates a current sandbox blocker from saved judging errors and rechecks w
   await waitFor(() =>
     expect(screen.queryByText("Cannot start or continue")).toBeNull(),
   );
-  expect(screen.getByRole("button", { name: "Finish run" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Start run" })).toBeEnabled();
   expect(screen.getByText("Previous judging errors")).toBeInTheDocument();
   expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
@@ -518,7 +518,7 @@ it("shows why the runner refused to finish a run", async () => {
     "model-1 on Bravo: the account's plan no longer offers this model",
   );
   show({ runId: "run-2" });
-  await user.click(await screen.findByRole("button", { name: "Finish run" }));
+  await user.click(await screen.findByRole("button", { name: "Start run" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "the account's plan no longer offers this model",
   );
@@ -974,7 +974,7 @@ it("finishes a stopped run inside its window, adding the tests it lacks, instead
     state: "running",
   });
   show({ runId: "run-2" });
-  const finish = await screen.findByRole("button", { name: "Finish run" });
+  const finish = await screen.findByRole("button", { name: "Start run" });
   // The hint counts the queued tests with the added ones, those that keep
   // repetitions already scored, and names the deadline.
   expect(screen.getByText("Remaining")).toBeInTheDocument();
@@ -1025,7 +1025,7 @@ it("says a run's window closed and offers a new run for the tests it still owed"
   await waitFor(() => expect(start).toBeEnabled());
   expect(screen.getByRole("alert")).toHaveTextContent(/This run is archived/);
   // Nothing offers to go on with the closed run.
-  for (const name of ["Resume", "Pause", "Finish run"])
+  for (const name of ["Resume", "Pause", "Start run"])
     expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
@@ -1064,7 +1064,7 @@ it("says a paused run made for an older runtime cannot go on and offers only Sto
   expect(
     await screen.findByText(/This run used an earlier execution environment/),
   ).toHaveTextContent(/Stop it, then start a new run for the remaining tests/);
-  for (const name of ["Resume", "Pause", "Finish run", "Start"])
+  for (const name of ["Resume", "Pause", "Start run", "Start"])
     expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Stop" }));
   expect(benchmarkApi.cancelRun).toHaveBeenCalledWith("run-2");
@@ -1097,7 +1097,7 @@ it("offers a new run for the owed tests once a run made for an older runtime is 
   expect(screen.getByText("New run required")).toBeInTheDocument();
   expect(screen.queryByText(/Stop it/)).toBeNull();
   expect(
-    screen.queryByRole("button", { name: "Finish run" }),
+    screen.queryByRole("button", { name: "Start run" }),
   ).not.toBeInTheDocument();
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
@@ -1254,7 +1254,7 @@ it("finishes a text run with repository tests by bringing the repository configu
     runId: "run-2",
     definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
   });
-  const finish = await screen.findByRole("button", { name: "Finish run" });
+  const finish = await screen.findByRole("button", { name: "Start run" });
   await waitFor(() => expect(finish).toBeEnabled());
   await user.click(finish);
   expect(benchmarkApi.extendRun).toHaveBeenCalledWith(
@@ -1288,7 +1288,7 @@ it("finishes an old text run that already holds a repository test on its reposit
     runId: "run-2",
     definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
   });
-  const finish = await screen.findByRole("button", { name: "Finish run" });
+  const finish = await screen.findByRole("button", { name: "Start run" });
   await waitFor(() => expect(finish).toBeEnabled());
   await user.click(finish);
   // The wrongly paired test reads as missing and goes to its own profile.
@@ -1501,15 +1501,15 @@ it("keeps paused rows still, updates the archive date, and expires only after th
   };
   act(() => client.setQueryData(["benchmarks", "run", "run-2"], resumed));
   await settleClockQueries();
-  expect(screen.getByRole("button", { name: "Finish run" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Start run" })).toBeEnabled();
   checkboxRenders.mockClear();
   const remaining = runWindowCloses(resumed) - Date.now();
   await act(async () => vi.advanceTimersByTimeAsync(remaining - 1));
   expect(checkboxRenders).not.toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: "Finish run" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Start run" })).toBeEnabled();
   await act(async () => vi.advanceTimersByTimeAsync(1));
   expect(
-    screen.queryByRole("button", { name: "Finish run" }),
+    screen.queryByRole("button", { name: "Start run" }),
   ).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
   expect(screen.getByText(/This run is archived/)).toBeInTheDocument();
@@ -1557,7 +1557,7 @@ it("warns before measuring a model again whose run inside its window is complete
     /All tests measured. Measuring again starts a new paid run/,
   );
   expect(
-    screen.queryByRole("button", { name: "Finish run" }),
+    screen.queryByRole("button", { name: "Start run" }),
   ).not.toBeInTheDocument();
   // Nothing is owed, so nothing starts checked and Start says why it waits.
   expect(screen.getByText("0 of 6 tests, 0 attempts")).toBeInTheDocument();
@@ -1588,7 +1588,7 @@ it("starts legacy one-repetition runs afresh instead of paying to extend an unus
   );
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("button", { name: "Finish run" }),
+    screen.queryByRole("button", { name: "Start run" }),
   ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Measure again" }),

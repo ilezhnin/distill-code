@@ -378,7 +378,7 @@
     "start": "Iniciar",
     "stop": "Detener",
     "stopping": "Deteniendo…",
-    "finish": "Terminar la ejecución",
+    "finish": "Iniciar ejecución",
     "finishHint": "Ejecución del {{at}}, abierta hasta {{until}}: {{left}} pruebas por medir; {{partial}} de ellas conservan las repeticiones ya puntuadas y solo ejecutan el resto.",
     "expiredHint": "La ejecución del {{at}} se cerró a las {{until}}: su ventana de 24 horas, sin contar las pausas, terminó, así que ya no puede reanudarse ni completarse. Las {{owed}} pruebas que el tablero aún debe están marcadas; Iniciar las mide en una nueva ejecución.",
     "measuredHint": "Medida por completo {{at}}: {{measured}} pruebas, todas las repeticiones. Repetir esta medición es un gasto innecesario. Medir todo de nuevo guarda este resultado en el historial e inicia una nueva ejecución con su coste completo.",

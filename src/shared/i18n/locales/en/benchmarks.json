@@ -378,7 +378,7 @@
     "start": "Start",
     "stop": "Stop",
     "stopping": "Stopping…",
-    "finish": "Finish run",
+    "finish": "Start run",
     "finishHint": "Run of {{at}}, open until {{until}}: {{left}} tests to measure, {{partial}} of them keep the repetitions already scored and run only the rest.",
     "expiredHint": "The run of {{at}} closed at {{until}}: its 24-hour window, pauses left out, is over, so it can no longer resume or finish. The {{owed}} tests the board still owes are checked; Start measures them in a new run.",
     "measuredHint": "Measured in full {{at}}: {{measured}} tests, every repetition. Repeating this measurement is unnecessary spending. Measure all again saves this result in history and starts a new run at full cost.",
