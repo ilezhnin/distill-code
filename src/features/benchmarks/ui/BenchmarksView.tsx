@@ -1,5 +1,11 @@
 import { poolTaskOrder } from "./BenchmarkTaskGrid";
-import { Fragment, useMemo, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -173,8 +179,10 @@ export function BenchmarksView({
       ),
   );
   const openedRow = openedModel?.row ?? null;
-  const openEvidence = (attemptId: string) =>
-    onNavigate({ ...location, attemptId });
+  const openEvidence = useCallback(
+    (attemptId: string) => onNavigate({ ...location, attemptId }),
+    [location, onNavigate],
+  );
   const openRun = (id: string) => {
     setDialog(null);
     setRunSelection(null);

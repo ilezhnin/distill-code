@@ -46,6 +46,19 @@ import {
   runSummary,
 } from "./fixtures";
 
+const repetitionRenders = vi.hoisted(() => vi.fn());
+vi.mock("../ui/BenchmarkTestStatus", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../ui/BenchmarkTestStatus")>();
+  return {
+    ...original,
+    RepetitionDots: (props: Parameters<typeof original.RepetitionDots>[0]) => {
+      repetitionRenders(props.states);
+      return <original.RepetitionDots {...props} />;
+    },
+  };
+});
+
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) =>
     error && typeof error === "object" && "message" in error
@@ -991,6 +1004,64 @@ describe("benchmark authoring and saved evidence", () => {
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(openDialog).toHaveBeenLastCalledWith("running-run-1");
   });
+  it("keeps settled model cards unchanged while opening Run and uses fresh evidence navigation", async () => {
+    const row = leaderboardRow({});
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort,
+      rows: [row],
+    });
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.listAttempts).mockResolvedValue([
+      { ...attemptSummary, score: 1 },
+    ]);
+    vi.mocked(benchmarkApi.getInventory).mockResolvedValue([]);
+    const location: BenchmarkLocation = {
+      section: "leaderboard",
+      configurationId: rowKey(row),
+    };
+    const oldNavigate = vi.fn();
+    const newNavigate = vi.fn();
+    const selectSession = vi.fn();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    const view = (onNavigate: typeof oldNavigate) => (
+      <QueryClientProvider client={client}>
+        <BenchmarksView
+          location={location}
+          onNavigate={onNavigate}
+          onSelectSession={selectSession}
+        />
+      </QueryClientProvider>
+    );
+    const rendered = render(view(oldNavigate));
+    const task = await screen.findByRole("button", { name: /^Task 1: / });
+    await waitFor(() => expect(task).toBeEnabled());
+    // The grid keeps three planned repetition dots; the dialog's standing
+    // result separately shows its one recorded repetition.
+    const gridDots = repetitionRenders.mock.calls.at(-1)?.[0];
+    expect(gridDots).toEqual(["passed", "queued", "queued"]);
+    repetitionRenders.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByRole("dialog");
+    await waitFor(() => expect(benchmarkApi.getInventory).toHaveBeenCalled());
+    expect(
+      repetitionRenders.mock.calls.some(([dots]) => dots === gridDots),
+    ).toBe(false);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    rendered.rerender(view(newNavigate));
+    await userEvent.click(screen.getByRole("button", { name: /^Task 1: / }));
+    expect(newNavigate).toHaveBeenLastCalledWith({
+      ...location,
+      attemptId: attemptSummary.id,
+    });
+    expect(oldNavigate).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("runs the model page's model from its dialog on today's runtime", async () => {
     const stale = {
       ...configuration,
