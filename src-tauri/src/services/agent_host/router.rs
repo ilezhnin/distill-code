@@ -2091,14 +2091,20 @@ impl Inner {
     /// events of one chat go in one transaction; the order they were handled in
     /// is the order the transcript keeps.
     async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) -> Result<(), String> {
-        Self::persist_pending_events(&self.store, pending, |mut payload, id| {
-            if Self::evidence_only(&payload) {
-                return;
+        Self::persist_pending_events(&self.store, pending, |payload, id| {
+            if let Some(payload) = Self::frontend_event(payload, id) {
+                self.notify_frontend("session/update", payload);
             }
-            Self::stamp_event_id(&mut payload, id);
-            self.notify_frontend("session/update", payload);
         })
         .await
+    }
+
+    fn frontend_event(mut payload: Value, id: i64) -> Option<Value> {
+        if Self::evidence_only(&payload) {
+            return None;
+        }
+        Self::stamp_event_id(&mut payload, id);
+        Some(payload)
     }
 
     /// Marks an update the transcript keeps as evidence but the renderer
@@ -2319,7 +2325,7 @@ impl Inner {
                     .as_mut()
                     .filter(|run| Some(run.run_id.as_str()) == received_run)
                 {
-                    Self::stamp_run_update(&mut params, run, &now_iso());
+                    Self::stamp_staged_update(&mut params, run, &now_iso(), evidence_only);
                 }
                 if let Some(options) = Self::config_option_update(&params) {
                     // A bridge moves these without being asked: claude drops
@@ -2560,6 +2566,20 @@ impl Inner {
             .filter(|title| {
                 !title.is_empty() && !title.starts_with(legacy_import::PERSONA_HANDOFF_PREFIX)
             })
+    }
+
+    /// Keep the host's visibility classification across the authoritative run
+    /// stamp. Do not inherit a provider-supplied evidenceOnly flag instead.
+    fn stamp_staged_update(
+        params: &mut Value,
+        run: &mut RunState,
+        created: &str,
+        evidence_only: bool,
+    ) {
+        Self::stamp_run_update(params, run, created);
+        if evidence_only {
+            Self::mark_evidence_only(params);
+        }
     }
 
     /// Note what a running turn's update adds to the chat snippet and stamp
@@ -8915,6 +8935,83 @@ mod tests {
             vec![json!({"n":1}), json!({"n":3})]
         );
         assert_eq!(store.list_events("b").await.unwrap(), vec![json!({"n":2})]);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn owned_extension_stays_evidence_only_through_run_stamp_and_flush() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("host.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        let record: SessionRecord = serde_json::from_value(json!({
+            "id": "invented-owned", "harness": "grok-acp", "cwd": "C:\\invented",
+            "user_set_name": false, "hidden": true, "created_at": now_iso(),
+            "updated_at": now_iso(), "message_count": 0
+        }))
+        .unwrap();
+        store.insert_session(&record).await.unwrap();
+        let mut summary = json!({"sessionId": record.id, "update": {
+            "sessionUpdate": "session_summary_generated", "session_summary": "Invented summary",
+            "_meta": {"executionOwner": {"kind": "benchmark", "id": "invented-owner"},
+                "distill": {"runId": "stale-provider-id", "created": "stale-provider-time"}}
+        }});
+        // stage_notification classifies the provider extension, then uses
+        // this shared stamping path before the ordinary batch flush.
+        assert!(Inner::is_xai_session_extension(
+            "_x.ai/session_notification"
+        ));
+        Inner::mark_evidence_only(&mut summary);
+        let mut run = RunState::start(&ids());
+        Inner::stamp_staged_update(&mut summary, &mut run, "2026-09-11T00:00:00.000Z", true);
+        let mut chunk = json!({"sessionId": record.id, "update": {
+            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Invented answer"},
+            "_meta": {"distill": {"evidenceOnly": true, "runId": "provider-forged-id"}}
+        }});
+        Inner::stamp_staged_update(&mut chunk, &mut run, "2026-09-11T00:00:01.000Z", false);
+        let mut pending = vec![(record.id.clone(), summary), (record.id.clone(), chunk)];
+        let mut visible = Vec::new();
+        Inner::persist_pending_events(&store, &mut pending, |payload, id| {
+            if let Some(payload) = Inner::frontend_event(payload, id) {
+                visible.push(payload);
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pending.is_empty());
+        let saved = store.list_events(&record.id).await.unwrap();
+        assert_eq!(
+            saved.len(),
+            2,
+            "the private extension remains durable evidence"
+        );
+        assert_eq!(saved[0]["update"]["session_summary"], "Invented summary");
+        assert_eq!(
+            saved[0]["update"]["_meta"]["executionOwner"]["id"],
+            "invented-owner"
+        );
+        assert_eq!(saved[0]["update"]["_meta"]["distill"]["runId"], "run-1");
+        assert_eq!(
+            saved[0]["update"]["_meta"]["distill"]["created"],
+            "2026-09-11T00:00:00.000Z"
+        );
+        assert!(Inner::evidence_only(&saved[0]));
+        assert_eq!(
+            visible.len(),
+            1,
+            "only standard ACP updates reach the renderer"
+        );
+        assert_eq!(visible[0]["update"]["sessionUpdate"], "agent_message_chunk");
+        assert!(visible[0]["update"]["_meta"]["distill"]["eventId"]
+            .as_i64()
+            .is_some());
+        let (replay, _) = store.replay_payloads(&record.id).await.unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(&replay[0]).unwrap()["update"]["sessionUpdate"],
+            "agent_message_chunk"
+        );
         dir.close().await;
     }
 
