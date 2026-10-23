@@ -1,6 +1,6 @@
 //! A rejected request is not a candidate verdict. On explicit recovery an
 //! ordinary panel is selected afresh, without that judge for the same answer
-//! and scoring instructions. Frozen panels and calibrations never substitute.
+//! and scoring instructions. Preregistered panels and calibrations never substitute.
 use super::*;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -96,7 +96,9 @@ fn rejection_from_status(evaluation: &Evaluation, status: &ExecutionDispatch) ->
 }
 
 fn recovery_allowed(draft: &BenchmarkDraft, evidence: &JudgeEvidence<'_>) -> bool {
-    draft.environment.get("judgePanel").is_none() && matches!(evidence, JudgeEvidence::Attempt)
+    matches!(evidence, JudgeEvidence::OrdinaryAttempt)
+        || (draft.environment.get("judgePanel").is_none()
+            && matches!(evidence, JudgeEvidence::Attempt))
 }
 
 impl NativeBackend {
@@ -405,5 +407,6 @@ mod tests {
         ));
         draft.environment["judgePanel"] = json!({"recipe":"frozen-native-panel-v1"});
         assert!(!recovery_allowed(&draft, &JudgeEvidence::Attempt));
+        assert!(recovery_allowed(&draft, &JudgeEvidence::OrdinaryAttempt));
     }
 }

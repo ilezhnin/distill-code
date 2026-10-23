@@ -671,17 +671,28 @@ When quota is already known before a judge starts, the saved answer and any
 completed votes wait for the reset without creating an abstention or repeating
 candidate generation. An unknown reset is checked again after five minutes.
 An ordinary panel waits only when eligible judges on limited accounts could
-complete it; enough available judges proceed immediately. Frozen panels keep
-their exact seats and all binding checks. These waits release execution and
-preparation capacity so other candidates and panels can continue.
+complete it; enough available judges proceed immediately. Qualification and
+preregistered workflow panels keep their exact seats and binding checks. These
+waits release execution and preparation capacity so other candidates and panels
+can continue.
 
 If a judge session does not acknowledge its requested model, effort or fast
 mode before any scoring prompt is dispatched, setup retries that exact seat
 at most twice. Each refused session is retained, a fresh session owner is used,
 and any completed votes and the sealed candidate answer stay in the same batch.
 Paid or uncertain requests and invalid score sheets are not retried by this
-setup recovery. Frozen runtime mismatches still stop that panel, and its run
-shows the specific refusal instead of only saying that scores are missing.
+setup recovery. Frozen runtime mismatches stop qualification and preregistered
+workflow panels, with a specific refusal instead of only missing scores.
+
+Ordinary benchmark runs score the retained artifact with the current eligible
+judge pool, even when the task declares a panel for its calibration. Changes to
+a judge's account, model or runtime do not invalidate the candidate answer.
+On recovery, completed votes keep their original attribution; only unfilled
+seats rotate. A replacement batch references the same sealed rendering and
+each reused vote, without repeating its provider call or counting usage twice.
+The panel size and sample count stay within the existing run's reservation.
+Actual judge settings and runtime are recorded with new scores. These ordinary
+panels do not inherit a frozen calibration's authority for research certification.
 
 A workflow root under it settles with its quota outcome instead, since its
 committed steps are never replayed. A try the provider refused before any
@@ -875,11 +886,11 @@ as a zero for the candidate. On Resume or Evaluate again, an ordinary panel
 excludes the rejecting model and effort for that answer and scoring protocol,
 including its other accounts. The service selects a fresh panel from the
 currently eligible, calibrated pool and records the rejected evaluations and
-the replacement panel's own protocol hash. It reuses the sealed answer, but
-does not transfer votes between panels or reduce the two-judge minimum. Older
-generic errors are recognized only from their matching terminal host dispatch.
-Frozen panels and calibration controls never substitute a judge. A missing
-replacement is reported explicitly; no paid retry loop is started.
+the replacement panel's own protocol hash. During run recovery it reuses the
+sealed artifact and references completed votes without reducing the panel size.
+Older generic errors are recognized only from their matching terminal host dispatch.
+Preregistered workflow panels and calibration controls never substitute a judge.
+A missing replacement is reported explicitly; no paid retry loop is started.
 
 ## 5. Fit and inspect the local selector
 

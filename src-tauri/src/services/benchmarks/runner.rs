@@ -28,6 +28,7 @@ mod judge_corrections;
 mod judge_recovery;
 mod judge_watchdog;
 pub(crate) mod native_receipt;
+mod ordinary_judging;
 mod preparation_watchdog;
 
 /// Fewest judges whose votes may settle a rendering.
@@ -3373,6 +3374,8 @@ async fn saved_rendering(open: &OpenBatch, textual: bool, max_text_bytes: u64) -
 /// The native panel: each judge's evaluation is saved on the attempt as it lands.
 enum JudgeEvidence<'a> {
     Attempt,
+    /// Artifact judging in a normal run; calibration pins do not select seats.
+    OrdinaryAttempt,
     Qualification {
         record: &'a mut super::qualification::Record,
         index: usize,
@@ -3387,7 +3390,7 @@ enum JudgeEvidence<'a> {
 impl JudgeEvidence<'_> {
     fn directory(&self, store: &Store, attempt: &Attempt) -> std::path::PathBuf {
         match self {
-            Self::Attempt => store
+            Self::Attempt | Self::OrdinaryAttempt => store
                 .root
                 .join("runs")
                 .join(&attempt.run_id)
@@ -3402,7 +3405,7 @@ impl JudgeEvidence<'_> {
     }
     async fn save(&mut self, store: &Store, attempt: &Attempt) -> Result<()> {
         match self {
-            Self::Attempt => store.save_attempt(attempt).await,
+            Self::Attempt | Self::OrdinaryAttempt => store.save_attempt(attempt).await,
             Self::Qualification { record, index } => {
                 record.controls[*index].judge_evaluations = attempt.evaluations.clone();
                 store.save_qualification_progress(record).await
@@ -3675,11 +3678,15 @@ impl NativeBackend {
         attempt: &Attempt,
         draft: &BenchmarkDraft,
         rejected: &[judge_recovery::Rejection],
+        frozen: bool,
+        retained_votes: bool,
     ) -> Result<DiscoveredJudgePanel> {
         let contributing = super::workflow::judge_candidates(store, attempt).await?;
         let candidates: Vec<_> = contributing.iter().collect();
-        if let Some(panel) = super::judge_panel::frozen(draft, &candidates)? {
-            return Ok(DiscoveredJudgePanel::fixed(panel));
+        if frozen {
+            if let Some(panel) = super::judge_panel::frozen(draft, &candidates)? {
+                return Ok(DiscoveredJudgePanel::fixed(panel));
+            }
         }
         let textual = text_judged(draft);
         let pool = super::judge_pool::seatable(&store.root, textual).await?;
@@ -3714,9 +3721,9 @@ impl NativeBackend {
                 )
             })
             .collect();
-        // Frozen panels returned above and saved open batches keep their exact
-        // seats. A new ordinary panel may choose another idle account before
-        // any vote is reserved. The checks before/inside a batch remain the
+        // Frozen panels returned above keep their exact seats. Ordinary panels
+        // may choose another idle account for an unfilled seat. The checks
+        // before/inside a batch remain the
         // race guard if an account becomes busy after this snapshot.
         let host = self
             .app
@@ -3738,23 +3745,24 @@ impl NativeBackend {
                 availability.insert(key, activity.active_sessions.is_empty());
             }
         }
-        let panel = ordinary_available_judges(
-            &candidates,
-            draft,
-            offered
-                .into_iter()
-                .filter(|(_, judge)| !judge_recovery::excluded(judge, rejected))
-                .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
-                .collect(),
-            |judge| {
-                judge.account_id.as_ref().is_some_and(|account| {
-                    availability
-                        .get(&(judge.provider_id.clone(), account.clone()))
-                        .copied()
-                        .unwrap_or(false)
-                })
-            },
-        )?;
+        let offered = offered
+            .into_iter()
+            .filter(|(_, judge)| !judge_recovery::excluded(judge, rejected))
+            .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
+            .collect();
+        let available = |judge: &Configuration| {
+            judge.account_id.as_ref().is_some_and(|account| {
+                availability
+                    .get(&(judge.provider_id.clone(), account.clone()))
+                    .copied()
+                    .unwrap_or(false)
+            })
+        };
+        let panel = if retained_votes {
+            ordinary_judging::available_replacements(&candidates, draft, offered, available)
+        } else {
+            ordinary_available_judges(&candidates, draft, offered, available)?
+        };
         log::info!(
             "[benchmarks] judge panel for attempt {}: {} of offered {}",
             attempt.id,
@@ -3769,7 +3777,16 @@ impl NativeBackend {
                 .join(", "),
             seats.join(", ")
         );
-        let panel = resolve_quota_panel(panel, &candidates, draft, quota, deferred)?;
+        let mut panel = if retained_votes {
+            // Completed seats need no idle account or remaining quota. A single
+            // available replacement can complete a panel with retained votes.
+            panel
+        } else {
+            resolve_quota_panel(panel, &candidates, draft, quota, deferred)?
+        };
+        // Older tasks may have reserved two seats for their calibration panel.
+        // Rotate identities without enlarging that run's admitted call budget.
+        panel.truncate(super::judge_execution_count(draft));
         Ok(DiscoveredJudgePanel::discovered(panel, diagnostics, &pool))
     }
 
@@ -4081,7 +4098,8 @@ impl NativeBackend {
         {
             return Ok(judge_abstention(version, judge, batch, reason));
         }
-        let frozen = version.manifest.environment.get("judgePanel").is_some();
+        let frozen = !matches!(evidence, JudgeEvidence::OrdinaryAttempt)
+            && version.manifest.environment.get("judgePanel").is_some();
         if frozen {
             let contributing = super::workflow::judge_candidates(store, attempt).await?;
             let candidates: Vec<_> = contributing.iter().collect();
@@ -4168,7 +4186,7 @@ impl NativeBackend {
             }
         }
         let timeout = Duration::from_secs(u64::from(JUDGE_TIMEOUT_SECONDS));
-        let ((_, status), grant) =
+        let ((runtime_revision, status), grant) =
             with_app_sign_in(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
                 text_runtime_snapshot(judge, Some(JUDGE_TIMEOUT_SECONDS))
             })
@@ -4213,10 +4231,9 @@ impl NativeBackend {
         acknowledged.model_id = session.selection.model_id.clone().unwrap_or_default();
         acknowledged.effort = session.selection.reasoning_effort.clone();
         acknowledged.fast_mode = session.selection.fast_mode;
-        let frozen_panel = version.manifest.environment.get("judgePanel").is_some();
         if !session.substitutions.is_empty()
             || !matches_selection(judge, &acknowledged)
-            || (frozen_panel && judge.effort != acknowledged.effort)
+            || (frozen && judge.effort != acknowledged.effort)
         {
             let mut abstention = judge_abstention(
                 version,
@@ -4366,7 +4383,7 @@ impl NativeBackend {
                         };
                         exhaust_judge_on_quota(&attempt.run_id, &account, error, known);
                     }
-                    if frozen_panel
+                    if frozen
                         && status.result.as_ref().and_then(|result| {
                             result
                                 .pointer("/observedSelection/reasoningEffort")
@@ -4526,6 +4543,7 @@ impl NativeBackend {
                 "requestKey":key, "inFlight":!usage_complete,
                 "providerError": provider_error,
                 "durationMs": started.elapsed().as_millis() as u64,
+                "runtimeRevision": runtime_revision,
                 "criteria": parsed.as_ref().map(|sheet| &sheet.shares),
                 "criticalCheckPolicy": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|_| judge_checks::POLICY)),
                 "criticalCheckStatus": parsed.as_ref().and_then(|sheet| sheet.critical.as_ref().map(|check| check.status)),
@@ -4661,6 +4679,7 @@ impl NativeBackend {
         mut evidence: JudgeEvidence<'_>,
         trace: &mut diagnostics::JudgeTrace,
     ) -> Result<Attempt> {
+        let ordinary = matches!(evidence, JudgeEvidence::OrdinaryAttempt);
         let criteria = rubric_criteria(&version.manifest);
         if criteria.is_empty() {
             return Ok(attempt);
@@ -4672,7 +4691,7 @@ impl NativeBackend {
         };
         let textual = text_judged(&version.manifest);
         trace.stage = "judge_renderer_readiness";
-        let installed_renderer = if textual {
+        let mut installed_renderer = if textual || ordinary {
             None
         } else {
             Some(super::worker::ready().await?)
@@ -4694,11 +4713,18 @@ impl NativeBackend {
         // not asked yet, so the plan's reservation still covers it.
         let open = match stop
             .continues_batches()
-            .then(|| recoverable_open_batch(&attempt.evaluations, &prompt, &renderer, &rejected))
+            .then(|| {
+                if ordinary {
+                    ordinary_judging::recoverable(&attempt, &version.manifest, &prompt)
+                } else {
+                    recoverable_open_batch(&attempt.evaluations, &prompt, &renderer, &rejected)
+                }
+            })
             .flatten()
         {
             Some(open)
-                if !textual
+                if !ordinary
+                    && !textual
                     && attempt
                         .evaluations
                         .iter()
@@ -4729,7 +4755,37 @@ impl NativeBackend {
             None => None,
         };
         let (batch, judges, expected, votes, png) = match open {
-            Some((open, png)) => {
+            Some((mut open, png)) => {
+                if ordinary {
+                    let discovered = self
+                        .judge_panel(
+                            store,
+                            &attempt,
+                            &version.manifest,
+                            &rejected,
+                            false,
+                            !open.asked.is_empty(),
+                        )
+                        .await?;
+                    let Some(panel) = ordinary_judging::replacement_panel(&open, discovered.seats)
+                    else {
+                        attempt.reason = Some(JUDGES_BUSY.into());
+                        return Ok(attempt);
+                    };
+                    if ordinary_judging::needs_reseating(&attempt, &open, &panel) {
+                        let contributing =
+                            super::workflow::judge_candidates(store, &attempt).await?;
+                        let candidates: Vec<_> = contributing.iter().collect();
+                        open = ordinary_judging::reseat(
+                            &mut attempt,
+                            &version.manifest,
+                            &open,
+                            panel,
+                            &candidates,
+                        )?;
+                        evidence.save(store, &attempt).await?;
+                    }
+                }
                 let samples = open.expected / open.panel.len().max(1);
                 let judges = seat_samples(&open.panel, samples, &open.asked);
                 let waiting: Vec<Configuration> =
@@ -4748,8 +4804,15 @@ impl NativeBackend {
                         DiscoveredJudgePanel::fixed(vec![judge.as_ref().clone()])
                     }
                     _ => {
-                        self.judge_panel(store, &attempt, &version.manifest, &rejected)
-                            .await?
+                        self.judge_panel(
+                            store,
+                            &attempt,
+                            &version.manifest,
+                            &rejected,
+                            !ordinary,
+                            false,
+                        )
+                        .await?
                     }
                 };
                 let issue = discovered.issue(!rejected.is_empty());
@@ -4778,6 +4841,9 @@ impl NativeBackend {
                 if !self.judges_idle(&panel).await? {
                     attempt.reason = Some(JUDGES_BUSY.into());
                     return Ok(attempt);
+                }
+                if !textual && installed_renderer.is_none() {
+                    installed_renderer = Some(super::worker::ready().await?);
                 }
                 let png = if textual {
                     document.as_bytes().to_vec()
@@ -4847,7 +4913,11 @@ impl NativeBackend {
                     _ => judge_samples(&version.manifest),
                 };
                 let expected = panel.len() * samples;
-                let mut protocol = judge_protocol(&version.manifest, &panel);
+                let mut protocol = if ordinary {
+                    ordinary_judging::protocol(&version.manifest, &panel)
+                } else {
+                    judge_protocol(&version.manifest, &panel)
+                };
                 protocol["samplesPerJudge"] = json!(samples);
                 protocol["expectedJudges"] = json!(expected);
                 if let Some(installed) = &installed_renderer {
@@ -4857,7 +4927,11 @@ impl NativeBackend {
                     &panel,
                     &prompt,
                     &renderer,
-                    ordinary_recipe(&version.manifest),
+                    if ordinary {
+                        Some(super::judge_pool::PANEL_RECIPE)
+                    } else {
+                        ordinary_recipe(&version.manifest)
+                    },
                     samples,
                 );
                 let extension = if textual { "txt" } else { "png" };
@@ -5570,10 +5644,15 @@ impl ExecutionBackend for NativeBackend {
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move {
             let id = attempt.id.clone();
+            let evidence = if ordinary_judging::for_attempt(store, &attempt).await? {
+                JudgeEvidence::OrdinaryAttempt
+            } else {
+                JudgeEvidence::Attempt
+            };
             judge_watchdog::prepare(
                 store,
                 &id,
-                self.judge_response(store, attempt, version, stop, JudgeEvidence::Attempt),
+                self.judge_response(store, attempt, version, stop, evidence),
             )
             .await
         })

@@ -280,7 +280,7 @@ treated so without it. Its check then keeps its whole CPU ceiling for itself
 while it runs, and other CPU-heavy jobs start beside it only as the measured
 load allows (see benchmark operations).
 
-Without a frozen panel, a rendering's judges come from the judge pool: the
+In ordinary runs, a rendering's judges come from the judge pool: the
 owner's list of models and efforts (`judgePool` in the benchmark settings
 document, edited in Settings > Benchmarks), not a rule in code. A judge reads
 private rubrics and the conditions a right answer meets, so a provider that may
@@ -333,13 +333,14 @@ recipe (`three-lab-v1`) and the labs it seated enter its protocol and its hash,
 so its scores never compare with earlier panels, and the hash names them
 instead of the seated judges: the calibrated seats rotate by usage, so one
 recipe, panel size and set of labs is one ruler. Calibrations count for their
-own recipe (`strong-pool-v1`). A frozen panel names its own seats and is not
-subject to this rule.
+own recipe (`strong-pool-v1`). A qualification or preregistered workflow panel
+names its own seats and is not subject to this rule.
 
 A new ordinary panel chooses idle eligible accounts. A busy optional seat
-cannot delay two available judges; an opened or frozen panel keeps its exact
-seats and paid votes while an account is busy. Waiting answers take turns by
-their last scheduling opportunity, and a selected panel reserves preparation
+cannot delay two available judges. An ordinary open panel retains paid votes
+and can replace unfilled seats with currently eligible judges; qualification
+and preregistered workflow panels keep their exact seats. Waiting answers take
+turns by their last scheduling opportunity, and a selected panel reserves preparation
 capacity before fresh candidate work can use it.
 
 For retained benchmark answers, judge preparation stops after five minutes
@@ -420,8 +421,9 @@ three scores. It triples the judge calls, so it is off (1) unless a rubric
 asks for it, and it is refused with critical checks or a frozen panel. The
 samples enter the protocol hash, so sampled judgments compare apart.
 
-Rubric tasks can freeze their judge seats in `environment.judgePanel`, with
-`recipe: "frozen-native-panel-v1"` and a `judges` array of two or three complete
+Rubric tasks can freeze judge seats for qualification and preregistered research
+in `environment.judgePanel`, with `recipe: "frozen-native-panel-v1"` and a
+`judges` array of two or three complete
 configurations. Each seat pins its account, model, effort, fast mode, billing
 mode, native text profile and inventory revision. The rubric needs 1-32 distinct
 criteria with finite positive weights. An exact author of the case cannot
@@ -435,7 +437,11 @@ that acknowledges no fast mode (a model without one, such as Sonnet) counts
 as off during session setup, dispatch and grading. A missing control does not
 acknowledge a request for fast mode on. The runner checks current
 availability and the pinned runtime
-before each judge call; it never substitutes another judge for a frozen seat.
+before each qualification or preregistered workflow judge call; it never
+substitutes another judge for those frozen seats. Ordinary benchmark runs use
+the current eligible judge pool instead. The calibration's runtime pins do not
+block scoring a retained candidate artifact, and ordinary scores do not claim
+the frozen panel's certification authority.
 Text panels accept verified native text providers; visual panels additionally
 require image support. Complete votes must come from distinct registered seats
 and sessions in the same batch. This binding is separate from the historical
