@@ -12,6 +12,11 @@ import {
   type WebSocketStream,
 } from "./createWebSocketStream";
 import { HostClient } from "./hostClient";
+import {
+  HOST_MESSAGE_USAGE_METHOD,
+  parseHostMessageUsage,
+  type HostMessageUsageNotification,
+} from "./hostMessageUsage";
 import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import { logRendererEvent } from "./rendererLog";
 
@@ -31,6 +36,9 @@ export interface AcpPermissionAnswerReport {
 
 export interface AcpNotificationHandler {
   handleSessionNotification(notification: SessionNotification): Promise<void>;
+  handleMessageUsageNotification(
+    notification: HostMessageUsageNotification,
+  ): Promise<void>;
   /**
    * Optional. Called for an answer the operator would want to know about — a
    * request the app could only cancel. Nothing about the transport depends on
@@ -107,6 +115,12 @@ function createClientCallbacks(): () => Client {
     sessionUpdate: async (notification: SessionNotification): Promise<void> => {
       if (notificationHandler) {
         await notificationHandler.handleSessionNotification(notification);
+      }
+    },
+    extNotification: async (method, params): Promise<void> => {
+      if (method === HOST_MESSAGE_USAGE_METHOD) {
+        const notification = parseHostMessageUsage(params);
+        await notificationHandler?.handleMessageUsageNotification(notification);
       }
     },
   });

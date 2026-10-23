@@ -46,6 +46,7 @@ import type {
   AcpNotificationHandler,
   AcpPermissionAnswerReport,
 } from "@/shared/api/acpConnection";
+import type { HostMessageUsageNotification } from "@/shared/api/hostMessageUsage";
 import {
   clearSkillReplayChips,
   handleReplayUserMessageChunk,
@@ -431,13 +432,7 @@ export async function handleSessionNotification(
     return;
   }
   const isReplay = useChatStore.getState().loadingSessionIds.has(sessionId);
-  const hostMeta = update._meta?.distill;
-  if (
-    isRecord(hostMeta) &&
-    typeof hostMeta.eventId === "number" &&
-    hostMeta.eventId <= (historyBoundaries.get(sessionId) ?? 0)
-  )
-    return;
+  if (isAtHistoryBoundary(sessionId, update)) return;
 
   if (isReplay) {
     const sid = logSessionId(sessionId);
@@ -465,6 +460,40 @@ export async function handleSessionNotification(
     }
     await handleLive(sessionId, update);
   }
+}
+
+function isAtHistoryBoundary(
+  sessionId: string,
+  update: { _meta?: Record<string, unknown> | null },
+): boolean {
+  const meta = update._meta?.distill;
+  return (
+    isRecord(meta) &&
+    typeof meta.eventId === "number" &&
+    meta.eventId <= (historyBoundaries.get(sessionId) ?? 0)
+  );
+}
+
+/** Per-turn deltas use the host extension, not ACP's cumulative usage update. */
+export async function handleMessageUsageNotification(
+  notification: HostMessageUsageNotification,
+): Promise<void> {
+  const { sessionId, update } = notification;
+  observeExecutionOwner(
+    sessionId,
+    notification._meta?.executionOwner ?? update._meta?.executionOwner,
+  );
+  // A snapshot request buffers genuinely live notifications while loading.
+  // Count their usage once on arrival; there is no transcript row to replay.
+  // An ordinary history load, or an already committed boundary, is not use.
+  if (
+    !loadingLiveUpdates.has(sessionId) &&
+    (useChatStore.getState().loadingSessionIds.has(sessionId) ||
+      isAtHistoryBoundary(sessionId, update))
+  ) {
+    return;
+  }
+  recordMessageUsageNotification(sessionId, update.usage);
 }
 
 export function getReplayPerf(
@@ -1175,14 +1204,12 @@ function recordUsageNotification(
     });
     return;
   }
+}
 
-  if (kind !== "message_usage") {
-    return;
-  }
-  const usage = (update as unknown as { usage?: unknown }).usage;
-  if (!isRecord(usage)) {
-    return;
-  }
+function recordMessageUsageNotification(
+  sessionId: string,
+  usage: HostMessageUsageNotification["update"]["usage"],
+): void {
   const cacheTokens =
     (readNumber(usage.cacheReadTokens) ?? 0) +
     (readNumber(usage.cacheWriteTokens) ?? 0);
@@ -1519,6 +1546,7 @@ export function reportPermissionAnswer(
 
 const handler: AcpNotificationHandler = {
   handleSessionNotification,
+  handleMessageUsageNotification,
   reportPermissionAnswer,
 };
 

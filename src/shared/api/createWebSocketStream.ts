@@ -1,4 +1,5 @@
 import type { AnyMessage, Stream } from "@agentclientprotocol/sdk";
+import { adaptHostMessageUsage } from "./hostMessageUsage";
 
 function isAcpDebugEnabled(): boolean {
   if (!import.meta.env.DEV) return false;
@@ -149,7 +150,7 @@ export function createWebSocketStream(wsUrl: string): WebSocketStream {
           );
           continue;
         }
-        pushMessage(mapped);
+        pushMessage(adaptHostMessageUsage(mapped));
       }
     } catch {
       // ignore malformed JSON
