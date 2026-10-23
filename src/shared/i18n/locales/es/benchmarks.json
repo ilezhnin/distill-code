@@ -405,6 +405,9 @@
     "waitingResources": "Esperando recursos locales",
     "readinessBlocked": "No se puede iniciar ni continuar",
     "policyCheckMissing": "Hay que renovar la comprobación del entorno aislado para esta versión de Flock.",
+    "policyCheckRenew": "Actualizar comprobación",
+    "policyCheckRenewing": "Actualizando comprobación…",
+    "policyCheckHelp": "Ejecuta una comprobación local sin consumir uso del modelo. Puede tardar unos minutos. Los resultados completados se conservan; inicia la ejecución cuando termine.",
     "availabilityFailed": "No se pudo verificar la disponibilidad actual.",
     "readinessRetry": "Comprobar de nuevo",
     "readinessChecking": "Comprobando…"

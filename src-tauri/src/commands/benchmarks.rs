@@ -526,6 +526,21 @@ pub async fn benchmark_events_since(
         .await
 }
 #[tauri::command]
+pub async fn benchmark_renew_policy_check(provider_id: String) -> Result<()> {
+    let provider = NativeProvider::for_harness(&provider_id)
+        .ok_or_else(|| BenchmarkError::new("validation", "Unknown benchmark provider"))?;
+    crate::services::benchmark_policy_check::renew(provider)
+        .await
+        .map_err(|error| {
+            let code = if error.contains("resource_busy:") {
+                "resource_busy"
+            } else {
+                "infrastructure_failure"
+            };
+            BenchmarkError::new(code, error)
+        })
+}
+#[tauri::command]
 pub async fn benchmark_get_inventory(
     app: AppHandle,
     provider_id: String,

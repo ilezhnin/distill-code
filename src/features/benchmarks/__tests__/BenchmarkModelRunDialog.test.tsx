@@ -47,6 +47,7 @@ vi.mock("../api/benchmarks", async () => ({
   )),
   benchmarkApi: {
     getInventory: vi.fn(),
+    renewPolicyCheck: vi.fn(),
     previewRun: vi.fn(),
     startRun: vi.fn(),
     getRun: vi.fn(),
@@ -181,7 +182,7 @@ it("keeps existing result dots while a changed standing loads", async () => {
   client.clear();
 });
 
-it("separates a current sandbox blocker from saved judging errors and rechecks without starting work", async () => {
+it("renews a stale sandbox check and enables continuation without starting work or losing saved results", async () => {
   const user = userEvent.setup();
   const previous = stoppedRun("completed", [
     { versionId: "version-1", outcome: "pending_review", score: null },
@@ -242,7 +243,25 @@ it("separates a current sandbox blocker from saved judging errors and rechecks w
       reason: null,
     },
   ]);
-  await user.click(screen.getByRole("button", { name: "Check again" }));
+  let finishCheck: (() => void) | undefined;
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finishCheck = resolve;
+      }),
+  );
+  await user.click(
+    screen.getByRole("button", { name: "Update sandbox check" }),
+  );
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledWith(
+    configuration.providerId,
+  );
+  expect(
+    screen.getByRole("button", { name: "Updating sandbox check…" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Start run" })).toBeDisabled();
+  expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
+  await act(async () => finishCheck?.());
   await waitFor(() =>
     expect(screen.queryByText("Cannot start or continue")).toBeNull(),
   );
@@ -250,6 +269,49 @@ it("separates a current sandbox blocker from saved judging errors and rechecks w
   expect(screen.getByText("Previous judging errors")).toBeInTheDocument();
   expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
+it("keeps continuation blocked after a failed renewal and lets the operator retry", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(
+    "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe",
+  );
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockRejectedValue(
+    new Error("Sandbox check failed: offline suite failed"),
+  );
+  const user = userEvent.setup();
+  show();
+  await user.click(
+    await screen.findByRole("button", { name: "Update sandbox check" }),
+  );
+  expect(
+    await screen.findByText("Sandbox check failed: offline suite failed"),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Update sandbox check" }),
+  ).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+  expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+  expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
+});
+
+it("offers renewal when inventory lists the model with a stale proof instead of throwing", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    {
+      configuration,
+      name: "Test model",
+      efforts: ["high"],
+      supportsFastMode: true,
+      available: false,
+      reason:
+        "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe",
+    },
+  ]);
+  show();
+  expect(
+    await screen.findByRole("button", { name: "Update sandbox check" }),
+  ).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
 });
 
 it("blocks new starts and resumes when the current inventory check failed", async () => {

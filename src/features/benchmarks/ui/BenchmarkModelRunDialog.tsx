@@ -578,13 +578,20 @@ export function BenchmarkModelRunDialog({
   const over = expired || outdated;
   // Saved run pins do not establish today's availability. Every dispatch
   // action waits for a successful current listing, including after an error.
-  const inventoryUnready = inventory.data == null || inventory.error != null;
   const inventoryFailure = inventory.error
     ? benchmarkErrorMessage(inventory.error)
-    : null;
+    : ([...(resolutions?.values() ?? [])]
+        .flatMap((entry) =>
+          "issue" in entry && entry.issue === "unavailable" && entry.reason
+            ? [entry.reason]
+            : [],
+        )
+        .find((reason) => reason.includes("Linux text policy proof")) ?? null);
   const policyCheckMissing = inventoryFailure?.includes(
     "Linux text policy proof",
   );
+  const inventoryUnready =
+    inventory.data == null || inventory.error != null || policyCheckMissing;
   const stopped =
     !over &&
     windowOpen &&
@@ -691,7 +698,22 @@ export function BenchmarkModelRunDialog({
       rows.current.get(runningId)?.scrollIntoView?.({ block: "nearest" });
   }, [runningId]);
   const [busy, setBusy] = useState(false);
+  const [renewingPolicy, setRenewingPolicy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const renewPolicy = async () => {
+    setBusy(true);
+    setRenewingPolicy(true);
+    setError(null);
+    try {
+      await benchmarkApi.renewPolicyCheck(configuration.providerId);
+      await inventory.refetch();
+    } catch (failure) {
+      setError(benchmarkErrorMessage(failure));
+    } finally {
+      setRenewingPolicy(false);
+      setBusy(false);
+    }
+  };
   const start = async (all = false) => {
     if (inventoryUnready) return;
     // The checked tests in list order, so the plan order stays the queue.
@@ -835,7 +857,7 @@ export function BenchmarkModelRunDialog({
         </DialogHeader>
         <DialogBody className="space-y-3">
           {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
-          {inventory.error ? (
+          {inventoryFailure ? (
             <Alert
               variant={isRefusal(inventory.error) ? "warning" : "destructive"}
             >
@@ -862,14 +884,25 @@ export function BenchmarkModelRunDialog({
                   variant="alert"
                   size="xs"
                   disabled={inventory.isFetching || busy}
-                  onClick={() => void inventory.refetch()}
+                  onClick={() =>
+                    void (policyCheckMissing
+                      ? renewPolicy()
+                      : inventory.refetch())
+                  }
                 >
                   {t(
-                    inventory.isFetching
-                      ? "modelRun.readinessChecking"
-                      : "modelRun.readinessRetry",
+                    renewingPolicy
+                      ? "modelRun.policyCheckRenewing"
+                      : policyCheckMissing
+                        ? "modelRun.policyCheckRenew"
+                        : inventory.isFetching
+                          ? "modelRun.readinessChecking"
+                          : "modelRun.readinessRetry",
                   )}
                 </Button>
+                {policyCheckMissing ? (
+                  <p>{t("modelRun.policyCheckHelp")}</p>
+                ) : null}
               </AlertDescription>
             </Alert>
           ) : null}
@@ -878,6 +911,11 @@ export function BenchmarkModelRunDialog({
           {profilesOf(chosen).map((profile) => {
             const resolution = resolutions?.get(profile);
             if (!resolution || !("issue" in resolution)) return null;
+            if (
+              resolution.issue === "unavailable" &&
+              resolution.reason === inventoryFailure
+            )
+              return null;
             const model =
               profile === "protected_repository"
                 ? t("modelRun.repositoryProfile", { model: name })

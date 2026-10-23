@@ -339,6 +339,8 @@ export const benchmarkApi = {
       accountId,
       refresh,
     }),
+  renewPolicyCheck: (providerId: string) =>
+    invoke<void>("benchmark_renew_policy_check", { providerId }),
   listen: (callback: (change: BenchmarkChange) => void) =>
     listen<BenchmarkChange>("benchmark-changed", (event) =>
       callback(event.payload),

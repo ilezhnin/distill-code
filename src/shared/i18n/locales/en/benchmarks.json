@@ -405,6 +405,9 @@
     "waitingResources": "Waiting for resources",
     "readinessBlocked": "Cannot start or continue",
     "policyCheckMissing": "The sandbox check must be renewed for this version of Flock.",
+    "policyCheckRenew": "Update sandbox check",
+    "policyCheckRenewing": "Updating sandbox check…",
+    "policyCheckHelp": "Runs a local check without model usage. This may take a few minutes. Your completed results are kept; start the run when the check finishes.",
     "availabilityFailed": "Current availability could not be verified.",
     "readinessRetry": "Check again",
     "readinessChecking": "Checking…"
