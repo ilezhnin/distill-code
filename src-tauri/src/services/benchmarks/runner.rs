@@ -43,6 +43,8 @@ pub(super) const RENDERER_BUSY: &str =
     "Waiting for local resources to render for the judge panel; evaluate again later";
 const JUDGE_DISCOVERY_WAIT: &str = "Waiting for local resources to judge";
 pub(super) const JUDGE_ADMISSION_WAIT: &str = "judge_admission_wait";
+const JUDGE_QUOTA_WAIT: &str = "judge_quota_wait";
+const JUDGE_QUOTA_REASON: &str = "Waiting for judge subscription quota to reset";
 const JUDGE_BUSY_RETRY: Duration = Duration::from_secs(5);
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.
@@ -72,6 +74,17 @@ fn judging_deferred(attempt: &Attempt) -> bool {
         attempt.reason.as_deref(),
         Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY)
     ) || judge_discovery_waiting(attempt)
+        || judge_quota_waiting(attempt)
+}
+
+fn judge_quota_waiting(attempt: &Attempt) -> bool {
+    attempt.reason.as_deref() == Some(JUDGE_QUOTA_REASON)
+}
+
+fn judge_quota_wait(until: Option<i64>) -> BenchmarkError {
+    BenchmarkError::new(JUDGE_QUOTA_WAIT, JUDGE_QUOTA_REASON).with_details(json!({
+        "nextReset": until.filter(|until| *until > now()).unwrap_or(now() + QUOTA_RETRY_MS)
+    }))
 }
 
 fn judge_discovery_waiting(attempt: &Attempt) -> bool {
@@ -98,7 +111,47 @@ struct JudgeOffers {
         Option<crate::services::provider_account_status::Headroom>,
         InventoryModel,
     )>,
+    /// Offered models on accounts whose subscription quota is temporarily
+    /// spent. Eligibility is still checked against the calibrated pool.
+    quota: Vec<(i64, InventoryModel)>,
     deferred: Option<BenchmarkError>,
+}
+
+fn quota_seats(
+    pool: &[super::judge_pool::Entry],
+    rows: Vec<(i64, InventoryModel)>,
+    rejected: &[judge_recovery::Rejection],
+) -> Vec<(i64, Configuration)> {
+    rows.into_iter()
+        .flat_map(|(until, row)| {
+            super::judge_pool::seat_rows(pool, vec![(None, row)])
+                .into_iter()
+                .filter(|(_, judge)| !judge_recovery::excluded(judge, rejected))
+                .map(move |(_, judge)| (until, judge))
+        })
+        .collect()
+}
+
+/// A quota only defers a panel if the same eligibility rules could seat enough
+/// judges after it resets. A full usable panel never waits for optional seats.
+fn resolve_quota_panel(
+    panel: Vec<Configuration>,
+    candidates: &[&Configuration],
+    draft: &BenchmarkDraft,
+    mut quota: Vec<(i64, Configuration)>,
+    deferred: Option<BenchmarkError>,
+) -> Result<Vec<Configuration>> {
+    if panel.len() < MIN_JUDGES && !quota.is_empty() {
+        quota.sort_by_key(|(until, _)| *until);
+        let mut potential: Vec<_> = panel.iter().cloned().map(|judge| (None, judge)).collect();
+        for (until, judge) in quota {
+            potential.push((None, judge));
+            if ordinary_judges(candidates, draft, potential.clone()).len() >= MIN_JUDGES {
+                return Err(judge_quota_wait(Some(until)));
+            }
+        }
+    }
+    resolve_judge_panel(panel, deferred)
 }
 
 fn resolve_judge_panel(
@@ -2169,6 +2222,7 @@ pub(super) async fn reset_account_waits(store: &Store, run: &BenchmarkRun) -> Re
         }
         let reason = attempt.reason.as_deref().unwrap_or_default();
         let account_wait = reason == SIGN_IN_WAIT_REASON
+            || judge_quota_waiting(attempt)
             || reason == crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY
             || serde_json::from_str::<Value>(reason).is_ok_and(|error| {
                 let data = error.get("data").unwrap_or(&error);
@@ -2320,17 +2374,21 @@ fn exhaust(run_id: &str, account: &str, until: i64) {
 
 /// Whether `account`'s limit still holds `run_id` off.
 fn exhausted(run_id: &str, account: &str) -> bool {
+    exhausted_until(run_id, account).is_some()
+}
+
+fn exhausted_until(run_id: &str, account: &str) -> Option<i64> {
     let mut held = EXHAUSTED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = (run_id.to_owned(), account.to_owned());
     match held.get(&key) {
-        Some(until) if *until > now() => true,
+        Some(until) if *until > now() => Some(*until),
         Some(_) => {
             held.remove(&key);
-            false
+            None
         }
-        None => false,
+        None => None,
     }
 }
 
@@ -3084,6 +3142,9 @@ impl PanelJudges for NativePanel<'_, '_> {
                     admission_window::refused(&scope, &job);
                     return Err(error);
                 }
+                // This seat has not created a paid placeholder or dispatched
+                // a turn. Keep the batch's existing votes for its reset.
+                Err(error) if error.code == JUDGE_QUOTA_WAIT => return Err(error),
                 Err(error) if matches!(error.code.as_str(), ACCOUNT_BUSY | SIGN_IN_WAIT) => {
                     return Ok(JudgeAnswer::Busy);
                 }
@@ -3292,6 +3353,7 @@ impl NativeBackend {
             )
             .await?;
         let deferred = offered.deferred;
+        let quota = quota_seats(&pool, offered.quota, rejected);
         let offered = super::judge_pool::seat_rows(&pool, offered.rows);
         let seats: Vec<String> = offered
             .iter()
@@ -3333,13 +3395,14 @@ impl NativeBackend {
                 .join(", "),
             seats.join(", ")
         );
-        resolve_judge_panel(panel, deferred)
+        resolve_quota_panel(panel, &candidates, draft, quota, deferred)
     }
 
     /// Every enabled account's available native text models of the providers
     /// `admit` takes, with their account's usage headroom. An account whose
-    /// usage is spent, or ran out in `run`, could only abstain and is skipped;
-    /// judges never draw on credits.
+    /// usage is spent, or ran out in `run`, cannot be asked now, but its rows
+    /// still distinguish a temporary missing seat from an impossible panel.
+    /// Judges never draw on credits.
     async fn offered_judges(
         &self,
         run: &str,
@@ -3359,10 +3422,11 @@ impl NativeBackend {
             .await
             .map_err(host_error)?;
         let mut offered = Vec::new();
+        let mut quota = Vec::new();
         let mut deferred = None;
         for account in &accounts {
-            let skipped = if exhausted(run, &account.id) {
-                Some("its usage ran out in this run".to_owned())
+            let limited_until = if let Some(until) = exhausted_until(run, &account.id) {
+                Some(until)
             } else if crate::services::provider_account_status::usage_spent(
                 &self.app,
                 &account.id,
@@ -3370,16 +3434,23 @@ impl NativeBackend {
             )
             .await
             {
-                Some("its usage limit is spent".to_owned())
+                Some(
+                    crate::services::provider_account_status::spent_until(
+                        &self.app,
+                        &account.id,
+                        None,
+                    )
+                    .await
+                    .unwrap_or(now() + QUOTA_RETRY_MS),
+                )
             } else {
                 None
             };
-            if let Some(reason) = skipped {
+            if let Some(until) = limited_until {
                 log::info!(
-                    "[benchmarks] judge panel for {subject} skips account {}: {reason}",
-                    account.id
+                    "[benchmarks] judge panel for {subject} cannot ask account {} before quota recheck {until}",
+                    account.id,
                 );
-                continue;
             }
             let listed = self
                 .judge_listing(
@@ -3413,6 +3484,10 @@ impl NativeBackend {
             };
             for model in models {
                 if model.available && model.configuration.execution_profile == "native_text" {
+                    if let Some(until) = limited_until {
+                        quota.push((until, model));
+                        continue;
+                    }
                     let headroom = crate::services::provider_account_status::usage_headroom(
                         &self.app,
                         &account.id,
@@ -3429,6 +3504,7 @@ impl NativeBackend {
         }
         Ok(JudgeOffers {
             rows: offered,
+            quota,
             deferred,
         })
     }
@@ -3498,24 +3574,8 @@ impl NativeBackend {
         {
             return Ok(judge_abstention(version, judge, batch, reason));
         }
-        let activity = host
-            .account_activity(&judge.provider_id, &account)
-            .await
-            .map_err(host_error)?;
-        // Interactive work has priority; the batch waits and nothing is paid.
-        if !activity.active_sessions.is_empty() {
-            return Err(BenchmarkError::new(
-                ACCOUNT_BUSY,
-                "Judge account became busy",
-            ));
-        }
-        // A judge turn flies on its account too, so a stretch of judging alone
-        // still counts as the account flying (see `trusted_headroom`).
-        account_pace::record_flight(
-            &pace_key(store, &format!("{}\u{1f}{}", judge.provider_id, account)),
-            now(),
-        );
-        if version.manifest.environment.get("judgePanel").is_some() {
+        let frozen = version.manifest.environment.get("judgePanel").is_some();
+        if frozen {
             let contributing = super::workflow::judge_candidates(store, attempt).await?;
             let candidates: Vec<_> = contributing.iter().collect();
             let panel =
@@ -3533,14 +3593,40 @@ impl NativeBackend {
                     "Frozen judge is no longer eligible",
                 ));
             }
-            if crate::services::provider_account_status::usage_spent(&self.app, &account, false)
-                .await
-            {
-                return Err(BenchmarkError::new(
-                    "quota_exhausted",
-                    "Frozen judge account has no remaining usage",
-                ));
-            }
+        }
+        // An opened panel keeps its exact seats and any paid votes. Quota
+        // discovered before this seat starts is a wait, not an abstention.
+        if let Some(until) = exhausted_until(&attempt.run_id, &account) {
+            return Err(judge_quota_wait(Some(until)));
+        }
+        if crate::services::provider_account_status::usage_spent(&self.app, &account, false).await {
+            return Err(judge_quota_wait(
+                crate::services::provider_account_status::spent_until(
+                    &self.app,
+                    &account,
+                    Some(&judge.model_id),
+                )
+                .await,
+            ));
+        }
+        let activity = host
+            .account_activity(&judge.provider_id, &account)
+            .await
+            .map_err(host_error)?;
+        // Interactive work has priority; the batch waits and nothing is paid.
+        if !activity.active_sessions.is_empty() {
+            return Err(BenchmarkError::new(
+                ACCOUNT_BUSY,
+                "Judge account became busy",
+            ));
+        }
+        // A judge turn flies on its account too, so a stretch of judging alone
+        // still counts as the account flying (see `trusted_headroom`).
+        account_pace::record_flight(
+            &pace_key(store, &format!("{}\u{1f}{}", judge.provider_id, account)),
+            now(),
+        );
+        if frozen {
             // From the account's newest listing, as for ordinary seats.
             let listing = (
                 &host,
@@ -9193,7 +9279,17 @@ impl BenchmarkService {
                                 attempt = saved;
                             }
                         }
-                        if unstarted_refusal(&error) || error.code == JUDGE_ADMISSION_WAIT {
+                        if error.code == JUDGE_QUOTA_WAIT {
+                            attempt.reason = Some(JUDGE_QUOTA_REASON.into());
+                            attempt.wait_until = Some(
+                                error
+                                    .details
+                                    .as_ref()
+                                    .and_then(|details| details["nextReset"].as_i64())
+                                    .filter(|until| *until > now())
+                                    .unwrap_or(now() + QUOTA_RETRY_MS),
+                            );
+                        } else if unstarted_refusal(&error) || error.code == JUDGE_ADMISSION_WAIT {
                             if unstarted_refusal(&error) {
                                 admission_window::refused(&scope, &job);
                             }
@@ -9306,7 +9402,9 @@ impl BenchmarkService {
     /// else, a cancelled run included, settles the attempt.
     async fn settled_phase(&self, run: &BenchmarkRun, attempt: &Attempt) -> Result<&'static str> {
         Ok(
-            if (run.request.automatic_retry() || judge_discovery_waiting(attempt))
+            if (run.request.automatic_retry()
+                || judge_discovery_waiting(attempt)
+                || judge_quota_waiting(attempt))
                 && judging_deferred(attempt)
                 && !matches!(
                     self.store.run_state(&run.id).await?.as_str(),
@@ -9384,6 +9482,12 @@ pub struct FakeBackend {
     /// Local discovery refusals, before any judge prompt is sent.
     #[cfg(test)]
     judge_listing_refusals: std::sync::atomic::AtomicU64,
+    /// Quota known before any judge call or placeholder, independently of the
+    /// candidate's account. Zero means the invented judge is available.
+    #[cfg(test)]
+    judge_quota_until: std::sync::atomic::AtomicI64,
+    #[cfg(test)]
+    judge_quota_refusals: std::sync::atomic::AtomicU64,
     /// Turns the host refuses for quota before any provider call.
     pub quota_waits: std::sync::atomic::AtomicU64,
     #[cfg(test)]
@@ -9536,6 +9640,14 @@ impl ExecutionBackend for FakeBackend {
     ) -> BoxFuture<'a, Result<Attempt>> {
         use std::sync::atomic::Ordering;
         Box::pin(async move {
+            #[cfg(test)]
+            {
+                let until = self.judge_quota_until.load(Ordering::SeqCst);
+                if until > now() {
+                    self.judge_quota_refusals.fetch_add(1, Ordering::SeqCst);
+                    return Err(judge_quota_wait(Some(until)));
+                }
+            }
             #[cfg(test)]
             if self
                 .judge_admission_waits
@@ -9855,6 +9967,9 @@ mod execution_limits_tests;
 
 #[cfg(test)]
 mod quota_resource_tests;
+
+#[cfg(test)]
+mod judge_quota_tests;
 
 #[cfg(test)]
 mod evaluation_admission_tests;

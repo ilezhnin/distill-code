@@ -667,6 +667,14 @@ backoffs and dispatch admission deadlines remain in force. A judge's quota
 refusal releases its preparation slot and panel lane; its saved abstention
 remains subject to the existing incomplete-panel policy.
 
+When quota is already known before a judge starts, the saved answer and any
+completed votes wait for the reset without creating an abstention or repeating
+candidate generation. An unknown reset is checked again after five minutes.
+An ordinary panel waits only when eligible judges on limited accounts could
+complete it; enough available judges proceed immediately. Frozen panels keep
+their exact seats and all binding checks. These waits release execution and
+preparation capacity so other candidates and panels can continue.
+
 A workflow root under it settles with its quota outcome instead, since its
 committed steps are never replayed. A try the provider refused before any
 answer (another model acknowledged at session open, a busy account, a prompt

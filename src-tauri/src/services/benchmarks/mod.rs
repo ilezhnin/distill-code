@@ -1128,14 +1128,18 @@ impl BenchmarkService {
             .await?;
         run.request.require_dispatch_admission(now())?;
         if !run.request.automatic_retry() {
-            // Resume may finish original, never-started slots. It must not
-            // supersede receipts or enlarge the admitted execution plan.
+            // Resume may finish original, never-started slots or the remaining
+            // judging of a sealed answer. Neither replaces a generation or
+            // supersedes receipts/enlarges the admitted execution plan.
             return Ok(run.attempts.iter().any(|attempt| {
-                attempt.phase == "pending"
+                (attempt.phase == "pending"
                     && attempt.started_at.is_none()
                     && attempt.session_id.is_none()
                     && attempt.host_run_id.is_none()
-                    && attempt.workflow_steps.is_empty()
+                    && attempt.workflow_steps.is_empty())
+                    || (attempt.phase == runner::AWAITING_JUDGES
+                        && attempt.outcome.as_deref() == Some("pending_review")
+                        && attempt.evidence_hash.is_some())
             }));
         }
         let planned = run.request.repetitions.max(1);
