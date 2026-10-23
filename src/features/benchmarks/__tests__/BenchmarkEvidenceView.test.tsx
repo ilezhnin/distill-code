@@ -27,7 +27,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
 }));
 vi.mock("@/features/stats/lib/usageLedger", () => ({
-  projectBenchmarkUsage: vi.fn(),
+  projectBenchmarkUsageBatch: vi.fn(),
 }));
 
 /** Serves each version of these tests the way the service reads one. */

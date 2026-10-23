@@ -3,6 +3,7 @@ import {
   type KeyboardEventHandler,
   type ReactNode,
   type Ref,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -17,7 +18,8 @@ import type { AppView } from "@/app/AppShell";
 import {
   selectLocalMessageCountsBySession,
   selectNonEmptyDraftSessionIds,
-  selectSessionStateById,
+  selectSessionListActivityById,
+  type SessionListActivity,
 } from "@/features/chat/stores/chatSelectors";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { selectSessions } from "@/features/chat/stores/chatSessionSelectors";
@@ -34,7 +36,6 @@ import {
 import type { SessionAction } from "@/features/sessions/lib/sessionSelection";
 import {
   compareSessionsByActivityDesc,
-  isSessionRunning,
   sessionActivityAt,
 } from "@/features/chat/lib/sessionActivity";
 import type { ProjectInfo } from "@/features/projects/api/projects";
@@ -53,8 +54,6 @@ import {
   groupFlatChatsByActivityAge,
   limitFlatSidebarSessions,
 } from "@/features/sidebar/lib/sidebarFlatChats";
-import type { SessionChatRuntime } from "@/shared/types/chat";
-import { INITIAL_SESSION_CHAT_RUNTIME } from "@/shared/types/chat";
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
 import {
   getChatSessionIdsWithTerminals,
@@ -161,10 +160,10 @@ function validateExpandedProjects(value: unknown): Record<string, boolean> {
 
 function toSessionListItem(
   session: ChatSession,
-  sessionStateById: Record<string, SessionChatRuntime>,
+  sessionStateById: Record<string, SessionListActivity>,
   branchNameBySessionId: ReadonlyMap<string, string>,
 ): SidebarSessionItem {
-  const runtime = sessionStateById[session.id] ?? INITIAL_SESSION_CHAT_RUNTIME;
+  const activity = sessionStateById[session.id];
   const branchName = branchNameBySessionId.get(session.id);
   return {
     id: session.id,
@@ -175,15 +174,15 @@ function toSessionListItem(
     projectId: session.projectId ?? undefined,
     updatedAt: session.updatedAt,
     lastMessageAt: session.lastMessageAt,
-    isRunning: isSessionRunning(runtime.chatState),
-    hasUnread: runtime.hasUnread,
+    isRunning: activity?.isRunning ?? false,
+    hasUnread: activity?.hasUnread ?? false,
   };
 }
 
 function getFlatSessionListItems(
   visibleSessions: ChatSession[],
   projectsById: ReadonlyMap<string, ProjectInfo>,
-  sessionStateById: Record<string, SessionChatRuntime>,
+  sessionStateById: Record<string, SessionListActivity>,
   placeholderSessionIds: ReadonlySet<string>,
   branchNameBySessionId: ReadonlyMap<string, string>,
 ): SidebarSessionItem[] {
@@ -219,7 +218,7 @@ function orderFlatSessionListItems(
 function getSessionListGroups(
   visibleSessions: ChatSession[],
   projectIds: ReadonlySet<string>,
-  sessionStateById: Record<string, SessionChatRuntime>,
+  sessionStateById: Record<string, SessionListActivity>,
   placeholderSessionIds: ReadonlySet<string>,
   branchNameBySessionId: ReadonlyMap<string, string>,
 ): SessionListGroups {
@@ -350,7 +349,7 @@ function validateSectionVisibility(
   };
 }
 
-export function SessionListCapability({
+export const SessionListCapability = memo(function SessionListCapability({
   activeSessionId,
   collapsed,
   labelTransition,
@@ -415,7 +414,7 @@ export function SessionListCapability({
     getChatSessionIdsWithTerminals,
     () => new Set<string>(),
   );
-  const sessionStateById = useChatStore(selectSessionStateById);
+  const sessionStateById = useChatStore(selectSessionListActivityById);
   const sessions = useChatSessionStore(selectSessions);
   const conductorSessionIdList = useConductorGraphStore(
     useShallow((state) =>
@@ -900,4 +899,4 @@ export function SessionListCapability({
       )}
     </>
   );
-}
+});

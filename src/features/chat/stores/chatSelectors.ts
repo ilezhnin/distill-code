@@ -1,3 +1,4 @@
+import { isSessionRunning } from "../lib/sessionActivity";
 import type { ChatStore } from "./chatStore";
 
 // Derived counts are recomputed only when the underlying messagesBySession
@@ -56,3 +57,38 @@ export const selectSessionStateById = (state: ChatStore) =>
 
 export const selectNonEmptyDraftSessionIds = (state: ChatStore) =>
   state.nonEmptyDraftSessionIds;
+
+export interface SessionListActivity {
+  isRunning: boolean;
+  hasUnread: boolean;
+}
+let cachedRuntimeBySession: ChatStore["sessionStateById"] | null = null;
+let cachedSessionListActivity: Record<string, SessionListActivity> = {};
+
+/** Sidebar rows do not depend on streamed tokens, run ids or message ids. */
+export function selectSessionListActivityById(
+  state: ChatStore,
+): Record<string, SessionListActivity> {
+  const runtimes = state.sessionStateById;
+  if (runtimes === cachedRuntimeBySession) return cachedSessionListActivity;
+  const next: Record<string, SessionListActivity> = {};
+  let changed = false;
+  for (const [id, runtime] of Object.entries(runtimes)) {
+    const previous = cachedSessionListActivity[id];
+    const isRunning = isSessionRunning(runtime.chatState);
+    if (
+      previous?.isRunning === isRunning &&
+      previous.hasUnread === runtime.hasUnread
+    ) {
+      next[id] = previous;
+    } else {
+      next[id] = { isRunning, hasUnread: runtime.hasUnread };
+      changed = true;
+    }
+  }
+  changed ||=
+    Object.keys(next).length !== Object.keys(cachedSessionListActivity).length;
+  cachedRuntimeBySession = runtimes;
+  if (changed) cachedSessionListActivity = next;
+  return cachedSessionListActivity;
+}

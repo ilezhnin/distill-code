@@ -2429,12 +2429,8 @@ code[data-streamdown="inline-code"],
 }
 
 .gallery-card-enter {
-  animation: gallery-card-enter 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
-  filter: blur(12px);
-  opacity: 0;
-  transform: scale(0.97);
+  animation: gallery-card-enter 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
   transform-origin: center;
-  will-change: filter, opacity, transform;
 }
 
 @keyframes gallery-card-enter {

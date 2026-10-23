@@ -8,6 +8,7 @@ import { compareSkillsByName } from "../lib/skillsHelpers";
 import { SkillCard } from "./SkillCard";
 
 const GALLERY_CARD_STAGGER_MS = 55;
+const MAX_STAGGERED_CARDS = 6;
 
 interface SkillsGridProps {
   skills: SkillInfo[];
@@ -84,7 +85,7 @@ export function SkillsGrid({
           key={skill.id}
           className="gallery-card-enter h-full"
           style={{
-            animationDelay: `${(index + 1) * GALLERY_CARD_STAGGER_MS}ms`,
+            animationDelay: `${Math.min(index + 1, MAX_STAGGERED_CARDS) * GALLERY_CARD_STAGGER_MS}ms`,
           }}
         >
           <SkillCard

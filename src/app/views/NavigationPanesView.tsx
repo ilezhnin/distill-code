@@ -17,7 +17,10 @@ import type { BenchmarkSection } from "@/features/benchmarks/lib/benchmarkNaviga
 import type { BenchmarkProgress } from "@/features/benchmarks/lib/benchmarkActivity";
 import { PrimaryNavigationSurface } from "@/features/navigation/ui/PrimaryNavigationSurface";
 import type { CommandOutcome } from "@/features/flockctl/navigation";
-import { SessionListCapability } from "@/features/sessions/capabilities/SessionListCapability";
+import {
+  SessionListCapability,
+  type SessionListCapabilityProps,
+} from "@/features/sessions/capabilities/SessionListCapability";
 import {
   DEFAULT_SETTINGS_SECTION,
   getVisibleSettingsSections,
@@ -68,6 +71,12 @@ export interface NavigationPanesViewProps {
   className?: string;
   projects: ProjectInfo[];
 }
+
+const EMBEDDED_SESSION_LIST_SURFACE: SessionListCapabilityProps["surface"] = {
+  renderDragHandle: () => null,
+  showTopDivider: true,
+  variant: "embedded",
+};
 
 // Height of the nav's bottom fade mask. Shared by the mask style and the
 // scroll-into-view math so a row never lands underneath the fade.
@@ -421,11 +430,7 @@ export function NavigationPanesView({
                   }
                   projectCreatedRevision={projectCreatedRevision}
                   projects={projects}
-                  surface={{
-                    renderDragHandle: () => null,
-                    showTopDivider: true,
-                    variant: "embedded",
-                  }}
+                  surface={EMBEDDED_SESSION_LIST_SURFACE}
                 />
               )
             : undefined

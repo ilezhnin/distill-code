@@ -19,6 +19,7 @@ import type {
   Configuration,
 } from "../types";
 import { BenchmarkModelRunDialog } from "../ui/BenchmarkModelRunDialog";
+import { runWindowCloses } from "../lib/benchmarkPlan";
 import {
   attempt,
   configuration,
@@ -26,6 +27,19 @@ import {
   leaderboardRow,
   run,
 } from "./fixtures";
+
+const checkboxRenders = vi.hoisted(() => vi.fn());
+vi.mock("@/shared/ui/checkbox", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("@/shared/ui/checkbox")>();
+  return {
+    ...original,
+    Checkbox: (props: Parameters<typeof original.Checkbox>[0]) => {
+      checkboxRenders(props);
+      return <original.Checkbox {...props} />;
+    },
+  };
+});
 
 vi.mock("../api/benchmarks", async () => ({
   ...(await vi.importActual<typeof import("../api/benchmarks")>(
@@ -444,7 +458,10 @@ beforeEach(() => {
     },
   ]);
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 it("runs held-out tests for a model whose provider may train on submitted data", async () => {
   const user = userEvent.setup();
@@ -1398,6 +1415,112 @@ it("keeps a run open past 24 hours by the time it spent paused", async () => {
   show({ runId: "run-2" });
   expect(await screen.findByRole("button", { name: "Resume" })).toBeEnabled();
   expect(screen.queryByText(/window, pauses left out, is over/)).toBeNull();
+});
+
+async function settleClockQueries() {
+  // Query notifications are queued separately from the promises they observe.
+  for (let index = 0; index < 4; index += 1)
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+}
+
+it("ticks only the running row while keeping settled tests still", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+  const currentRun = liveRun("running");
+  currentRun.attempts = currentRun.attempts.map((entry) =>
+    entry.versionId === "version-5"
+      ? {
+          ...entry,
+          startedAt: Date.now() - 5_000,
+          finishedAt: null,
+          durationMs: null,
+        }
+      : entry,
+  );
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(currentRun);
+  show({
+    runId: "run-2",
+    definitions: [
+      ...definitions,
+      ...Array.from({ length: 200 }, (_, index) =>
+        test(index + 100, `Invented ${index}`),
+      ),
+    ],
+  });
+  await settleClockQueries();
+  const live = within(screen.getByText("Echo").closest("li") as HTMLElement);
+  expect(live.getByText("≥ 5 s")).toBeInTheDocument();
+  checkboxRenders.mockClear();
+  await act(async () => vi.advanceTimersByTimeAsync(1_000));
+  expect(live.getByText("≥ 6 s")).toBeInTheDocument();
+  expect(checkboxRenders).toHaveBeenCalledTimes(1);
+  expect(screen.getAllByRole("checkbox")).toHaveLength(207);
+});
+
+it("keeps paused rows still, updates the archive date, and expires only after the resumed window", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+  const stopped = stoppedRun("paused", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-5", outcome: null, score: null },
+  ]);
+  stopped.run.createdAt = Date.now() - 24 * 3_600_000 + 1_500;
+  stopped.run.pausedSince = Date.now();
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(stopped.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(stopped.summaries);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <BenchmarkModelRunDialog
+        row={leaderboardRow({})}
+        definitions={definitions}
+        runId="run-2"
+        onClose={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await settleClockQueries();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+  const archiveTime = screen
+    .getByLabelText("Run overview")
+    .querySelectorAll("time")[1];
+  const initialArchive = Date.parse(archiveTime.dateTime);
+  checkboxRenders.mockClear();
+  await act(async () => vi.advanceTimersByTimeAsync(3_000));
+  expect(Date.parse(archiveTime.dateTime)).toBe(initialArchive + 3_000);
+  expect(checkboxRenders).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+  // Cancelling/resuming removes the open pause and saves its accumulated time.
+  const resumed = {
+    ...stopped.run,
+    state: "cancelled",
+    pausedSince: null,
+    pausedMs: 3_000,
+  };
+  act(() => client.setQueryData(["benchmarks", "run", "run-2"], resumed));
+  await settleClockQueries();
+  expect(screen.getByRole("button", { name: "Finish run" })).toBeEnabled();
+  checkboxRenders.mockClear();
+  const remaining = runWindowCloses(resumed) - Date.now();
+  await act(async () => vi.advanceTimersByTimeAsync(remaining - 1));
+  expect(checkboxRenders).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Finish run" })).toBeEnabled();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(
+    screen.queryByRole("button", { name: "Finish run" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+  expect(screen.getByText(/This run is archived/)).toBeInTheDocument();
+  // Memoized rows still receive changed selection and are not frozen at expiry.
+  const alpha = within(
+    screen.getByText("Alpha").closest("label") as HTMLElement,
+  ).getByRole("checkbox");
+  const wasChecked = alpha.getAttribute("aria-checked");
+  fireEvent.click(alpha);
+  expect(alpha.getAttribute("aria-checked")).not.toBe(wasChecked);
+  client.clear();
 });
 
 it("warns before measuring a model again whose run inside its window is complete", async () => {

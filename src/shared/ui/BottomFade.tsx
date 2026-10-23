@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { cn } from "@/shared/lib/cn";
 
 interface BottomFadeProps {
@@ -15,7 +15,6 @@ export function BottomFade({
   surface = "var(--canvas-base)",
 }: BottomFadeProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const [opacity, setOpacity] = useState(1);
 
   useEffect(() => {
     const el = ref.current;
@@ -35,15 +34,22 @@ export function BottomFade({
         ? scrollEl.firstElementChild
         : null;
 
-    const update = () => {
+    let frame = 0;
+    let previousOpacity = -1;
+    const paint = () => {
+      frame = 0;
       const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
-      if (maxScroll <= 0) {
-        setOpacity(0);
-        return;
-      }
       const distance = maxScroll - scrollEl.scrollTop;
       const threshold = Math.min(FADE_OUT_DISTANCE, maxScroll);
-      setOpacity(Math.max(0, Math.min(1, distance / threshold)));
+      const opacity =
+        maxScroll <= 0 ? 0 : Math.max(0, Math.min(1, distance / threshold));
+      if (opacity !== previousOpacity) {
+        previousOpacity = opacity;
+        el.style.opacity = String(opacity);
+      }
+    };
+    const update = () => {
+      if (!frame) frame = requestAnimationFrame(paint);
     };
 
     update();
@@ -56,6 +62,7 @@ export function BottomFade({
     return () => {
       scrollEl?.removeEventListener("scroll", update);
       ro.disconnect();
+      if (frame) cancelAnimationFrame(frame);
     };
   }, [scrollElement]);
 
@@ -67,7 +74,7 @@ export function BottomFade({
         className,
       )}
       style={{
-        opacity,
+        opacity: 0,
         background: `linear-gradient(to bottom, transparent 0%, ${surface} 100%)`,
         backdropFilter: "blur(2px)",
         WebkitBackdropFilter: "blur(2px)",

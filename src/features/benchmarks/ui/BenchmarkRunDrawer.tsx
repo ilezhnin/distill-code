@@ -30,6 +30,7 @@ import {
   shortId,
 } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
+import { firstById } from "../lib/benchmarkLookup";
 import type { Configuration } from "../types";
 import {
   BenchmarkAlert,
@@ -155,6 +156,11 @@ export function BenchmarkRunDrawer({
       ),
     [summaries.data],
   );
+  const summaryById = useMemo(
+    () => firstById(summaries.data ?? []),
+    [summaries.data],
+  );
+  const taskById = useMemo(() => firstById(taskOrder), [taskOrder]);
   // A model's configurations, one per execution profile, are one model:
   // its run is titled by the model and shows one grid; a matrix of models
   // is titled by its id, one grid per model.
@@ -185,8 +191,7 @@ export function BenchmarkRunDrawer({
         order.push({
           id: attempt.versionId,
           name: names.get(attempt.versionId) ?? shortId(attempt.versionId),
-          number: taskOrder.find((task) => task.id === attempt.versionId)
-            ?.number,
+          number: taskById.get(attempt.versionId)?.number,
         });
       }
       return {
@@ -196,9 +201,7 @@ export function BenchmarkRunDrawer({
           order,
           own.map((attempt) => ({
             ...attempt,
-            cost:
-              summaries.data?.find((entry) => entry.id === attempt.id)?.cost ??
-              attempt.usage.cost,
+            cost: summaryById.get(attempt.id)?.cost ?? attempt.usage.cost,
             score: scores.get(attempt.id) ?? null,
           })),
           run?.state ?? null,
@@ -206,7 +209,7 @@ export function BenchmarkRunDrawer({
         ),
       };
     });
-  }, [attempts, models, names, scores, run?.state, taskOrder, summaries.data]);
+  }, [attempts, models, names, scores, run?.state, taskById, summaryById]);
   // Keep the configuration that works now in view as a matrix run moves on.
   const rows = useRef(new Map<string, HTMLDivElement>());
   // Progress in tests: a cell, one configuration measuring one case, is

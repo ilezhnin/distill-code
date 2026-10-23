@@ -7,7 +7,7 @@ import { benchmarkProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { judgingFailureLabel } from "../lib/benchmarkRunIssues";
-import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
+import { projectBenchmarkUsageBatch } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/flockStore";
 import type {
   CatalogEntry,
@@ -217,11 +217,12 @@ export function useBenchmarkRuntime() {
     refetchIntervalInBackground: true,
   });
   useEffect(() => {
-    for (const record of query.data ?? []) {
-      if (projected.current.has(record.attemptId)) continue;
-      projectBenchmarkUsage(record);
-      projected.current.add(record.attemptId);
-    }
+    const records = (query.data ?? []).filter(
+      (record) => !projected.current.has(record.attemptId),
+    );
+    if (records.length === 0) return;
+    projectBenchmarkUsageBatch(records);
+    for (const record of records) projected.current.add(record.attemptId);
   }, [query.data]);
 }
 

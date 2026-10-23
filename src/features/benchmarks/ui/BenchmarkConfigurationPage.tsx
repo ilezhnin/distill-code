@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconPlayerPlay } from "@tabler/icons-react";
@@ -54,6 +54,7 @@ import {
   taskCells,
   withOpenCells,
   poolTaskOrder,
+  type TaskCell,
 } from "./BenchmarkTaskGrid";
 import { listByIds } from "./BenchmarkTestStatus";
 import {
@@ -134,6 +135,38 @@ export function BenchmarkConfigurationPage({
   const measurements = useMemo(
     () => historyMeasurements(history.snapshots, key, false, true),
     [history.snapshots, key],
+  );
+  const chartPoints = useMemo(
+    () =>
+      measurements.map((entry) => {
+        // A point counts only the cases finished by its date; the
+        // cases its recalculation borrows from later cells are named
+        // apart, never as measured then.
+        const backfilled = entry.snapshot.backfilledVersionIds?.length ?? 0;
+        return {
+          id: pointId(entry.snapshot),
+          at: entry.snapshot.createdAt,
+          points: entry.row.points,
+          series: entry.series,
+          scored: entry.row.scored - backfilled,
+          planned: entry.row.planned,
+          backfilled,
+          revised: entry.snapshot.revisedVersionIds?.length ?? 0,
+          // A case with a repetition still to run moves the points too.
+          complete: entry.row.complete,
+          // A fully tested point covers the whole measurement suite.
+          suite:
+            entry.row.suitePlanned == null
+              ? undefined
+              : {
+                  complete: entry.row.suiteComplete ?? 0,
+                  planned: entry.row.suitePlanned,
+                },
+          added: entry.change?.added,
+          removed: entry.change?.removed,
+        };
+      }),
+    [measurements],
   );
   // A history compares the model with itself, so it counts the tests the
   // model wrote, which its board row leaves out of quality.
@@ -229,6 +262,10 @@ export function BenchmarkConfigurationPage({
     runs,
     selected,
   ]);
+  const openCell = useCallback(
+    (cell: TaskCell) => onEvidence(cell.attemptIds[0]),
+    [onEvidence],
+  );
   const catchUp = useMemo(() => catchUpCases(row, runs), [row, runs]);
   const activity = useMemo(
     () =>
@@ -252,10 +289,10 @@ export function BenchmarkConfigurationPage({
   );
   const standings: BoardStanding[] = useMemo(() => {
     const boards = boardsFor(shownReport.cohort);
+    const rows = reportModels(shownReport).map((model) =>
+      model.key === modelKey(shownRow.configuration) ? shownRow : model.row,
+    );
     return boards.map((board) => {
-      const rows = reportModels(shownReport).map((model) =>
-        model.key === modelKey(shownRow.configuration) ? shownRow : model.row,
-      );
       const ranked = rankRows(rows, board);
       const entry = ranked.find(
         (result) => rowKey(result.row) === rowKey(shownRow),
@@ -502,35 +539,7 @@ export function BenchmarkConfigurationPage({
         <section aria-label={t("history.title")}>
           <PointsHistoryChart
             releases={releaseMarks}
-            points={measurements.map((entry) => {
-              // A point counts only the cases finished by its date; the
-              // cases its recalculation borrows from later cells are named
-              // apart, never as measured then.
-              const backfilled =
-                entry.snapshot.backfilledVersionIds?.length ?? 0;
-              return {
-                id: pointId(entry.snapshot),
-                at: entry.snapshot.createdAt,
-                points: entry.row.points,
-                series: entry.series,
-                scored: entry.row.scored - backfilled,
-                planned: entry.row.planned,
-                backfilled,
-                revised: entry.snapshot.revisedVersionIds?.length ?? 0,
-                // A case with a repetition still to run moves the points too.
-                complete: entry.row.complete,
-                // A fully tested point covers the whole measurement suite.
-                suite:
-                  entry.row.suitePlanned == null
-                    ? undefined
-                    : {
-                        complete: entry.row.suiteComplete ?? 0,
-                        planned: entry.row.suitePlanned,
-                      },
-                added: entry.change?.added,
-                removed: entry.change?.removed,
-              };
-            })}
+            points={chartPoints}
             selectedId={selected ? pointId(selected.snapshot) : null}
             onSelect={select}
           />
@@ -661,10 +670,7 @@ export function BenchmarkConfigurationPage({
       <section className="space-y-4">
         <SectionHeading title={t("grid.title", { cases: cells.length })} />
         <TaskSummary cells={cells} />
-        <TaskGrid
-          cells={cells}
-          onOpen={(cell) => onEvidence(cell.attemptIds[0])}
-        />
+        <TaskGrid cells={cells} onOpen={openCell} />
       </section>
     </div>
   );

@@ -559,6 +559,59 @@ describe("chatStore", () => {
     expect(loadCachedUnreadSessionIds()).toEqual(["s2"]);
   });
 
+  it("does not notify draft-list subscribers when repeatedly cleaning an absent session", () => {
+    const store = useChatStore.getState();
+    store.setDraft("retained-draft", "unsent text");
+    const before = useChatStore.getState().nonEmptyDraftSessionIds;
+    const onChange = vi.fn();
+    const stop = useChatStore.subscribe(
+      (state) => state.nonEmptyDraftSessionIds,
+      onChange,
+    );
+    try {
+      for (let index = 0; index < 10; index += 1) {
+        store.cleanupSession("absent-pending-session");
+      }
+      expect(useChatStore.getState().nonEmptyDraftSessionIds).toBe(before);
+      expect(onChange).not.toHaveBeenCalled();
+      expect(useChatStore.getState().draftsBySession["retained-draft"]).toBe(
+        "unsent text",
+      );
+    } finally {
+      stop();
+    }
+  });
+
+  it("notifies draft-list subscribers only when cleanup removes a draft", () => {
+    const store = useChatStore.getState();
+    store.setDraft("removed-draft", "unsent text");
+    store.setDraft("retained-draft", "keep this");
+    const before = useChatStore.getState().nonEmptyDraftSessionIds;
+    const onChange = vi.fn();
+    const stop = useChatStore.subscribe(
+      (state) => state.nonEmptyDraftSessionIds,
+      onChange,
+    );
+    try {
+      store.cleanupSession("removed-draft", { preserveUnsent: true });
+      expect(useChatStore.getState().nonEmptyDraftSessionIds).toBe(before);
+      expect(onChange).not.toHaveBeenCalled();
+
+      store.cleanupSession("removed-draft");
+      const after = useChatStore.getState().nonEmptyDraftSessionIds;
+      expect(after).not.toBe(before);
+      expect(after).toEqual(new Set(["retained-draft"]));
+      expect(before).toEqual(new Set(["removed-draft", "retained-draft"]));
+      expect(onChange).toHaveBeenCalledTimes(1);
+
+      store.cleanupSession("removed-draft");
+      expect(useChatStore.getState().nonEmptyDraftSessionIds).toBe(after);
+      expect(onChange).toHaveBeenCalledTimes(1);
+    } finally {
+      stop();
+    }
+  });
+
   it("releases every chat it evicts or cleans up to the session release listeners", () => {
     const released: string[] = [];
     const stopListening = onChatSessionReleased((sessionId) =>

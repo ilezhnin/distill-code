@@ -1,3 +1,4 @@
+import { useBenchmarkProgress } from "@/features/benchmarks/hooks/useBenchmarks";
 import {
   useEffect,
   useMemo,
@@ -77,6 +78,15 @@ function findFirstFocusable(
     }
   }
   return null;
+}
+
+function BenchmarkNavigationPanes(
+  props: ComponentProps<typeof NavigationPanesView>,
+) {
+  const benchmarkProgress = useBenchmarkProgress();
+  return (
+    <NavigationPanesView {...props} benchmarkProgress={benchmarkProgress} />
+  );
 }
 
 export function AppShellLayout({
@@ -260,7 +270,7 @@ export function AppShellLayout({
             onMouseLeave={() => setSidebarHovered(false)}
           >
             <div className="relative h-full pt-[var(--spacing-app-panel-gutter-top)] pl-3">
-              <NavigationPanesView
+              <BenchmarkNavigationPanes
                 {...navigationPanes}
                 elevatedShadow={sidebarElevated}
               />

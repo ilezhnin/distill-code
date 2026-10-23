@@ -45,16 +45,12 @@ export function TopFade({
     };
   }, [scrollElement]);
 
-  const initialOpacity = scrollElement
-    ? Math.max(0, Math.min(1, scrollElement.scrollTop / FADE_IN_DISTANCE))
-    : 0;
-
   return (
     <div
       ref={ref}
       className={cn("pointer-events-none h-20 w-full", className)}
       style={{
-        opacity: initialOpacity,
+        opacity: 0,
         background: `linear-gradient(to bottom, ${surface} 0%, transparent 100%)`,
       }}
       aria-hidden="true"

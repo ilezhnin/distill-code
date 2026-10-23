@@ -1,9 +1,6 @@
 import type { BenchmarkLocation } from "@/features/benchmarks/lib/benchmarkNavigation";
 import { useBenchmarkViewStore } from "@/features/benchmarks/stores/benchmarkViewStore";
-import {
-  useBenchmarkProgress,
-  useBenchmarkRuntime,
-} from "@/features/benchmarks/hooks/useBenchmarks";
+import { useBenchmarkRuntime } from "@/features/benchmarks/hooks/useBenchmarks";
 import {
   useCallback,
   useEffect,
@@ -566,8 +563,20 @@ function getTopBarChromeInsets(
 }
 
 export function AppShell({ children }: { children?: React.ReactNode }) {
+  return (
+    <>
+      <BenchmarkRuntime />
+      <AppShellView>{children}</AppShellView>
+    </>
+  );
+}
+
+function BenchmarkRuntime() {
   useBenchmarkRuntime();
-  const benchmarkProgress = useBenchmarkProgress();
+  return null;
+}
+
+function AppShellView({ children }: { children?: React.ReactNode }) {
   const { t } = useTranslation([
     "chat",
     "common",
@@ -626,6 +635,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   ] = useState(0);
   const initialActiveView = getInitialAppView(initialSettingsSection);
   const [activeView, setActiveView] = useState<AppView>(initialActiveView);
+  // Event handlers read the committed route without changing identity on each
+  // navigation and forcing the entire project/session sidebar to render.
+  const activeViewRef = useRef(activeView);
+  useLayoutEffect(() => {
+    activeViewRef.current = activeView;
+  }, [activeView]);
   const capabilities = useProfileCapabilities();
   const sessions = useChatSessionStore(selectSessions);
   const activeSessionId = useChatSessionStore(selectActiveSessionId);
@@ -2051,17 +2066,29 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     ],
   );
 
-  const agentBuilder = useAgentBuilderCoordinator({
-    startupReady: startup.ready,
-    createNewTab: async (title, options) => {
+  const createAgentBuilderTab = useCallback(
+    async (title?: string, options?: { activate?: boolean }) => {
       const session = await createNewTab(title, undefined, options);
       if (!session) {
         throw new Error(t("settings:providers.setupRequired.toast"));
       }
       return session;
     },
-    closeSession: (sessionId) => closeAgentBuilderSessionRef.current(sessionId),
-    navigateChat: (sessionId) => navigateAgentBuilderChatRef.current(sessionId),
+    [createNewTab, t],
+  );
+  const closeAgentBuilderSession = useCallback(
+    (sessionId: string) => closeAgentBuilderSessionRef.current(sessionId),
+    [],
+  );
+  const navigateAgentBuilderChat = useCallback(
+    (sessionId: string) => navigateAgentBuilderChatRef.current(sessionId),
+    [],
+  );
+  const agentBuilder = useAgentBuilderCoordinator({
+    startupReady: startup.ready,
+    createNewTab: createAgentBuilderTab,
+    closeSession: closeAgentBuilderSession,
+    navigateChat: navigateAgentBuilderChat,
   });
 
   const guardAppNavigation = useCallback(
@@ -2336,7 +2363,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     (agentId: string, onNavigationAccepted?: () => void) => {
       guardAppNavigation(() => {
         onNavigationAccepted?.();
-        if (activeView === "agents" && agentsPersonaId === agentId) {
+        if (activeViewRef.current === "agents" && agentsPersonaId === agentId) {
           setGlobalComposerPlacement("centered");
           setGlobalComposerFocusRequest((request) => request + 1);
           return;
@@ -2387,13 +2414,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           });
       });
     },
-    [
-      activeView,
-      agentsPersonaId,
-      createNewTab,
-      patchSession,
-      guardAppNavigation,
-    ],
+    [agentsPersonaId, createNewTab, patchSession, guardAppNavigation],
   );
 
   // The global composer's effort and fast controls act on the Home session it
@@ -2954,8 +2975,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         section,
         capabilities,
       );
-      if (activeView !== "settings" && activeView !== "design-system") {
-        lastNonSecondaryViewRef.current = activeView;
+      const currentView = activeViewRef.current;
+      if (currentView !== "settings" && currentView !== "design-system") {
+        lastNonSecondaryViewRef.current = currentView;
       }
       setActiveSettingsSection(enabledSection);
       setSettingsSectionUrl(enabledSection);
@@ -2964,7 +2986,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         void expandSidebar();
       }
     },
-    [activeView, capabilities, expandSidebar, sidebarCollapsed],
+    [capabilities, expandSidebar, sidebarCollapsed],
   );
 
   const leaveSecondarySurface = useCallback(() => {
@@ -2989,12 +3011,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const openDesignSystem = useCallback(() => {
     if (!isDesignSystemExplorerEnabled()) return;
-    if (activeView !== "design-system") {
-      designSystemReturnViewRef.current = activeView;
+    if (activeViewRef.current !== "design-system") {
+      designSystemReturnViewRef.current = activeViewRef.current;
     }
     setDesignSystemUrl();
     setActiveView("design-system");
-  }, [activeView]);
+  }, []);
 
   const closeDesignSystem = useCallback(() => {
     const returnView = designSystemReturnViewRef.current;
@@ -3329,7 +3351,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const handleSelectSession = useCallback(
     (id: string) => {
       if (
-        activeView === "chat" &&
+        activeViewRef.current === "chat" &&
         id === useChatSessionStore.getState().activeSessionId
       ) {
         return;
@@ -3338,7 +3360,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         selectSessionDirect(id);
       });
     },
-    [activeView, guardAppNavigation, selectSessionDirect],
+    [guardAppNavigation, selectSessionDirect],
   );
 
   const handleSelectSearchResult = useCallback(
@@ -3410,6 +3432,25 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       resetGlobalComposerTransition,
       setActiveSession,
     ],
+  );
+
+  const handleSidebarNewChat = useCallback(() => {
+    guardAppNavigation(() => {
+      void createNewTab(DEFAULT_CHAT_TITLE).catch((error) => {
+        console.error("Failed to start new chat:", error);
+      });
+    });
+  }, [createNewTab, guardAppNavigation]);
+  const handleSidebarCreateProject = useCallback(() => {
+    openCreateProjectDialog();
+  }, [openCreateProjectDialog]);
+  const handleProjectCreatedRevisionHandled = useCallback(
+    (revision: number) => {
+      setProjectCreatedRevision((current) =>
+        current === revision ? 0 : current,
+      );
+    },
+    [],
   );
 
   const handleOpenProject = useCallback(
@@ -4051,14 +4092,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             navigateBenchmarks({ section }),
           onNewChatInProject: handleNewChatInProject,
           onNewConductorInProject: handleNewConductorInProject,
-          onNewChat: () => {
-            guardAppNavigation(() => {
-              void createNewTab(DEFAULT_CHAT_TITLE).catch((error) => {
-                console.error("Failed to start new chat:", error);
-              });
-            });
-          },
-          onCreateProject: () => openCreateProjectDialog(),
+          onNewChat: handleSidebarNewChat,
+          onCreateProject: handleSidebarCreateProject,
           onEditProject: handleEditProject,
           onOpenProject: handleOpenProject,
           onArchiveProject: handleArchiveProject,
@@ -4072,13 +4107,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           onSelectSession: handleSelectSession,
           activeView,
           activeBenchmarkSection: benchmarkLocation.section,
-          benchmarkProgress,
           activeSettingsSection,
           activeSessionId,
-          onProjectCreatedRevisionHandled: (revision) =>
-            setProjectCreatedRevision((current) =>
-              current === revision ? 0 : current,
-            ),
+          onProjectCreatedRevisionHandled: handleProjectCreatedRevisionHandled,
           projectCreatedRevision,
           projects,
           className: "h-full rounded-md",

@@ -14,7 +14,7 @@ import {
   useBenchmarkRuntime,
   useFreshBenchmarkUsage,
 } from "../hooks/useBenchmarks";
-import { projectBenchmarkUsage } from "@/features/stats/lib/usageLedger";
+import { projectBenchmarkUsageBatch } from "@/features/stats/lib/usageLedger";
 import type { BenchmarkChange, UsageLedgerEntry } from "../types";
 import { runSummary } from "./fixtures";
 
@@ -29,7 +29,7 @@ vi.mock("../api/benchmarks", () => ({
   },
 }));
 vi.mock("@/features/stats/lib/usageLedger", () => ({
-  projectBenchmarkUsage: vi.fn(),
+  projectBenchmarkUsageBatch: vi.fn(),
 }));
 vi.mock("@/shared/api/flockStore", () => ({
   isDesktopRuntime: () => true,
@@ -89,8 +89,10 @@ describe("persistent benchmark runtime", () => {
           <Shell />
         </QueryClientProvider>,
       );
-      await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledOnce());
-      expect(projectBenchmarkUsage).toHaveBeenCalledWith(entry);
+      await waitFor(() =>
+        expect(projectBenchmarkUsageBatch).toHaveBeenCalledOnce(),
+      );
+      expect(projectBenchmarkUsageBatch).toHaveBeenCalledWith([entry]);
       // The usage ledger reads every attempt, so events never refresh it;
       // it follows on its own interval.
       act(() => changed?.({ sequence: 1 }));
@@ -98,12 +100,12 @@ describe("persistent benchmark runtime", () => {
       expect(benchmarkApi.getUsageLedger).toHaveBeenCalledOnce();
       await act(() => vi.advanceTimersByTimeAsync(USAGE_LEDGER_REFRESH_MS));
       await waitFor(() =>
-        expect(projectBenchmarkUsage).toHaveBeenCalledTimes(2),
+        expect(projectBenchmarkUsageBatch).toHaveBeenCalledTimes(2),
       );
     } finally {
       vi.useRealTimers();
     }
-    expect(projectBenchmarkUsage).toHaveBeenLastCalledWith(second);
+    expect(projectBenchmarkUsageBatch).toHaveBeenLastCalledWith([second]);
     act(() => changed?.({ sequence: 1 }));
     expect(benchmarkApi.getUsageLedger).toHaveBeenCalledTimes(2);
     view?.unmount();
@@ -127,14 +129,18 @@ describe("persistent benchmark runtime", () => {
         <Shell />
       </QueryClientProvider>,
     );
-    await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(projectBenchmarkUsageBatch).toHaveBeenCalledOnce(),
+    );
     view.rerender(
       <QueryClientProvider client={client}>
         <Shell />
         <Stats />
       </QueryClientProvider>,
     );
-    await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(projectBenchmarkUsageBatch).toHaveBeenCalledTimes(2),
+    );
     client.clear();
   });
 
@@ -232,7 +238,9 @@ describe("persistent benchmark runtime", () => {
         <Shell />
       </QueryClientProvider>,
     );
-    await waitFor(() => expect(projectBenchmarkUsage).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(projectBenchmarkUsageBatch).toHaveBeenCalledOnce(),
+    );
     expect(benchmarkApi.eventsSince).toHaveBeenCalledWith(0);
     expect(benchmarkApi.listen).toHaveBeenCalledOnce();
     client.clear();

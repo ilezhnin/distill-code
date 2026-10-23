@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { memo, useCallback, useEffect, type ReactNode } from "react";
 import { HomeScreen } from "@/features/chat/ui/home/HomeScreen";
 import { WelcomeView } from "@/features/chat/ui/home/WelcomeView";
 import { ChatView } from "@/features/chat/ui/ChatView";
@@ -31,6 +31,13 @@ import { perfLog } from "@/shared/lib/perfLog";
 import { cn } from "@/shared/lib/cn";
 import { AppContentPlaceholder } from "./AppContentPlaceholder";
 import { scheduleAfterNextPaint } from "../lib/scheduleAfterNextPaint";
+
+// Route staging briefly keeps the outgoing page mounted. Unchanged galleries
+// must not rebuild while the shell paints the next page's placeholder.
+const MemoizedSkillsView = memo(SkillsView);
+const MemoizedAgentsView = memo(AgentsView);
+const MemoizedBenchmarksView = memo(BenchmarksView);
+const MemoizedWelcomeView = memo(WelcomeView);
 
 interface AppShellContentProps {
   targetLocation: AppNavigationLocation;
@@ -139,11 +146,16 @@ export function AppShellContent({
     targetLocation,
   });
 
+  const onDeleteDraftSession = useCallback(
+    (sessionId: string) => onArchiveChat(sessionId).then(() => undefined),
+    [onArchiveChat],
+  );
+
   // The widget desktop is gone (features/home with it): home is the
   // invitation to start — the composer is the new chat, the button the new
   // project.
   const homeContent = (
-    <WelcomeView
+    <MemoizedWelcomeView
       sessionId={homeSessionId}
       onActivateSession={onActivateHomeSession}
       onCreatePersona={onCreatePersona}
@@ -168,6 +180,7 @@ export function AppShellContent({
     onActivateHomeSession,
     onAgentsBreadcrumbLabelChange,
     onArchiveChat,
+    onDeleteDraftSession,
     onChatComposerHandoffTarget,
     onWorkspaceNameRequest,
     onCreatePersona,
@@ -247,6 +260,7 @@ interface RenderRouteContentOptions {
   onAgentBuilderCompleted: (agentId: string) => void;
   onStartAgentBuilderSession: (args?: { path?: string; slug?: string }) => void;
   onArchiveChat: (sessionId: string) => Promise<CommandOutcome>;
+  onDeleteDraftSession: (sessionId: string) => Promise<void>;
   onCreateProject: (options?: {
     initialWorkingDir?: string | null;
     onCreated?: (projectId: string) => void;
@@ -286,6 +300,7 @@ function renderRouteContent({
   onActivateHomeSession,
   onAgentsBreadcrumbLabelChange,
   onArchiveChat,
+  onDeleteDraftSession,
   onChatComposerHandoffTarget,
   onWorkspaceNameRequest,
   onCloseDesignSystem,
@@ -334,7 +349,7 @@ function renderRouteContent({
       );
     case "benchmarks":
       return (
-        <BenchmarksView
+        <MemoizedBenchmarksView
           location={location}
           onNavigate={onNavigateBenchmarks}
           onSelectSession={onSelectSession}
@@ -342,7 +357,7 @@ function renderRouteContent({
       );
     case "skills":
       return (
-        <SkillsView
+        <MemoizedSkillsView
           activeSkillId={location.skillId}
           onActiveSkillIdChange={onNavigateSkills}
           onBreadcrumbLabelChange={onSkillsBreadcrumbLabelChange}
@@ -351,15 +366,13 @@ function renderRouteContent({
       );
     case "agents":
       return (
-        <AgentsView
+        <MemoizedAgentsView
           activePersonaId={location.personaId}
           onActivePersonaIdChange={onNavigateAgents}
           onBreadcrumbLabelChange={onAgentsBreadcrumbLabelChange}
           onStartAgentBuilderSession={onStartAgentBuilderSession}
           onStartChatWithAgent={onOpenAgent}
-          onDeleteDraftSession={(sessionId) =>
-            onArchiveChat(sessionId).then(() => undefined)
-          }
+          onDeleteDraftSession={onDeleteDraftSession}
         />
       );
     case "projects":

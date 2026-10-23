@@ -2175,8 +2175,13 @@ const createChatStore: StateCreator<
       const { [sessionId]: ___, ...remainingQueued } =
         state.queuedMessageBySession;
       const { [sessionId]: ____, ...remainingDrafts } = state.draftsBySession;
-      const nonEmptyDraftSessionIds = new Set(state.nonEmptyDraftSessionIds);
-      nonEmptyDraftSessionIds.delete(sessionId);
+      // Home may release an already-empty pending session on every mount.
+      // Keep sidebar subscribers stable unless a visible draft was removed.
+      let nonEmptyDraftSessionIds = state.nonEmptyDraftSessionIds;
+      if (!preserveUnsent && nonEmptyDraftSessionIds.has(sessionId)) {
+        nonEmptyDraftSessionIds = new Set(nonEmptyDraftSessionIds);
+        nonEmptyDraftSessionIds.delete(sessionId);
+      }
       const { [sessionId]: removedSkillDrafts, ...remainingSkillDrafts } =
         state.skillDraftsBySession;
       void removedSkillDrafts;

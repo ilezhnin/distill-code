@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   keepPreviousData,
   useQuery,
@@ -59,10 +59,11 @@ import {
   runWindowOpen,
 } from "../lib/benchmarkPlan";
 import { runTimeLimitSeconds } from "../stores/benchmarkSettingsStore";
-import { taskActivity } from "../lib/benchmarkTaskTiming";
+import { taskActivity, type TaskActivity } from "../lib/benchmarkTaskTiming";
 import type {
   Attempt,
   BenchmarkDefinitionSummary,
+  BenchmarkRun,
   BenchmarkVersionSummary,
   Configuration,
   InventoryModel,
@@ -76,6 +77,7 @@ import {
   listByIds,
   passed,
   TestStatusMark,
+  type TestStatus,
   testStatus,
   useNow,
 } from "./BenchmarkTestStatus";
@@ -93,6 +95,111 @@ function sameConfiguration(a: Configuration, b: Configuration): boolean {
     (a.fastMode ?? false) === (b.fastMode ?? false)
   );
 }
+
+// The controls change when the window closes, not every second. A paused
+// window has no deadline until it resumes; query updates reschedule it.
+function useRunWindowOpen(run: BenchmarkRun | null | undefined): boolean {
+  const [, refresh] = useState(0);
+  useEffect(() => {
+    if (run == null) return;
+    let timer: number | undefined;
+    const schedule = () => {
+      const now = Date.now();
+      if (
+        !runWindowOpen(run, now) ||
+        (run.pausedSince != null && run.pausedSince <= now)
+      )
+        return;
+      timer = window.setTimeout(
+        () => {
+          refresh((value) => value + 1);
+          schedule();
+        },
+        Math.max(1, Math.min(runWindowCloses(run, now) - now, 2_147_483_647)),
+      );
+    };
+    schedule();
+    return () => window.clearTimeout(timer);
+  }, [run]);
+  return run != null && runWindowOpen(run, Date.now());
+}
+
+function RunArchiveTime({ run }: { run: BenchmarkRun }) {
+  const { formatDate } = useLocaleFormatting();
+  const now = useNow(run.bakedAt == null && run.pausedSince != null);
+  const closes = run.bakedAt ?? runWindowCloses(run, now);
+  return (
+    <time className="text-sm" dateTime={new Date(closes).toISOString()}>
+      {formatDate(closes, { dateStyle: "medium", timeStyle: "short" })}
+    </time>
+  );
+}
+
+const RunTestRow = memo(function RunTestRow({
+  version,
+  status,
+  standing,
+  activity,
+  disabled,
+  checked,
+  authored,
+  onCheckedChange,
+  registerRow,
+}: {
+  version: BenchmarkVersionSummary;
+  status: TestStatus | null;
+  standing: TestStatus | null;
+  activity: TaskActivity | undefined;
+  disabled: boolean;
+  checked: boolean;
+  authored: boolean;
+  onCheckedChange: (id: string, checked: boolean) => void;
+  registerRow: (id: string, element: HTMLLIElement | null) => void;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const current =
+    status?.kind === "running" ||
+    status?.kind === "judging" ||
+    status?.kind === "waiting";
+  const now = useNow(current);
+  const ref = useCallback(
+    (element: HTMLLIElement | null) => registerRow(version.id, element),
+    [registerRow, version.id],
+  );
+  return (
+    <li
+      ref={ref}
+      aria-current={current ? "step" : undefined}
+      className={cn("rounded-md", current && "bg-muted")}
+    >
+      <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
+        <Checkbox
+          disabled={disabled}
+          checked={checked}
+          onCheckedChange={(value) =>
+            onCheckedChange(version.id, value === true)
+          }
+        />
+        <span className="min-w-0 flex-1 truncate">{version.manifest.name}</span>
+        {authored ? (
+          <span
+            className="shrink-0 text-xs text-muted-foreground"
+            title={t("modelRun.authoredHint")}
+          >
+            {t("modelRun.authored")}
+          </span>
+        ) : null}
+        {status ? (
+          <TestStatusMark status={status} now={now} activity={activity} />
+        ) : standing ? (
+          <span className="opacity-60">
+            <TestStatusMark status={standing} now={now} />
+          </span>
+        ) : null}
+      </Label>
+    </li>
+  );
+});
 
 /**
  * Runs one leaderboard model on the current tests. A run is one sitting:
@@ -353,8 +460,7 @@ export function BenchmarkModelRunDialog({
       .map((entry) => entry.finishedAt ?? 0),
   );
   const stopping = run.data?.state === "cancelling";
-  // The dialog's clock: a running test's timer and the window check.
-  const clock = useNow(run.data != null);
+  const windowOpen = useRunWindowOpen(run.data);
   // The run's cells: a test is finished once every planned repetition
   // scored; one short of that keeps its scored repetitions and runs the
   // rest when the run goes on. A test its
@@ -392,7 +498,6 @@ export function BenchmarkModelRunDialog({
     }
     return { left, partial, remaining, complete, measured: inRun.size - left };
   }, [mine, scores, run.data]);
-  const windowOpen = run.data ? runWindowOpen(run.data, clock) : false;
   const resolvingRun =
     runId != null &&
     (run.isPending || (mine.length > 0 && summaries.isPending));
@@ -562,10 +667,18 @@ export function BenchmarkModelRunDialog({
     [attemptsByVersion, run.data?.state],
   );
   const inRun = statuses.size;
-  // A running test's clock ticks every second; the window check reads it too.
-  const now = clock;
   // Keep the test that runs now in view as the run moves down the list.
   const rows = useRef(new Map<string, HTMLLIElement>());
+  const registerRow = useCallback(
+    (id: string, element: HTMLLIElement | null) => {
+      if (element) rows.current.set(id, element);
+      else rows.current.delete(id);
+    },
+    [],
+  );
+  const setChecked = useCallback((id: string, checked: boolean) => {
+    setOverrides((previous) => new Map(previous).set(id, checked));
+  }, []);
   const followProgress = useRef(true);
   useEffect(() => {
     if (runId != null) followProgress.current = true;
@@ -814,17 +927,7 @@ export function BenchmarkModelRunDialog({
               icon={<CalendarClock aria-hidden className="size-3.5" />}
               value={
                 run.data ? (
-                  <time
-                    className="text-sm"
-                    dateTime={new Date(
-                      run.data.bakedAt ?? runWindowCloses(run.data, clock),
-                    ).toISOString()}
-                  >
-                    {formatDate(
-                      run.data.bakedAt ?? runWindowCloses(run.data, clock),
-                      { dateStyle: "medium", timeStyle: "short" },
-                    )}
-                  </time>
+                  <RunArchiveTime run={run.data} />
                 ) : (
                   <span className="text-sm">
                     {t("modelRun.archiveAfterStart")}
@@ -974,63 +1077,20 @@ export function BenchmarkModelRunDialog({
             }}
             className="max-h-[55vh] overflow-y-auto overscroll-contain scrollbar-visible [scrollbar-gutter:stable]"
           >
-            {ordered.map((version) => {
-              const status = statuses.get(version.id) ?? null;
-              const current =
-                status?.kind === "running" ||
-                status?.kind === "judging" ||
-                status?.kind === "waiting";
-              return (
-                <li
-                  key={version.id}
-                  ref={(element) => {
-                    if (element) rows.current.set(version.id, element);
-                    else rows.current.delete(version.id);
-                  }}
-                  aria-current={current ? "step" : undefined}
-                  className={cn("rounded-md", current && "bg-muted")}
-                >
-                  <Label className="flex items-center gap-3 px-2 py-1.5 text-sm font-normal">
-                    <Checkbox
-                      disabled={
-                        locked || (finishing && inRunIds.has(version.id))
-                      }
-                      checked={isChecked(version.id)}
-                      onCheckedChange={(checked) =>
-                        setOverrides((previous) =>
-                          new Map(previous).set(version.id, checked === true),
-                        )
-                      }
-                    />
-                    <span className="min-w-0 flex-1 truncate">
-                      {version.manifest.name}
-                    </span>
-                    {own.has(version.id) ? (
-                      <span
-                        className="shrink-0 text-xs text-muted-foreground"
-                        title={t("modelRun.authoredHint")}
-                      >
-                        {t("modelRun.authored")}
-                      </span>
-                    ) : null}
-                    {status ? (
-                      <TestStatusMark
-                        status={status}
-                        now={now}
-                        activity={activities.get(version.id)}
-                      />
-                    ) : standing.has(version.id) ? (
-                      <span className="opacity-60">
-                        <TestStatusMark
-                          status={standing.get(version.id) ?? null}
-                          now={now}
-                        />
-                      </span>
-                    ) : null}
-                  </Label>
-                </li>
-              );
-            })}
+            {ordered.map((version) => (
+              <RunTestRow
+                key={version.id}
+                version={version}
+                status={statuses.get(version.id) ?? null}
+                standing={standing.get(version.id) ?? null}
+                activity={activities.get(version.id)}
+                disabled={locked || (finishing && inRunIds.has(version.id))}
+                checked={isChecked(version.id)}
+                authored={own.has(version.id)}
+                onCheckedChange={setChecked}
+                registerRow={registerRow}
+              />
+            ))}
           </ol>
         </DialogBody>
         <DialogFooter>

@@ -88,7 +88,7 @@ vi.mock("../api/benchmarks", () => ({
   },
 }));
 vi.mock("@/features/stats/lib/usageLedger", () => ({
-  projectBenchmarkUsage: vi.fn(),
+  projectBenchmarkUsageBatch: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),

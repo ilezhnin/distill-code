@@ -417,7 +417,6 @@ function writeLedger(next: UsageLedger): void {
   pendingWrite = true;
   scheduleLedgerFlush();
   window.dispatchEvent(new Event(USAGE_LEDGER_CHANGED_EVENT));
-  notifyListeners();
 }
 
 /**
@@ -568,107 +567,117 @@ export function recordSessionTokens(
   now = Date.now(),
 ): void {
   mutateLedger((ledger) => {
-    const current = ledger.sessions[sessionId] ?? emptySessionRecord();
-    const next = { ...current };
-    if (meta?.providerId) next.providerId = meta.providerId;
-    if (meta?.modelId !== undefined) next.modelId = meta.modelId;
-    if (meta?.modelName !== undefined) next.modelName = meta.modelName;
-    const effort = normalizeEffort(meta?.effort);
-    if (effort) next.effort = effort;
-    if (next.createdAt <= 0) next.createdAt = now;
-    next.lastActivityAt = Math.max(next.lastActivityAt, now);
-    next.started = true;
-
-    const previousInput = next.inputTokens;
-    const previousOutput = next.outputTokens;
-    const previousCache = next.cacheTokens;
-    const previousTotal = next.totalTokens;
-    // An auto snapshot that reports a turn (turnsDelta) is that turn's usage
-    // (ACP PromptResponse.usage), so it always adds. Treating it as a
-    // cumulative counter whenever both figures grew kept only the larger
-    // turn: 100/50 then 200/60 ended at 260 tokens instead of 410.
-    const add =
-      snapshot.mode === "add" ||
-      (snapshot.mode !== "replace" &&
-        ((snapshot.turnsDelta ?? 0) > 0 ||
-          (snapshot.inputTokens != null &&
-            snapshot.outputTokens != null &&
-            (snapshot.inputTokens < next.inputTokens ||
-              snapshot.outputTokens < next.outputTokens))));
-
-    if (snapshot.inputTokens !== undefined) {
-      next.inputTokens = add
-        ? next.inputTokens + snapshot.inputTokens
-        : Math.max(next.inputTokens, snapshot.inputTokens);
-    }
-    if (snapshot.outputTokens !== undefined) {
-      next.outputTokens = add
-        ? next.outputTokens + snapshot.outputTokens
-        : Math.max(next.outputTokens, snapshot.outputTokens);
-    }
-    if (snapshot.cacheTokens !== undefined) {
-      next.cacheTokens = add
-        ? next.cacheTokens + snapshot.cacheTokens
-        : Math.max(next.cacheTokens, snapshot.cacheTokens);
-    }
-
-    if (add) {
-      if (snapshot.totalTokens != null) {
-        next.totalTokens += snapshot.totalTokens;
-      } else if (
-        snapshot.inputTokens !== undefined ||
-        snapshot.outputTokens !== undefined ||
-        snapshot.cacheTokens !== undefined
-      ) {
-        next.totalTokens =
-          next.inputTokens + next.outputTokens + next.cacheTokens;
-      }
-    } else {
-      const inferredTotal =
-        snapshot.totalTokens ??
-        (snapshot.inputTokens !== undefined ||
-        snapshot.outputTokens !== undefined
-          ? next.inputTokens + next.outputTokens + next.cacheTokens
-          : undefined);
-      if (inferredTotal !== undefined) {
-        next.totalTokens = Math.max(next.totalTokens, inferredTotal);
-      }
-    }
-
-    if (snapshot.costUsd !== undefined) {
-      // A bridge that reports credits or EUR must not have its amounts added
-      // to a USD running total: a changed currency replaces the cost instead.
-      const currency =
-        snapshot.costCurrency === undefined
-          ? next.costCurrency
-          : normalizeCostCurrency(snapshot.costCurrency);
-      const mixesCurrencies =
-        next.costUsd != null && currency !== next.costCurrency;
-      next.costUsd =
-        add && !mixesCurrencies
-          ? (next.costUsd ?? 0) + (snapshot.costUsd ?? 0)
-          : snapshot.costUsd;
-      next.costCurrency = currency;
-    }
-    if (snapshot.turnsDelta) {
-      next.turns += Math.max(0, snapshot.turnsDelta);
-    }
-
-    ledger.sessions[sessionId] = next;
-    touchFirstEvent(ledger, next.createdAt || now);
-
-    addDailyTokens(ledger, formatLocalDay(new Date(now)), {
-      inputTokens: Math.max(0, next.inputTokens - previousInput),
-      outputTokens: Math.max(0, next.outputTokens - previousOutput),
-      cacheTokens: Math.max(0, next.cacheTokens - previousCache),
-      totalTokens: Math.max(0, next.totalTokens - previousTotal),
-      providerId: next.providerId,
-    });
+    applySessionTokens(ledger, sessionId, snapshot, meta, now);
   });
 }
 
-/** Reconcile sealed benchmark evidence. Replaying the same snapshot adds nothing. */
-export function projectBenchmarkUsage(record: {
+function applySessionTokens(
+  ledger: UsageLedger,
+  sessionId: string,
+  snapshot: UsageTokenSnapshot,
+  meta?: Partial<
+    Pick<UsageSessionSource, "providerId" | "modelId" | "modelName" | "effort">
+  >,
+  now = Date.now(),
+): void {
+  const current = ledger.sessions[sessionId] ?? emptySessionRecord();
+  const next = { ...current };
+  if (meta?.providerId) next.providerId = meta.providerId;
+  if (meta?.modelId !== undefined) next.modelId = meta.modelId;
+  if (meta?.modelName !== undefined) next.modelName = meta.modelName;
+  const effort = normalizeEffort(meta?.effort);
+  if (effort) next.effort = effort;
+  if (next.createdAt <= 0) next.createdAt = now;
+  next.lastActivityAt = Math.max(next.lastActivityAt, now);
+  next.started = true;
+
+  const previousInput = next.inputTokens;
+  const previousOutput = next.outputTokens;
+  const previousCache = next.cacheTokens;
+  const previousTotal = next.totalTokens;
+  // An auto snapshot that reports a turn (turnsDelta) is that turn's usage
+  // (ACP PromptResponse.usage), so it always adds. Treating it as a
+  // cumulative counter whenever both figures grew kept only the larger
+  // turn: 100/50 then 200/60 ended at 260 tokens instead of 410.
+  const add =
+    snapshot.mode === "add" ||
+    (snapshot.mode !== "replace" &&
+      ((snapshot.turnsDelta ?? 0) > 0 ||
+        (snapshot.inputTokens != null &&
+          snapshot.outputTokens != null &&
+          (snapshot.inputTokens < next.inputTokens ||
+            snapshot.outputTokens < next.outputTokens))));
+
+  if (snapshot.inputTokens !== undefined) {
+    next.inputTokens = add
+      ? next.inputTokens + snapshot.inputTokens
+      : Math.max(next.inputTokens, snapshot.inputTokens);
+  }
+  if (snapshot.outputTokens !== undefined) {
+    next.outputTokens = add
+      ? next.outputTokens + snapshot.outputTokens
+      : Math.max(next.outputTokens, snapshot.outputTokens);
+  }
+  if (snapshot.cacheTokens !== undefined) {
+    next.cacheTokens = add
+      ? next.cacheTokens + snapshot.cacheTokens
+      : Math.max(next.cacheTokens, snapshot.cacheTokens);
+  }
+
+  if (add) {
+    if (snapshot.totalTokens != null) {
+      next.totalTokens += snapshot.totalTokens;
+    } else if (
+      snapshot.inputTokens !== undefined ||
+      snapshot.outputTokens !== undefined ||
+      snapshot.cacheTokens !== undefined
+    ) {
+      next.totalTokens =
+        next.inputTokens + next.outputTokens + next.cacheTokens;
+    }
+  } else {
+    const inferredTotal =
+      snapshot.totalTokens ??
+      (snapshot.inputTokens !== undefined || snapshot.outputTokens !== undefined
+        ? next.inputTokens + next.outputTokens + next.cacheTokens
+        : undefined);
+    if (inferredTotal !== undefined) {
+      next.totalTokens = Math.max(next.totalTokens, inferredTotal);
+    }
+  }
+
+  if (snapshot.costUsd !== undefined) {
+    // A bridge that reports credits or EUR must not have its amounts added
+    // to a USD running total: a changed currency replaces the cost instead.
+    const currency =
+      snapshot.costCurrency === undefined
+        ? next.costCurrency
+        : normalizeCostCurrency(snapshot.costCurrency);
+    const mixesCurrencies =
+      next.costUsd != null && currency !== next.costCurrency;
+    next.costUsd =
+      add && !mixesCurrencies
+        ? (next.costUsd ?? 0) + (snapshot.costUsd ?? 0)
+        : snapshot.costUsd;
+    next.costCurrency = currency;
+  }
+  if (snapshot.turnsDelta) {
+    next.turns += Math.max(0, snapshot.turnsDelta);
+  }
+
+  ledger.sessions[sessionId] = next;
+  touchFirstEvent(ledger, next.createdAt || now);
+
+  addDailyTokens(ledger, formatLocalDay(new Date(now)), {
+    inputTokens: Math.max(0, next.inputTokens - previousInput),
+    outputTokens: Math.max(0, next.outputTokens - previousOutput),
+    cacheTokens: Math.max(0, next.cacheTokens - previousCache),
+    totalTokens: Math.max(0, next.totalTokens - previousTotal),
+    providerId: next.providerId,
+  });
+}
+
+export type BenchmarkUsageRecord = {
   sessionId: string;
   providerId: string;
   modelId: string;
@@ -678,47 +687,61 @@ export function projectBenchmarkUsage(record: {
   costUsd: number | null;
   durationMs: number | null;
   finishedAt: number;
-}): void {
-  const current = getUsageLedger().sessions[record.sessionId];
-  const input = record.inputTokens ?? current?.inputTokens;
-  const output = record.outputTokens ?? current?.outputTokens;
-  if (
-    current?.origin === "benchmark" &&
-    current.inputTokens === (input ?? 0) &&
-    current.outputTokens === (output ?? 0) &&
-    current.costUsd === record.costUsd &&
-    current.workedMs === (record.durationMs ?? 0)
-  )
-    return;
-  recordSessionTokens(
-    record.sessionId,
-    {
-      mode: "replace",
-      inputTokens: input,
-      outputTokens: output,
-      ...(input !== undefined && output !== undefined
-        ? { totalTokens: input + output }
-        : {}),
-      costUsd: record.costUsd,
-      costCurrency: "USD",
-    },
-    {
-      providerId: record.providerId,
-      modelId: record.modelId,
-      effort: record.effort,
-    },
-    record.finishedAt,
-  );
-  mutateLedger((ledger) => {
-    const row = ledger.sessions[record.sessionId];
-    if (!row) return;
-    ledger.sessions[record.sessionId] = {
-      ...row,
+};
+
+/** Reconcile sealed benchmark evidence. Replaying the same snapshot adds nothing. */
+export function projectBenchmarkUsage(record: BenchmarkUsageRecord): void {
+  projectBenchmarkUsageBatch([record]);
+}
+
+/** Import a snapshot with one ledger copy and one subscriber notification. */
+export function projectBenchmarkUsageBatch(
+  records: readonly BenchmarkUsageRecord[],
+): void {
+  const ledger = getUsageLedger();
+  let draft: UsageLedger | undefined;
+  for (const record of records) {
+    const current = (draft ?? ledger).sessions[record.sessionId];
+    const input = record.inputTokens ?? current?.inputTokens;
+    const output = record.outputTokens ?? current?.outputTokens;
+    const workedMs = record.durationMs ?? current?.workedMs ?? 0;
+    if (
+      current?.origin === "benchmark" &&
+      current.inputTokens === (input ?? 0) &&
+      current.outputTokens === (output ?? 0) &&
+      current.costUsd === record.costUsd &&
+      current.workedMs === workedMs
+    )
+      continue;
+    draft ??= draftLedger(ledger);
+    applySessionTokens(
+      draft,
+      record.sessionId,
+      {
+        mode: "replace",
+        inputTokens: input,
+        outputTokens: output,
+        ...(input !== undefined && output !== undefined
+          ? { totalTokens: input + output }
+          : {}),
+        costUsd: record.costUsd,
+        costCurrency: "USD",
+      },
+      {
+        providerId: record.providerId,
+        modelId: record.modelId,
+        effort: record.effort,
+      },
+      record.finishedAt,
+    );
+    draft.sessions[record.sessionId] = {
+      ...draft.sessions[record.sessionId],
       origin: "benchmark",
       turns: 1,
-      workedMs: record.durationMs ?? row.workedMs,
+      workedMs,
     };
-  });
+  }
+  if (draft) writeLedger(draft);
 }
 
 export function addSessionWorkedMs(
