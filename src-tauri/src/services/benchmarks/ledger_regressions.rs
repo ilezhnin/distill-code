@@ -1080,6 +1080,45 @@ fn history_prepares_peers_once_per_cutoff_and_once_for_today() {
 }
 
 #[test]
+fn prepared_measurements_keep_attempt_identity_and_review_cutoffs_separate() {
+    let mut data = before_only();
+    data.attempts.truncate(2);
+    for attempt in &mut data.attempts {
+        // Repeated labels must not let one object borrow another's verdict.
+        attempt.id = "invented-repeated-label".into();
+        attempt.finished_at = Some(5);
+        attempt.outcome = Some("judged".into());
+        attempt.evaluations.clear();
+    }
+    data.attempts[0].evaluations = vec![
+        evaluation(6, Some(0.2), "objective", "judged"),
+        evaluation(15, Some(1.0), "human", "judged"),
+    ];
+    data.attempts[1].evaluations = vec![evaluation(6, Some(0.0), "objective", "judged")];
+    for (as_of, first, second) in [
+        (Some(5), None, None),
+        (Some(10), Some(0.2), Some(0.0)),
+        (Some(20), Some(1.0), Some(0.0)),
+        (None, Some(1.0), Some(0.0)),
+    ] {
+        let query = ResultQuery {
+            as_of,
+            ..Default::default()
+        };
+        let prepared = PreparedMeasurements::new(&data, &query, &ranked_pool(&data, &query));
+        assert_eq!(prepared.score(&data.attempts[0]), first);
+        assert_eq!(prepared.score(&data.attempts[1]), second);
+    }
+    // A later request reads the new review, even for the same attempt object.
+    data.attempts[0]
+        .evaluations
+        .push(evaluation(25, Some(0.4), "human", "judged"));
+    let query = ResultQuery::default();
+    let prepared = PreparedMeasurements::new(&data, &query, &ranked_pool(&data, &query));
+    assert_eq!(prepared.score(&data.attempts[0]), Some(0.4));
+}
+
+#[test]
 fn incomplete_judge_batch_stays_unscored_and_judge_spend_is_not_the_candidates() {
     let mut a = before_only().attempts.remove(0);
     a.outcome = Some("judged".into());

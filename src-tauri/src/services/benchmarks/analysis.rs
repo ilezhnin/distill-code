@@ -623,6 +623,14 @@ pub(super) fn case_cells<'a>(
     as_of: Option<i64>,
     protocol: CaseProtocol<'_>,
 ) -> BTreeMap<&'a str, CaseCell> {
+    case_cells_scored(attempts, protocol, &|attempt| score_as_of(attempt, as_of))
+}
+
+fn case_cells_scored<'a>(
+    attempts: &[&'a Attempt],
+    protocol: CaseProtocol<'_>,
+    score: &dyn Fn(&Attempt) -> Option<f64>,
+) -> BTreeMap<&'a str, CaseCell> {
     let (required, graded) = (protocol.required, protocol.graded);
     let mut by_case: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
     for attempt in attempts {
@@ -634,11 +642,10 @@ pub(super) fn case_cells<'a>(
     by_case
         .into_iter()
         .filter_map(|(version, list)| {
-            let list: Vec<&Attempt> = list
+            let (list, scores): (Vec<&Attempt>, Vec<f64>) = list
                 .into_iter()
-                .filter(|a| score_as_of(a, as_of).is_some())
-                .collect();
-            let scores: Vec<f64> = list.iter().filter_map(|a| score_as_of(a, as_of)).collect();
+                .filter_map(|attempt| score(attempt).map(|score| (attempt, score)))
+                .unzip();
             if scores.is_empty() {
                 return None;
             }
@@ -682,20 +689,36 @@ pub(super) struct CaseRecords {
     costs: BTreeMap<String, f64>,
 }
 
+#[cfg(test)]
 pub(super) fn case_records(
     attempts: &[Attempt],
     runs: &BTreeMap<&str, &BenchmarkRun>,
     as_of: Option<i64>,
     protocol: CaseProtocol<'_>,
 ) -> CaseRecords {
+    case_records_scored(
+        attempts,
+        runs,
+        protocol,
+        &run_acknowledgments(attempts),
+        &|attempt| score_as_of(attempt, as_of),
+    )
+}
+
+fn case_records_scored(
+    attempts: &[Attempt],
+    runs: &BTreeMap<&str, &BenchmarkRun>,
+    protocol: CaseProtocol<'_>,
+    acknowledged: &Acknowledgments<'_>,
+    score: &dyn Fn(&Attempt) -> Option<f64>,
+) -> CaseRecords {
     let graded = protocol.graded;
-    let acknowledged = run_acknowledgments(attempts);
     let mut cells: BTreeMap<(String, &str), Vec<&Attempt>> = BTreeMap::new();
     for attempt in attempts {
         if !runs.contains_key(attempt.run_id.as_str()) {
             continue;
         }
-        let key = leaderboard_key(&ledger_configuration(attempt, &acknowledged));
+        let key = leaderboard_key(&ledger_configuration(attempt, acknowledged));
         cells
             .entry((key, attempt.run_id.as_str()))
             .or_default()
@@ -704,7 +727,7 @@ pub(super) fn case_records(
     let mut records = CaseRecords::default();
     let least = |best: Option<&f64>, value: Option<f64>| min_of(best.copied(), value);
     for list in cells.values() {
-        for (version, cell) in case_cells(list, as_of, protocol) {
+        for (version, cell) in case_cells_scored(list, protocol, score) {
             if (cell.reward < 1.0 && !graded(version)) || cell.reward <= 0.0 {
                 continue;
             }
@@ -1207,7 +1230,7 @@ pub(super) fn latest_cell_attempts<'a>(
 fn spent_attempts<'a>(
     attempts: &[&'a Attempt],
     scored: &BTreeSet<&str>,
-    as_of: Option<i64>,
+    score: &dyn Fn(&Attempt) -> Option<f64>,
 ) -> Vec<&'a Attempt> {
     let unscored: BTreeSet<&str> = attempts
         .iter()
@@ -1227,7 +1250,7 @@ fn spent_attempts<'a>(
             if unscored.contains(a.version_id.as_str()) {
                 a.started_at.is_some() && !unknown.contains(a.version_id.as_str())
             } else {
-                score_as_of(a, as_of).is_some()
+                score(a).is_some()
             }
         })
         .collect()
@@ -1373,6 +1396,8 @@ struct PreparedMeasurements<'a> {
     runs: BTreeMap<&'a str, &'a BenchmarkRun>,
     acknowledged: Acknowledgments<'a>,
     records: CaseRecords,
+    entered: BTreeMap<&'a str, i64>,
+    scores: std::collections::HashMap<*const Attempt, Option<f64>>,
 }
 
 #[cfg(test)]
@@ -1381,7 +1406,7 @@ std::thread_local! {
 }
 
 impl<'a> PreparedMeasurements<'a> {
-    fn new(data: &'a QueryData, query: &ResultQuery, pool: &[&BenchmarkVersion]) -> Self {
+    fn new(data: &'a QueryData, query: &ResultQuery, pool: &[&'a BenchmarkVersion]) -> Self {
         #[cfg(test)]
         PREPARED_MEASUREMENTS.with(|count| count.set(count.get() + 1));
         let runs = data
@@ -1392,32 +1417,64 @@ impl<'a> PreparedMeasurements<'a> {
             .filter(|run| query.as_of.is_none_or(|at| run.created_at <= at))
             .map(|run| (run.id.as_str(), run))
             .collect();
+        let pool_versions: BTreeMap<&str, &BenchmarkVersion> =
+            pool.iter().map(|v| (v.id.as_str(), *v)).collect();
         let graded = |version_id: &str| {
-            pool.iter()
-                .find(|v| v.id == version_id)
+            pool_versions
+                .get(version_id)
                 .is_some_and(|v| v.manifest.evaluator.kind == "rubric")
         };
         let required = |version_id: &str| {
-            pool.iter()
-                .find(|v| v.id == version_id)
+            pool_versions
+                .get(version_id)
                 .map_or(data.required_repetitions.max(1), |v| {
                     required_repetitions(data, v)
                 })
         };
-        let records = case_records(
+        let acknowledged = run_acknowledgments(&data.attempts);
+        let scores: std::collections::HashMap<*const Attempt, Option<f64>> = data
+            .attempts
+            .iter()
+            .map(|attempt| {
+                (
+                    std::ptr::from_ref(attempt),
+                    score_as_of(attempt, query.as_of),
+                )
+            })
+            .collect();
+        let records = case_records_scored(
             &data.attempts,
             &runs,
-            query.as_of,
             CaseProtocol {
                 required: &required,
                 graded: &graded,
             },
+            &acknowledged,
+            &|attempt| scores[&std::ptr::from_ref(attempt)],
         );
+        let published = data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
+        let entered = pool
+            .iter()
+            .map(|v| {
+                (
+                    v.id.as_str(),
+                    entered_pool(&published, &data.releases, v, query.as_of),
+                )
+            })
+            .collect();
         Self {
             runs,
-            acknowledged: run_acknowledgments(&data.attempts),
+            acknowledged,
             records,
+            entered,
+            scores,
         }
+    }
+
+    fn score(&self, attempt: &Attempt) -> Option<f64> {
+        // All board sources borrow this immutable QueryData's attempts. Use
+        // object identity so even repeated labels cannot share an evaluation.
+        self.scores[&std::ptr::from_ref(attempt)]
     }
 }
 
@@ -1426,7 +1483,7 @@ impl<'a> PreparedMeasurements<'a> {
 fn model_cell_attempts<'a>(
     by_run: &BTreeMap<&str, Vec<&'a Attempt>>,
     runs: &BTreeMap<&str, &BenchmarkRun>,
-    as_of: Option<i64>,
+    score: &dyn Fn(&Attempt) -> Option<f64>,
     by_execution: bool,
 ) -> Vec<&'a Attempt> {
     let mut cells: BTreeMap<(&str, &str, &str, String), Vec<&Attempt>> = BTreeMap::new();
@@ -1454,7 +1511,7 @@ fn model_cell_attempts<'a>(
     let order = |cell: &[&Attempt]| {
         let first = cell[0];
         (
-            cell.iter().any(|a| score_as_of(a, as_of).is_some()),
+            cell.iter().any(|a| score(a).is_some()),
             cell.iter().any(|a| a.started_at.is_some()),
             runs[first.run_id.as_str()].created_at,
             first.run_id.clone(),
@@ -1489,13 +1546,14 @@ fn measurement_report(
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
     let pool_versions: BTreeMap<&str, &BenchmarkVersion> =
         pool.iter().map(|v| (v.id.as_str(), *v)).collect();
-    let published: BTreeMap<&str, &BenchmarkVersion> =
-        data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
     let PreparedMeasurements {
         runs,
         acknowledged,
         records,
+        entered,
+        ..
     } = prepared;
+    let score = |attempt: &Attempt| prepared.score(attempt);
     let work_classes: Vec<String> = pool
         .iter()
         .map(|v| v.manifest.work_class_id.clone())
@@ -1503,19 +1561,19 @@ fn measurement_report(
         .into_iter()
         .collect();
     let work_class = |version_id: &str| {
-        pool.iter()
-            .find(|v| v.id == version_id)
+        pool_versions
+            .get(version_id)
             .map(|v| v.manifest.work_class_id.as_str())
             .unwrap_or("unknown")
     };
     let graded = |version_id: &str| {
-        pool.iter()
-            .find(|v| v.id == version_id)
+        pool_versions
+            .get(version_id)
             .is_some_and(|v| v.manifest.evaluator.kind == "rubric")
     };
     let required = |version_id: &str| {
-        pool.iter()
-            .find(|v| v.id == version_id)
+        pool_versions
+            .get(version_id)
             .map_or(data.required_repetitions.max(1), |v| {
                 required_repetitions(data, v)
             })
@@ -1568,7 +1626,7 @@ fn measurement_report(
                 .into_iter()
                 .filter(|(id, list)| {
                     runs[id].baked_at.is_none()
-                        || case_cells(list, query.as_of, protocol)
+                        || case_cells_scored(list, protocol, &score)
                             .values()
                             .any(|cell| cell.complete)
                 })
@@ -1588,7 +1646,7 @@ fn measurement_report(
             // repetitions, whichever run measured it: runs taken in chunks
             // fill a row together, while a cell never mixes runs.
             let mut attempts: Vec<&Attempt> =
-                model_cell_attempts(&by_run, runs, query.as_of, by_model);
+                model_cell_attempts(&by_run, runs, &score, by_model);
             // Keep the newest concrete configuration for the next run;
             // each attempt retains its original runtime and account evidence.
             if let Some(latest) = attempts
@@ -1637,14 +1695,14 @@ fn measurement_report(
                 contributing.insert(attempt.run_id.as_str());
             }
             // Speed and cost read every cell of the sitting, own cases included.
-            let every_cells = case_cells(&every_cell, query.as_of, protocol);
+            let every_cells = case_cells_scored(&every_cell, protocol, &score);
             let every_scored: Vec<&Attempt> = every_cell
                 .iter()
                 .copied()
-                .filter(|a| score_as_of(a, query.as_of).is_some())
+                .filter(|a| score(a).is_some())
                 .collect();
             let every_scored_versions: BTreeSet<&str> = every_cells.keys().copied().collect();
-            let spent = spent_attempts(&every_cell, &every_scored_versions, query.as_of);
+            let spent = spent_attempts(&every_cell, &every_scored_versions, &score);
             let cost = mean_case_cost(&spent, query.as_of);
             let priced = spent.iter().any(|a| a.usage.cost.is_some());
             let resources = board_stats(&every_cells, records);
@@ -1706,13 +1764,13 @@ fn measurement_report(
                 .map(|a| a.version_id.as_str())
                 .collect::<BTreeSet<_>>()
                 .len() as u32;
-            let cells = case_cells(&attempts, query.as_of, protocol);
+            let cells = case_cells_scored(&attempts, protocol, &score);
             // The repetitions the cells are made of: scored ones alone, so a
             // repetition of a measured case that never ran dates or costs nothing.
             let scored_attempts: Vec<&Attempt> = attempts.iter().copied()
-                .filter(|a| score_as_of(a, query.as_of).is_some()).collect();
+                .filter(|a| score(a).is_some()).collect();
             let standard_budgets = attempts.iter().all(|a| {
-                eligible.iter().find(|v| v.id == a.version_id).is_some_and(|v|
+                pool_versions.get(a.version_id.as_str()).is_some_and(|v|
                     runs[a.run_id.as_str()].request.timeout_seconds >= v.manifest.limits.timeout_seconds)
             });
             // A class board is the mean over its cases; the row is the mean
@@ -1779,15 +1837,25 @@ fn measurement_report(
                     by_request.entry(attempt.configuration.id.as_str()).or_default().push(attempt);
                 }
                 for cell_attempts in by_request.values() {
-                    for (version, cell) in case_cells(cell_attempts, query.as_of, protocol) {
-                        let done = cell_attempts
-                            .iter()
-                            .filter(|a| a.version_id == version && score_as_of(a, query.as_of).is_some())
-                            .filter_map(|a| settled_at(a))
-                            .max();
-                        if let (true, Some(done)) = (cell.complete, done) {
-                            completions.entry(version).or_default().push(done);
+                    let cells = case_cells_scored(cell_attempts, protocol, &score);
+                    // Gather each case's last settlement in one pass. Scanning
+                    // the whole sitting again for every case made history grow
+                    // quadratically with the number of measured cases.
+                    let mut done: BTreeMap<&str, i64> = BTreeMap::new();
+                    for &attempt in cell_attempts {
+                        if !cells.get(attempt.version_id.as_str()).is_some_and(|cell| cell.complete)
+                            || score(attempt).is_none()
+                        {
+                            continue;
                         }
+                        if let Some(at) = settled_at(attempt) {
+                            done.entry(attempt.version_id.as_str())
+                                .and_modify(|last| *last = (*last).max(at))
+                                .or_insert(at);
+                        }
+                    }
+                    for (version, done) in done {
+                        completions.entry(version).or_default().push(done);
                     }
                 }
             }
@@ -1795,7 +1863,7 @@ fn measurement_report(
                 .iter()
                 .map(|v| {
                     (
-                        entered_pool(&published, &data.releases, v, query.as_of),
+                        entered[v.id.as_str()],
                         completions.get(v.id.as_str()).cloned().unwrap_or_default(),
                     )
                 })
@@ -1809,7 +1877,7 @@ fn measurement_report(
             let unscored: Vec<&BenchmarkVersion> = eligible
                 .iter()
                 .copied()
-                .filter(|v| !scored_attempts.iter().any(|a| a.version_id == v.id))
+                .filter(|v| !cells.contains_key(v.id.as_str()))
                 .collect();
             let (unsupported_version_ids, missing_version_ids): (Vec<String>, Vec<String>) =
                 unscored.iter().map(|v| v.id.clone()).partition(|id| {
@@ -1818,7 +1886,7 @@ fn measurement_report(
                     })
                 });
             Some(LeaderboardRow {
-                comparison_key: comparison_key(&scored_attempts, runs, &pool, query.as_of),
+                comparison_key: comparison_key(&scored_attempts, runs, &pool_versions, query.as_of),
                 configuration,
                 passed,
                 scored,
@@ -1985,16 +2053,13 @@ fn protocol_evaluation(attempt: &Attempt, as_of: Option<i64>) -> Option<&Evaluat
 fn comparison_key(
     attempts: &[&Attempt],
     runs: &BTreeMap<&str, &BenchmarkRun>,
-    pool: &[&BenchmarkVersion],
+    pool: &BTreeMap<&str, &BenchmarkVersion>,
     as_of: Option<i64>,
 ) -> String {
     let protocols: BTreeSet<_> = attempts
         .iter()
         .map(|a| {
-            let version = pool
-                .iter()
-                .find(|v| v.id == a.version_id)
-                .expect("pool attempt");
+            let version = pool.get(a.version_id.as_str()).expect("pool attempt");
             let evaluation = protocol_evaluation(a, as_of);
             serde_json::to_string(&serde_json::json!([
                 a.version_id,
@@ -2045,7 +2110,7 @@ fn recalculated_history_report(
                 && a.finished_at.is_some_and(|end| end <= at)
                 // A refusal by the provider stays, so the point lists the
                 // case as refused, as the board does, not as an open gap.
-                && (score_as_of(a, None).is_some() || a.outcome.as_deref() == Some("unsupported"))
+                && (current.prepared.score(a).is_some() || a.outcome.as_deref() == Some("unsupported"))
         })
         .collect();
     let backfilled: Vec<String> = Vec::new();
