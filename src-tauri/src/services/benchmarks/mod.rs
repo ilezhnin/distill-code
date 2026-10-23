@@ -865,6 +865,7 @@ impl BenchmarkService {
                     ));
                 }
                 // The operator's resume asks every waiting account again.
+                runner::reset_account_waits(&self.store, &run).await?;
                 runner::forget_quota_waits(id);
                 "running"
             }
@@ -1108,6 +1109,7 @@ impl BenchmarkService {
         if run.state != "running" {
             // A stopped run going on again asks every waiting account again;
             // one still running keeps what its turns learned.
+            runner::reset_account_waits(&self.store, &run).await?;
             runner::forget_quota_waits(id);
             self.store.set_run_state(id, "running").await?;
         }

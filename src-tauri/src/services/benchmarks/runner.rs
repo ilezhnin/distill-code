@@ -463,6 +463,10 @@ struct CreditTurn {
     from_start: bool,
     /// The credit balance before the turn, where the provider reports one.
     balance: Option<f64>,
+    /// Timestamp of the before-sample already recorded in the credit ledger.
+    balance_observed_at: i64,
+    /// Keeps concurrent admissions from mistaking a long turn for idle time.
+    _active_sample: Option<super::credits::ActiveSample>,
 }
 
 /// A turn whose plan usage is spent, refused before any provider call
@@ -488,12 +492,15 @@ impl NativeBackend {
         &self,
         root: &std::path::Path,
         configuration: &Configuration,
+        track_turn: bool,
     ) -> Result<CreditTurn> {
         use crate::services::provider_account_status as accounts;
         let mut turn = CreditTurn {
             allow: false,
             from_start: false,
             balance: None,
+            balance_observed_at: 0,
+            _active_sample: None,
         };
         let Some(account) = configuration
             .account_id
@@ -505,15 +512,15 @@ impl NativeBackend {
         let Ok(status) = accounts::account_status(&self.app, account).await else {
             return Ok(turn);
         };
-        turn.balance = accounts::plan_credit_balance(&status);
-        if let Some(balance) = turn.balance {
-            if let Err(error) =
-                super::credits::observe(root, account, balance, status.last_updated_at).await
-            {
-                log::warn!("[benchmarks] {}", error.message);
-            }
-        }
-        let spend = super::credits::spend(root).await;
+        turn.balance = super::credits::current_balance(&status, now());
+        let spend = if let Some(balance) = turn.balance {
+            turn.balance_observed_at = status.last_updated_at;
+            // An unsaved drop cannot authorize more spending against the old
+            // ledger. Preserve the error for the existing quota-wait reason.
+            super::credits::observe_and_spend(root, account, balance, status.last_updated_at).await
+        } else {
+            super::credits::spend(root).await
+        };
         turn.allow = turn.balance.is_some()
             && spend
                 .as_ref()
@@ -529,6 +536,13 @@ impl NativeBackend {
             };
             return Err(credit_wait(account, plan_reset, &reason));
         }
+        if track_turn && turn.balance.is_some() && spend.is_ok() {
+            turn._active_sample = Some(
+                super::credits::active_sample(root, account, turn.balance_observed_at, now())
+                    .await
+                    .map_err(|error| credit_wait(account, plan_reset, &error.message))?,
+            );
+        }
         Ok(turn)
     }
 
@@ -540,7 +554,7 @@ impl NativeBackend {
         root: &std::path::Path,
         attempt: &mut Attempt,
         evidence: &mut Value,
-        turn: &CreditTurn,
+        turn: &mut CreditTurn,
     ) {
         use crate::services::provider_account_status as accounts;
         let Some(account) = attempt.configuration.account_id.clone() else {
@@ -552,12 +566,30 @@ impl NativeBackend {
         let after = accounts::account_status_after_turn(&self.app, &account)
             .await
             .ok();
-        let balance_after = after.as_ref().and_then(accounts::plan_credit_balance);
+        let balance_after = after
+            .as_ref()
+            .and_then(|status| super::credits::current_balance(status, now()));
         if let (Some(status), Some(balance)) = (&after, balance_after) {
-            if let Err(error) =
-                super::credits::observe(root, &account, balance, status.last_updated_at).await
+            match super::credits::observe_after_turn(
+                root,
+                &account,
+                balance,
+                status.last_updated_at,
+                turn.balance_observed_at,
+            )
+            .await
             {
-                log::warn!("[benchmarks] {}", error.message);
+                Ok(()) => {
+                    // Successful settlement can release the durable marker only
+                    // after this turn stops contributing to active accounting.
+                    turn._active_sample.take();
+                    if let Err(error) =
+                        super::credits::clear_settled(root, &account, status.last_updated_at).await
+                    {
+                        log::warn!("[benchmarks] {}", error.message);
+                    }
+                }
+                Err(error) => log::warn!("[benchmarks] {}", error.message),
             }
         }
         let ended_on_credits = after.as_ref().is_some_and(|status| {
@@ -1831,6 +1863,17 @@ fn resource_waiting(attempt: &Attempt) -> bool {
             .is_some_and(|reason| reason.starts_with("Waiting for local resources:"))
 }
 
+/// A persisted queue wait survives ticks and process restarts. Only a local
+/// resource refusal may wake early when a finished job releases capacity.
+fn pending_waiting(attempt: &Attempt, scope: &str, at: i64) -> bool {
+    attempt.wait_until.is_some_and(|until| until > at)
+        && (!attempt
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("Waiting for local resources:"))
+            || !admission_window::remaining(scope).is_zero())
+}
+
 /// How many attempts of `run_id` fly at once on `account` (its provider and
 /// id, as a seat names it): one while the run waits out that account's usage
 /// limit (`scope`, see [`quota_scope`]), so a single turn finds out whether
@@ -2113,6 +2156,34 @@ pub(super) fn forget_quota_waits(run_id: &str) {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(run, _), _| run != run_id);
     }
+}
+
+/// Explicit resume probes quota/sign-in availability again. Preserve unrelated
+/// preparation and retry backoffs, and the request's dispatch deadline.
+pub(super) async fn reset_account_waits(store: &Store, run: &BenchmarkRun) -> Result<()> {
+    for attempt in &run.attempts {
+        if !matches!(attempt.phase.as_str(), "pending" | AWAITING_JUDGES)
+            || attempt.wait_until.is_none()
+        {
+            continue;
+        }
+        let reason = attempt.reason.as_deref().unwrap_or_default();
+        let account_wait = reason == SIGN_IN_WAIT_REASON
+            || reason == crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY
+            || serde_json::from_str::<Value>(reason).is_ok_and(|error| {
+                let data = error.get("data").unwrap_or(&error);
+                data["kind"] == QUOTA_WAIT
+                    || data["type"] == QUOTA_WAIT
+                    || crate::services::provider_account_status::is_quota_error(&error)
+            });
+        if account_wait {
+            // Run summaries omit output: keep the complete saved receipt.
+            let mut waiting = store.attempt(&attempt.id).await?;
+            waiting.wait_until = None;
+            store.save_attempt(&waiting).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Tries of one attempt refused before any answer that go back to the queue
@@ -4994,7 +5065,7 @@ impl ExecutionBackend for NativeBackend {
             busy().await?;
             // A turn whose plan usage is spent waits here, before any setup,
             // unless it may run on credits.
-            self.credit_turn(&store.root, &attempt.configuration)
+            self.credit_turn(&store.root, &attempt.configuration, false)
                 .await?;
             let version =
                 collection_context::prepare(store, &mut attempt, version, timeout).await?;
@@ -5262,8 +5333,8 @@ impl ExecutionBackend for NativeBackend {
                     timeout_seconds,
                 )?;
             }
-            let credit = self
-                .credit_turn(&store.root, &attempt.configuration)
+            let mut credit = self
+                .credit_turn(&store.root, &attempt.configuration, true)
                 .await?;
             let started = Instant::now();
             let request = OwnedTurnRequest {
@@ -5354,8 +5425,9 @@ impl ExecutionBackend for NativeBackend {
             if let Some(verdict) = session_limit {
                 evidence["sessionLimit"] = verdict;
             }
-            self.record_credit_use(&store.root, &mut attempt, &mut evidence, &credit)
+            self.record_credit_use(&store.root, &mut attempt, &mut evidence, &mut credit)
                 .await;
+            drop(credit);
             record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
             mark_phase(&mut attempt, "collected");
             attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
@@ -7624,7 +7696,8 @@ impl BenchmarkService {
             {
                 continue;
             }
-            let ready = self.dispatchable(&run).await?;
+            let ready_at = now();
+            let ready = self.dispatchable(&run, ready_at).await?;
             if ready.is_empty() {
                 // Cells held for their provider still wait for it; the run
                 // completes only once none is pending.
@@ -7632,7 +7705,7 @@ impl BenchmarkService {
                     (a.phase == "pending"
                         && (provider_held(&run.id, &a.configuration.provider_id)
                             || provider_held(&run.id, &quota_scope(&a.configuration))
-                            || resource_waiting(a)))
+                            || a.wait_until.is_some_and(|until| until > ready_at)))
                         || a.phase == "interrupted"
                 });
                 if flying == 0 && waiting.is_none() && !held {
@@ -8744,9 +8817,10 @@ impl BenchmarkService {
     async fn dispatchable(
         &self,
         run: &BenchmarkRun,
+        at: i64,
     ) -> Result<Vec<(Attempt, Arc<BenchmarkVersion>)>> {
         let mut ready = Vec::new();
-        if now() >= super::analysis::window_closes(run)
+        if at >= super::analysis::window_closes(run)
             && !self
                 .store
                 .workflow_campaign_owns(&run.request.request_key)
@@ -8760,9 +8834,7 @@ impl BenchmarkService {
             a.phase == "pending"
                 && !provider_held(&run.id, &a.configuration.provider_id)
                 && !provider_held(&run.id, &quota_scope(&a.configuration))
-                && (!resource_waiting(a)
-                    || admission_window::remaining(&self.store.root.display().to_string())
-                        .is_zero())
+                && !pending_waiting(a, &self.store.root.display().to_string(), at)
         }) {
             if !versions.contains_key(&pending.version_id) {
                 let version = self.store.version_shared(&pending.version_id).await?;
@@ -9603,6 +9675,9 @@ mod reconciliation_tests;
 
 #[cfg(test)]
 mod execution_limits_tests;
+
+#[cfg(test)]
+mod quota_resource_tests;
 
 #[cfg(test)]
 mod unstarted_admission_tests;
@@ -13314,7 +13389,7 @@ mod tests {
         ));
         exhaust(&run.id, "isolated", now() + QUOTA_WAIT_LIMIT_MS);
         hold_provider_until(&run.id, &scope, now() + QUOTA_WAIT_LIMIT_MS);
-        assert!(s.dispatchable(&run).await.unwrap().is_empty());
+        assert!(s.dispatchable(&run, now()).await.unwrap().is_empty());
         // Adding cases to a run still going on keeps what its turns learned.
         s.extend_run(&run.id, &[], &[]).await.unwrap();
         assert!(quota_waiting(&run.id, &scope));
@@ -13326,7 +13401,7 @@ mod tests {
         assert!(!exhausted(&run.id, "isolated"));
         assert!(!provider_held(&run.id, &scope));
         let resumed = s.store.run(&run.id).await.unwrap();
-        assert_eq!(s.dispatchable(&resumed).await.unwrap().len(), 2);
+        assert_eq!(s.dispatchable(&resumed, now()).await.unwrap().len(), 2);
         assert!(matches!(
             quota_plan(&run.id, &scope, &error, now()),
             QuotaPlan::WaitUntil(_)
@@ -13577,6 +13652,16 @@ mod tests {
         assert!(!stopped_for_quota(&limit, &capped, false));
         assert!(stopped_for_quota(&limit, &capped, true));
     }
+    async fn expire_saved_waits(service: &BenchmarkService, run_id: &str) {
+        for attempt in service.store.run(run_id).await.unwrap().attempts {
+            if attempt.wait_until.is_some() {
+                let mut elapsed = service.store.attempt(&attempt.id).await.unwrap();
+                elapsed.wait_until = Some(now() - 1);
+                service.store.save_attempt(&elapsed).await.unwrap();
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {
         let (dir, s, fake) = setup().await;
@@ -13594,6 +13679,7 @@ mod tests {
             .lock()
             .unwrap()
             .retain(|(held, _), _| held != &run.id);
+        expire_saved_waits(&s, &run.id).await;
         for _ in 0..3 {
             s.tick().await.unwrap();
         }
@@ -13742,11 +13828,13 @@ mod tests {
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "running");
         // The same wait again settles nothing and asks nobody.
         assert!(release().is_some());
+        expire_saved_waits(&s, &run.id).await;
         s.tick().await.unwrap();
         let again = s.store.run(&run.id).await.unwrap();
         assert_eq!(again.state, "running");
         assert!(again.attempts.iter().all(|a| a.phase == "pending"));
         assert!(release().is_some());
+        expire_saved_waits(&s, &run.id).await;
         for _ in 0..3 {
             s.tick().await.unwrap();
         }
@@ -13787,6 +13875,7 @@ mod tests {
             .lock()
             .unwrap()
             .remove(&(run.id.clone(), "fake".to_owned()));
+        expire_saved_waits(&s, &run.id).await;
         for _ in 0..3 {
             s.tick().await.unwrap();
         }

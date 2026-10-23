@@ -53,6 +53,9 @@ async fn execution_limits_quota_waits_then_dispatches_once_on_the_same_account()
             .lock()
             .unwrap()
             .retain(|(held, _), _| held != &run.id);
+        let mut elapsed = waiting.clone();
+        elapsed.wait_until = Some(now() - 1);
+        service.store.save_attempt(&elapsed).await.unwrap();
         for _ in 0..3 {
             service.tick().await.unwrap();
         }

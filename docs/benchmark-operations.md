@@ -659,6 +659,14 @@ waits until the reset the account's last usage read shows (a weekly window
 read spent makes it a reset the run cannot wait for, so the run stops for the
 operator), or asks again every five minutes where the read shows none. A judge whose turn a limit refused or
 cut off leaves the run's panels until that reset.
+A persisted queue wait survives ticks and application restarts without
+claiming an account seat or preparation slot; eligible candidates and judge
+panels can continue while another account waits. Explicitly resuming a stopped
+run rechecks quota and sign-in availability, while resource and transient-error
+backoffs and dispatch admission deadlines remain in force. A judge's quota
+refusal releases its preparation slot and panel lane; its saved abstention
+remains subject to the existing incomplete-panel policy.
+
 A workflow root under it settles with its quota outcome instead, since its
 committed steps are never replayed. A try the provider refused before any
 answer (another model acknowledged at session open, a busy account, a prompt
@@ -784,8 +792,18 @@ reached, a test whose account's plan usage is spent waits for plan usage to
 reset like any usage limit, and its waiting row says credits are not allowed.
 Spending is measured from the balance Codex reports and kept in
 `benchmarks/credit-spend.json`: every drop between two samples of an account
-taken within 30 minutes counts, including other use of the account meanwhile,
-and a purchase never offsets it. The limit stops new turns on credits; turns
+taken within 30 minutes counts, including other use of the account meanwhile.
+A turn's recorded before-sample and its completion stay in the same stretch
+even when the turn lasts longer; overlapping completions count each drop only
+once. A purchase never offsets spending. New credit admission requires a
+successful balance sample from the last five minutes and a saved ledger update;
+stale telemetry or a failed ledger write cannot authorize more credits.
+Before dispatch, a durable `unsettledSince` marker preserves accounting across
+a failed final read, failed write, cancellation or restart. The next successful
+balance sample charges that outstanding interval before admitting more credits;
+until then an old cached before-sample cannot authorize spending. Successful
+settlement clears the marker once no other candidate turn is active.
+The limit stops new turns on credits; turns
 already running finish, so spending can pass the limit by what they use. A
 turn whose account runs out of plan usage while it runs may go on on credits
 on the provider's side, whatever the setting. An attempt paid with credits, from its start or

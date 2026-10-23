@@ -6,8 +6,9 @@
 //! credits. Spending is measured from the credit balance the provider reports
 //! and kept in a ledger beside the benchmark database. Every drop between two
 //! samples of an account taken within [`SAME_STRETCH_MS`] of each other
-//! counts, so anything else that used the account's credits meanwhile counts
-//! too, and a purchase never offsets what was spent.
+//! counts, and a known turn keeps its start and finish in the same stretch
+//! even when it lasts longer. Anything else that used the account meanwhile
+//! counts too, and a purchase never offsets what was spent.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,11 +21,85 @@ use super::types::{BenchmarkError, Result};
 const SETTINGS: &str = "settings.json";
 const LEDGER: &str = "credit-spend.json";
 /// Samples further apart than this belong to separate stretches of benchmark
-/// turns: what the balance lost between them is not counted.
+/// turns unless a recorded turn spans them: idle losses are not counted.
 pub const SAME_STRETCH_MS: i64 = 30 * 60 * 1000;
+/// Credit admission accepts a successful balance within the provider status
+/// cache's normal five-minute lifetime; old telemetry cannot authorize spend.
+const BALANCE_MAX_AGE_MS: i64 = 5 * 60 * 1000;
 
 /// One read-modify-write of the ledger at a time.
 static LEDGER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A live turn bridges an otherwise idle-looking gap between balance reads.
+/// Keys include the ledger root so isolated runs never share accounting state.
+type ActiveSamples = BTreeMap<(std::path::PathBuf, String), BTreeMap<i64, usize>>;
+static ACTIVE_SAMPLES: std::sync::Mutex<ActiveSamples> = std::sync::Mutex::new(BTreeMap::new());
+
+pub(super) struct ActiveSample {
+    key: (std::path::PathBuf, String),
+    observed_at: i64,
+}
+
+/// Hold only after the before-sample was saved, and for the lifetime of the
+/// candidate turn. Dropping an early refusal or failed turn releases it too.
+pub(super) async fn active_sample(
+    root: &Path,
+    account: &str,
+    observed_at: i64,
+    started_at: i64,
+) -> Result<ActiveSample> {
+    let _guard = LEDGER_LOCK.lock().await;
+    let mut ledger = read_ledger(root).await?;
+    let entry = ledger.accounts.get_mut(account).ok_or_else(|| {
+        BenchmarkError::new(
+            "storage_unavailable",
+            "Credit turn has no saved before-sample",
+        )
+    })?;
+    entry.unsettled_since = Some(
+        entry
+            .unsettled_since
+            .map_or(started_at, |at| at.max(started_at)),
+    );
+    save_ledger(root, &ledger).await?;
+    let key = (root.to_owned(), account.to_owned());
+    let mut samples = ACTIVE_SAMPLES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *samples
+        .entry(key.clone())
+        .or_default()
+        .entry(observed_at)
+        .or_default() += 1;
+    Ok(ActiveSample { key, observed_at })
+}
+
+impl Drop for ActiveSample {
+    fn drop(&mut self) {
+        let mut samples = ACTIVE_SAMPLES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(account) = samples.get_mut(&self.key) {
+            if let Some(count) = account.get_mut(&self.observed_at) {
+                *count -= 1;
+                if *count == 0 {
+                    account.remove(&self.observed_at);
+                }
+            }
+            if account.is_empty() {
+                samples.remove(&self.key);
+            }
+        }
+    }
+}
+
+fn active_since(root: &Path, account: &str) -> Option<i64> {
+    ACTIVE_SAMPLES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(root.to_owned(), account.to_owned()))
+        .and_then(|samples| samples.keys().next().copied())
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +109,10 @@ pub struct AccountSpend {
     pub observed_at: i64,
     /// Credits counted as spent on this account.
     pub spent: f64,
+    /// Latest admitted turn start awaiting a reliable later balance. A crash or
+    /// failed final sample keeps continuity until that sample can be saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsettled_since: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -51,7 +130,20 @@ impl Ledger {
     /// Records a balance sample of `account` reported at `observed_at`, and
     /// returns the credits it adds to the spending. A sample no newer than the
     /// last one changes nothing.
+    #[cfg(test)]
     pub fn observe(&mut self, account: &str, balance: f64, observed_at: i64) -> f64 {
+        self.observe_sample(account, balance, observed_at, None)
+    }
+
+    /// A turn's before-sample must already be in the ledger. Later overlapping
+    /// samples charge only the drop from the newest recorded balance.
+    fn observe_sample(
+        &mut self,
+        account: &str,
+        balance: f64,
+        observed_at: i64,
+        turn_started_at: Option<i64>,
+    ) -> f64 {
         if !balance.is_finite() {
             return 0.0;
         }
@@ -59,7 +151,11 @@ impl Ledger {
         if observed_at <= entry.observed_at {
             return 0.0;
         }
-        let spent = if observed_at - entry.observed_at <= SAME_STRETCH_MS {
+        let ongoing = entry.unsettled_since.is_some()
+            || turn_started_at.is_some_and(|start| {
+                start > 0 && start <= entry.observed_at && start < observed_at
+            });
+        let spent = if ongoing || observed_at.saturating_sub(entry.observed_at) <= SAME_STRETCH_MS {
             (entry.balance - balance).max(0.0)
         } else {
             0.0
@@ -101,7 +197,7 @@ impl CreditSpend {
 /// Why a turn whose plan usage is spent may not run on credits the account
 /// reports no balance for.
 pub const UNMEASURED: &str =
-    "Plan usage is spent, and benchmark credits cannot be measured: the account reports no credit balance";
+    "Plan usage is spent, and benchmark credits cannot be measured: the account reports no current credit balance";
 
 fn amount(value: f64) -> String {
     let rounded = (value * 100.0).round() / 100.0;
@@ -110,6 +206,49 @@ fn amount(value: f64) -> String {
     } else {
         format!("{rounded}")
     }
+}
+
+/// A balance recent enough to authorize another benchmark turn on credits.
+pub(super) fn current_balance(
+    status: &crate::services::provider_account_status::ProviderAccountStatus,
+    at: i64,
+) -> Option<f64> {
+    use crate::services::provider_account_status::AccountState;
+    if status.stale
+        || status.error.is_some()
+        || !matches!(
+            status.state,
+            AccountState::Ready | AccountState::Limited | AccountState::Unknown
+        )
+        || status.last_updated_at <= 0
+        || !(0..BALANCE_MAX_AGE_MS).contains(&at.saturating_sub(status.last_updated_at))
+    {
+        return None;
+    }
+    crate::services::provider_account_status::plan_credit_balance(status)
+}
+
+/// Observe the balance used by admission before reading the remaining limit.
+pub(super) async fn observe_and_spend(
+    root: &Path,
+    account: &str,
+    balance: f64,
+    observed_at: i64,
+) -> Result<CreditSpend> {
+    observe(root, account, balance, observed_at).await?;
+    if active_since(root, account).is_none()
+        && read_ledger(root)
+            .await?
+            .accounts
+            .get(account)
+            .is_some_and(|entry| entry.unsettled_since.is_some())
+    {
+        return Err(BenchmarkError::new(
+            "credit_accounting_pending",
+            "A previous benchmark turn still needs a fresh credit balance before more credits may be used",
+        ));
+    }
+    spend(root).await
 }
 
 /// The limit in a benchmark settings document; a missing, negative or
@@ -136,14 +275,76 @@ pub async fn spend(root: &Path) -> Result<CreditSpend> {
 
 /// Adds a balance sample of `account` to the ledger under `root`.
 pub async fn observe(root: &Path, account: &str, balance: f64, observed_at: i64) -> Result<()> {
+    observe_sample(
+        root,
+        account,
+        balance,
+        observed_at,
+        active_since(root, account),
+    )
+    .await
+}
+
+/// Settles a turn against its recorded before-sample, even beyond the idle
+/// stretch timeout. The ordinary ledger timestamp still prevents double counts.
+pub(super) async fn observe_after_turn(
+    root: &Path,
+    account: &str,
+    balance: f64,
+    observed_at: i64,
+    turn_started_at: i64,
+) -> Result<()> {
+    observe_sample(root, account, balance, observed_at, Some(turn_started_at)).await
+}
+
+async fn observe_sample(
+    root: &Path,
+    account: &str,
+    balance: f64,
+    observed_at: i64,
+    turn_started_at: Option<i64>,
+) -> Result<()> {
     let _guard = LEDGER_LOCK.lock().await;
     let mut ledger = read_ledger(root).await?;
     let before = ledger.clone();
-    ledger.observe(account, balance, observed_at);
+    ledger.observe_sample(account, balance, observed_at, turn_started_at);
+    // With no live turns, this new sample also settles a previous failed final
+    // read or a restart. A cached before-sample cannot discharge that debt.
+    if balance.is_finite() && active_since(root, account).is_none() {
+        if let Some(entry) = ledger.accounts.get_mut(account).filter(|entry| {
+            observed_at >= entry.observed_at
+                && entry.unsettled_since.is_some_and(|at| observed_at > at)
+        }) {
+            entry.unsettled_since = None;
+        }
+    }
     if ledger == before {
         return Ok(());
     }
-    let contents = serde_json::to_string_pretty(&ledger)?;
+    save_ledger(root, &ledger).await
+}
+
+/// Called after a successful final observation and after releasing this turn's
+/// guard. A concurrent or later turn retains the durable obligation.
+pub(super) async fn clear_settled(root: &Path, account: &str, observed_at: i64) -> Result<()> {
+    let _guard = LEDGER_LOCK.lock().await;
+    if active_since(root, account).is_some() {
+        return Ok(());
+    }
+    let mut ledger = read_ledger(root).await?;
+    let Some(entry) = ledger
+        .accounts
+        .get_mut(account)
+        .filter(|entry| entry.unsettled_since.is_some_and(|at| observed_at > at))
+    else {
+        return Ok(());
+    };
+    entry.unsettled_since = None;
+    save_ledger(root, &ledger).await
+}
+
+async fn save_ledger(root: &Path, ledger: &Ledger) -> Result<()> {
+    let contents = serde_json::to_string_pretty(ledger)?;
     let target = root.join(LEDGER);
     tokio::task::spawn_blocking(move || {
         let temporary = target.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
@@ -217,6 +418,273 @@ mod tests {
             ledger.observe("a", f64::NAN, 3 * MINUTE + 24 * 60 * MINUTE),
             0.0
         );
+    }
+
+    #[test]
+    fn a_long_running_turn_keeps_its_spend_in_the_same_stretch() {
+        let mut ledger = Ledger::default();
+        ledger.observe("a", 1000.0, MINUTE);
+        assert_eq!(
+            ledger.observe_sample("a", 600.0, 41 * MINUTE, Some(MINUTE)),
+            400.0
+        );
+        assert_eq!(ledger.spent(), 400.0);
+    }
+
+    #[test]
+    fn long_parallel_turns_charge_each_drop_once_and_do_not_bridge_idle_gaps() {
+        let mut ledger = Ledger::default();
+        ledger.observe("a", 1000.0, MINUTE);
+        assert_eq!(
+            ledger.observe_sample("a", 700.0, 61 * MINUTE, Some(MINUTE)),
+            300.0
+        );
+        assert_eq!(
+            ledger.observe_sample("a", 650.0, 62 * MINUTE, Some(MINUTE)),
+            50.0
+        );
+        assert_eq!(
+            ledger.observe_sample("a", 720.0, 60 * MINUTE, Some(MINUTE)),
+            0.0
+        );
+        assert_eq!(
+            ledger.observe_sample("a", 650.0, 62 * MINUTE, Some(MINUTE)),
+            0.0
+        );
+        // Purchases do not refund the earlier drops.
+        assert_eq!(
+            ledger.observe_sample("a", 1650.0, 100 * MINUTE, Some(MINUTE)),
+            0.0
+        );
+        assert_eq!(
+            ledger.observe_sample("a", 1600.0, 140 * MINUTE, Some(MINUTE)),
+            50.0
+        );
+        assert_eq!(ledger.spent(), 400.0);
+        // A later admission after an idle day retains the old stretch rule.
+        assert_eq!(ledger.observe("a", 900.0, 24 * 60 * MINUTE), 0.0);
+        assert_eq!(ledger.spent(), 400.0);
+        // A start sample absent from the ledger cannot invent a continuous turn.
+        assert_eq!(
+            ledger.observe_sample("b", 100.0, 90 * MINUTE, Some(MINUTE)),
+            0.0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_turn_settlement_is_durable_and_stops_new_credit_admission() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(SETTINGS), r#"{"creditLimit":100}"#).unwrap();
+        assert!(observe_and_spend(root.path(), "a", 1000.0, MINUTE)
+            .await
+            .unwrap()
+            .allows());
+        observe_after_turn(root.path(), "a", 850.0, 41 * MINUTE, MINUTE)
+            .await
+            .unwrap();
+        let spent = spend(root.path()).await.unwrap();
+        assert_eq!(spent.spent, 150.0);
+        assert!(!spent.allows());
+        observe_after_turn(root.path(), "a", 850.0, 41 * MINUTE, MINUTE)
+            .await
+            .unwrap();
+        assert_eq!(spend(root.path()).await.unwrap().spent, 150.0);
+    }
+
+    #[tokio::test]
+    async fn admission_during_overlapping_long_turns_keeps_the_original_spend() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(SETTINGS), r#"{"creditLimit":1000}"#).unwrap();
+        observe_and_spend(root.path(), "a", 1000.0, MINUTE)
+            .await
+            .unwrap();
+        let first = active_sample(root.path(), "a", MINUTE, MINUTE)
+            .await
+            .unwrap();
+        let same_sample = active_sample(root.path(), "a", MINUTE, MINUTE)
+            .await
+            .unwrap();
+        // A new admission must not reset the baseline while the first turn runs.
+        assert_eq!(
+            observe_and_spend(root.path(), "a", 900.0, 41 * MINUTE)
+                .await
+                .unwrap()
+                .spent,
+            100.0
+        );
+        let second = active_sample(root.path(), "a", 41 * MINUTE, 41 * MINUTE)
+            .await
+            .unwrap();
+        drop(first);
+        assert_eq!(active_since(root.path(), "a"), Some(MINUTE));
+        drop(same_sample);
+        assert_eq!(active_since(root.path(), "a"), Some(41 * MINUTE));
+        observe_after_turn(root.path(), "a", 850.0, 61 * MINUTE, MINUTE)
+            .await
+            .unwrap();
+        // An out-of-order completion cannot restore the higher balance.
+        observe_after_turn(root.path(), "a", 880.0, 51 * MINUTE, MINUTE)
+            .await
+            .unwrap();
+        assert_eq!(
+            observe_and_spend(root.path(), "a", 800.0, 101 * MINUTE)
+                .await
+                .unwrap()
+                .spent,
+            200.0
+        );
+        // Guards are account- and root-specific.
+        assert_eq!(active_since(root.path(), "other"), None);
+        let isolated = tempfile::tempdir().unwrap();
+        assert_eq!(active_since(isolated.path(), "a"), None);
+        drop(second);
+        assert_eq!(active_since(root.path(), "a"), None);
+        clear_settled(root.path(), "a", 101 * MINUTE).await.unwrap();
+        observe(root.path(), "a", 600.0, 24 * 60 * MINUTE)
+            .await
+            .unwrap();
+        assert_eq!(spend(root.path()).await.unwrap().spent, 200.0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_final_sample_survives_drop_and_restart_without_holding_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(SETTINGS), r#"{"creditLimit":100}"#).unwrap();
+        observe_and_spend(root.path(), "a", 1000.0, MINUTE)
+            .await
+            .unwrap();
+        let turn = active_sample(root.path(), "a", MINUTE, 2 * MINUTE)
+            .await
+            .unwrap();
+        // The final telemetry failed; dropping the turn releases all live state,
+        // while the serialized ledger retains the accounting obligation.
+        drop(turn);
+        assert_eq!(active_since(root.path(), "a"), None);
+        assert_eq!(
+            read_ledger(root.path()).await.unwrap().accounts["a"].unsettled_since,
+            Some(2 * MINUTE)
+        );
+        assert!(observe_and_spend(root.path(), "a", 1000.0, MINUTE)
+            .await
+            .is_err());
+        // A freshly reconstructed ledger after restart charges the entire gap.
+        let spent = observe_and_spend(root.path(), "a", 850.0, 61 * MINUTE)
+            .await
+            .unwrap();
+        assert_eq!(spent.spent, 150.0);
+        assert!(!spent.allows());
+        assert_eq!(
+            read_ledger(root.path()).await.unwrap().accounts["a"].unsettled_since,
+            None
+        );
+        observe(root.path(), "a", 700.0, 24 * 60 * MINUTE)
+            .await
+            .unwrap();
+        assert_eq!(spend(root.path()).await.unwrap().spent, 150.0);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_failed_final_ledger_write_is_retried_without_forgiving_the_spend() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(SETTINGS), r#"{"creditLimit":100}"#).unwrap();
+        observe_and_spend(root.path(), "a", 1000.0, MINUTE)
+            .await
+            .unwrap();
+        let turn = active_sample(root.path(), "a", MINUTE, MINUTE)
+            .await
+            .unwrap();
+        let target = root.path().join(LEDGER);
+        let original = std::fs::metadata(&target).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&target, readonly).unwrap();
+        let failed = observe_after_turn(root.path(), "a", 850.0, 61 * MINUTE, MINUTE).await;
+        std::fs::set_permissions(&target, original).unwrap();
+        assert!(failed.is_err());
+        drop(turn);
+        let spent = observe_and_spend(root.path(), "a", 850.0, 61 * MINUTE)
+            .await
+            .unwrap();
+        assert_eq!(spent.spent, 150.0);
+        assert!(!spent.allows());
+    }
+
+    #[tokio::test]
+    async fn an_older_final_sample_cannot_clear_a_later_turns_obligation() {
+        let root = tempfile::tempdir().unwrap();
+        observe(root.path(), "a", 1000.0, MINUTE).await.unwrap();
+        let first = active_sample(root.path(), "a", MINUTE, MINUTE)
+            .await
+            .unwrap();
+        observe_after_turn(root.path(), "a", 900.0, 2 * MINUTE, MINUTE)
+            .await
+            .unwrap();
+        drop(first);
+        // Another turn can start from the same cached sample, then fail before
+        // the first turn clears its final accounting marker.
+        let second = active_sample(root.path(), "a", 2 * MINUTE, 3 * MINUTE)
+            .await
+            .unwrap();
+        drop(second);
+        clear_settled(root.path(), "a", 2 * MINUTE).await.unwrap();
+        assert_eq!(
+            read_ledger(root.path()).await.unwrap().accounts["a"].unsettled_since,
+            Some(3 * MINUTE)
+        );
+        observe(root.path(), "a", 800.0, 60 * MINUTE).await.unwrap();
+        assert_eq!(spend(root.path()).await.unwrap().spent, 200.0);
+    }
+
+    #[test]
+    fn stale_or_failed_balance_samples_cannot_authorize_credit_spending() {
+        use crate::services::provider_account_status::{
+            AccountState, CreditBalance, ProviderAccountStatus,
+        };
+        let mut status = ProviderAccountStatus::empty("invented-account", "codex-acp", MINUTE);
+        status.state = AccountState::Ready;
+        status.credits = Some(vec![CreditBalance {
+            id: "credits".into(),
+            label: "Credits".into(),
+            balance: Some("1000".into()),
+            total: None,
+            currency: None,
+            expires_at: None,
+            unlimited: false,
+        }]);
+        assert_eq!(current_balance(&status, MINUTE), Some(1000.0));
+        status.stale = true;
+        assert_eq!(current_balance(&status, MINUTE), None);
+        status.stale = false;
+        status.state = AccountState::Error;
+        assert_eq!(current_balance(&status, MINUTE), None);
+        status.state = AccountState::Ready;
+        status.error = Some("Telemetry unavailable".into());
+        assert_eq!(current_balance(&status, MINUTE), None);
+        status.error = None;
+        assert_eq!(current_balance(&status, 7 * MINUTE), None);
+        assert_eq!(current_balance(&status, MINUTE - 1), None);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_readable_but_unwritable_ledger_cannot_admit_more_credits() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(SETTINGS), r#"{"creditLimit":100}"#).unwrap();
+        observe(root.path(), "a", 1000.0, MINUTE).await.unwrap();
+        let target = root.path().join(LEDGER);
+        let original = std::fs::metadata(&target).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&target, readonly).unwrap();
+        let result = observe_and_spend(root.path(), "a", 850.0, 2 * MINUTE).await;
+        // Restore before assertions so a failing regression can clean its fixture.
+        std::fs::set_permissions(&target, original).unwrap();
+        assert!(
+            result.is_err(),
+            "An unsaved 150-credit drop must not admit against the old zero spend"
+        );
+        assert_eq!(spend(root.path()).await.unwrap().spent, 0.0);
     }
 
     #[test]
