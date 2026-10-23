@@ -583,6 +583,13 @@ budget those calls separately. A panel must reject consequentially wrong content
 not merely malformed output. Details and bounds are in
 [evaluator qualification](benchmark-authoring.md#evaluators-and-isolation).
 
+Local admission refusals wait with backoff while a control has not asked a
+judge. A saved rendering alone does not spend the qualification. After thirty
+minutes of admission refusals, qualification becomes interrupted and requires
+the same request to resume; revocation stops the wait. A judge result or
+in-flight placeholder prevents automatic replay, preserving the first result
+and any uncertain usage.
+
 Finite controls establish agreement on reviewed examples. Independently assess
 coverage, verifier isolation and task usefulness before paying for model runs.
 
@@ -601,8 +608,11 @@ the first control outside its band. It costs one judge call per control. Only a
 pool entry is calibrated, and never one of a provider that may train on
 submitted data (see the provider data use above). Calibrations live in
 `judge-calibrations.json` beside the benchmark database; one cut off by a
-restart, or by a judge that gave no answer at all (a spent quota, a failed
-bridge, judges busy for half an hour), reads as interrupted. Settings >
+restart, worker failure or a judge that gave no answer at all (a spent quota,
+an unavailable sandbox, a failed bridge, judges busy for half an hour), reads
+as interrupted. An interrupted visual probe preserves its passed text controls
+and grants no visual seats; an actually scored control outside its band still
+fails the probe. Settings >
 Benchmarks shows the pool and starts calibrations too. After the pool changes
 the panel, rescore ordinary rubric attempts so every candidate is judged by the
 pool's recipe; their outputs are reused.
@@ -901,7 +911,7 @@ lists the class's journaled evaluations, newest first.
     model and enter its id. The fit's cutoff is the newest counted training
     measurement, so unchanged training cells give the same fit.
   - A fit refuses any held-out version.
-- **Evaluation (recipe `held-out-certification-v1`).** The fit is replayed on
+- **Evaluation (recipe `held-out-certification-v2`).** The fit is replayed on
   every held-out case of the class and scope that ordinary runs measured.
   - The certified pool is the fit's candidates measured on at least eight
     held-out groups. Only they are compared, and a certificate lets the policy
@@ -916,6 +926,9 @@ lists the class's journaled evaluations, newest first.
     bias which cells count.
   - A renderer-bound version's cells must have been graded by its qualified
     renderer.
+  - Every repetition of a frozen rubric cell must match its qualified judge
+    protocol and evaluator revision. Human overrides and votes from another
+    panel cannot certify a selector; invalid cells stay absent, never zero.
   - The learned arm chooses among the pool candidates the case measured; when
     it abstains it falls back as a chat does, to the persona arm, else to the
     aggregate arm.
@@ -943,7 +956,10 @@ lists the class's journaled evaluations, newest first.
 - **Certificate.** A passing look issues the class certificate (`source:
   "held_out_certification"`). It is active only while its look is the class's
   newest: a later look that does not certify returns the class to its fallback
-  order. The newest look of each class, passed or not, and the look count
+  order. Certificates from older or unknown evaluation recipes remain readable
+  history but cannot authorize selection. Evaluate the class again under the
+  current recipe to validate its saved measurements, without new model calls.
+  The newest look of each class, passed or not, and the look count
   appear in `benchmark_class_policies` and in the class status in Settings.
 
 If all candidates have indistinguishable utilities, labels are incomplete, or

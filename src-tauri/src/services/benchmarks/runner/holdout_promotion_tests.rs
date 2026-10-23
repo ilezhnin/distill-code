@@ -141,6 +141,64 @@ async fn certificate_scenario() {
     assert_eq!(decision.learned_status, executor::CERTIFIED_CLASS_POLICY);
     assert_eq!(decision.source, "learned");
     assert_eq!(decision.chosen.as_ref().unwrap().model_id, "parser");
+    // Historical recipes remain readable, but cannot authorize a dispatch
+    // without the current recipe's evidence validation. Unknown future
+    // recipes are not implicitly trusted either.
+    for recipe in ["held-out-certification-v1", "held-out-certification-future"] {
+        let mut legacy = evaluation.clone();
+        legacy.recipe = recipe.into();
+        legacy.artifact_hash.clear();
+        legacy.artifact_hash =
+            crate::services::benchmarks::workflow_campaign::hash(&legacy).unwrap();
+        sqlx::query("UPDATE selector_certifications SET data_json=?,artifact_hash=? WHERE id=?")
+            .bind(serde_json::to_string(&legacy).unwrap())
+            .bind(&legacy.artifact_hash)
+            .bind(&legacy.id)
+            .execute(&service.store.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .store
+                .class_evaluation(&legacy.id)
+                .await
+                .unwrap()
+                .recipe,
+            recipe
+        );
+        assert!(service
+            .store
+            .require_active_promotion(&certificate_id)
+            .await
+            .unwrap_err()
+            .message
+            .contains("evidence recipe"));
+        assert!(service
+            .store
+            .class_certificate("debug")
+            .await
+            .unwrap()
+            .is_none());
+        let fallback = service
+            .store
+            .prepare_ordinary_executor_decision(ordinary(recipe))
+            .await
+            .unwrap();
+        assert_ne!(fallback.source, "learned");
+        assert_eq!(fallback.chosen.as_ref().unwrap().model_id, "painter");
+    }
+    sqlx::query("UPDATE selector_certifications SET data_json=?,artifact_hash=? WHERE id=?")
+        .bind(serde_json::to_string(&evaluation).unwrap())
+        .bind(&evaluation.artifact_hash)
+        .bind(&evaluation.id)
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    assert!(service
+        .store
+        .require_active_promotion(&certificate_id)
+        .await
+        .is_ok());
     // Owned native deployments never discover or cover a class certificate.
     assert!(!class.covers(&class.contract, 0));
     assert!(matches!(

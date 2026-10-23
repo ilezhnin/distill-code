@@ -401,6 +401,125 @@ fn held_out_cases_count_present_candidates_only_and_certify_on_enough_groups() {
 }
 
 #[test]
+fn held_out_certification_rejects_votes_outside_the_qualified_rubric_protocol() {
+    use super::super::super::{judge_panel, runner};
+    use serde_json::json;
+
+    let mut data = measured(16);
+    let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();
+    let persona = persona_keys(&artifact.model, &request().persona_order);
+    let mut judge = data.runs[0].request.configurations[0].clone();
+    judge.provider_id = "claude-acp".into();
+    judge.account_id = Some("invented-account".into());
+    judge.fast_mode = Some(false);
+    let panel: Vec<_> = ["invented-judge-a", "invented-judge-b"]
+        .into_iter()
+        .map(|id| Configuration {
+            id: id.into(),
+            model_id: id.into(),
+            ..judge.clone()
+        })
+        .collect();
+    let version = data
+        .versions
+        .iter_mut()
+        .find(|v| v.id == "held-00")
+        .unwrap();
+    version.manifest.evaluator.kind = "rubric".into();
+    version.manifest.environment["judgeInput"] = json!("text");
+    version.manifest.environment["rubricCriteria"] = json!([{"id":"correctness","weight":1}]);
+    version.manifest.environment["judgePanel"] =
+        json!({"recipe":judge_panel::RECIPE,"judges":panel});
+    let draft = version.manifest.clone();
+    judge_panel::frozen(&draft, &[]).unwrap();
+    for attempt in data
+        .attempts
+        .iter_mut()
+        .filter(|a| a.version_id == "held-00")
+    {
+        let marker = Evaluation {
+            id: format!("{}-marker", attempt.id),
+            evaluator_revision: draft.evaluator.revision.clone(),
+            provenance: "render".into(),
+            verdict: "rendered".into(),
+            score: None,
+            reason: "Invented rubric evidence".into(),
+            created_at: 2,
+            artifacts: vec![],
+            judge: None,
+            usage: None,
+            details: Some(
+                json!({"judgeBatchId":attempt.id,"expectedJudges":panel.len(),
+                "protocol":runner::judge_protocol(&draft, &panel)}),
+            ),
+        };
+        attempt.evaluations = vec![marker.clone()];
+        for (seat, judge) in panel.iter().enumerate() {
+            let mut vote = marker.clone();
+            vote.id = format!("{}-vote-{seat}", attempt.id);
+            vote.provenance = "judge".into();
+            vote.verdict = "judged".into();
+            vote.score = Some(0.8);
+            vote.judge = Some(judge.clone());
+            vote.details = Some(
+                json!({"judgeBatchId":attempt.id,"sessionId":format!("{}-{seat}", attempt.id),"usageComplete":true}),
+            );
+            attempt.evaluations.push(vote);
+        }
+        attempt.outcome = Some("judged".into());
+        judge_panel::validate_evidence(&draft, attempt, 10).unwrap();
+    }
+    let eligible = countable(&data);
+    assert_eq!(
+        held_out_cases(&data, &artifact, &persona, &eligible, 10)
+            .unwrap()
+            .cases
+            .len(),
+        16
+    );
+    for violation in ["human", "foreign_panel", "evaluator_revision"] {
+        let mut invalid = data.clone();
+        let attempt = invalid
+            .attempts
+            .iter_mut()
+            .find(|a| a.version_id == "held-00" && a.configuration.model_id == "parser")
+            .unwrap();
+        match violation {
+            "human" => {
+                let mut human = attempt.evaluations[1].clone();
+                human.id = "invented-override".into();
+                human.provenance = "human".into();
+                human.verdict = "pass".into();
+                human.score = Some(1.0);
+                attempt.evaluations.push(human);
+            }
+            "foreign_panel" => {
+                let mut other = draft.clone();
+                other
+                    .evaluator
+                    .rubric
+                    .push_str(" Different grading instruction.");
+                attempt.evaluations[0].details.as_mut().unwrap()["protocol"] =
+                    runner::judge_protocol(&other, &panel);
+            }
+            _ => {
+                for evaluation in &mut attempt.evaluations {
+                    evaluation.evaluator_revision.push_str("-other");
+                }
+            }
+        }
+        assert!(
+            judge_panel::validate_evidence(&draft, attempt, 10).is_err(),
+            "{violation}"
+        );
+        let held = held_out_cases(&invalid, &artifact, &persona, &eligible, 10).unwrap();
+        assert_eq!(held.ungraded, 1, "{violation}");
+        assert_eq!(held.cases.len(), 15, "{violation}");
+        assert!(held.cases.iter().all(|case| case.version_id != "held-00"));
+    }
+}
+
+#[test]
 fn a_class_without_measured_held_out_cases_has_no_cases() {
     let data = measured(0);
     let artifact = fit(&data, training_request(&data, &request(), 10).unwrap()).unwrap();

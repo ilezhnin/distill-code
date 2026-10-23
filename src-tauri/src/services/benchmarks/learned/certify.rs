@@ -20,8 +20,9 @@ use serde_json::Value;
 use sqlx::Row;
 use std::collections::BTreeMap;
 
-/// The evaluation recipe: its arithmetic and its fixed acceptance rule.
-pub const RECIPE: &str = "held-out-certification-v1";
+/// The evaluation recipe: its arithmetic, fixed acceptance rule and native
+/// evidence admission. V2 checks the frozen rubric protocol of every cell.
+pub const RECIPE: &str = "held-out-certification-v2";
 /// The quality floor of a learned choice, as an ordinary chat applies it.
 const MIN_QUALITY: f64 = 0.5;
 
@@ -106,7 +107,7 @@ pub struct ClassEvaluation {
     pub cases: Vec<ReportCase>,
     /// Held-out cases left out for a missing or stale qualification.
     pub unqualified_cases: usize,
-    /// Measured cells left out because another renderer graded them.
+    /// Measured cells left out for an unqualified renderer or rubric protocol.
     pub ungraded_cells: usize,
     /// Hash of every counted cell: what this evaluation looked at.
     pub snapshot_hash: String,
@@ -595,6 +596,26 @@ pub(super) fn held_out_cases(
             else {
                 continue;
             };
+            if draft.environment.get("judgePanel").is_some()
+                && !cell["outcomes"].as_array().is_some_and(|outcomes| {
+                    !outcomes.is_empty()
+                        && outcomes.iter().all(|outcome| {
+                            outcome["attemptId"]
+                                .as_str()
+                                .and_then(|id| attempts.get(id))
+                                .is_some_and(|attempt| {
+                                    attempt.version_id == version.id
+                                        && super::super::judge_panel::validate_evidence(
+                                            draft, attempt, cutoff,
+                                        )
+                                        .is_ok()
+                                })
+                        })
+                })
+            {
+                ungraded += 1;
+                continue;
+            }
             if let Some(installed) = countable.binding.evaluator_runtime_revision.as_deref() {
                 if !graded_by(cell, &attempts, installed, countable.worker.as_deref()) {
                     ungraded += 1;

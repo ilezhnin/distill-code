@@ -1311,8 +1311,20 @@ fn leaderboard_from_attempts(
     pool: Vec<&BenchmarkVersion>,
     own: OwnCases,
 ) -> LeaderboardReport {
-    let mut report = measurement_report(data, query, source, pool.clone(), false, own);
-    let models = measurement_report(data, query, source, pool, true, own);
+    let prepared = PreparedMeasurements::new(data, query, &pool);
+    leaderboard_prepared(data, query, source, pool, own, &prepared)
+}
+
+fn leaderboard_prepared(
+    data: &QueryData,
+    query: &ResultQuery,
+    source: &[&Attempt],
+    pool: Vec<&BenchmarkVersion>,
+    own: OwnCases,
+    prepared: &PreparedMeasurements<'_>,
+) -> LeaderboardReport {
+    let mut report = measurement_report(data, query, source, pool.clone(), false, own, prepared);
+    let models = measurement_report(data, query, source, pool, true, own, prepared);
     report.models = models
         .rows
         .into_iter()
@@ -1352,6 +1364,61 @@ fn leaderboard_from_attempts(
         })
         .collect();
     report
+}
+
+/// Immutable peer baselines for one query cutoff and pool. Configuration and
+/// model rows use the same peers; retrospective history points also share
+/// today's baseline. This lives only inside one analysis request.
+struct PreparedMeasurements<'a> {
+    runs: BTreeMap<&'a str, &'a BenchmarkRun>,
+    acknowledged: Acknowledgments<'a>,
+    records: CaseRecords,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PREPARED_MEASUREMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl<'a> PreparedMeasurements<'a> {
+    fn new(data: &'a QueryData, query: &ResultQuery, pool: &[&BenchmarkVersion]) -> Self {
+        #[cfg(test)]
+        PREPARED_MEASUREMENTS.with(|count| count.set(count.get() + 1));
+        let runs = data
+            .runs
+            .iter()
+            .filter(|run| !run.request.preview)
+            .filter(|run| query.run_id.as_ref().is_none_or(|id| id == &run.id))
+            .filter(|run| query.as_of.is_none_or(|at| run.created_at <= at))
+            .map(|run| (run.id.as_str(), run))
+            .collect();
+        let graded = |version_id: &str| {
+            pool.iter()
+                .find(|v| v.id == version_id)
+                .is_some_and(|v| v.manifest.evaluator.kind == "rubric")
+        };
+        let required = |version_id: &str| {
+            pool.iter()
+                .find(|v| v.id == version_id)
+                .map_or(data.required_repetitions.max(1), |v| {
+                    required_repetitions(data, v)
+                })
+        };
+        let records = case_records(
+            &data.attempts,
+            &runs,
+            query.as_of,
+            CaseProtocol {
+                required: &required,
+                graded: &graded,
+            },
+        );
+        Self {
+            runs,
+            acknowledged: run_acknowledgments(&data.attempts),
+            records,
+        }
+    }
 }
 
 /// Model scores count a test once. Its newest scored run/configuration supplies
@@ -1417,20 +1484,18 @@ fn measurement_report(
     pool: Vec<&BenchmarkVersion>,
     by_model: bool,
     own: OwnCases,
+    prepared: &PreparedMeasurements<'_>,
 ) -> LeaderboardReport {
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
     let pool_versions: BTreeMap<&str, &BenchmarkVersion> =
         pool.iter().map(|v| (v.id.as_str(), *v)).collect();
     let published: BTreeMap<&str, &BenchmarkVersion> =
         data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
-    let runs: BTreeMap<&str, &BenchmarkRun> = data
-        .runs
-        .iter()
-        .filter(|run| !run.request.preview)
-        .filter(|run| query.run_id.as_ref().is_none_or(|id| id == &run.id))
-        .filter(|run| query.as_of.is_none_or(|at| run.created_at <= at))
-        .map(|run| (run.id.as_str(), run))
-        .collect();
+    let PreparedMeasurements {
+        runs,
+        acknowledged,
+        records,
+    } = prepared;
     let work_classes: Vec<String> = pool
         .iter()
         .map(|v| v.manifest.work_class_id.clone())
@@ -1459,8 +1524,6 @@ fn measurement_report(
         required: &required,
         graded: &graded,
     };
-    let records = case_records(&data.attempts, &runs, query.as_of, protocol);
-    let acknowledged = run_acknowledgments(&data.attempts);
     // Every attempt on a pool case from a counted run, by configuration and
     // run, with the repetitions set aside (superseded): a configuration
     // whose every repetition was dropped still has its row, so no measured
@@ -1476,7 +1539,7 @@ fn measurement_report(
         {
             continue;
         }
-        let configuration = ledger_configuration(attempt, &acknowledged);
+        let configuration = ledger_configuration(attempt, acknowledged);
         let entry = cells
             .entry(if by_model {
                 model_key(&configuration)
@@ -1525,14 +1588,14 @@ fn measurement_report(
             // repetitions, whichever run measured it: runs taken in chunks
             // fill a row together, while a cell never mixes runs.
             let mut attempts: Vec<&Attempt> =
-                model_cell_attempts(&by_run, &runs, query.as_of, by_model);
+                model_cell_attempts(&by_run, runs, query.as_of, by_model);
             // Keep the newest concrete configuration for the next run;
             // each attempt retains its original runtime and account evidence.
             if let Some(latest) = attempts
                 .iter()
                 .max_by_key(|attempt| (attempt.started_at, &attempt.id))
             {
-                configuration = ledger_configuration(latest, &acknowledged).into_owned();
+                configuration = ledger_configuration(latest, acknowledged).into_owned();
             }
             // Catch-up pins this configuration, so it carries the runnable profile.
             configuration.execution_profile =
@@ -1584,7 +1647,7 @@ fn measurement_report(
             let spent = spent_attempts(&every_cell, &every_scored_versions, query.as_of);
             let cost = mean_case_cost(&spent, query.as_of);
             let priced = spent.iter().any(|a| a.usage.cost.is_some());
-            let resources = board_stats(&every_cells, &records);
+            let resources = board_stats(&every_cells, records);
             // Work that never began measured nothing, so it never dates the row.
             let measured_at = every_scored
                 .iter()
@@ -1667,13 +1730,13 @@ fn measurement_report(
                         .iter()
                         .filter(|v| v.manifest.work_class_id == *class)
                         .count() as u32;
-                    let stats = board_stats(&subset, &records);
+                    let stats = board_stats(&subset, records);
                     let class_cells: BTreeMap<&str, CaseCell> = every_cells
                         .iter()
                         .filter(|(version, _)| work_class(version) == class)
                         .map(|(version, cell)| (*version, *cell))
                         .collect();
-                    let resources = board_stats(&class_cells, &records);
+                    let resources = board_stats(&class_cells, records);
                     LeaderboardAxis {
                         id: class.clone(),
                         quality: stats.quality,
@@ -1686,7 +1749,7 @@ fn measurement_report(
                     }
                 })
                 .collect();
-            let overall = board_stats(&cells, &records);
+            let overall = board_stats(&cells, records);
             let measured_axes: Vec<&LeaderboardAxis> =
                 axes.iter().filter(|axis| axis.scored > 0).collect();
             let points = (!measured_axes.is_empty()).then(|| {
@@ -1755,7 +1818,7 @@ fn measurement_report(
                     })
                 });
             Some(LeaderboardRow {
-                comparison_key: comparison_key(&scored_attempts, &runs, &pool, query.as_of),
+                comparison_key: comparison_key(&scored_attempts, runs, &pool, query.as_of),
                 configuration,
                 passed,
                 scored,
@@ -1951,6 +2014,13 @@ fn comparison_key(
     serde_json::to_string(&protocols).unwrap_or_default()
 }
 
+/// Today's pool and all peers, shared by every retrospective observation.
+struct CurrentHistoryPool<'a> {
+    versions: Vec<&'a BenchmarkVersion>,
+    ids: BTreeSet<&'a str>,
+    prepared: PreparedMeasurements<'a>,
+}
+
 /// Recompute an observation on today's cases with today's evidence: the
 /// run's own cells as they had finished by `at`, whatever runtime, budget or
 /// evaluator revision they ran under, so a later run never rewrites an
@@ -1960,7 +2030,7 @@ fn comparison_key(
 fn recalculated_history_report(
     data: &QueryData,
     own: &[&Attempt],
-    current: &BTreeSet<&str>,
+    current: &CurrentHistoryPool<'_>,
     run_id: &str,
     at: i64,
     by_model: bool,
@@ -1970,7 +2040,7 @@ fn recalculated_history_report(
         .copied()
         .filter(|a| {
             (by_model || a.run_id == run_id)
-                && current.contains(a.version_id.as_str())
+                && current.ids.contains(a.version_id.as_str())
                 && !is_superseded(a)
                 && a.finished_at.is_some_and(|end| end <= at)
                 // A refusal by the provider stays, so the point lists the
@@ -1995,12 +2065,13 @@ fn recalculated_history_report(
             models: Vec::new(),
         }
     } else {
-        leaderboard_from_attempts(
+        leaderboard_prepared(
             data,
             &ResultQuery::default(),
             &selected,
-            ranked_pool(data, &ResultQuery::default()),
+            current.versions.clone(),
             OwnCases::Counted,
+            &current.prepared,
         )
     };
     for row in &mut report.rows {
@@ -2157,6 +2228,14 @@ fn history_for(
         observed.insert(*run_id, at);
     }
     let events: BTreeSet<(i64, &str)> = observed.iter().map(|(run, at)| (*at, *run)).collect();
+    if events.is_empty() {
+        return Vec::new();
+    }
+    let current = CurrentHistoryPool {
+        prepared: PreparedMeasurements::new(data, &ResultQuery::default(), &current_pool),
+        versions: current_pool,
+        ids: current,
+    };
     newest_observations(events.into_iter().rev(), HISTORY_POINTS, |(at, run_id)| {
         // As the board stood at the run's end, with the model's own cases
         // counted: a history compares the model with itself.

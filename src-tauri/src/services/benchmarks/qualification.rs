@@ -6,9 +6,12 @@ use super::{
     types::*,
     BenchmarkService,
 };
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::AssertUnwindSafe;
+use std::time::Duration;
 
 #[cfg(test)]
 mod tests;
@@ -16,6 +19,9 @@ mod tests;
 /// The status of a first qualification an interruption stopped before any
 /// verdict; its request goes on with it.
 const INTERRUPTED: &str = "interrupted";
+/// Admission may wait before a call starts, but may not reserve the only
+/// qualification forever. A timeout leaves it for an explicit resume.
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 fn invalid(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("invalid_qualification", message)
@@ -415,13 +421,31 @@ impl BenchmarkService {
             let app = self.app.clone();
             let stopped_id = id.clone();
             tokio::spawn(async move {
-                if let Err(error) =
-                    run_controls(&store, backend.as_ref(), &version, record, app.as_ref()).await
-                {
+                let result = AssertUnwindSafe(Box::pin(run_controls(
+                    &store,
+                    backend.as_ref(),
+                    &version,
+                    record,
+                    app.as_ref(),
+                    ADMISSION_TIMEOUT,
+                )))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err(qualification_panic()));
+                if let Err(error) = result {
                     // Keep the last committed placeholder and any partial spend;
                     // no second request may replay an ambiguous judge call.
-                    let _ = store.stop_qualification(&stopped_id, &error).await;
-                    log::warn!("[benchmarks] rubric calibration stopped: {}", error.code);
+                    if let Err(recording) = store.stop_qualification(&stopped_id, &error).await {
+                        log::error!(
+                            "[benchmarks] could not record qualification {stopped_id} failure: {}",
+                            recording.message
+                        );
+                    }
+                    log::warn!(
+                        "[benchmarks] rubric calibration {stopped_id} stopped: {}: {}",
+                        error.code,
+                        error.message
+                    );
                     super::notify_changed(&store, app.as_ref()).await;
                 }
             });
@@ -429,20 +453,35 @@ impl BenchmarkService {
         }
         // Keep the rendering/evaluation future off the caller's stack. This
         // service is also awaited from larger qualification/promotion flows.
-        let settled = Box::pin(run_controls(
+        let settled = AssertUnwindSafe(Box::pin(run_controls(
             &self.store,
             self.backend.as_ref(),
             &version,
             record,
             self.app.as_ref(),
-        ))
-        .await;
+            ADMISSION_TIMEOUT,
+        )))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| Err(qualification_panic()));
         if let Err(error) = &settled {
-            let _ = self.store.stop_qualification(&id, error).await;
+            if let Err(recording) = self.store.stop_qualification(&id, error).await {
+                log::error!(
+                    "[benchmarks] could not record qualification {id} failure: {}",
+                    recording.message
+                );
+            }
             self.changed().await;
         }
         settled
     }
+}
+
+fn qualification_panic() -> BenchmarkError {
+    BenchmarkError::new(
+        "infrastructure_failure",
+        "Qualification worker panicked; inspect the application log",
+    )
 }
 
 pub(super) fn in_band(rubric: &RubricCalibration, expected: &str, score: Option<f64>) -> bool {
@@ -599,6 +638,7 @@ async fn run_controls(
     version: &BenchmarkVersion,
     mut record: Record,
     app: Option<&tauri::AppHandle>,
+    admission_timeout: Duration,
 ) -> Result<Record> {
     // A resumed calibration keeps the controls it settled and goes on with
     // the next one.
@@ -618,7 +658,17 @@ async fn run_controls(
             waiting: None,
         });
         store.save_qualification_progress(&record).await?;
+        let mut admission_deadline = None;
         let evaluated = loop {
+            if store.qualification_stopped(&record.id).await? {
+                break Err(BenchmarkError::new(
+                    "cancelled",
+                    "Qualification was stopped before evaluator admission",
+                ));
+            }
+            if admission_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                return Err(admission_expired());
+            }
             let evaluated = tokio::select! {
                 result = backend.evaluate_output(&version.manifest, &output) => result,
                 result = qualification_cancellation(store, &record.id) => {
@@ -643,9 +693,12 @@ async fn run_controls(
                 // version's only qualification must not spend itself on it:
                 // the control waits and asks again.
                 Err(error)
-                    if runner::unstarted_refusal(&error)
-                        && record.controls[index].judge_evaluations.is_empty() =>
+                    if (runner::unstarted_refusal(&error)
+                        || error.code == runner::JUDGE_ADMISSION_WAIT)
+                        && judges_unasked(&record.controls[index]) =>
                 {
+                    let deadline = *admission_deadline
+                        .get_or_insert_with(|| tokio::time::Instant::now() + admission_timeout);
                     let waiting = format!("Waiting for local resources: {}", error.message);
                     if record.controls[index].waiting.as_deref() != Some(waiting.as_str()) {
                         record.controls[index].waiting = Some(waiting);
@@ -654,6 +707,7 @@ async fn run_controls(
                     }
                     let revoked = tokio::select! {
                         _ = tokio::time::sleep(runner::EVALUATION_RETRY) => false,
+                        _ = tokio::time::sleep_until(deadline) => return Err(admission_expired()),
                         result = qualification_cancellation(store, &record.id) => {
                             result?;
                             true
@@ -725,6 +779,13 @@ async fn run_controls(
     store.finish_qualification(&mut record).await?;
     super::notify_changed(store, app).await;
     store.qualification(&record.id).await
+}
+
+fn admission_expired() -> BenchmarkError {
+    BenchmarkError::new(
+        "qualification_admission_timeout",
+        "Qualification admission timed out before a control could be evaluated; resume the same request when local resources are available",
+    )
 }
 
 async fn qualification_cancellation(store: &Store, id: &str) -> Result<()> {
@@ -907,7 +968,20 @@ impl Store {
 fn resumable(record: &Record) -> bool {
     record.failure.is_none()
         && record.controls.iter().all(|control| {
-            control.error.is_none()
-                && (control.evaluation.is_some() || control.judge_evaluations.is_empty())
+            control.error.is_none() && (control.evaluation.is_some() || judges_unasked(control))
         })
+}
+
+/// Rendering is local preparation. Any judge result, failure or in-flight
+/// placeholder may represent a paid call and must never be replayed here.
+fn judges_unasked(control: &ControlResult) -> bool {
+    control.judge_evaluations.iter().all(|evaluation| {
+        evaluation.provenance == "render"
+            && evaluation.judge.is_none()
+            && evaluation.usage.is_none()
+            && evaluation
+                .details
+                .as_ref()
+                .is_none_or(|details| details["inFlight"] != true)
+    })
 }

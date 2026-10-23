@@ -5,8 +5,9 @@
 //! records and scored every one inside its band. A frozen panel
 //! (`environment.judgePanel`) names its own seats and never uses the pool.
 
-use std::path::Path;
+use std::{panic::AssertUnwindSafe, path::Path};
 
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -41,6 +42,15 @@ fn running() -> std::sync::MutexGuard<'static, Vec<(String, Entry)>> {
     RUNNING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A stopped or panicking task must never keep a judge's live reservation.
+struct RunningCalibration(String);
+
+impl Drop for RunningCalibration {
+    fn drop(&mut self) {
+        running().retain(|(id, _)| id != &self.0);
+    }
 }
 
 /// A model the owner lets judge, at an effort.
@@ -529,10 +539,10 @@ async fn run(
             settled.status = "failed".into();
             settled.failure = Some(failure);
         }
-        // A judge that cannot take a rendering at all fails the probe; a
-        // passing one needs a calibration again.
+        // No visual verdict was measured. Keep the passed text phase, and
+        // leave visual seats unavailable until another explicit calibration.
         Err(error) => {
-            settled.status = "failed".into();
+            settled.status = "interrupted".into();
             settled.failure = Some(format!(
                 "The judge gave no answer on a rendering: {}: {}",
                 error.code, error.message
@@ -696,23 +706,45 @@ impl BenchmarkService {
             }
             live.push((calibration.id.clone(), entry.clone()));
         }
-        if let Err(error) = save(&self.store.root, &calibration).await {
-            running().retain(|(live, _)| live != &calibration.id);
-            return Err(error);
-        }
+        let reservation = RunningCalibration(calibration.id.clone());
+        save(&self.store.root, &calibration).await?;
         let store = self.store.clone();
         let backend = self.backend.clone();
         let app = self.app.clone();
         let mut settled = calibration.clone();
         tokio::spawn(async move {
-            let interrupted =
-                match Box::pin(run(&store, backend.as_ref(), &mut settled, &sets, &visual)).await {
-                    Ok(()) => false,
-                    Err(error) => {
-                        settled.failure = Some(format!("{}: {}", error.code, error.message));
-                        error.code == UNAVAILABLE
+            let result = AssertUnwindSafe(Box::pin(run(
+                &store,
+                backend.as_ref(),
+                &mut settled,
+                &sets,
+                &visual,
+            )))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                let message = "Judge calibration worker panicked; inspect the application log";
+                // The text phase already passed. A visual worker failure
+                // cannot erase that verdict or authorize visual seats.
+                if settled.status == "passed" {
+                    if let Some(visual) = settled.visual.as_mut() {
+                        visual.status = "interrupted".into();
+                        visual.failure = Some(message.into());
+                        return Ok(());
                     }
-                };
+                }
+                Err(BenchmarkError::new(UNAVAILABLE, message))
+            });
+            let interrupted = match result {
+                Ok(()) => false,
+                Err(error) => {
+                    settled.failure = Some(format!("{}: {}", error.code, error.message));
+                    // Only a completed control outside its score band is a
+                    // failed quality verdict. Preparation/worker errors mean
+                    // the judge was not measured, whatever their error code.
+                    true
+                }
+            };
             settled.status = if interrupted {
                 "interrupted"
             } else if settled.failure.is_none() {
@@ -729,7 +761,7 @@ impl BenchmarkService {
                     error.message
                 );
             }
-            running().retain(|(live, _)| live != &settled.id);
+            drop(reservation);
             log::info!(
                 "[benchmarks] judge calibration {} of {} {} at {}: {} ({} controls{}){}",
                 settled.id,

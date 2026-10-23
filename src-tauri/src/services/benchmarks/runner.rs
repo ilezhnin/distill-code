@@ -42,7 +42,7 @@ pub(super) const JUDGES_BUSY: &str = "Judge accounts are busy; evaluate again la
 pub(super) const RENDERER_BUSY: &str =
     "Waiting for local resources to render for the judge panel; evaluate again later";
 const JUDGE_DISCOVERY_WAIT: &str = "Waiting for local resources to judge";
-const JUDGE_ADMISSION_WAIT: &str = "judge_admission_wait";
+pub(super) const JUDGE_ADMISSION_WAIT: &str = "judge_admission_wait";
 const JUDGE_BUSY_RETRY: Duration = Duration::from_secs(5);
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.

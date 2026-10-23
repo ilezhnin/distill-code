@@ -111,6 +111,11 @@ impl Store {
             .class_evaluation(&certificate.campaign_id)
             .await
             .map_err(|_| invalid("Held-out certificate evidence disappeared"))?;
+        if evaluation.recipe != certify::RECIPE {
+            return Err(invalid(
+                "Held-out certificate uses another evidence recipe; evaluate the class again before dispatch",
+            ));
+        }
         if evaluation.model_id != certificate.model_id
             || evaluation.snapshot_hash != certificate.report_hash
             || evaluation.certificate_id.as_deref() != Some(certificate.id.as_str())

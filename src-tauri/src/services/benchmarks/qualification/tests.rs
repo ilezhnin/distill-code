@@ -3,7 +3,7 @@ use super::*;
 use futures_util::future::BoxFuture;
 use serde_json::json;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use tokio::sync::watch;
@@ -16,8 +16,66 @@ struct PanelBackend {
     /// rendered or asked; refused panels are counted apart from asked ones.
     refuse_from: AtomicUsize,
     refusals: AtomicUsize,
+    panic_stage: AtomicUsize,
+    marker_refusals: AtomicUsize,
+    marker_refuse_from: AtomicUsize,
+    local_admission: AtomicBool,
+    refuse_after_placeholder: AtomicBool,
+    paid_calls: AtomicUsize,
 }
 impl runner::ExecutionBackend for PanelBackend {
+    fn calibration_judge<'a>(
+        &'a self,
+        entry: &'a super::super::judge_pool::Entry,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Configuration>> {
+        Box::pin(async move {
+            if self.panic_stage.load(Ordering::SeqCst) == 4 {
+                return Err(BenchmarkError::new(
+                    "resource_busy",
+                    "Invented unavailable sandbox",
+                ));
+            }
+            if self.panic_stage.load(Ordering::SeqCst) >= 5 {
+                let mut selected = judge(&entry.model_id);
+                selected.provider_id = entry.provider_id.clone();
+                return Ok(selected);
+            }
+            panic!("Invented judge-pool worker panic")
+        })
+    }
+    fn calibrate_control<'a>(
+        &'a self,
+        _: &'a Store,
+        version: &'a BenchmarkVersion,
+        record: &'a Record,
+        index: usize,
+        _: &'a Configuration,
+        _: std::path::PathBuf,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move {
+            let stage = self.panic_stage.load(Ordering::SeqCst);
+            let visual = !runner::text_judged(&version.manifest);
+            if visual && stage == 6 {
+                return Err(BenchmarkError::new(
+                    "resource_busy",
+                    "Invented visual sandbox refusal",
+                ));
+            }
+            assert!(!(visual && stage == 7), "Invented visual worker panic");
+            let mut attempt = runner::qualification_carrier(record, version, index);
+            let score = if stage == 5
+                || (visual && stage == 8)
+                || record.request.controls[index].expected == "fail"
+            {
+                0.1
+            } else {
+                0.9
+            };
+            attempt.evaluations = vec![evaluation(version, "judge", "judged", Some(score))];
+            Ok(attempt)
+        })
+    }
     fn unsupported(&self, _: &Configuration, _: &BenchmarkDraft) -> Option<String> {
         None
     }
@@ -55,12 +113,17 @@ impl runner::ExecutionBackend for PanelBackend {
                 ));
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_ne!(
+                self.panic_stage.load(Ordering::SeqCst),
+                1,
+                "Invented admission panic"
+            );
             let panel = super::super::judge_panel::frozen(&version.manifest, &[])?.unwrap();
             let batch = format!("{}-control-{index}", record.id);
             let mut marker = evaluation(version, "render", "rendered", None);
             marker.details = Some(json!({"judgeBatchId":batch, "expectedJudges":panel.len(),
                 "protocol":runner::judge_protocol(&version.manifest, &panel)}));
-            record.controls[index].judge_evaluations.push(marker);
+            record.controls[index].judge_evaluations = vec![marker];
             if self.hold {
                 let mut placeholder = evaluation(version, "judge_failure", "abstained", None);
                 placeholder.judge = Some(panel[0].clone());
@@ -69,8 +132,33 @@ impl runner::ExecutionBackend for PanelBackend {
                     "requestKey":"invented-judge-call","inFlight":true,"usageComplete":false}),
                 );
                 record.controls[index].judge_evaluations.push(placeholder);
+                self.paid_calls.fetch_add(1, Ordering::SeqCst);
             }
             store.save_qualification_progress(record).await?;
+            if self.refuse_after_placeholder.load(Ordering::SeqCst)
+                || (index >= self.marker_refuse_from.load(Ordering::SeqCst)
+                    && self
+                        .marker_refusals
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                            left.checked_sub(1)
+                        })
+                        .is_ok())
+            {
+                self.refusals.fetch_add(1, Ordering::SeqCst);
+                return Err(BenchmarkError::new(
+                    if self.local_admission.load(Ordering::SeqCst) {
+                        "judge_admission_wait"
+                    } else {
+                        "resource_busy"
+                    },
+                    "Invented refusal after rendering",
+                ));
+            }
+            assert_ne!(
+                self.panic_stage.load(Ordering::SeqCst),
+                2,
+                "Invented judge panic"
+            );
             if self.hold {
                 while !store.qualification_stopped(&record.id).await? {
                     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -79,6 +167,7 @@ impl runner::ExecutionBackend for PanelBackend {
             }
             let wrong = record.request.controls[index].output.starts_with("wrong");
             for (seat, judge) in panel.into_iter().enumerate() {
+                self.paid_calls.fetch_add(1, Ordering::SeqCst);
                 let score = if wrong && !(self.bad_seat && seat == 2) {
                     0.1
                 } else {
@@ -200,6 +289,12 @@ async fn fixture(
         hold,
         refuse_from: AtomicUsize::new(usize::MAX),
         refusals: AtomicUsize::new(0),
+        panic_stage: AtomicUsize::new(0),
+        marker_refusals: AtomicUsize::new(0),
+        marker_refuse_from: AtomicUsize::new(0),
+        local_admission: AtomicBool::new(false),
+        refuse_after_placeholder: AtomicBool::new(false),
+        paid_calls: AtomicUsize::new(0),
     });
     (
         BenchmarkService {
@@ -226,6 +321,431 @@ async fn settled(store: &Store, id: &str) -> Record {
     })
     .await
     .expect("Fixture qualification did not settle")
+}
+
+async fn marker_only_refusal(local_admission: bool) {
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, false, false).await;
+    backend.marker_refusals.store(2, Ordering::SeqCst);
+    backend
+        .local_admission
+        .store(local_admission, Ordering::SeqCst);
+    let started = tokio::time::Instant::now();
+    let first = service.qualify_version(request).await.unwrap();
+    let record = settled(&service.store, &first.id).await;
+    assert_eq!(record.status, "controls_verified_review_attested");
+    assert!(started.elapsed() >= runner::EVALUATION_RETRY * 2);
+    assert_eq!(backend.refusals.load(Ordering::SeqCst), 2);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 6);
+    assert_eq!(backend.paid_calls.load(Ordering::SeqCst), 12);
+    assert!(record
+        .controls
+        .iter()
+        .all(|c| c.judge_evaluations.len() == 4));
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn rendered_qualification_waits_out_resource_refusals_before_any_judge_call() {
+    marker_only_refusal(false).await;
+}
+
+#[tokio::test]
+async fn rendered_qualification_waits_out_local_admission_before_any_judge_call() {
+    marker_only_refusal(true).await;
+}
+
+#[tokio::test]
+async fn qualification_never_retries_a_refusal_after_a_paid_placeholder() {
+    for local_admission in [false, true] {
+        let dir = crate::test_support::TempRoot::new();
+        let (service, backend, request) = fixture(&dir, false, true).await;
+        backend
+            .local_admission
+            .store(local_admission, Ordering::SeqCst);
+        backend
+            .refuse_after_placeholder
+            .store(true, Ordering::SeqCst);
+        let first = service.qualify_version(request.clone()).await.unwrap();
+        let record = settled(&service.store, &first.id).await;
+        assert_eq!(record.status, "failed");
+        assert_eq!(record.controls[0].judge_evaluations.len(), 2);
+        assert_eq!(
+            record.controls[0].judge_evaluations[1].provenance,
+            "judge_failure"
+        );
+        assert_eq!(service.qualify_version(request).await.unwrap().id, first.id);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.paid_calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+}
+
+async fn controls_task_stopped(backend: &Arc<PanelBackend>, idle_references: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while Arc::strong_count(backend) > idle_references {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("The qualification controls task did not exit");
+}
+
+#[tokio::test]
+async fn rendered_qualification_wait_can_be_revoked_without_a_judge_call() {
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, false, false).await;
+    let idle_references = Arc::strong_count(&backend);
+    backend.marker_refusals.store(usize::MAX, Ordering::SeqCst);
+    backend.local_admission.store(true, Ordering::SeqCst);
+    let first = service.qualify_version(request.clone()).await.unwrap();
+    first_record(&service.store, &request.version_id, |record| {
+        record.controls.first().is_some_and(|c| c.waiting.is_some())
+    })
+    .await;
+    service
+        .store
+        .revoke_qualification(&first.id, "Fixture stop during admission")
+        .await
+        .unwrap();
+    let record = settled(&service.store, &first.id).await;
+    controls_task_stopped(&backend, idle_references).await;
+    assert_eq!(record.status, "failed");
+    assert_eq!(record.controls[0].judge_evaluations.len(), 1);
+    assert_eq!(backend.paid_calls.load(Ordering::SeqCst), 0);
+    let calls = backend.calls.load(Ordering::SeqCst);
+    assert_eq!(
+        service.qualify_version(request).await.unwrap().status,
+        "failed"
+    );
+    tokio::time::sleep(runner::EVALUATION_RETRY * 3).await;
+    assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn rendered_qualification_admission_expires_and_requires_explicit_resume() {
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, false, false).await;
+    let idle_references = Arc::strong_count(&backend);
+    backend.marker_refusals.store(usize::MAX, Ordering::SeqCst);
+    backend.marker_refuse_from.store(2, Ordering::SeqCst);
+    backend.local_admission.store(true, Ordering::SeqCst);
+    let first = service.qualify_version(request.clone()).await.unwrap();
+    first_record(&service.store, &request.version_id, |record| {
+        record.controls.get(2).is_some_and(|c| c.waiting.is_some())
+    })
+    .await;
+    // A restart while only a rendering is saved also retains the first request.
+    service.store.recover().await.unwrap();
+    controls_task_stopped(&backend, idle_references).await;
+    let interrupted = service.store.qualification(&first.id).await.unwrap();
+    assert_eq!(interrupted.status, INTERRUPTED);
+    assert_eq!(interrupted.controls[2].judge_evaluations.len(), 1);
+    assert_eq!(backend.paid_calls.load(Ordering::SeqCst), 6);
+
+    // Exercise the production control loop with a short admission window;
+    // no wall-clock wait or test-only production deadline is necessary.
+    let mut resumed = interrupted.clone();
+    resumed.status = "reserved".into();
+    resumed
+        .controls
+        .retain(|control| control.evaluation.is_some());
+    assert!(service
+        .store
+        .take_up_qualification(&interrupted, &resumed)
+        .await
+        .unwrap());
+    let version = service.store.version(&request.version_id).await.unwrap();
+    let before = backend.calls.load(Ordering::SeqCst);
+    let timeout = runner::EVALUATION_RETRY * 3;
+    let started = tokio::time::Instant::now();
+    let error = run_controls(
+        &service.store,
+        backend.as_ref(),
+        &version,
+        resumed,
+        None,
+        timeout,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "qualification_admission_timeout");
+    assert!(started.elapsed() >= timeout);
+    let retries = backend.calls.load(Ordering::SeqCst) - before;
+    assert!(
+        (1..=3).contains(&retries),
+        "Admission retries must back off: {retries}"
+    );
+    service
+        .store
+        .stop_qualification(&first.id, &error)
+        .await
+        .unwrap();
+    let expired = service.store.qualification(&first.id).await.unwrap();
+    assert_eq!(expired.status, INTERRUPTED);
+    assert!(expired.failure.is_none());
+    assert!(expired.controls[2].error.is_none());
+    assert!(expired.controls[2].waiting.is_none());
+    assert_eq!(expired.controls[2].judge_evaluations.len(), 1);
+    assert_eq!(backend.paid_calls.load(Ordering::SeqCst), 6);
+    tokio::time::sleep(timeout).await;
+    assert_eq!(backend.calls.load(Ordering::SeqCst) - before, retries);
+
+    backend.marker_refusals.store(0, Ordering::SeqCst);
+    assert_eq!(service.qualify_version(request).await.unwrap().id, first.id);
+    let finished = settled(&service.store, &first.id).await;
+    assert_eq!(finished.status, "controls_verified_review_attested");
+    for index in 0..2 {
+        assert_eq!(
+            serde_json::to_value(&finished.controls[index]).unwrap(),
+            serde_json::to_value(&interrupted.controls[index]).unwrap()
+        );
+    }
+    controls_task_stopped(&backend, idle_references).await;
+    assert_eq!(backend.paid_calls.load(Ordering::SeqCst), 12);
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn panicking_qualification_stops_without_losing_or_replaying_judge_evidence() {
+    for stage in [1, 2] {
+        let dir = crate::test_support::TempRoot::new();
+        let (service, backend, request) = fixture(&dir, false, stage == 2).await;
+        backend.panic_stage.store(stage, Ordering::SeqCst);
+        let first = service.qualify_version(request.clone()).await.unwrap();
+        let record = settled(&service.store, &first.id).await;
+        assert_eq!(
+            record.status,
+            if stage == 1 { INTERRUPTED } else { "failed" }
+        );
+        assert_eq!(record.controls.len(), 1);
+        if stage == 2 {
+            assert!(record.failure.as_deref().unwrap().contains("panicked"));
+            assert_eq!(record.controls[0].judge_evaluations.len(), 2);
+            assert_eq!(
+                record.controls[0].judge_evaluations[1]
+                    .details
+                    .as_ref()
+                    .unwrap()["inFlight"],
+                true
+            );
+            assert_eq!(service.qualify_version(request).await.unwrap().id, first.id);
+        } else {
+            assert!(record.controls[0].judge_evaluations.is_empty());
+        }
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+}
+
+#[tokio::test]
+async fn panicking_judge_pool_calibration_releases_its_reservation() {
+    let dir = crate::test_support::TempRoot::new();
+    let (service, _, request) = fixture(&dir, false, false).await;
+    let first = service.qualify_version(request).await.unwrap();
+    assert_eq!(
+        settled(&service.store, &first.id).await.status,
+        "controls_verified_review_attested"
+    );
+    let entry: super::super::judge_pool::Entry = serde_json::from_value(json!({
+        "providerId":"claude-acp", "modelId":"invented-panicking-pool-judge",
+        "inputs":["text"], "accounts":["invented-account"]
+    }))
+    .unwrap();
+    std::fs::write(
+        dir.path().join("settings.json"),
+        json!({"judgePool":[entry]}).to_string(),
+    )
+    .unwrap();
+    let started = service.calibrate_judge(entry.clone()).await.unwrap();
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let status = service.judge_pool().await.unwrap();
+            let calibration = status
+                .calibrations
+                .into_iter()
+                .find(|c| c.id == started.id)
+                .unwrap();
+            if calibration.status != "running" {
+                return calibration;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("Panicking pool worker left its running reservation behind");
+    assert_eq!(finished.status, "interrupted");
+    assert!(finished.failure.as_deref().unwrap().contains("panicked"));
+    assert!(finished.finished_at.is_some());
+    assert!(!service.judge_pool().await.unwrap().pool[0].seats);
+    // Only another explicit request may start a replacement calibration.
+    let again = service.calibrate_judge(entry).await.unwrap();
+    assert_ne!(started.id, again.id);
+    // Wait for the replacement to settle before closing the fixture store.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while service
+            .judge_pool()
+            .await
+            .unwrap()
+            .calibrations
+            .iter()
+            .any(|c| c.id == again.id && c.status == "running")
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn unavailable_judge_pool_preparation_is_not_a_failed_quality_verdict() {
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, false, false).await;
+    let first = service.qualify_version(request).await.unwrap();
+    settled(&service.store, &first.id).await;
+    backend.panic_stage.store(4, Ordering::SeqCst);
+    let entry: super::super::judge_pool::Entry = serde_json::from_value(json!({
+        "providerId":"claude-acp", "modelId":"invented-busy-pool-judge",
+        "inputs":["text"], "accounts":["invented-account"]
+    }))
+    .unwrap();
+    std::fs::write(
+        dir.path().join("settings.json"),
+        json!({"judgePool":[entry]}).to_string(),
+    )
+    .unwrap();
+    let started = service.calibrate_judge(entry.clone()).await.unwrap();
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let status = service.judge_pool().await.unwrap();
+            let calibration = status
+                .calibrations
+                .into_iter()
+                .find(|c| c.id == started.id)
+                .unwrap();
+            if calibration.status != "running" {
+                return calibration;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(finished.status, "interrupted");
+    assert!(finished.controls.is_empty());
+    assert!(finished
+        .failure
+        .as_deref()
+        .unwrap()
+        .contains("resource_busy"));
+    assert!(!service.judge_pool().await.unwrap().pool[0].seats);
+    // By contrast, a judge that actually rejects an accepted control fails.
+    backend.panic_stage.store(5, Ordering::SeqCst);
+    let wrong = service.calibrate_judge(entry).await.unwrap();
+    let wrong = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let status = service.judge_pool().await.unwrap();
+            let calibration = status
+                .calibrations
+                .into_iter()
+                .find(|c| c.id == wrong.id)
+                .unwrap();
+            if calibration.status != "running" {
+                return calibration;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(wrong.status, "failed");
+    assert_eq!(wrong.controls.len(), 1);
+    assert!(!wrong.controls[0].in_band);
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn visual_pool_worker_failures_preserve_the_passed_text_verdict() {
+    let dir = crate::test_support::TempRoot::new();
+    let (service, backend, request) = fixture(&dir, false, false).await;
+    let first = service.qualify_version(request).await.unwrap();
+    let mut record = settled(&service.store, &first.id).await;
+    let mut draft = service
+        .store
+        .version(&record.request.version_id)
+        .await
+        .unwrap()
+        .manifest;
+    draft.environment["judgeInput"] = json!("visual");
+    let definition = service.store.save_draft(None, None, draft).await.unwrap();
+    let version = service
+        .store
+        .publish(&definition.id, definition.draft_revision)
+        .await
+        .unwrap();
+    // A stopped invented visual qualification still supplies its registered
+    // controls for the pool's separate visual probe. No browser is launched.
+    record.id = "invented-visual-controls".into();
+    record.request.request_key = record.id.clone();
+    record.request.version_id = version.id.clone();
+    record.request.content_hash = version.content_hash.clone();
+    record.manifest_hash = hash(&version.manifest).unwrap();
+    record.controls.clear();
+    record.status = "failed".into();
+    record.failure = Some("Invented interrupted panel".into());
+    sqlx::query("INSERT INTO selector_qualifications(id,request_key,request_hash,version_id,content_hash,manifest_hash,evaluator_revision,created_at,phase,status,record_json,record_hash) VALUES(?,?,?,?,?,?,?,?,'terminal','failed',?,?)")
+        .bind(&record.id).bind(&record.request.request_key).bind(hash(&record.request).unwrap())
+        .bind(&version.id).bind(&version.content_hash).bind(&record.manifest_hash)
+        .bind(&record.request.evaluator_revision).bind(record.created_at)
+        .bind(serde_json::to_string(&record).unwrap()).bind(hash(&record).unwrap())
+        .execute(&service.store.pool).await.unwrap();
+    for stage in [6, 7, 8] {
+        backend.panic_stage.store(stage, Ordering::SeqCst);
+        let entry: super::super::judge_pool::Entry = serde_json::from_value(json!({
+            "providerId":"codex-acp", "modelId":format!("invented-visual-judge-{stage}"),
+            "accounts":["invented-account"]
+        }))
+        .unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            json!({"judgePool":[entry]}).to_string(),
+        )
+        .unwrap();
+        let started = service.calibrate_judge(entry).await.unwrap();
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let status = service.judge_pool().await.unwrap();
+                let calibration = status
+                    .calibrations
+                    .into_iter()
+                    .find(|c| c.id == started.id)
+                    .unwrap();
+                if calibration.finished_at.is_some() {
+                    return calibration;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(finished.status, "passed", "stage {stage}");
+        assert_eq!(finished.controls.len(), 4);
+        let visual = finished.visual.unwrap();
+        assert_eq!(
+            visual.status,
+            if stage == 8 { "failed" } else { "interrupted" },
+            "stage {stage}"
+        );
+        assert!(visual.failure.is_some());
+        assert_eq!(visual.controls.len(), usize::from(stage == 8));
+        let status = service.judge_pool().await.unwrap();
+        assert!(status.pool[0].seats);
+        assert!(!status.pool[0].seats_visual);
+    }
+    dir.close().await;
 }
 
 #[tokio::test]

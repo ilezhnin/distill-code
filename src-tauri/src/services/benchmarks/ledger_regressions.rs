@@ -887,6 +887,198 @@ fn history_work_stops_once_the_shown_points_are_settled() {
     assert_eq!(kept, vec![2, 6]);
 }
 
+fn history_preparation_fixtures() -> Vec<(&'static str, QueryData)> {
+    let mut base = super::tests::dataset();
+    add_candidate(&mut base, "invented-fast-peer");
+    add_candidate(&mut base, "invented-cheap-peer");
+    for (index, version) in base.versions.iter_mut().enumerate() {
+        version.manifest.work_class_id = format!("invented-class-{}", index % 2);
+    }
+    for attempt in &mut base.attempts {
+        let run = base
+            .runs
+            .iter()
+            .find(|run| run.id == attempt.run_id)
+            .unwrap();
+        attempt.started_at = Some(run.created_at);
+        attempt.finished_at = Some(run.updated_at);
+        attempt.duration_ms = Some(if attempt.configuration.model_id == "invented-fast-peer" {
+            25
+        } else {
+            100
+        });
+        attempt.usage.cost = Some(if attempt.configuration.model_id == "invented-cheap-peer" {
+            0.25
+        } else {
+            1.0
+        });
+    }
+
+    let mut reviewed = base.clone();
+    for version in &mut reviewed.versions {
+        version.manifest.evaluator.kind = "rubric".into();
+    }
+    judge_run(
+        &mut reviewed,
+        "after",
+        Some("invented-reviewed-protocol"),
+        0.7,
+    );
+    for attempt in reviewed.attempts.iter_mut().filter(|a| a.run_id == "after") {
+        for evaluation in &mut attempt.evaluations {
+            evaluation.created_at += 8;
+        }
+        // A later incomplete panel must keep the preceding complete one.
+        let mut marker = evaluation(22, None, "render", "rendered");
+        marker.details =
+            Some(serde_json::json!({"expectedJudges":2,"protocolHash":"invented-incomplete"}));
+        attempt
+            .evaluations
+            .extend([marker, evaluation(23, Some(0.2), "judge", "judged")]);
+    }
+    reviewed
+        .attempts
+        .iter_mut()
+        .find(|a| a.id == "after-v0")
+        .unwrap()
+        .evaluations
+        .push(evaluation(25, Some(0.3), "human", "judged"));
+    settled_retest(&mut reviewed, "completed", &["pass"]);
+
+    let mut released = base.clone();
+    settled_retest(&mut released, "cancelled", &["pass", "cancelled"]);
+    released.required_repetitions = 2;
+    let mut unmeasured = released.versions[0].clone();
+    unmeasured.id = "invented-new-case".into();
+    unmeasured.definition_id = "invented-new-definition".into();
+    unmeasured.published_at = 8;
+    released.versions.push(unmeasured);
+    released.releases = vec![
+        PoolRelease {
+            id: "invented-small-pool".into(),
+            name: "Small".into(),
+            created_at: 4,
+            version_ids: vec!["v0".into(), "v1".into(), "v2".into()],
+        },
+        PoolRelease {
+            id: "invented-expanded-pool".into(),
+            name: "Expanded".into(),
+            created_at: 8,
+            version_ids: released.versions.iter().map(|v| v.id.clone()).collect(),
+        },
+    ];
+
+    let mut archived = base.clone();
+    archived.definitions = vec![
+        DefinitionState {
+            id: "d0".into(),
+            archived: true,
+            archived_at: Some(7),
+            archive_history: vec![],
+        },
+        DefinitionState {
+            id: "d1".into(),
+            archived: false,
+            archived_at: None,
+            archive_history: vec![(4, 8)],
+        },
+    ];
+    settled_retest(&mut archived, "completed", &["pass"]);
+
+    let mut profiles = base.clone();
+    profiles.required_repetitions = 3;
+    settled_retest(&mut profiles, "completed", &["pass", "fail", "pass"]);
+    profiles
+        .runs
+        .iter_mut()
+        .find(|r| r.id == "retest")
+        .unwrap()
+        .baked_at = Some(12);
+    for attempt in profiles
+        .attempts
+        .iter_mut()
+        .filter(|a| a.configuration.model_id == "model")
+    {
+        if ["v0", "v1", "v2"].contains(&attempt.version_id.as_str()) {
+            attempt.configuration.id = "invented-repository-configuration".into();
+            attempt.configuration.execution_profile = "protected_repository".into();
+            attempt.observed = Some(attempt.configuration.clone());
+        }
+    }
+    vec![
+        ("peers", base),
+        ("late-reviews", reviewed),
+        ("releases", released),
+        ("archives", archived),
+        ("profiles", profiles),
+    ]
+}
+
+/// Full serialized references captured before sharing peer preparation. These
+/// cover both series, every peer row, ranking, cost, protocol and evidence ID.
+#[test]
+fn history_peer_preparation_preserves_complete_reference_outputs() {
+    let expected = [
+        "d4ab045398bf372d7043f22d8e1101fae2c50b9ff68240d460cc632ce3f60ca2",
+        "d42bbab91dd0b48562df5c47ea7e8b06ce19f56d3330a09510529fccee60c7e8",
+        "72ab62f6bb4ac7b499518d5c771d258258e6dd1123eeff740bf97fe635253b55",
+        "77c39918263fd7c5f2dc4c15823c6a52140ab42d6f06e999e668af5fe782b5b7",
+        "70480e9152b91d8832a475372734d48c79c257a5e79249d6f923d1b5ddc175dc",
+    ];
+    for ((name, data), expected) in history_preparation_fixtures().into_iter().zip(expected) {
+        let configurations: BTreeMap<_, _> = data
+            .attempts
+            .iter()
+            .map(|a| (leaderboard_key(&a.configuration), a.configuration.clone()))
+            .collect();
+        let histories: Vec<_> = configurations
+            .values()
+            .map(|configuration| {
+                (
+                    history(&data, configuration),
+                    model_history(&data, configuration),
+                )
+            })
+            .collect();
+        assert!(
+            histories
+                .iter()
+                .any(|(configuration, _)| configuration.len() > 1),
+            "{name}"
+        );
+        let boards: Vec<_> = [None, Some(3), Some(6), Some(11), Some(26)]
+            .into_iter()
+            .map(|as_of| {
+                leaderboard(
+                    &data,
+                    &ResultQuery {
+                        as_of,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let bytes = serde_json::to_vec(&(histories, boards)).unwrap();
+        let digest = super::super::fixtures::hash(&bytes);
+        eprintln!("{name}: {digest}, {} bytes", bytes.len());
+        assert_eq!(digest, expected, "{name}");
+    }
+}
+
+#[test]
+fn history_prepares_peers_once_per_cutoff_and_once_for_today() {
+    let data = history_preparation_fixtures().remove(0).1;
+    let configuration = &data.runs[0].request.configurations[0];
+    PREPARED_MEASUREMENTS.with(|count| count.set(0));
+    let points = model_history(&data, configuration);
+    assert_eq!(points.len(), 2);
+    // Two dated baselines and one current baseline, not four per observation.
+    assert_eq!(PREPARED_MEASUREMENTS.with(|count| count.get()), 3);
+    // No global cache: another request prepares its own current evidence.
+    model_history(&data, configuration);
+    assert_eq!(PREPARED_MEASUREMENTS.with(|count| count.get()), 6);
+}
+
 #[test]
 fn incomplete_judge_batch_stays_unscored_and_judge_spend_is_not_the_candidates() {
     let mut a = before_only().attempts.remove(0);
