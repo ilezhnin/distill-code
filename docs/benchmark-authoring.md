@@ -336,6 +336,23 @@ recipe, panel size and set of labs is one ruler. Calibrations count for their
 own recipe (`strong-pool-v1`). A frozen panel names its own seats and is not
 subject to this rule.
 
+A new ordinary panel chooses idle eligible accounts. A busy optional seat
+cannot delay two available judges; an opened or frozen panel keeps its exact
+seats and paid votes while an account is busy. Waiting answers take turns by
+their last scheduling opportunity, and a selected panel reserves preparation
+capacity before fresh candidate work can use it.
+
+For retained benchmark answers, judge preparation stops after five minutes
+without a completed judge call,
+unless a durable in-flight turn needs completion or reconciliation. The
+ten-minute turn budget also bounds dispatch and status/event reads, with a
+15-second observation grace period before cancellation and cleanup. A running
+run whose judge queue makes no progress for ten minutes pauses through normal
+run control and records the wait reason. Known subscription-quota waits and
+paused time do not count; completed judge calls keep a progressing backlog
+open. These controls preserve answers and votes, never manufacture a score,
+and do not repeat candidate generation.
+
 A text rubric's critical checks (`environment.criticalChecks`, policy
 `critical-text-v1`) need from each judge a verdict and a reason for every
 condition. A fail must quote the violation from the response. A pass may carry

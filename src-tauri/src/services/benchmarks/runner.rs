@@ -25,6 +25,7 @@ mod admission_window;
 pub mod collection_context;
 mod judge_corrections;
 mod judge_recovery;
+mod judge_watchdog;
 pub(crate) mod native_receipt;
 mod preparation_watchdog;
 
@@ -110,6 +111,8 @@ fn prepare_judge(scope: &str, job: &str) -> Result<admission_window::Preparing> 
 pub(super) fn judge_error_reason(error: &BenchmarkError) -> String {
     if error.code == JUDGE_QUOTA_WAIT {
         JUDGE_QUOTA_REASON.into()
+    } else if error.code == ACCOUNT_BUSY {
+        JUDGES_BUSY.into()
     } else if unstarted_refusal(error) || error.code == JUDGE_ADMISSION_WAIT {
         format!("{JUDGE_DISCOVERY_WAIT}: {}", error.message)
     } else {
@@ -1237,6 +1240,27 @@ pub(crate) fn ordinary_judges(
         }
     }
     panel
+}
+
+/// Pick an ordinary panel from accounts that can work now. A busy optional
+/// seat, or the roomiest account of one model, must not block usable seats.
+/// Only eligible busy seats can turn a short panel into a temporary wait.
+fn ordinary_available_judges(
+    candidates: &[&Configuration],
+    draft: &BenchmarkDraft,
+    offered: Vec<(Option<f64>, Configuration)>,
+    available: impl Fn(&Configuration) -> bool,
+) -> Result<Vec<Configuration>> {
+    let ready = offered
+        .iter()
+        .filter(|(_, judge)| available(judge))
+        .cloned()
+        .collect();
+    let panel = ordinary_judges(candidates, draft, ready);
+    if panel.len() < MIN_JUDGES && ordinary_judges(candidates, draft, offered).len() >= MIN_JUDGES {
+        return Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGES_BUSY));
+    }
+    Ok(panel)
 }
 
 /// The vendors of the candidates, or none when one is unknown.
@@ -3540,7 +3564,31 @@ impl NativeBackend {
                 )
             })
             .collect();
-        let panel = ordinary_judges(
+        // Frozen panels returned above and saved open batches keep their exact
+        // seats. A new ordinary panel may choose another idle account before
+        // any vote is reserved. The checks before/inside a batch remain the
+        // race guard if an account becomes busy after this snapshot.
+        let host = self
+            .app
+            .state::<AgentHost>()
+            .get_or_start(&self.app)
+            .await
+            .map_err(host_error)?;
+        let mut availability = std::collections::BTreeMap::new();
+        for (_, judge) in &offered {
+            let Some(account) = judge.account_id.as_deref() else {
+                continue;
+            };
+            let key = (judge.provider_id.clone(), account.to_owned());
+            if !availability.contains_key(&key) {
+                let activity = host
+                    .account_activity(&judge.provider_id, account)
+                    .await
+                    .map_err(host_error)?;
+                availability.insert(key, activity.active_sessions.is_empty());
+            }
+        }
+        let panel = ordinary_available_judges(
             &candidates,
             draft,
             offered
@@ -3548,7 +3596,15 @@ impl NativeBackend {
                 .filter(|(_, judge)| !judge_recovery::excluded(judge, rejected))
                 .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
                 .collect(),
-        );
+            |judge| {
+                judge.account_id.as_ref().is_some_and(|account| {
+                    availability
+                        .get(&(judge.provider_id.clone(), account.clone()))
+                        .copied()
+                        .unwrap_or(false)
+                })
+            },
+        )?;
         log::info!(
             "[benchmarks] judge panel for attempt {}: {} of offered {}",
             attempt.id,
@@ -3926,8 +3982,11 @@ impl NativeBackend {
                 .request
                 .require_dispatch_admission(now())?;
         }
-        let dispatch = host
-            .dispatch_owned_turn(OwnedTurnRequest {
+        let started = Instant::now();
+        let deadline = tokio::time::Instant::now() + timeout + Duration::from_secs(15);
+        let dispatch = judge_watchdog::until(
+            deadline,
+            host.dispatch_owned_turn(OwnedTurnRequest {
                 session_id: session.session_id.clone(),
                 request_key: key.clone(),
                 prompt: prompt.to_string(),
@@ -3935,9 +3994,9 @@ impl NativeBackend {
                 timeout_ms: timeout.as_millis() as u64,
                 images: image.cloned().into_iter().collect(),
                 allow_credits: false,
-            })
-            .await;
-        let started = Instant::now();
+            }),
+        )
+        .await;
         let mut cursor = 0i64;
         let mut reply = String::new();
         let mut usage = TokenUsage::default();
@@ -3961,9 +4020,11 @@ impl NativeBackend {
                 failure = Some("Judge exceeded its time budget".to_string());
                 break;
             }
-            let page = match host
-                .read_owned_events(&session.session_id, cursor, 200)
-                .await
+            let page = match judge_watchdog::until(
+                deadline,
+                host.read_owned_events(&session.session_id, cursor, 200),
+            )
+            .await
             {
                 Ok(page) => page,
                 Err(error) => {
@@ -3975,7 +4036,7 @@ impl NativeBackend {
                 consume_event(&event.payload, &mut reply, &mut usage);
             }
             cursor = page.cursor;
-            let status = match host.execution_status(&key).await {
+            let status = match judge_watchdog::until(deadline, host.execution_status(&key)).await {
                 Ok(status) => status,
                 Err(error) => {
                     failure = Some(error);
@@ -5067,7 +5128,15 @@ impl ExecutionBackend for NativeBackend {
         version: &'a BenchmarkVersion,
         stop: JudgeStop,
     ) -> BoxFuture<'a, Result<Attempt>> {
-        Box::pin(self.judge_response(store, attempt, version, stop, JudgeEvidence::Attempt))
+        Box::pin(async move {
+            let id = attempt.id.clone();
+            judge_watchdog::prepare(
+                store,
+                &id,
+                self.judge_response(store, attempt, version, stop, JudgeEvidence::Attempt),
+            )
+            .await
+        })
     }
     fn reconcile_judges<'a>(
         &'a self,
@@ -8088,6 +8157,9 @@ impl BenchmarkService {
             if run.state != "running" {
                 continue;
             }
+            if judge_watchdog::check_queue(self, &run, now()).await? {
+                continue;
+            }
             // A rendering a pause or busy judges held back is judged beside the
             // run's generations; the run completes only once none is waiting.
             let waiting = run
@@ -8098,7 +8170,7 @@ impl BenchmarkService {
             let ready_judge = run
                 .attempts
                 .iter()
-                .find(|a| {
+                .filter(|a| {
                     a.phase == AWAITING_JUDGES
                         && admission_window::has_room(&scope)
                         && (judge_discovery_waiting(a)
@@ -8110,28 +8182,21 @@ impl BenchmarkService {
                             || a.wait_until.is_some()
                             || judging_deferred(a))
                 })
+                // A refused panel must not monopolize every resource probe.
+                // Order by its last opportunity, or when an untried answer
+                // became ready, so fresh arrivals cannot starve older work.
+                .min_by_key(|a| {
+                    a.phase_times
+                        .as_ref()
+                        .and_then(|times| times.get("judgeStarted"))
+                        .copied()
+                        .or(a.finished_at)
+                        .or(a.started_at)
+                        .unwrap_or_default()
+                })
                 .map(|a| a.id.clone());
             if let Some(id) = ready_judge {
-                let lane = format!("judges\u{1f}{}", run.id);
-                let seat = Seat {
-                    id: &lane,
-                    lane: &lane,
-                    lane_slots: 1,
-                    account: "",
-                    account_slots: ACCOUNT_SLOTS,
-                    model: "",
-                    model_slots: usize::MAX,
-                };
-                if let Some(cancel) = self.claim(&run.id, seat).await {
-                    tried.insert(id.clone());
-                    let (service, run) = (self.clone(), run.clone());
-                    flights.spawn(async move {
-                        let result = AssertUnwindSafe(service.resume_judging(&run, &id, cancel))
-                            .catch_unwind()
-                            .await;
-                        service.finish_flight(&id, &lane, result).await;
-                    });
-                }
+                self.start_waiting_judge(&run, id, flights, tried).await;
             }
             if !admission_window::remaining(&scope).is_zero()
                 && run.attempts.iter().any(|a| a.phase == "pending")
@@ -8203,6 +8268,49 @@ impl BenchmarkService {
                 return Ok(());
             }
         }
+    }
+
+    async fn start_waiting_judge(
+        self: &Arc<Self>,
+        run: &BenchmarkRun,
+        id: String,
+        flights: &mut tokio::task::JoinSet<()>,
+        tried: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        let lane = format!("judges\u{1f}{}", run.id);
+        let seat = Seat {
+            id: &lane,
+            lane: &lane,
+            lane_slots: 1,
+            account: "",
+            account_slots: ACCOUNT_SLOTS,
+            model: "",
+            model_slots: usize::MAX,
+        };
+        let Some(cancel) = self.claim(&run.id, seat).await else {
+            return false;
+        };
+        // Reserve before spawning: fill continues admitting candidates while
+        // this task is not yet polled. The chosen paid answer must already
+        // own its place. Claim the lane first so a duplicate scheduler pass
+        // cannot drop the active panel's same-generation preparation guard.
+        let scope = self.store.root.display().to_string();
+        let job = format!("judge:{id}");
+        let Some(preparing) = admission_window::begin(&scope, &job) else {
+            self.release(&lane).await;
+            return false;
+        };
+        let preparing = preparing.observe();
+        tried.insert(id.clone());
+        let (service, run) = (self.clone(), run.clone());
+        flights.spawn(async move {
+            let _preparing = preparing;
+            let result = AssertUnwindSafe(service.resume_judging(&run, &id, cancel))
+                .catch_unwind()
+                .await;
+            service.finish_flight(&id, &lane, result).await;
+        });
+        true
     }
     /// Whether [`Self::claim_workers`] would take `seat` now, without taking it.
     async fn has_room(&self, seat: &Seat<'_>, workers: &[WorkerReservation]) -> bool {
@@ -10154,10 +10262,16 @@ mod quota_resource_tests;
 mod judge_quota_tests;
 
 #[cfg(test)]
+mod judge_availability_tests;
+
+#[cfg(test)]
 mod judge_discovery_diagnostics_tests;
 
 #[cfg(test)]
 mod manual_judge_diagnostics_tests;
+
+#[cfg(test)]
+mod judge_scheduling_tests;
 
 #[cfg(test)]
 mod evaluation_admission_tests;
