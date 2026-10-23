@@ -1364,7 +1364,12 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
         raise refused('a repository attempt waits for the memory text sessions claim')
     if (read_number(ROOT / 'pids.current') or 0) + pids > AGGREGATE_PIDS:
         raise refused('sandbox process budget leaves no room for this job')
-    observed = host_gate(gate, unused, needed)
+    # A refused check or preparation keeps its room at every memory floor,
+    # not only the Linux aggregate above. Otherwise smaller fresh sessions
+    # can repeatedly take Windows/guest headroom while that job waits.
+    # Continuing paid workflow steps retain their existing priority (their
+    # kept_memory is zero), and all jobs still cover their own actual claim.
+    observed = host_gate(gate, unused + kept_memory, needed)
     measured = sandbox_cores()
     guest = guest_cores()
     host_cores = observed.get('hostCpuBusy')

@@ -924,6 +924,68 @@ class BudgetTests(unittest.TestCase):
         (budget.STATE / 'priority.json').write_text(json.dumps({key: time.time() - 1 for key in held}))
         self.reserve('text', 'fictional-text-later')
 
+    def assert_waiting_browser_keeps_floor_room(self, floor):
+        self.roomy()
+        self.learn(repository=512 * MIB, text=256 * MIB)
+        self.measure(1.0)
+        tokens = []
+        for index in range(8):
+            tokens.append(self.reserve('repository', f'fictional-running-{index}'))
+            self.settle()
+        # Eight learned claims use 5 GiB of the 23 GiB Linux admission line.
+        # The independent floor has 6 GiB above it: another 640 MiB session
+        # fits, but the unlearned browser's 2 GiB does not. A refused browser
+        # must keep its room at that floor, not only at the Linux line.
+        if floor == 'ram':
+            self.headroom = (18, 60)
+            reason = 'Windows available RAM'
+        elif floor == 'commit':
+            self.headroom = (60, 14)
+            reason = 'Windows commit headroom'
+        else:
+            budget.Path('/proc/meminfo').write_text('MemAvailable: 8388608 kB\n')
+            reason = 'shared WSL memory'
+        with self.assertRaisesRegex(BlockingIOError, reason):
+            self.reserve('browser', 'fictional-waiting-browser')
+        self.assertEqual(budget.kept_room('repository', budget.peaks())[0], 2 * budget.GIB)
+        for kind in ('repository', 'text'):
+            with self.subTest(floor=floor, kind=kind), self.assertRaisesRegex(BlockingIOError, reason):
+                self.reserve(kind, f'fictional-fresh-{kind}')
+
+        # A later step whose earlier work is paid for retains its existing
+        # priority, but it still cannot cross the actual floor itself.
+        continuing = self.reserve('repository', 'fictional-continuing', continuing=True)
+        with self.assertRaisesRegex(BlockingIOError, reason):
+            self.reserve('repository', 'fictional-continuing-too-large', continuing=True)
+        budget.release(continuing)
+
+        # Holds expire if their owner stops asking: no durable capacity loss.
+        held = json.loads((budget.STATE / 'priority.json').read_text())
+        held['memory'] = time.time() - 1
+        (budget.STATE / 'priority.json').write_text(json.dumps(held))
+        expired = self.reserve('repository', 'fictional-after-hold')
+        budget.release(expired)
+        with self.assertRaisesRegex(BlockingIOError, reason):
+            self.reserve('browser', 'fictional-waiting-browser')
+
+        # Enough releases let a small session fit beside the browser's held
+        # room, then the browser itself: waiting never blocks disjoint room.
+        for token in tokens[:3]:
+            budget.release(token)
+        record = self.admit('repository', 'fictional-session-beside')['admission']
+        self.assertEqual(record['expectedMemory'], 640 * MIB)
+        self.assertEqual(record['keptMemory'], 2 * budget.GIB)
+        self.reserve('browser', 'fictional-browser-next')
+
+    def test_waiting_browser_keeps_windows_ram_room(self):
+        self.assert_waiting_browser_keeps_floor_room('ram')
+
+    def test_waiting_browser_keeps_windows_commit_room(self):
+        self.assert_waiting_browser_keeps_floor_room('commit')
+
+    def test_waiting_browser_keeps_shared_guest_memory_room(self):
+        self.assert_waiting_browser_keeps_floor_room('guest')
+
     def test_a_repository_attempt_short_of_memory_holds_new_text_attempts_back(self):
         # Before any peak is learned a text attempt needs 5 GiB of room and a
         # repository attempt 6: text sessions refilling every few minutes
@@ -1982,83 +2044,67 @@ class ArchiveTests(unittest.TestCase):
                 self.extract(entries)
 
 
-@unittest.skipIf(sys.platform == 'win32', 'the renewal runs inside the Linux sandbox')
-class ClaudeRenewalTests(unittest.TestCase):
-    """bench-login's renewal program with an invented CLI: a renewal that
-    goes wrong never costs the stored grant, and the token is never printed."""
+class LoginBoundaryTests(unittest.TestCase):
+    """The actual Kimi-only launcher rejects invalid requests before setup.
+    App-owned provider renewal is covered by the native sign-in suites."""
 
     def setUp(self):
-        text = source.with_name('bench-login').read_text()
-        self.program = text.split("/usr/bin/python3 -c '\n", 1)[1].split("\n'\nfi\n", 1)[0]
-        self.assertIn('CLAUDE_CODE_OAUTH_REFRESH_TOKEN', self.program)
+        self.bash = shutil.which('bash') if sys.platform != 'win32' else next(
+            (str(path) for path in (Path(r'C:\Program Files\Git\bin\bash.exe'),) if path.exists()), None)
+        self.assertIsNotNone(self.bash, 'the launcher boundary tests require POSIX bash')
         self.temporary = tempfile.TemporaryDirectory()
-        root = Path(self.temporary.name)
-        self.home = root / 'home'
-        self.bin = root / 'bin'
-        self.home.mkdir()
-        self.bin.mkdir()
-        self.credentials = self.home / '.credentials.json'
-        self.copy = self.home / '.credentials.renewal-copy.json'
-        self.stored = json.dumps({'claudeAiOauth': {'accessToken': 'invented-access', 'refreshToken': 'invented-refresh',
-                                                    'expiresAt': 1000, 'scopes': ['user:inference', 'user:profile']}})
-        self.credentials.write_text(self.stored)
+        self.addCleanup(self.temporary.cleanup)
 
-    def tearDown(self):
-        self.temporary.cleanup()
+    def login(self, *args):
+        # Source the unchanged launcher with its real positional arguments.
+        # Guards stop before either host setup or its absolute bench-run exec:
+        # even a broken validation cannot create accounts or launch a provider.
+        wrapper = '''
+install() { printf 'unexpected install\n' >&2; exit 97; }
+exec() { printf 'unexpected exec\n' >&2; exit 98; }
+launcher=$1
+shift
+source "$launcher" "$@"
+'''
+        return subprocess.run(
+            [self.bash, '--noprofile', '--norc', '-c', wrapper, 'fictional-login-test',
+             source.with_name('bench-login').as_posix(), *args],
+            cwd=self.temporary.name, capture_output=True, text=True, timeout=10)
 
-    def renew(self, cli):
-        claude = self.bin / 'claude'
-        claude.write_text('#!/bin/sh\n' + cli + '\n')
-        claude.chmod(0o755)
-        env = {'PATH': str(self.bin) + os.pathsep + os.environ.get('PATH', ''), 'CLAUDE_CONFIG_DIR': str(self.home)}
-        done = subprocess.run([sys.executable, '-c', self.program], env=env, capture_output=True, text=True, timeout=60)
-        self.assertNotIn('invented-refresh', done.stdout + done.stderr)
-        return done
+    def assert_refused(self, *args):
+        done = self.login(*args)
+        self.assertEqual(done.returncode, 64, done.stderr)
+        self.assertEqual(done.stdout, '')
+        self.assertIn('usage: bench-login kimi ACCOUNT-ID', done.stderr)
+        self.assertNotIn('unexpected install', done.stderr)
+        self.assertNotIn('unexpected exec', done.stderr)
+        self.assertEqual(list(Path(self.temporary.name).iterdir()), [])
 
-    def write(self, expires):
-        return ('printf %s \'{"claudeAiOauth":{"accessToken":"renewed","refreshToken":"rotated","expiresAt":'
-                + str(expires) + '}}\' > "$CLAUDE_CONFIG_DIR/.credentials.json"')
+    def test_other_providers_are_refused_before_setup(self):
+        for provider in ('claude', 'codex', 'grok', 'zai', 'unknown', 'Kimi', ''):
+            with self.subTest(provider=provider):
+                self.assert_refused(provider, 'fictional-account')
 
-    def test_a_renewed_grant_replaces_the_stored_one(self):
-        done = self.renew('[ "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" = invented-refresh ] || exit 3\n'
-                          '[ "$CLAUDE_CODE_OAUTH_SCOPES" = "user:inference user:profile" ] || exit 3\n'
-                          '[ "$(stat -c %a "$CLAUDE_CONFIG_DIR/.credentials.renewal-copy.json")" = 600 ] || exit 3\n'
-                          + self.write(2000))
-        self.assertEqual((done.returncode, done.stdout.strip()), (0, 'renewed 2000'))
-        self.assertEqual(json.loads(self.credentials.read_text())['claudeAiOauth']['expiresAt'], 2000)
-        self.assertFalse(self.copy.exists())
+    def test_invalid_account_ids_are_refused_before_setup(self):
+        for account in ('', '.', '..', '../outside', 'nested/account', 'has space',
+                        'semi;colon', '$(command)', 'nonascii-\u00e9', 'x' * 81):
+            with self.subTest(account=account):
+                self.assert_refused('kimi', account)
 
-    def test_a_renewal_that_breaks_refuses_or_shortens_the_grant_keeps_the_stored_one(self):
-        for cli in [': > "$CLAUDE_CONFIG_DIR/.credentials.json"', 'rm "$CLAUDE_CONFIG_DIR/.credentials.json"',
-                    'exit 1', self.write(500),
-                    'printf %s \'{"claudeAiOauth":{"expiresAt":9000}}\' > "$CLAUDE_CONFIG_DIR/.credentials.json"']:
-            with self.subTest(cli=cli):
-                self.credentials.write_text(self.stored)
-                done = self.renew(cli)
-                self.assertEqual(done.returncode, 66)
-                self.assertEqual(self.credentials.read_text(), self.stored)
-                self.assertFalse(self.copy.exists())
+    def test_wrong_argument_counts_are_refused_before_setup(self):
+        for args in ((), ('kimi',), ('kimi', 'fictional-account', 'extra')):
+            with self.subTest(args=args):
+                self.assert_refused(*args)
 
-    def test_the_grant_a_killed_renewal_left_in_its_copy_comes_back(self):
-        self.copy.write_text(self.stored)
-        self.credentials.write_text('{"claudeAiOauth":')
-        done = self.renew('exit 0')
-        self.assertEqual(done.returncode, 66)
-        self.assertEqual(self.credentials.read_text(), self.stored)
-        self.assertFalse(self.copy.exists())
-        # A grant the killed renewal's CLI did write stays.
-        self.copy.write_text(self.stored)
-        renewed = '{"claudeAiOauth":{"accessToken":"renewed","refreshToken":"rotated","expiresAt":3000}}'
-        self.credentials.write_text(renewed)
-        self.assertEqual(self.renew('exit 0').returncode, 66)
-        self.assertEqual(self.credentials.read_text(), renewed)
-        self.assertFalse(self.copy.exists())
-
-    def test_a_sign_in_without_a_refresh_token_needs_a_person(self):
-        self.credentials.write_text('{"claudeAiOauth":{"accessToken":"invented-access","expiresAt":1000}}')
-        done = self.renew('exit 0')
-        self.assertEqual(done.returncode, 65)
-        self.assertFalse(self.copy.exists())
+    def test_valid_account_ids_reach_only_the_setup_guard(self):
+        # Positive control: the test intercepts setup, rather than making
+        # every request fail independently of the launcher's validation.
+        for account in ('fictional_Account-1', 'x' * 80):
+            with self.subTest(account=account):
+                done = self.login('kimi', account)
+                self.assertEqual((done.returncode, done.stdout), (97, ''))
+                self.assertEqual(done.stderr.strip(), 'unexpected install')
+                self.assertEqual(list(Path(self.temporary.name).iterdir()), [])
 
 
 if __name__ == '__main__':
