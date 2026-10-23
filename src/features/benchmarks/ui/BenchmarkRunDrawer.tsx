@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
+import type { TaskGridFocusReturn } from "../hooks/useTaskGridWindow";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
@@ -69,11 +76,13 @@ export function BenchmarkRunDrawer({
   runId,
   onClose,
   onEvidence,
+  focusReturn,
 }: {
   taskOrder?: TaskReference[];
   runId: string;
   onClose: () => void;
   onEvidence: (id: string) => void;
+  focusReturn?: MutableRefObject<TaskGridFocusReturn | null>;
 }) {
   const { t } = useTranslation("benchmarks");
   const { formatDate } = useLocaleFormatting();
@@ -342,6 +351,8 @@ export function BenchmarkRunDrawer({
                     >
                       <TaskGrid
                         cells={grid.cells}
+                        focusReturn={focusReturn}
+                        focusScope={`${runId}:${grid.key}`}
                         timing="elapsed"
                         clockAt={
                           run.state === "paused"

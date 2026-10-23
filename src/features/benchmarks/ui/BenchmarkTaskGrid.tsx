@@ -2,7 +2,13 @@
 // one block per case with its number, its mark, its time and its spend. The
 // block opens the case's evidence; its name belongs to the test management
 // pages and the evidence, so a held hover is the only place the grid shows it.
-import { memo, useLayoutEffect, useMemo, useRef } from "react";
+import {
+  memo,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type MutableRefObject,
+} from "react";
 import { replaceEqualDeep } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconClock, IconCoin } from "@tabler/icons-react";
@@ -10,6 +16,10 @@ import { cn } from "@/shared/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { formatUsd } from "../lib/benchmarkLabels";
+import {
+  useTaskGridWindow,
+  type TaskGridFocusReturn,
+} from "../hooks/useTaskGridWindow";
 import type {
   AttemptSummary,
   AttemptActivity,
@@ -325,6 +335,8 @@ export function TaskGrid({
   onOpen,
   clockAt,
   timing = "generation",
+  focusReturn,
+  focusScope,
 }: {
   cells: TaskCell[];
   onOpen: (cell: TaskCell) => void;
@@ -332,6 +344,8 @@ export function TaskGrid({
   clockAt?: number;
   /** Run details show active time; model statistics keep generation speed. */
   timing?: "generation" | "elapsed";
+  focusReturn?: MutableRefObject<TaskGridFocusReturn | null>;
+  focusScope?: string;
 }) {
   // Recalculated history snapshots often contain the same settled cases.
   // Retain a case only when all its data is equal, including evidence IDs
@@ -347,49 +361,72 @@ export function TaskGrid({
   useLayoutEffect(() => {
     previous.current = new Map(shared.map((cell) => [cell.versionId, cell]));
   }, [shared]);
+  const { i18n } = useTranslation("benchmarks");
+  const keys = useMemo(() => shared.map((cell) => cell.versionId), [shared]);
+  const window = useTaskGridWindow(
+    keys,
+    i18n.resolvedLanguage ?? i18n.language,
+    focusReturn,
+    focusScope,
+  );
   return (
-    <ul className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-2">
-      {shared.map((cell) => (
+    <ul
+      ref={window.gridRef}
+      data-task-grid=""
+      className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-2"
+      style={window.active ? { overflowAnchor: "none" } : undefined}
+    >
+      {shared.map((cell, index) => (
         <TaskCard
           key={cell.versionId}
           cell={cell}
           onOpen={onOpen}
           clockAt={clockAt}
           timing={timing}
+          index={index}
+          count={shared.length}
+          materialized={window.materialized(index)}
+          placeholderHeight={window.placeholderHeight(index)}
+          onPin={window.pin}
+          onRememberFocus={window.rememberFocus}
         />
       ))}
     </ul>
   );
 }
 
-// A live clock belongs to its card; one running case must not redraw every
-// settled case in a model's pool each second.
 const TaskCard = memo(function TaskCard({
   cell,
   onOpen,
   clockAt,
   timing,
+  index,
+  count,
+  materialized,
+  placeholderHeight,
+  onPin,
+  onRememberFocus,
 }: {
   cell: TaskCell;
   onOpen: (cell: TaskCell) => void;
   clockAt?: number;
   timing: "generation" | "elapsed";
+  index: number;
+  count: number;
+  materialized: boolean;
+  placeholderHeight: number;
+  onPin: (key: string) => void;
+  onRememberFocus: (key: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
-  const now = useNow(
-    clockAt == null && (cell.clock || cell.status?.kind === "waiting"),
-  );
   const active = cell.verdict === "running";
-  const times = activityElapsed(cell.activity, clockAt ?? now);
-  const actual = cell.clock || timing === "elapsed";
-  const elapsed = actual ? times.execution : cell.durationMs;
-  const timeHint = actual
-    ? `${t(cell.activity.partial ? "grid.partialTimeHint" : "grid.totalHint")}\n${t("grid.measuredHint")}: ${
-        cell.durationMs == null ? "–" : compactElapsed(cell.durationMs)
-      }\n${t("grid.waited")}: ${times.waiting == null ? "–" : `${cell.activity.partial ? "≥ " : ""}${compactElapsed(times.waiting)}`}`
-    : t("grid.measuredHint");
   return (
-    <li key={cell.versionId}>
+    <li
+      data-task-index={index}
+      aria-posinset={index + 1}
+      aria-setsize={count}
+      style={materialized ? undefined : { height: placeholderHeight }}
+    >
       <Tooltip delayDuration={TOOLTIP_DELAY.held}>
         <TooltipTrigger asChild>
           <button
@@ -400,53 +437,107 @@ const TaskCard = memo(function TaskCard({
               number: cell.number,
               name: cell.name,
             })}
-            onClick={() => onOpen(cell)}
+            onFocusCapture={() => onPin(cell.versionId)}
+            onClick={() => {
+              onRememberFocus(cell.versionId);
+              onOpen(cell);
+            }}
             className={cn(
               "flex h-full w-full flex-col gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors",
               "enabled:hover:bg-muted disabled:cursor-default",
               tone(cell.verdict),
             )}
           >
-            <span className="flex items-center justify-between gap-2">
-              <span className="font-medium tabular-nums">
+            {materialized ? (
+              <TaskCardBody cell={cell} clockAt={clockAt} timing={timing} />
+            ) : (
+              <>
                 {t("grid.task", { number: cell.number })}
-              </span>
-              <RepetitionDots
-                states={cell.dots}
-                animate={
-                  clockAt == null &&
-                  (cell.status?.kind === "running" ||
-                    cell.status?.kind === "judging")
-                }
-              />
-            </span>
-            {cell.status?.kind === "waiting" ||
-            cell.status?.kind === "judging" ||
-            cell.status?.kind === "paused" ? (
-              <TestStatusMark
-                status={cell.status}
-                now={clockAt ?? now}
-                waitingMs={times.waiting}
-                waitingPartial={cell.activity.partial}
-                compact
-              />
-            ) : null}
-            <span className="mt-auto flex items-center justify-between gap-2 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
-              <span className="inline-flex items-center gap-1" title={timeHint}>
-                <IconClock className="size-3.5" aria-hidden />
-                {elapsed == null
-                  ? "–"
-                  : `${actual && cell.activity.partial ? "≥ " : ""}${compactElapsed(elapsed)}`}
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <IconCoin className="size-3.5" aria-hidden />
-                {cell.cost == null ? "–" : formatUsd(t, cell.cost)}
-              </span>
-            </span>
+                <span
+                  role="img"
+                  className="sr-only"
+                  aria-label={t("grid.repetitions", {
+                    passes: cell.dots.filter((state) => state === "passed")
+                      .length,
+                    scored: cell.dots.filter(
+                      (state) => state === "passed" || state === "failed",
+                    ).length,
+                    of: cell.dots.length,
+                  })}
+                />
+              </>
+            )}
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom">{cell.name}</TooltipContent>
       </Tooltip>
     </li>
+  );
+});
+
+// Only materialized contents own clocks and decorative descendants. The
+// accessible button itself survives scrolling, focus and evidence navigation.
+const TaskCardBody = memo(function TaskCardBody({
+  cell,
+  clockAt,
+  timing,
+}: {
+  cell: TaskCell;
+  clockAt?: number;
+  timing: "generation" | "elapsed";
+}) {
+  const { t } = useTranslation("benchmarks");
+  const now = useNow(
+    clockAt == null && (cell.clock || cell.status?.kind === "waiting"),
+  );
+  const times = activityElapsed(cell.activity, clockAt ?? now);
+  const actual = cell.clock || timing === "elapsed";
+  const elapsed = actual ? times.execution : cell.durationMs;
+  const timeHint = actual
+    ? `${t(cell.activity.partial ? "grid.partialTimeHint" : "grid.totalHint")}\n${t("grid.measuredHint")}: ${
+        cell.durationMs == null ? "–" : compactElapsed(cell.durationMs)
+      }\n${t("grid.waited")}: ${times.waiting == null ? "–" : `${cell.activity.partial ? "≥ " : ""}${compactElapsed(times.waiting)}`}`
+    : t("grid.measuredHint");
+  return (
+    <>
+      <span
+        data-task-body=""
+        className="flex items-center justify-between gap-2"
+      >
+        <span className="font-medium tabular-nums">
+          {t("grid.task", { number: cell.number })}
+        </span>
+        <RepetitionDots
+          states={cell.dots}
+          animate={
+            clockAt == null &&
+            (cell.status?.kind === "running" || cell.status?.kind === "judging")
+          }
+        />
+      </span>
+      {cell.status?.kind === "waiting" ||
+      cell.status?.kind === "judging" ||
+      cell.status?.kind === "paused" ? (
+        <TestStatusMark
+          status={cell.status}
+          now={clockAt ?? now}
+          waitingMs={times.waiting}
+          waitingPartial={cell.activity.partial}
+          compact
+        />
+      ) : null}
+      <span className="mt-auto flex items-center justify-between gap-2 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+        <span className="inline-flex items-center gap-1" title={timeHint}>
+          <IconClock className="size-3.5" aria-hidden />
+          {elapsed == null
+            ? "–"
+            : `${actual && cell.activity.partial ? "≥ " : ""}${compactElapsed(elapsed)}`}
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <IconCoin className="size-3.5" aria-hidden />
+          {cell.cost == null ? "–" : formatUsd(t, cell.cost)}
+        </span>
+      </span>
+    </>
   );
 });

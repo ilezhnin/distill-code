@@ -40,6 +40,7 @@ import {
   useBenchmarkRuns,
 } from "../hooks/useBenchmarks";
 import type { LeaderboardRow } from "../types";
+import type { TaskGridFocusReturn } from "../hooks/useTaskGridWindow";
 import type { BenchmarkLocation } from "../lib/benchmarkNavigation";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import { BenchDevelopmentView } from "./BenchDevelopmentView";
@@ -184,7 +185,16 @@ export function BenchmarksView({
   // Opening evidence changes the route, not the cards behind the dialog.
   // Keep their handler stable while reading the latest committed navigation.
   const evidenceNavigation = useRef({ location, onNavigate });
+  const taskFocusReturn = useRef<TaskGridFocusReturn | null>(null);
   useLayoutEffect(() => {
+    const previous = evidenceNavigation.current.location;
+    if (
+      previous.section !== location.section ||
+      previous.configurationId !== location.configurationId ||
+      previous.benchmarkId !== location.benchmarkId ||
+      previous.runId !== location.runId
+    )
+      taskFocusReturn.current = null;
     evidenceNavigation.current = { location, onNavigate };
   }, [location, onNavigate]);
   const openEvidence = useCallback((attemptId: string) => {
@@ -429,6 +439,7 @@ export function BenchmarksView({
       {location.runId && !location.attemptId ? (
         <BenchmarkRunDrawer
           taskOrder={taskOrder}
+          focusReturn={taskFocusReturn}
           runId={location.runId}
           onClose={() => onNavigate({ ...location, runId: undefined })}
           onEvidence={openEvidence}
