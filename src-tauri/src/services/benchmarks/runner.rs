@@ -3086,6 +3086,61 @@ fn panel_reason(
     })
 }
 
+/// Keep the actionable refusal on the run card, rather than replacing it
+/// with a generic incomplete-panel message. Only this batch's failed seats
+/// supply the cause; successful rubric notes are never an operational error.
+fn incomplete_panel_reason(attempt: &Attempt, batch: &str) -> String {
+    attempt
+        .evaluations
+        .iter()
+        .rev()
+        .find(|evaluation| {
+            evaluation.provenance == "judge_failure"
+                && evaluation.score.is_none()
+                && evaluation
+                    .details
+                    .as_ref()
+                    .is_some_and(|d| d["judgeBatchId"] == batch)
+        })
+        .map_or_else(
+            || PANEL_INCOMPLETE.into(),
+            |evaluation| format!("Judging failed: {}", evaluation.reason),
+        )
+}
+
+/// A session that could not select the requested settings has sent no
+/// scoring prompt. Retry that exact seat at most twice, preserving each
+/// setup receipt so its owner id is never reused. Paid or uncertain turns,
+/// invalid score sheets and frozen-runtime refusals do not qualify.
+fn retry_unpaid_judge_selection(attempt: &Attempt, evaluation: &Evaluation) -> bool {
+    fn unpaid(evaluation: &Evaluation) -> bool {
+        evaluation.provenance == "judge_failure"
+            && evaluation.score.is_none()
+            && evaluation.judge.is_some()
+            && evaluation.details.as_ref().is_some_and(|details| {
+                details["selectionNotAcknowledged"] == true
+                    && details["dispatched"] == false
+                    && details["usageComplete"] == true
+                    && details["inFlight"] == false
+                    && details["sessionId"].as_str().is_some()
+                    && details["judgeBatchId"].as_str().is_some()
+                    && details.get("requestKey").is_none_or(Value::is_null)
+            })
+    }
+    unpaid(evaluation)
+        && attempt
+            .evaluations
+            .iter()
+            .filter(|previous| {
+                unpaid(previous)
+                    && previous.judge == evaluation.judge
+                    && previous.details.as_ref().unwrap()["judgeBatchId"]
+                        == evaluation.details.as_ref().unwrap()["judgeBatchId"]
+            })
+            .count()
+            < 2
+}
+
 /// An incomplete batch keeps its valid votes on explicit resume. Prefer the
 /// batch with most valid seats, newest on a tie, without mixing batches.
 #[derive(Debug)]
@@ -3916,37 +3971,74 @@ impl NativeBackend {
         stop: &JudgeStop,
         evidence: &mut JudgeEvidence<'_>,
     ) -> Result<Evaluation> {
-        let mut trace = diagnostics::JudgeTrace::new(batch, index);
-        let result = self
-            .ask_judge_inner(
-                store, attempt, version, judge, batch, index, prompt, image, response, criteria,
-                stop, evidence, &mut trace,
-            )
-            .await;
-        match result {
-            Err(error) => Err(diagnostics::record(
-                store,
-                attempt,
-                trace.stage,
-                error,
-                Some(judge),
-                trace.context,
-            )
-            .await),
-            Ok(mut evaluation) if evaluation.provenance == "judge_failure" => {
-                let error = diagnostics::record(
+        let mut retrying = false;
+        loop {
+            if stop.halted(store).await? {
+                return Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGING_STOPPED));
+            }
+            let _retry_preparing = if retrying {
+                Some(prepare_judge(
+                    &store.root.display().to_string(),
+                    &format!("judge:{}", attempt.id),
+                )?)
+            } else {
+                None
+            };
+            let mut trace = diagnostics::JudgeTrace::new(batch, index);
+            let result = self
+                .ask_judge_inner(
+                    store, attempt, version, judge, batch, index, prompt, image, response,
+                    criteria, stop, evidence, &mut trace,
+                )
+                .await;
+            let result = match result {
+                Err(error) => Err(diagnostics::record(
                     store,
                     attempt,
                     trace.stage,
-                    BenchmarkError::new("judge_abstained", &evaluation.reason),
+                    error,
                     Some(judge),
                     trace.context,
                 )
-                .await;
-                evaluation.reason = error.message;
-                Ok(evaluation)
+                .await),
+                Ok(mut evaluation) if evaluation.provenance == "judge_failure" => {
+                    let error = diagnostics::record(
+                        store,
+                        attempt,
+                        trace.stage,
+                        BenchmarkError::new("judge_abstained", &evaluation.reason),
+                        Some(judge),
+                        trace.context,
+                    )
+                    .await;
+                    if error
+                        .details
+                        .as_ref()
+                        .is_some_and(|d| d["diagnosticPersistenceFailed"] == true)
+                    {
+                        return Err(error);
+                    }
+                    evaluation.reason = error.message;
+                    Ok(evaluation)
+                }
+                result => result,
+            };
+            let retry = result
+                .as_ref()
+                .is_ok_and(|evaluation| retry_unpaid_judge_selection(attempt, evaluation));
+            if !retry {
+                return result;
             }
-            result => result,
+            let evaluation = result?;
+            insert_judge_evaluation(attempt, batch, evaluation);
+            evidence.save(store, attempt).await?;
+            if stop.halted(store).await? {
+                return Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGING_STOPPED));
+            }
+            // Let the refused session's cleanup finish before opening a fresh
+            // one. The next pass still enforces account, runtime and resource gates.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            retrying = true;
         }
     }
 
@@ -4130,10 +4222,15 @@ impl NativeBackend {
                 version,
                 judge,
                 batch,
-                "Judge selection was not acknowledged".into(),
+                format!(
+                    "Judge selection was not acknowledged: requested {} ({:?}, fast {:?}), received {} ({:?}, fast {:?}); no scoring request was sent",
+                    judge.model_id, judge.effort, judge.fast_mode,
+                    acknowledged.model_id, acknowledged.effort, acknowledged.fast_mode,
+                ),
             );
             abstention.details = Some(json!({"judgeBatchId": batch,
-                "sessionId": session.session_id, "usageComplete": true}));
+                "sessionId": session.session_id, "usageComplete": true,
+                "inFlight": false, "dispatched": false, "selectionNotAcknowledged": true}));
             return Ok(abstention);
         }
         let key = format!("benchmark:{}:judge:{batch}:{index}", attempt.id);
@@ -4861,6 +4958,9 @@ impl NativeBackend {
             attempt.outcome = Some("judged".into());
         }
         attempt.reason = panel_reason(end, votes, expected, stop.cancelled()).map(str::to_owned);
+        if attempt.reason.as_deref() == Some(PANEL_INCOMPLETE) {
+            attempt.reason = Some(incomplete_panel_reason(&attempt, &batch));
+        }
         Ok(attempt)
     }
 }
@@ -10654,6 +10754,9 @@ mod manual_judge_diagnostics_tests;
 
 #[cfg(test)]
 mod judge_scheduling_tests;
+
+#[cfg(test)]
+mod judge_selection_tests;
 
 #[cfg(test)]
 mod evaluation_admission_tests;

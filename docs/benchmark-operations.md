@@ -675,6 +675,14 @@ complete it; enough available judges proceed immediately. Frozen panels keep
 their exact seats and all binding checks. These waits release execution and
 preparation capacity so other candidates and panels can continue.
 
+If a judge session does not acknowledge its requested model, effort or fast
+mode before any scoring prompt is dispatched, setup retries that exact seat
+at most twice. Each refused session is retained, a fresh session owner is used,
+and any completed votes and the sealed candidate answer stay in the same batch.
+Paid or uncertain requests and invalid score sheets are not retried by this
+setup recovery. Frozen runtime mismatches still stop that panel, and its run
+shows the specific refusal instead of only saying that scores are missing.
+
 A workflow root under it settles with its quota outcome instead, since its
 committed steps are never replayed. A try the provider refused before any
 answer (another model acknowledged at session open, a busy account, a prompt
