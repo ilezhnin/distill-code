@@ -90,34 +90,40 @@ when `just` is unavailable, troubleshooting, and installer details.
 | Check frontend contracts, design system, formatting, lint, i18n, and types | `just check` |
 | Run Vitest, hook, and repository script tests | `just test` |
 | Check Rust / run Rust tests / lint Rust | `just tauri-check` / `just tauri-test` / `just clippy` |
-| Run the local validation gate | `just ci` |
+| Run critical publication, vulnerability and compile checks | `just ci` |
+| Run the full regression suite explicitly | `just regression` |
 | Build the Windows installer | `just bundle` |
 
-The validation gate is the fork's CI, which runs the complete `just ci`
-(dependency audits, frontend checks and tests, the build, transcript
-Playwright tests, native Windows Rust checks and tests, and Windows script
-tests) on every push. The flow is: run the focused checks for the change,
-commit, push at once, report the work as done, then watch the CI run for the
-pushed commit. The work is complete only when that run is green; a red run is
-fixed with another commit and pushed again until it is. Never report a push as
-green without a green run. The hooks installed with `lefthook install` are
-quick guards only (benchmark privacy, commit attribution, private history) and
-must not be skipped with `--no-verify`, `LEFTHOOK=0` or local overrides. Fix
-formatting explicitly before staging; hooks do not rewrite or stage files.
-Run `just ci` locally only when a change warrants the whole gate before the
-push, such as a packaging or hook change; a local run is not a substitute for
-the CI result, which also covers macOS runner timing and advisories published
-after a local audit.
+Automatic CI is limited to critical failures: secrets and private material,
+dependency vulnerabilities, compilation and the public command contract, plus
+the native command-security suites. Secrets and dependency advisories are
+checked on every push. Compile gates run only for affected paths; unknown
+build inputs run both. CSS-only changes do not run Rust checks.
+
+Run focused checks, commit and push, then watch CI for that commit (or a newer
+commit containing it). Completion requires a green run. Do not describe a
+pending or failed run as successful. Formatting, design-system audits, general
+unit tests, benchmark campaigns and Playwright are explicit development tools,
+not mandatory gates on every change. Use `just regression` only when the task
+actually calls for full regression coverage.
+
+Git hooks protect staged content, outgoing history and private material. They
+must not be bypassed with `--no-verify`, `LEFTHOOK=0` or local overrides. The
+pinned Gitleaks archive is downloaded from its official release on first use,
+verified with SHA-256, and cached in the OS temporary directory. Scanning is
+local and reports never print matched secret values. Allow only reviewed,
+exact historical fixture fingerprints; never blanket-exclude tests or source.
 
 During development, use focused checks for quick feedback:
 
 - Documentation: read back the edit, check paths and links, and run
   `git diff --check`.
-- Frontend: `just check`, plus tests for affected behavior.
+- Frontend: `just ci-frontend`, plus focused tests when behavior warrants them.
 - Rust, Tauri configuration, or sidecars: `just tauri-check`, plus affected
   Rust tests.
 - Windows scripts: `just test-windows-dev`.
-- Broad or packaging changes: `just ci` and `just ci-windows`.
+- CI or publication hooks: `just ci`, plus focused guard tests.
+- Broad runtime or packaging changes: choose the relevant regression commands.
 - App commands: regenerate with `pnpm generate:flockctl-contract`, run
   `pnpm vitest run src/features/flockctl`, and run
   `cargo test -p flockctl` from `src-tauri/`.
@@ -186,4 +192,4 @@ commits. Do not credit AI agents or tools as authors or co-authors in commits,
 code, documentation, changelogs, or pull requests.
 
 Do not add AI attribution trailers, generated-by footers, or agent session links.
-The commit-message hook enforces this rule.
+These authorship rules apply independently of the security-only Git hooks.

@@ -19,28 +19,34 @@ env:
   FORCE_COLOR: "1"
 
 jobs:
-  commit-messages:
-    name: Commit message AI attribution check
+  safety:
+    name: Secrets and publication safety
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    outputs:
+      frontend: ${{ steps.scope.outputs.frontend }}
+      native: ${{ steps.scope.outputs.native }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Activate Hermit
+        uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - name: Scan reachable history for secrets
+        run: node scripts/hooks/secret-scan.mjs history
+      - name: Reject private material in the published tree
+        run: node scripts/hooks/benchmark-privacy.mjs --tree
+      - name: Test publication guards and CI scope
+        run: node --test scripts/ci-scope.test.mjs scripts/hooks/tests/secret-scan.test.mjs scripts/hooks/tests/benchmark-privacy.test.mjs scripts/hooks/tests/private-history-guard.test.mjs
+      - name: Select affected compile gates
+        id: scope
+        run: node scripts/ci-scope.mjs
 
-      - name: Fetch main
-        run: git fetch origin main
-
-      - name: Scan commit messages for AI attribution
-        run: git log --format=%B origin/main..HEAD | sh scripts/hooks/no-ai-attribution.sh -
-
-  # Dependency advisories fail this job alone. The checks and tests of the
-  # other jobs still run and report, so a new advisory never hides a
-  # regression behind it (it did, for a day, in October 2026).
+  # Advisories are checked on every push, even when lockfiles did not change.
   audits:
-    name: Dependency audits
+    name: Dependency vulnerabilities
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -48,68 +54,45 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-
       - name: Activate Hermit
         uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Audit shipped npm dependencies
         run: pnpm audit --prod --audit-level=high
-
       - name: Install cargo-audit
         uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-audit@0.22.2
-
-      # Reads src-tauri/.cargo/audit.toml, which explains every ignored
-      # advisory. A new advisory against a crate the app actually compiles
-      # fails the job.
+          fallback: none
       - name: Audit Rust dependencies
         working-directory: src-tauri
         run: cargo audit
 
   frontend:
-    name: Frontend checks and unit tests
-    runs-on: macos-latest
-    timeout-minutes: 30
+    name: Frontend compilation and command contract
+    needs: safety
+    if: needs.safety.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-
       - name: Activate Hermit
         uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Run frontend checks
-        run: just check
-
-      - name: Run unit tests
-        run: just test
-
-      - name: Run agent driver relay tests
-        run: just agent-driver-test
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frontend-test-results
-          path: |
-            coverage/
-            test-results/
-          if-no-files-found: ignore
-          retention-days: 7
+      - name: Check command contract and build frontend
+        run: just ci-frontend
 
   rust-windows:
-    name: Tauri Rust checks (Windows)
+    name: Native compilation and command security
+    needs: safety
+    if: needs.safety.outputs.native == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     env:
       FLOCK_TAURI_CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -119,89 +102,15 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-
       - name: Install just
         uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: just@1.48.0
-
+          fallback: none
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri -> target
-
-      - name: Run Windows-native Rust gate (fmt, managed Node tests, clippy)
+      - name: Check native compilation and command boundaries
         shell: powershell
-        run: just ci-windows
-
-      - name: Run Rust unit tests (app library and workspace crates)
-        shell: powershell
-        run: just tauri-test
-
-      - name: Run Windows script self-tests
-        shell: powershell
-        run: just test-windows-dev
-
-  transcript-virtualization:
-    name: Transcript virtualization
-    needs: frontend
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-
-      - name: Activate Hermit
-        uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-
-      - name: Install Playwright browser
-        run: pnpm exec playwright install chromium
-
-      - name: Run transcript virtualization tests
-        run: pnpm test:transcript-virtualization:ci
-
-      - name: Upload Playwright results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: transcript-virtualization-results
-          path: |
-            tests/transcript-virtualization/transcript-playwright-report/
-            test-results/
-          if-no-files-found: ignore
-          retention-days: 7
-
-  build:
-    name: Frontend build smoke
-    needs: frontend
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-
-      - name: Activate Hermit
-        uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-
-      - name: Build frontend
-        run: just build
-
-      - name: Upload frontend build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frontend-build
-          path: dist/
-          if-no-files-found: error
-          retention-days: 7
+        run: just ci-native

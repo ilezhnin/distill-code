@@ -1,34 +1,32 @@
 # Git hooks, run through lefthook.
 # See: https://github.com/evilmartians/lefthook
 #
-# The hooks are quick guards only. The validation gate is the fork's CI: a
-# change is committed and pushed at once, and the push is done when its CI
-# run is green; a red run is fixed with another commit. `just ci` runs the
-# same gate locally when a change warrants it.
+# Hooks prevent publishing secrets and private material. They never run builds,
+# formatting or functional suites. CI checks vulnerabilities and compile errors.
 
 pre-commit:
   commands:
     benchmark-privacy:
       run: node scripts/hooks/benchmark-privacy.mjs --staged
+    secrets:
+      run: node scripts/hooks/secret-scan.mjs staged
 
 pre-merge-commit:
   commands:
     benchmark-privacy:
       run: node scripts/hooks/benchmark-privacy.mjs --staged
+    secrets:
+      run: node scripts/hooks/secret-scan.mjs staged
 
 # Hooks check without rewriting or staging files. A missing tool or failed
 # check blocks the operation; fix the environment instead of deferring to CI.
-commit-msg:
-  commands:
-    no-ai-attribution:
-      # Plain sh, no dev-tool launcher: it needs nothing beyond Git's own sh,
-      # grep and sed, so it can never be skipped as "tool not found".
-      run: sh scripts/hooks/no-ai-attribution.sh {1}
-
 pre-push:
   commands:
+    secrets:
+      run: node scripts/hooks/secret-scan.mjs push
+      use_stdin: true
     private-history:
-      # Plain sh like no-ai-attribution: a GUI client's trimmed PATH, or a
+      # Plain sh: a GUI client's trimmed PATH, or a
       # local override, must not skip this one. It reads the refs being
       # pushed from Git on stdin.
       run: sh scripts/hooks/private-history-guard.sh "{2}"

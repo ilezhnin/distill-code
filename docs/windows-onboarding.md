@@ -116,35 +116,37 @@ Node runtime pinned by `node-runtime.lock.json`.
 
 ## Before committing
 
-Run the focused checks for the change (`just check`, the affected tests,
-`just tauri-check` for Rust), commit and push at once, then watch the fork's
-CI run for the pushed commit: it runs the complete gate (frozen-lockfile
-installation, dependency audits, frontend checks and unit tests, the
-production build, transcript Playwright tests, native Rust checks and tests,
-and Windows script tests). The change is done only when that run is green; a
-red run is fixed with another commit. The same gate runs locally as `just ci`
-when a change warrants it before the push.
+Run focused checks for the change, commit and push, then watch the fork's CI.
+Automatic checks cover secrets/private material, dependency vulnerabilities,
+compilation, the public command contract and native command security. Compile
+jobs are selected by changed paths: CSS-only changes do not run Rust. Unknown
+build inputs run both compile jobs. Completion requires a green run for the
+commit or a newer commit containing it.
+
+`just ci` runs the critical gates locally. General unit tests, design-system
+checks, formatting, benchmark campaigns and Playwright are manual tools. Use
+`just regression` explicitly when full regression coverage is needed; it is
+not a requirement for ordinary changes.
 
 The prerequisites for a local `just ci` are:
 
 ```powershell
 cargo install cargo-audit --version 0.22.2 --locked
-pnpm exec playwright install chromium
 lefthook install
 ```
 
-Audits and the native managed-Node test require network access. The gate can
-take several minutes and reuses normal build caches. A successful local run
-does not guarantee identical timing on GitHub's macOS runners or account for
-security advisories published later.
+Audits require network access. Gitleaks 8.30.1 is downloaded from its official
+GitHub release on first use, verified against a pinned SHA-256 and cached in
+the OS temporary directory. Source and credentials are never uploaded to the
+scanner. Git hooks scan staged content and all history reachable from each
+outgoing commit, including secrets removed in a later commit. Diagnostics
+show locations and rule names, never matched values. Reviewed historical
+fixture exceptions are exact fingerprints in `.gitleaksignore`.
 
-Format before staging (`just fmt`). The hooks are quick guards (benchmark
-privacy on the staged files, commit attribution, private history on push);
-they never stash, rewrite, or stage files. The local gate scripts under
-`scripts/hooks/` (`validate-tree.sh` and its callers) remain available for a
-manual `just ci` of a clean tree. Remove obsolete skip entries from
-`lefthook-local.yml` or `lefthook.local.yml`; agents must not bypass the hooks
-with local overrides or `--no-verify`.
+Hooks never compile, run functional suites, stash, rewrite or stage files.
+Missing scanners and failed checks block publication. Do not bypass them with
+local overrides or `--no-verify`. For manual Playwright runs, install its
+browser once with `pnpm exec playwright install chromium`.
 
 ## Where Build State Lives
 

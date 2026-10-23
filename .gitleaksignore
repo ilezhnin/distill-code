@@ -1,0 +1,9 @@
+# Reviewed historical test fixtures only. Exact commit/file/rule/line identities
+# do not exempt later edits, entire test directories, or any real credentials.
+# A private-key header used to test redaction; it contains no private key.
+4c8ce62957d41a1201eea7772886a7f8abc05bbb:src/features/memory/lib/memoryRedaction.test.ts:private-key:24
+# Invented local app-test-driver tokens in the former E2E test harness.
+3b17b4658f2d7d5c2af8c275039fbacfbfa4d5ab:src/main.test.tsx:generic-api-key:188
+c33a5fcb0becec66f233d53f57f9e473e2f93c6c:scripts/e2e-run-contract.test.mjs:generic-api-key:14
+c33a5fcb0becec66f233d53f57f9e473e2f93c6c:scripts/windows/Test-WindowsDev.ps1:generic-api-key:204
+c33a5fcb0becec66f233d53f57f9e473e2f93c6c:src/main.test.tsx:generic-api-key:96

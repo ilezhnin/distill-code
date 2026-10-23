@@ -1,0 +1,4 @@
+title = "Flock secret detection"
+
+[extend]
+useDefault = true

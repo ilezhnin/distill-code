@@ -13,8 +13,8 @@ launcher behind the "Levocat Flock Dev" desktop shortcut. Launch the app with
 
 Automated UI coverage lives elsewhere: component tests next to the code in
 `src/` (`just test`), and the renderer-only Playwright specs in
-`tests/transcript-virtualization/`, which CI runs with
-`pnpm test:transcript-virtualization:ci`.
+`tests/transcript-virtualization/`, run explicitly with `just transcript-test`
+or `just regression`. These suites are not part of the critical-only push CI.
 
 ## The local driver (default)
 

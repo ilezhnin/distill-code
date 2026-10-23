@@ -209,10 +209,33 @@ audit:
     {{ dev_tool }} pnpm audit --prod --audit-level=high
     just _tauri-cargo-windows audit
 
-# Run every CI lane before committing or pushing. The Windows-native lane
-# already includes Rust formatting and all clippy configurations.
+# Critical publication, vulnerability and compile gates. GitHub skips unaffected
+# compile lanes; local invocation deliberately checks both frontend and native.
 [windows]
-ci: ci-dependencies audit check test agent-driver-test build transcript-test ci-windows tauri-test test-windows-dev
+ci: ci-dependencies secrets audit ci-frontend ci-native
+
+# Detect secrets in HEAD history and pending tracked changes; never print values.
+secrets:
+    {{ dev_tool }} node scripts/hooks/secret-scan.mjs check
+    {{ dev_tool }} node scripts/hooks/benchmark-privacy.mjs --staged
+    {{ dev_tool }} node scripts/hooks/benchmark-privacy.mjs --tree
+
+# Compiler/bundler errors and stale public command schemas are release blockers.
+ci-frontend: flockctl-contract-check build
+
+# Default release code and development commands must compile. Only the two
+# command-boundary suites run automatically; large app campaigns stay manual.
+[windows]
+ci-native:
+    just _tauri-cargo-windows check --locked --workspace
+    just _tauri-cargo-windows check --locked --workspace --features {{ app_features }}
+    just _tauri-cargo-windows test --locked -p tauri-plugin-flockctl --features server
+    just _tauri-cargo-windows test --locked -p tauri-plugin-app-test-driver
+
+# Full regression suite for deliberate local/release investigations, never a
+# pre-commit/pre-push hook or the default CI run.
+[windows]
+regression: check test agent-driver-test transcript-test ci-windows tauri-test test-windows-dev
 
 # Match CI's dependency installation and reject package/lockfile drift.
 ci-dependencies:

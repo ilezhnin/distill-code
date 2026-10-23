@@ -3,31 +3,61 @@
 import { execFileSync } from "node:child_process";
 
 function git(args, options = {}) {
-  return execFileSync("git", args, {
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "pipe"],
-    ...options,
-  });
+  try {
+    return execFileSync("git", args, {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: 256 * 1024 * 1024,
+      ...options,
+    });
+  } catch {
+    // child_process errors can contain the blob being inspected.
+    throw new Error(
+      "Could not read Git data for publication checks; no content was logged.",
+    );
+  }
 }
 
 // The pre-push history guard is scripts/hooks/private-history-guard.sh: plain
 // sh, so it also runs where a GUI client starts hooks without Node.
 const mode = process.argv[2];
-if (mode !== "--staged") {
-  throw new Error("Expected --staged");
+if (mode !== "--staged" && mode !== "--tree") {
+  throw new Error("Expected --staged or --tree");
 }
 
-const paths = git([
-  "diff",
-  "--cached",
-  "--name-only",
-  "--diff-filter=ACMR",
-  "-z",
-])
+const paths = git(
+  mode === "--tree"
+    ? ["ls-tree", "-r", "--name-only", "-z", "HEAD"]
+    : ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
+)
   .split("\0")
   .filter(Boolean);
+// Read all blobs in one Git process. Per-file `git show` made full-tree scans
+// slow on Windows and its default buffer failed on ordinary font assets.
+const blobs =
+  paths.length === 0
+    ? Buffer.alloc(0)
+    : git(["cat-file", "--batch", "-z"], {
+        encoding: null,
+        input: Buffer.from(
+          paths
+            .map((path) => (mode === "--tree" ? `HEAD:${path}` : `:${path}`))
+            .join("\0") + "\0",
+        ),
+      });
+let offset = 0;
 let rejected = false;
 for (const path of paths) {
+  const end = blobs.indexOf(10, offset);
+  const header = blobs.subarray(offset, end).toString("utf8");
+  const match = /^[a-f0-9]+ blob (\d+)$/.exec(header);
+  if (end < 0 || !match)
+    throw new Error("Could not inspect a Git blob; refusing publication.");
+  const size = Number(match[1]);
+  const content = blobs.subarray(end + 1, end + 1 + size);
+  if (content.length !== size)
+    throw new Error("Truncated Git blob; refusing publication.");
+  offset = end + 1 + size + 1;
   if (
     /(^|\/)(benchmark-tasks|benchmark-tools|benchmark-review-qa|benchmark-private)(\/|$)/i.test(
       path,
@@ -41,7 +71,8 @@ for (const path of paths) {
     (/^distro\/skills\//i.test(path) &&
       !/^distro\/skills\/(?:flock-help|flock-monitor)\//i.test(path)) ||
     /(^|\/)(?:prompt|user|lore|security-posture)\.md$/i.test(path) ||
-    /(^|\/)(?:memory\.json|IMPLEMENTATION_PLAN\.md)$/i.test(path) ||
+    (/(^|\/)(?:memory\.json|IMPLEMENTATION_PLAN\.md)$/i.test(path) &&
+      !/^src\/shared\/i18n\/locales\/[a-z-]+\/memory\.json$/i.test(path)) ||
     /^(?:research\/|handoff[^/]*\.md$)/i.test(path) ||
     /\.(?:bundle|db|sqlite3?)$/i.test(path) ||
     /^docs\/(?:.*-plan|.*roadmap.*|audit-.*|.*-audit-and-migration|composable-capabilities|work-status-.*)\.md$/i.test(
@@ -55,8 +86,8 @@ for (const path of paths) {
     rejected = true;
     continue;
   }
-  const staged = git(["show", `:${path}`]);
-  if (staged.includes("\0")) continue;
+  if (content.includes(0)) continue;
+  const staged = content.toString("utf8");
   if (
     /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]{16,}?-----END (?:[A-Z]+ )?PRIVATE KEY-----/.test(
       staged,

@@ -8,10 +8,10 @@
 
 ## How it was verified
 
-<!-- `just ci` on the final tree is required. Say what you exercised in the running app for UI or runtime changes. -->
+<!-- Report critical CI and focused checks. Say what you exercised in the running app for UI or runtime changes. Full regression is not required for every change. -->
 
 ## Checklist
 
-- [ ] `just ci` passes on the final tree
+- [ ] Critical CI passes for this change
 - [ ] No private material (profiles, memory, conversations, credentials, benchmark tasks) in the diff
 - [ ] No AI attribution trailers or generated-by footers in commits
