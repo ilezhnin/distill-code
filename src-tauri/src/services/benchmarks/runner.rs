@@ -105,6 +105,18 @@ fn prepare_judge(scope: &str, job: &str) -> Result<admission_window::Preparing> 
     })
 }
 
+/// The current judging failure, including a manual pass outside a running
+/// plan. Saving it must not leave an older pause/cancel reason on the answer.
+pub(super) fn judge_error_reason(error: &BenchmarkError) -> String {
+    if error.code == JUDGE_QUOTA_WAIT {
+        JUDGE_QUOTA_REASON.into()
+    } else if unstarted_refusal(error) || error.code == JUDGE_ADMISSION_WAIT {
+        format!("{JUDGE_DISCOVERY_WAIT}: {}", error.message)
+    } else {
+        format!("Judging failed: {}", error.message)
+    }
+}
+
 /// A partial listing is not evidence of too few eligible judges.
 struct JudgeOffers {
     rows: Vec<(
@@ -9451,7 +9463,7 @@ impl BenchmarkService {
                             }
                         }
                         if error.code == JUDGE_QUOTA_WAIT {
-                            attempt.reason = Some(JUDGE_QUOTA_REASON.into());
+                            attempt.reason = Some(judge_error_reason(&error));
                             attempt.wait_until = Some(
                                 error
                                     .details
@@ -9464,13 +9476,12 @@ impl BenchmarkService {
                             if unstarted_refusal(&error) {
                                 admission_window::refused(&scope, &job);
                             }
-                            attempt.reason =
-                                Some(format!("{JUDGE_DISCOVERY_WAIT}: {}", error.message));
+                            attempt.reason = Some(judge_error_reason(&error));
                             let remaining = admission_window::remaining(&scope);
                             attempt.wait_until = (!remaining.is_zero())
                                 .then(|| now() + remaining.as_millis() as i64);
                         } else {
-                            attempt.reason = Some(format!("Judging failed: {}", error.message));
+                            attempt.reason = Some(judge_error_reason(&error));
                         }
                     }
                 }
@@ -10144,6 +10155,9 @@ mod judge_quota_tests;
 
 #[cfg(test)]
 mod judge_discovery_diagnostics_tests;
+
+#[cfg(test)]
+mod manual_judge_diagnostics_tests;
 
 #[cfg(test)]
 mod evaluation_admission_tests;
@@ -15688,7 +15702,7 @@ mod tests {
         dir.close().await;
     }
     /// One repetition of a creative brief for the passing fake model.
-    async fn creative_request(s: &BenchmarkService) -> RunRequest {
+    pub(super) async fn creative_request(s: &BenchmarkService) -> RunRequest {
         let version = publish(s, creative()).await;
         let mut req = request(s).await;
         req.request_key = "creative".into();

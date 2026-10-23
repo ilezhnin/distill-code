@@ -1461,10 +1461,33 @@ impl BenchmarkService {
                 ));
             }
             let recorded = a.evaluations.len();
-            a = self
+            a = match self
                 .backend
                 .judge(&self.store, a, &v, runner::JudgeStop::manual())
-                .await?;
+                .await
+            {
+                Ok(judged) => judged,
+                Err(error) => {
+                    // A panel may have saved its rendering or paid votes
+                    // before failing. Update that latest receipt, never the
+                    // pre-call copy, and report the original typed error.
+                    let recorded = async {
+                        let mut latest = self.store.attempt(id).await?;
+                        latest.reason = Some(runner::judge_error_reason(&error));
+                        self.store.save_attempt(&latest).await
+                    }
+                    .await;
+                    if let Err(recording) = recorded {
+                        log::warn!(
+                            "[benchmarks] could not record manual judging failure for {id}: {}",
+                            recording.message
+                        );
+                    } else {
+                        self.changed().await;
+                    }
+                    return Err(error);
+                }
+            };
             if !a.evaluations[recorded.min(a.evaluations.len())..]
                 .iter()
                 .any(|e| e.provenance == "render")
