@@ -120,10 +120,16 @@ import { mkdirSync as distillBenchmarkMkdir, writeFileSync as distillBenchmarkWr
 function distillBenchmarkAccountConfig(configPath) {
 \tconst account = JSON.parse(readFileSync("/tmp/provider/config.json", "utf8"));
 \tconst config = Object.fromEntries(
-\t\t["default_provider", "default_model", "providers", "models"]
+\t\t["default_provider", "default_model", "providers"]
 \t\t\t.filter((key) => account[key] !== undefined)
 \t\t\t.map((key) => [key, account[key]])
 \t);
+\tconfig.models = JSON.parse(process.env.DISTILL_BENCH_KIMI_MODELS ?? "null");
+\tif (!config.models || Array.isArray(config.models) || !Object.keys(config.models).length ||
+\t\tObject.values(config.models).some((model) => !model || !config.providers?.[model.provider])) {
+\t\tthrow new Error("capability_missing: shared Kimi model catalogue unavailable for this account");
+\t}
+\tif (!config.models[config.default_model]) config.default_model = Object.keys(config.models)[0];
 \tdistillBenchmarkMkdir(dirname(configPath), { recursive: true, mode: 0o700 });
 \tdistillBenchmarkWriteFile(configPath, stringify$1(config), { mode: 0o600 });
 }

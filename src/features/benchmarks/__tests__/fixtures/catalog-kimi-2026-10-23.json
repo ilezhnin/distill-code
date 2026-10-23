@@ -1,0 +1,36 @@
+[
+  {
+    "id": "seed-moonshot-k3.1-pro-2026-10-23",
+    "kind": "model",
+    "providerId": "kimi-acp",
+    "vendor": "Moonshot AI",
+    "cacheReadPerMillion": 0.2,
+    "contextTokens": 1048576,
+    "effectiveFrom": 1792713600000,
+    "checkedAt": 1792713600000,
+    "source": "https://platform.kimi.ai/docs/pricing/chat ; https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart ; cache writes: default 5m TTL",
+    "needle": "k3.1-pro",
+    "displayName": "Kimi K3.1 Pro",
+    "inputPerMillion": 2,
+    "outputPerMillion": 10,
+    "cacheWritePerMillion": 2,
+    "createdAt": 1792713600000
+  },
+  {
+    "id": "seed-moonshot-k3.1-pro-highspeed-2026-10-23",
+    "kind": "model",
+    "providerId": "kimi-acp",
+    "vendor": "Moonshot AI",
+    "cacheReadPerMillion": 0.2,
+    "contextTokens": 1048576,
+    "effectiveFrom": 1792713600000,
+    "checkedAt": 1792713600000,
+    "source": "https://platform.kimi.ai/docs/pricing/chat ; https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart ; cache writes: default 5m TTL",
+    "needle": "k3.1-pro-highspeed",
+    "displayName": "Kimi K3.1 Pro Highspeed",
+    "inputPerMillion": 4,
+    "outputPerMillion": 20,
+    "cacheWritePerMillion": 4,
+    "createdAt": 1792713600001
+  }
+]

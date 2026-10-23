@@ -1520,6 +1520,19 @@ impl Inner {
                 } else {
                     text_execution::launch(request, owned.provider, revision.to_owned())
                 };
+                if owned.provider == NativeProvider::Kimi {
+                    let models = ext::known_models(&self.store, harness_id, account_id).await;
+                    let catalog =
+                        super::kimi::sandbox_catalog(&models).map_err(protocol::internal)?;
+                    let separator = launch
+                        .args
+                        .iter()
+                        .position(|arg| arg == "--")
+                        .expect("isolated launch command separator");
+                    launch
+                        .args
+                        .insert(separator, format!("DISTILL_BENCH_KIMI_MODELS={catalog}"));
+                }
                 let deadline = chrono::Utc::now().timestamp_millis().max(0) as u64
                     + owned.turn_limit_ms
                     + 480_000;
@@ -6596,7 +6609,7 @@ impl Inner {
         }
     }
 
-    async fn owned_lock(&self, key: &str) -> Arc<Mutex<()>> {
+    pub(super) async fn owned_lock(&self, key: &str) -> Arc<Mutex<()>> {
         Arc::clone(
             self.owned_locks
                 .lock()
@@ -7527,6 +7540,9 @@ impl Inner {
         Box::pin(async move {
             let native = NativeProvider::for_harness(provider)
                 .ok_or("capability_missing: provider has no isolated benchmark runtime")?;
+            let catalog = ext::model_inventory(self, provider, Some(account), refresh)
+                .await
+                .map_err(|error| error_text(&error))?;
             // The listing runs on a lease of the account's Flock sign-in:
             // one too short for its session below, or whose renewal waits,
             // is renewed first.
@@ -7543,8 +7559,9 @@ impl Inner {
             let status = text_execution::readiness(native, account).await?;
             let revision = text_execution::revision(native, &status);
             let cache_key = format!(
-                "{}\u{1f}{revision}",
-                account_route_key(provider, Some(account))
+                "{}\u{1f}{revision}\u{1f}{}",
+                account_route_key(provider, Some(account)),
+                execution::digest(execution::canonical_json(&catalog["models"]))
             );
             let inventory_lock = self.owned_lock(&format!("inventory:{cache_key}")).await;
             let _inventory_guard = inventory_lock.lock().await;
@@ -7636,7 +7653,8 @@ impl Inner {
                         bridge.close_session(&session).await;
                     }
                 };
-                let models = Self::probe_model_rows(&opened, select, close).await;
+                let observed = Self::probe_model_rows(&opened, select, close).await;
+                let models = ext::benchmark_models(&catalog, &observed);
                 bridge.stop_sandbox().await?;
                 Ok::<_, String>((
                     models,
@@ -8087,10 +8105,13 @@ impl Inner {
                 }
             }
         };
-        Ok((
-            Self::probe_model_rows(&opened, select, close).await,
-            probed_on,
-        ))
+        let mut models = Self::probe_model_rows(&opened, select, close).await;
+        if harness_id == "kimi-acp" {
+            let env = self.spawn_env().await;
+            let catalog = super::kimi::model_catalog(&env.shell_env).map_err(protocol::internal)?;
+            super::kimi::annotate_models(&mut models, &catalog);
+        }
+        Ok((models, probed_on))
     }
 
     /// Walk a throwaway session's model list. `select` puts the session on

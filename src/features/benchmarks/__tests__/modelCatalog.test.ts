@@ -8,6 +8,7 @@ import {
 import type { CatalogEntry } from "../types";
 import { configuration } from "./fixtures";
 import vendorSeeds from "./fixtures/catalog-seeds-2026-10-03.json";
+import kimiRelease from "./fixtures/catalog-kimi-2026-10-23.json";
 
 function entry(overrides: Partial<CatalogEntry>): CatalogEntry {
   return {
@@ -99,6 +100,47 @@ describe("model catalog resolution", () => {
 describe("vendor seed sets", () => {
   // The rows the Rust catalog seeds; its test compares them field by field.
   const seeds = vendorSeeds as CatalogEntry[];
+
+  it("shows Kimi Pro and Highspeed with their own prices and context in either catalog order", () => {
+    const catalog = [...seeds, ...kimiRelease] as CatalogEntry[];
+    for (const entries of [catalog, [...catalog].reverse()]) {
+      for (const [model, price] of [
+        ["k3.1-pro", "$2 / $10"],
+        ["k3.1-pro-highspeed", "$4 / $20"],
+      ]) {
+        const found = resolveCatalogEntry(
+          entries,
+          { providerId: "kimi-acp", modelId: `kimi-code/${model}` },
+          null,
+          null,
+        );
+        expect(found?.id).toBe(`seed-moonshot-${model}-2026-10-23`);
+        expect(formatPrice(found)).toBe(price);
+        expect(formatContext(found?.contextTokens)).toBe("1.05M");
+        expect(found?.cacheReadPerMillion).toBe(0.2);
+      }
+      const old = { providerId: "kimi-acp", modelId: "kimi-code/k3" };
+      expect(formatPrice(resolveCatalogEntry(entries, old, "K3", null))).toBe(
+        "$3 / $15",
+      );
+      expect(
+        resolveCatalogEntry(
+          entries,
+          old,
+          "K3",
+          kimiRelease[0].effectiveFrom - 1,
+        )?.id,
+      ).toBe("seed-moonshot-k3");
+      expect(
+        resolveCatalogEntry(
+          entries,
+          { providerId: "claude-acp", modelId: "kimi-code/k3.1-pro" },
+          null,
+          null,
+        ),
+      ).toBeNull();
+    }
+  });
 
   it("each seed resolves only its models", () => {
     const cases: [string, string, string, string | null][] = [

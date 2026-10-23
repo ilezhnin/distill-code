@@ -19,6 +19,123 @@ use super::{
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Public model definitions from the same CLI configuration chats use. Only
+/// declared model fields cross into an isolated runtime: no providers, URLs,
+/// credentials, hooks or user configuration. The account there keeps its own
+/// sign-in and provider connection.
+pub(super) fn model_catalog(env: &HashMap<String, String>) -> Result<Value, String> {
+    let home = crate::services::env_key::get(env, "KIMI_CODE_HOME")
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".kimi-code")))
+        .ok_or("Kimi Code home is unknown")?;
+    let path = home.join("config.toml");
+    if std::fs::metadata(&path)
+        .map_err(|_| "Kimi model configuration is unavailable")?
+        .len()
+        > 1024 * 1024
+    {
+        return Err("Kimi model configuration exceeds its size limit".into());
+    }
+    let raw =
+        std::fs::read_to_string(path).map_err(|_| "Kimi model configuration is unavailable")?;
+    public_model_catalog(&raw)
+}
+
+fn public_model_catalog(raw: &str) -> Result<Value, String> {
+    let config: toml::Value =
+        toml::from_str(raw).map_err(|_| "Kimi model configuration is invalid")?;
+    let mut models = serde_json::Map::new();
+    for (id, model) in config
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flatten()
+    {
+        if !id.starts_with("kimi-code/")
+            || model.get("provider").and_then(toml::Value::as_str) != Some("managed:kimi-code")
+        {
+            continue;
+        }
+        let Some(name) = model
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .filter(|name| {
+                !name.is_empty() && name.len() <= 160 && !name.chars().any(char::is_control)
+            })
+        else {
+            continue;
+        };
+        let mut entry = json!({"provider":"managed:kimi-code", "model":name});
+        for key in [
+            "max_context_size",
+            "capabilities",
+            "display_name",
+            "support_efforts",
+            "default_effort",
+        ] {
+            if let Some(value) = model.get(key) {
+                let valid_text = |value: &toml::Value| {
+                    value.as_str().is_some_and(|text| {
+                        text.len() <= 160 && !text.chars().any(char::is_control)
+                    })
+                };
+                let valid = match key {
+                    "max_context_size" => value
+                        .as_integer()
+                        .is_some_and(|size| (1..=i64::from(u32::MAX)).contains(&size)),
+                    "capabilities" | "support_efforts" => value
+                        .as_array()
+                        .is_some_and(|values| values.len() <= 32 && values.iter().all(valid_text)),
+                    _ => valid_text(value),
+                };
+                if !valid {
+                    return Err("Kimi model definition has an invalid public field".into());
+                }
+                entry[key] =
+                    serde_json::to_value(value).map_err(|_| "Kimi model definition is invalid")?;
+            }
+        }
+        models.insert(id.clone(), entry);
+    }
+    Ok(Value::Object(models))
+}
+
+pub(super) fn annotate_models(rows: &mut [Value], catalog: &Value) {
+    for row in rows {
+        let model = row["id"].as_str().and_then(|id| catalog.get(id));
+        let context = model
+            .and_then(|model| model["max_context_size"].as_u64())
+            .filter(|context| *context > 0);
+        let configured = model.cloned().unwrap_or(Value::Null);
+        row["contextLimit"] = json!(context);
+        row["kimiModel"] = configured;
+    }
+}
+
+pub(super) fn sandbox_catalog(rows: &[Value]) -> Result<String, String> {
+    let models: serde_json::Map<String, Value> = rows
+        .iter()
+        .filter_map(|row| {
+            let id = row["id"].as_str()?;
+            let model = row.get("kimiModel").filter(|model| model.is_object())?;
+            Some((id.to_owned(), model.clone()))
+        })
+        .collect();
+    if models.is_empty() {
+        return Err(
+            "capability_missing: refresh Kimi's shared model catalogue before starting a benchmark"
+                .into(),
+        );
+    }
+    let serialized = serde_json::to_string(&models)
+        .map_err(|_| "Kimi model catalogue could not be serialized")?;
+    if serialized.len() > 16 * 1024 {
+        return Err("capability_missing: Kimi model catalogue exceeds its launch limit".into());
+    }
+    Ok(serialized)
+}
+
 async fn request(method: &str, env: HashMap<String, String>) -> Result<Value, Value> {
     let operation = async {
         let (events, _receiver) = mpsc::unbounded_channel();
@@ -240,6 +357,53 @@ pub(crate) async fn managed_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_kimi_catalogue_projects_new_models_without_account_configuration() {
+        let catalog = public_model_catalog(
+            r#"
+default_model = "kimi-code/future"
+[providers."managed:kimi-code"]
+api_key = "synthetic-secret-must-not-cross"
+[models."kimi-code/future"]
+provider = "managed:kimi-code"
+model = "future"
+display_name = "Future model"
+max_context_size = 1048576
+capabilities = ["thinking", "tool_use"]
+support_efforts = ["low", "max"]
+default_effort = "max"
+api_key = "synthetic-secret-must-not-cross"
+hooks = ["must-not-cross"]
+[models."custom/private"]
+provider = "custom"
+model = "private"
+"#,
+        )
+        .unwrap();
+        let mut rows = vec![
+            json!({"id":"kimi-code/future"}),
+            json!({"id":"custom/private"}),
+        ];
+        annotate_models(&mut rows, &catalog);
+        assert_eq!(rows[0]["contextLimit"], 1048576);
+        assert!(rows[1]["contextLimit"].is_null());
+        let projected = sandbox_catalog(&rows).unwrap();
+        let parsed: Value = serde_json::from_str(&projected).unwrap();
+        assert_eq!(parsed["kimi-code/future"]["model"], "future");
+        assert_eq!(parsed.as_object().unwrap().len(), 1);
+        assert!(!projected.contains("must-not-cross"));
+        assert!(!projected.contains("api_key"));
+        assert!(sandbox_catalog(&[]).is_err());
+        assert!(public_model_catalog(
+            r#"[models."kimi-code/invalid"]
+provider = "managed:kimi-code"
+model = "invalid"
+capabilities = [{ api_key = "not-a-capability" }]
+"#
+        )
+        .is_err());
+    }
 
     fn usage_server(
         paths: &[&'static str],

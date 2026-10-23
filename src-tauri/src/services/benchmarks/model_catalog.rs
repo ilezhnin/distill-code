@@ -23,6 +23,9 @@ const ANTHROPIC_CONTEXT_CHECKED_AT: i64 = 1_792_627_200_000;
 const VENDOR_SEEDS_CHECKED_AT: i64 = 1_791_028_800_000;
 /// 2026-10-05T12:00:00Z: the day the estimates for unpriced models were set.
 const ESTIMATES_CHECKED_AT: i64 = 1_791_201_600_000;
+/// 2026-10-23T00:00:00Z: K3.1 Pro and Highspeed were available in Kimi Code
+/// and their public API prices were checked on this date.
+const KIMI_K3_1_CHECKED_AT: i64 = 1_792_713_600_000;
 
 /// The model entry that applied to `configuration` at `at`, as
 /// `lib/modelCatalog.ts` resolves it: an entry of its provider or of none,
@@ -99,7 +102,39 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
         ("estimates-2026-10-05", estimate_seeds()),
         ("anthropic-2026-10-22", anthropic_context_seeds()),
         ("contexts-2026-10-22", context_seeds_2026_10_22()),
+        ("moonshot-2026-10-23", moonshot_seeds_2026_10_23()),
     ]
+}
+
+/// Separate release rows: the older `kimi-code/k3` needle also matches
+/// K3.1, but its name and prices must not describe the new generation.
+/// Highspeed follows Pro to win their shared needle. Cache writes use the
+/// provider's default 5-minute TTL, as with the existing K3 catalog row.
+fn moonshot_seeds_2026_10_23() -> Vec<CatalogEntry> {
+    [
+        ("k3.1-pro", "Kimi K3.1 Pro", 2.0, 10.0),
+        ("k3.1-pro-highspeed", "Kimi K3.1 Pro Highspeed", 4.0, 20.0),
+    ]
+    .into_iter()
+    .zip(0i64..)
+    .map(|((model, name, input, output), position)| CatalogEntry {
+        id: format!("seed-moonshot-{model}-2026-10-23"),
+        kind: "model".into(),
+        provider_id: Some("kimi-acp".into()),
+        needle: model.into(),
+        display_name: Some(name.into()),
+        vendor: Some("Moonshot AI".into()),
+        input_per_million: Some(input),
+        output_per_million: Some(output),
+        cache_read_per_million: Some(0.20),
+        cache_write_per_million: Some(input),
+        context_tokens: Some(1_048_576),
+        effective_from: KIMI_K3_1_CHECKED_AT,
+        checked_at: KIMI_K3_1_CHECKED_AT,
+        source: format!("{MOONSHOT_PRICING} ; https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart ; cache writes: default 5m TTL"),
+        created_at: KIMI_K3_1_CHECKED_AT + position,
+    })
+    .collect()
 }
 
 /// Rows checked on 2026-10-22 for models the board showed without a
@@ -594,7 +629,8 @@ mod tests {
                 "moonshot-2026-10-03",
                 "estimates-2026-10-05",
                 "anthropic-2026-10-22",
-                "contexts-2026-10-22"
+                "contexts-2026-10-22",
+                "moonshot-2026-10-23"
             ]
         );
         for seed in context_seeds_2026_10_22() {
@@ -623,6 +659,18 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(serde_json::to_value(&vendors).unwrap(), fixture);
+        let kimi_release = moonshot_seeds_2026_10_23();
+        let fixture: Vec<CatalogEntry> = serde_json::from_str(include_str!(
+            "../../../../src/features/benchmarks/__tests__/fixtures/catalog-kimi-2026-10-23.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&kimi_release).unwrap(),
+            serde_json::to_value(&fixture).unwrap()
+        );
+        for seed in &kimi_release {
+            validate(seed).unwrap();
+        }
         let mut ids = std::collections::HashSet::new();
         for seed in &vendors {
             validate(seed).unwrap();
@@ -818,6 +866,46 @@ mod tests {
         let entry = resolve(&entries, &sonnet_5_5, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
         assert_eq!(entry.id, "seed-anthropic-sonnet-5-5-2026-10-22");
         assert_eq!(entry.display_name.as_deref(), Some("Claude Sonnet 5.5"));
+    }
+
+    #[test]
+    fn kimi_pro_and_highspeed_keep_distinct_prices_without_repricing_k3() {
+        let entries: Vec<_> = seed_sets()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        for (model, input, output) in [("k3.1-pro", 2.0, 10.0), ("k3.1-pro-highspeed", 4.0, 20.0)] {
+            let configuration = Configuration {
+                model_id: format!("kimi-code/{model}"),
+                model_name: None,
+                ..k3()
+            };
+            let entry = resolve(&entries, &configuration, KIMI_K3_1_CHECKED_AT).unwrap();
+            assert_eq!(entry.id, format!("seed-moonshot-{model}-2026-10-23"));
+            assert_eq!(entry.context_tokens, Some(1_048_576));
+            assert_eq!(entry.input_per_million, Some(input));
+            assert_eq!(entry.output_per_million, Some(output));
+            assert_eq!(entry.cache_read_per_million, Some(0.20));
+            assert_eq!(entry.cache_write_per_million, Some(input));
+            let usage = TokenUsage {
+                input: Some(1_000_000),
+                output: Some(1_000_000),
+                cache_read: Some(1_000_000),
+                cache_write: Some(1_000_000),
+                ..Default::default()
+            };
+            assert_eq!(list_cost(entry, &usage), Some(input * 2.0 + output + 0.20));
+        }
+        let old = resolve(&entries, &k3(), KIMI_K3_1_CHECKED_AT).unwrap();
+        assert_eq!(old.id, "seed-moonshot-k3-2026-10-22");
+        assert_eq!(old.input_per_million, Some(3.0));
+        assert_eq!(old.output_per_million, Some(15.0));
+        assert_eq!(
+            old.id,
+            resolve(&entries, &k3(), VENDOR_SEEDS_CHECKED_AT)
+                .unwrap()
+                .id
+        );
     }
 
     /// The K3 rows share a needle: the 256K window resolves to its own row,

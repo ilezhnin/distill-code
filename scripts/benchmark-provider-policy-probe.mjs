@@ -2164,7 +2164,7 @@ async function probeKimi(root, children) {
     await writeFile(
       "/tmp/provider/config.json",
       JSON.stringify({
-        default_model: model,
+        default_model: "probe/obsolete",
         providers: {
           probe: {
             type: "kimi",
@@ -2173,9 +2173,9 @@ async function probeKimi(root, children) {
           },
         },
         models: {
-          [model]: {
+          "probe/obsolete": {
             provider: "probe",
-            model: "kimi-probe",
+            model: "obsolete",
             max_context_size: 262144,
           },
         },
@@ -2199,6 +2199,17 @@ async function probeKimi(root, children) {
       USERPROFILE: osHome,
       HOME: osHome,
       KIMI_CODE_HOME: kimiHome,
+      ...(linux
+        ? {
+            DISTILL_BENCH_KIMI_MODELS: JSON.stringify({
+              [model]: {
+                provider: "probe",
+                model: "kimi-probe",
+                max_context_size: 262144,
+              },
+            }),
+          }
+        : {}),
     };
     const restricted = startBridge(
       children,
@@ -2214,6 +2225,16 @@ async function probeKimi(root, children) {
         cwd: workspace,
         mcpServers: [],
       });
+      if (linux && client === restricted) {
+        const choices = opened.configOptions.find(
+          (option) => option.id === "model",
+        ).options;
+        assert.deepEqual(
+          choices.map((choice) => choice.value),
+          [model],
+          "Kimi uses the shared catalogue, never the account's old model list",
+        );
+      }
       await client.call("session/set_mode", {
         sessionId: opened.sessionId,
         modeId: policy.permissionMode,

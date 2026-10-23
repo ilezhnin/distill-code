@@ -418,27 +418,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 &provider_id,
                 params.get("accountId").and_then(Value::as_str),
             )?;
-            let cached = cached_inventory(host, &provider_id, account_id.as_deref()).await;
-            let serving = host
-                .serving_executable(&provider_id, account_id.as_deref())
-                .await;
-            let (models, updated_at) = if cached.models.is_empty()
-                || !inventory_is_fresh(&cached, &serving, chrono::Utc::now().timestamp())
-            {
-                if !cached.models.is_empty() {
-                    log::info!(
-                        "[agent-host] {provider_id} model inventory expired or its executable changed; probing it again"
-                    );
-                }
-                let (models, updated_at) =
-                    refresh_models(host, &provider_id, account_id.as_deref()).await?;
-                (models, Some(updated_at))
-            } else {
-                (cached.models, cached.updated_at)
-            };
-            let mut response = inventory_response(&provider_id, models, updated_at.as_deref());
-            response["accountId"] = json!(account_id);
-            Ok(response)
+            model_inventory(host, &provider_id, account_id.as_deref(), false).await
         }
         "providers/inventory/refresh" => {
             let provider_id = params
@@ -450,11 +430,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 &provider_id,
                 params.get("accountId").and_then(Value::as_str),
             )?;
-            let (models, updated_at) =
-                refresh_models(host, &provider_id, account_id.as_deref()).await?;
-            let mut response = inventory_response(&provider_id, models, Some(&updated_at));
-            response["accountId"] = json!(account_id);
-            Ok(response)
+            model_inventory(host, &provider_id, account_id.as_deref(), true).await
         }
 
         // --- sources -------------------------------------------------------
@@ -502,7 +478,60 @@ const INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// whenever the models Flock itself contributes change -- those are merged
 /// in at request time and never touch the probe's `updatedAt`, so without this
 /// a renderer holding a cached list has no way to notice them.
-const SHAPE_REVISION: u32 = 6;
+const SHAPE_REVISION: u32 = 7;
+
+/// One account catalogue for chats and benchmark candidates. Runtime probes
+/// validate this list; they do not own a second list of model identities.
+pub(super) async fn model_inventory(
+    host: &Arc<Inner>,
+    provider: &str,
+    account: Option<&str>,
+    refresh: bool,
+) -> Result<Value, Value> {
+    let lock = host
+        .owned_lock(&format!(
+            "model-catalog:{}",
+            super::router::account_route_key(provider, account)
+        ))
+        .await;
+    let _guard = lock.lock().await;
+    let cached = cached_inventory(host, provider, account).await;
+    let serving = host.serving_executable(provider, account).await;
+    let (models, updated_at) = if refresh
+        || cached.models.is_empty()
+        || !inventory_is_fresh(&cached, &serving, chrono::Utc::now().timestamp())
+        || (provider == "kimi-acp"
+            && cached
+                .models
+                .iter()
+                .any(|row| row.get("contextLimit").is_none()))
+    {
+        let (models, updated_at) = refresh_models(host, provider, account).await?;
+        (models, Some(updated_at))
+    } else {
+        (cached.models, cached.updated_at)
+    };
+    let mut response = inventory_response(provider, models, updated_at.as_deref());
+    response["accountId"] = json!(account);
+    Ok(response)
+}
+
+/// Preserve canonical names, order and context while recording what the
+/// isolated runtime actually supports. A missing model stays visible with a
+/// reason, rather than silently disappearing from the benchmark picker.
+pub(super) fn benchmark_models(catalog: &Value, runtime: &[Value]) -> Vec<Value> {
+    catalog["models"].as_array().into_iter().flatten().map(|model| {
+        let mut row = model.clone();
+        if let Some(observed) = runtime.iter().find(|candidate| candidate["id"] == model["id"]) {
+            for key in ["efforts", "defaultEffort", "supportsFast", "capabilitySource"] {
+                row[key] = observed[key].clone();
+            }
+        } else {
+            row["unavailable"] = json!("The installed benchmark runtime does not advertise this model. Refresh or update its runtime.");
+        }
+        row
+    }).collect()
+}
 
 /// The answer every model-list endpoint returns.
 ///
@@ -809,6 +838,29 @@ fn transcript_messages(events: &[Value]) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn benchmarks_use_shared_models_and_keep_runtime_support_separate() {
+        let catalog = json!({"models":[
+            {"id":"future","name":"Current name","contextLimit":1048576,"efforts":[{"value":"max"}]},
+            {"id":"new","name":"New release","contextLimit":2000000}
+        ]});
+        let runtime = vec![
+            json!({"id":"future","name":"Old name","efforts":[{"value":"low"}],"supportsFast":false,"capabilitySource":"probed"}),
+            json!({"id":"retired","name":"Retired model"}),
+        ];
+        let rows = benchmark_models(&catalog, &runtime);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "Current name");
+        assert_eq!(rows[0]["contextLimit"], 1048576);
+        assert_eq!(rows[0]["efforts"], json!([{"value":"low"}]));
+        assert!(rows[0].get("unavailable").is_none());
+        assert_eq!(rows[1]["id"], "new");
+        assert!(rows[1]["unavailable"].is_string());
+        let refreshed =
+            benchmark_models(&catalog, &[json!({"id":"new","capabilitySource":"probed"})]);
+        assert!(refreshed[1].get("unavailable").is_none());
+    }
 
     fn executable(modified: u64) -> Value {
         json!({ "path": "C:\\Users\\dev\\.grok\\bin\\grok.exe", "len": 153720832, "modified": modified })

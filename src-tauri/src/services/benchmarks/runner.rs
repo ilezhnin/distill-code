@@ -3547,6 +3547,9 @@ impl NativeBackend {
                     .and_then(Value::as_str)?;
                 let efforts = offered_efforts(row, excluded);
                 let name = row["name"].as_str().unwrap_or(id);
+                let reason = unavailable
+                    .clone()
+                    .or_else(|| row["unavailable"].as_str().map(str::to_owned));
                 Some(InventoryModel {
                     configuration: Configuration {
                         id: format!("{provider}:{account}:{id}"),
@@ -3565,8 +3568,8 @@ impl NativeBackend {
                     name: name.into(),
                     efforts,
                     supports_fast_mode: row["supportsFast"].as_bool().unwrap_or(false),
-                    available: unavailable.is_none(),
-                    reason: unavailable.clone(),
+                    available: reason.is_none(),
+                    reason,
                 })
             })
             .collect();
@@ -3588,8 +3591,8 @@ impl NativeBackend {
                     row.configuration.inventory_revision = revision.as_ref().map(|runtime| {
                         repository_inventory_revision(runtime, result, &row.configuration.model_id)
                     });
-                    row.available = reason.is_none();
-                    row.reason = reason.clone();
+                    row.reason = reason.clone().or(row.reason);
+                    row.available = row.reason.is_none();
                     row
                 })
                 .collect::<Vec<_>>();
@@ -15223,6 +15226,16 @@ mod tests {
     /// unsupported, not a broken bridge; a sign-in failure names no model.
     #[test]
     fn a_provider_refusing_the_model_makes_the_configuration_unsupported() {
+        let pro_highspeed = json!({"code": -32000,
+            "message": "Authentication required: 403 Your current subscription does not have access to k3.1-pro-highspeed. Upgrade to higher-tier Kimi Code plans."});
+        assert_eq!(
+            terminal_outcome(&pro_highspeed, "kimi-code/k3.1-pro-highspeed"),
+            "unsupported"
+        );
+        assert_eq!(
+            terminal_outcome(&pro_highspeed, "kimi-code/k3.1-pro"),
+            "infrastructure_failure"
+        );
         let refused = json!({"code": -32000,
             "data": {"accountId": "cli-login-kimi-acp", "dispatchStarted": true, "promptNotAccepted": false},
             "message": "Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed. Upgrade to higher-tier Kimi Code plans. Upgrade: Upgrade: https://www.kimi.com/code?from=server_highspeed_error#pricing"});
