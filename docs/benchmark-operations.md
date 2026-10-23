@@ -1123,6 +1123,15 @@ when new session events were last observed; hover for the detailed state.
 The clock includes preparation and waiting. Quiet activity or an unavailable
 check alone does not establish a hung model.
 
+Ordinary model runs also show the current child of each admitted workflow,
+including while a pause drains its dependent steps. The strip shows up to three
+active workflows; the run drawer shows the remaining admitted workflows. This
+view uses the same run-summary snapshot as the overall counts, with only step
+identity, phase, clock and model metadata. It does not load full workflow traces
+or change saved root evidence. Finishing the steps displays grading until the
+root verdict settles. Paused runs do not display a historical child as active;
+an unavailable summary refresh is reported as unavailable.
+
 ### Class certificates from held-out evaluations
 
 A class is certified for ordinary chats and waves by a passing held-out

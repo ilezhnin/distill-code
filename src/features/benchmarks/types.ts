@@ -284,6 +284,27 @@ export interface RunSummary {
   attention?: { outcome: string | null; reason: string } | null;
   /** Recorded result of the sole retained terminal workflow root, independent of run lifecycle. */
   workflowResult?: { outcome: string; reason: string | null } | null;
+  /** Entered workflows still executing or collecting; absent on older hosts. */
+  workflowActivity?: WorkflowActivity[];
+}
+/** Summary metadata only: no prompts, outputs, decisions, or grading evidence. */
+export interface WorkflowActivity {
+  rootAttemptId: string;
+  versionId: string;
+  phase: string;
+  outcome: string | null;
+  steps: WorkflowActivityStep[];
+}
+export interface WorkflowActivityStep {
+  attemptId: string;
+  index: number;
+  phase: string;
+  outcome: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  sessionId: string | null;
+  hostRunId: string | null;
+  configuration: Configuration;
 }
 /** A requested configuration and case an unfinished run has yet to settle. */
 export interface OpenRunCell {

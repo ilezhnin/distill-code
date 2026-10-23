@@ -44,7 +44,10 @@ import {
   type TaskReference,
 } from "./BenchmarkTaskGrid";
 import { FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
-import { BenchmarkWorkflowProgress } from "./BenchmarkWorkflowProgress";
+import {
+  BenchmarkWorkflowActivity,
+  BenchmarkWorkflowProgress,
+} from "./BenchmarkWorkflowProgress";
 
 /** The model a configuration runs, whatever its execution profile. */
 function modelIdentity(configuration: Configuration): string {
@@ -315,6 +318,14 @@ export function BenchmarkRunDrawer({
               </div>
               {run.request.workflowPolicy ? (
                 <BenchmarkWorkflowProgress runId={run.id} />
+              ) : summary?.workflowActivity?.length &&
+                [
+                  "running",
+                  "pausing",
+                  "cancelling",
+                  "needs_attention",
+                ].includes(run.state) ? (
+                <BenchmarkWorkflowActivity run={summary} />
               ) : null}
               <div className="max-h-[60vh] space-y-6 overflow-y-auto">
                 {grids.map((grid) => (

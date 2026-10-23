@@ -29,7 +29,10 @@ import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
 import type { LeaderboardRow, RunSummary } from "../types";
 import { StateBadge } from "./BenchmarkPrimitives";
-import { BenchmarkWorkflowProgress } from "./BenchmarkWorkflowProgress";
+import {
+  BenchmarkWorkflowActivity,
+  BenchmarkWorkflowProgress,
+} from "./BenchmarkWorkflowProgress";
 
 /** The models one run names before the rest are counted. */
 const SHOWN_MODELS = 3;
@@ -251,6 +254,9 @@ export function BenchmarkActivity({
                     />
                     {attentionLabel(t, run)}
                   </span>
+                ) : null}
+                {run.workflowActivity?.length ? (
+                  <BenchmarkWorkflowActivity run={run} compact />
                 ) : null}
               </button>
               {/* Steering without opening the run: Pause while it runs,

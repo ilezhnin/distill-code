@@ -525,6 +525,9 @@ impl Store {
     }
     /// Recent history needs plans and counts, never serialized attempt evidence.
     pub async fn runs(&self) -> Result<Vec<RunSummary>> {
+        // The count and live-child projections share one read snapshot. A step
+        // completing between them must not make an older root look active.
+        let mut tx = self.pool.begin().await?;
         let rows = sqlx::query(
             "WITH recent_runs AS MATERIALIZED (
                 SELECT * FROM run_plans ORDER BY created_at DESC,id LIMIT 100
@@ -598,8 +601,11 @@ impl Store {
                 )
              FROM recent_runs r ORDER BY r.created_at DESC,r.id LIMIT 100",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        let run_ids: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+        let mut workflow_activity = workflow_activity(&mut tx, &run_ids).await?;
+        tx.commit().await?;
         rows.into_iter()
             .map(|r| {
                 Ok(RunSummary {
@@ -622,6 +628,9 @@ impl Store {
                     workflow_result: r
                         .get::<Option<String>, _>(12)
                         .and_then(|raw| serde_json::from_str(&raw).ok()),
+                    workflow_activity: workflow_activity
+                        .remove(r.get::<&str, _>(0))
+                        .unwrap_or_default(),
                 })
             })
             .collect()
@@ -1459,6 +1468,64 @@ fn run_attention(raw: Option<String>) -> Option<RunAttention> {
     })
 }
 
+/// Only entered roots can contribute live child metadata. The run/phase index
+/// narrows roots before any manifest is read; each child lookup uses the unique
+/// root/index key. Protected step inputs and outputs never leave SQLite.
+const WORKFLOW_ACTIVITY_SQL: &str = "WITH selected_roots AS MATERIALIZED (
+    SELECT a.id,a.run_id,a.version_id,a.phase,a.rowid AS root_order,
+        json_extract(a.data_json,'$.outcome') AS outcome
+    FROM json_each(?) listed
+    JOIN run_plans r ON r.id=listed.value
+    JOIN attempts a ON a.run_id=r.id
+    WHERE r.state IN ('running','pausing','cancelling','needs_attention')
+        AND a.phase IN ('preparing','dispatching','running','collecting')
+        AND json_extract(a.data_json,'$.startedAt') IS NOT NULL
+        AND COALESCE(json_extract(a.data_json,'$.outcome'),'')<>'superseded'
+    )
+    SELECT a.run_id,a.id,a.version_id,a.phase,a.outcome,
+        (SELECT json_group_array(json(step)) FROM (
+            SELECT json_object(
+                'attemptId',s.attempt_id,'index',s.step_index,'phase',s.phase,
+                'outcome',json_extract(s.data_json,'$.outcome'),
+                'startedAt',json_extract(s.data_json,'$.startedAt'),
+                'finishedAt',json_extract(s.data_json,'$.finishedAt'),
+                'sessionId',json_extract(s.data_json,'$.sessionId'),
+                'hostRunId',json_extract(s.data_json,'$.hostRunId'),
+                'configuration',json(COALESCE(json_extract(s.data_json,'$.observed'),
+                    json_extract(s.data_json,'$.configuration')))) AS step
+            FROM workflow_steps s WHERE s.root_attempt_id=a.id ORDER BY s.step_index
+        ))
+    FROM selected_roots a JOIN benchmark_versions v ON v.id=a.version_id
+    WHERE json_type(v.manifest_json,'$.workflow')='object'
+    ORDER BY a.root_order";
+
+async fn workflow_activity(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_ids: &[String],
+) -> Result<HashMap<String, Vec<WorkflowActivity>>> {
+    let mut activity: HashMap<String, Vec<WorkflowActivity>> = HashMap::new();
+    if run_ids.is_empty() {
+        return Ok(activity);
+    }
+    let rows = sqlx::query(WORKFLOW_ACTIVITY_SQL)
+        .bind(serde_json::to_string(run_ids)?)
+        .fetch_all(&mut **tx)
+        .await?;
+    for row in rows {
+        activity
+            .entry(row.get(0))
+            .or_default()
+            .push(WorkflowActivity {
+                root_attempt_id: row.get(1),
+                version_id: row.get(2),
+                phase: row.get(3),
+                outcome: row.get(4),
+                steps: serde_json::from_str(row.get(5))?,
+            });
+    }
+    Ok(activity)
+}
+
 fn open_cells(rows: Option<&str>) -> Vec<OpenRunCell> {
     rows.and_then(|rows| serde_json::from_str::<Vec<(String, String, i64)>>(rows).ok())
         .unwrap_or_default()
@@ -1575,6 +1642,9 @@ pub async fn event(
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod workflow_activity_tests;
 
 #[cfg(test)]
 mod tests {

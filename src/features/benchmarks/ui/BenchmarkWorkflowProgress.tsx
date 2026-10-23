@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconActivity, IconClock, IconAlertCircle } from "@tabler/icons-react";
@@ -9,7 +9,7 @@ import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import { useBenchmarkSessionActivity } from "../hooks/useBenchmarkSessionActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { modelDisplayName, stateLabel } from "../lib/benchmarkLabels";
-import type { Attempt } from "../types";
+import type { Attempt, RunSummary, WorkflowActivityStep } from "../types";
 import { compactElapsed } from "./BenchmarkTaskGrid";
 import {
   FAILING_OUTCOMES,
@@ -83,13 +83,13 @@ function WorkflowAttemptProgress({
   taskName?: string;
 }) {
   const { t } = useTranslation("benchmarks");
-  const now = useClock();
   const trace = useQuery({
     queryKey: [...benchmarkKeys, "workflow-progress", root.id],
     queryFn: async () => {
       const value = await benchmarkApi.getWorkflowTrace(root.id);
       // Cache only the progress fields, never prompts, outputs or task fixtures.
       return value.steps.map(({ index, attempt }) => ({
+        attemptId: attempt.id,
         index,
         phase: attempt.phase,
         outcome: attempt.outcome,
@@ -113,7 +113,35 @@ function WorkflowAttemptProgress({
         {t("activity.checkUnavailable")}
       </span>
     );
-  const steps = trace.data ?? [];
+  return (
+    <WorkflowProgress
+      root={root}
+      steps={trace.data ?? []}
+      totalSteps={totalSteps}
+      title={title}
+      taskName={taskName}
+    />
+  );
+}
+
+/** Shared rendering; the caller chooses the trace or summary read model. */
+function WorkflowProgress({
+  root,
+  steps,
+  totalSteps,
+  title,
+  taskName,
+  summaryOnly = false,
+}: {
+  root: Pick<Attempt, "phase" | "outcome">;
+  steps: WorkflowActivityStep[];
+  totalSteps?: number;
+  title?: string;
+  taskName?: string;
+  summaryOnly?: boolean;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const now = useClock();
   const settled = steps.filter((step) => step.phase === "terminal").length;
   const current = steps.find((step) => step.phase !== "terminal");
   const total = totalSteps ?? null;
@@ -190,8 +218,16 @@ function WorkflowAttemptProgress({
           <IconClock aria-hidden className="size-3.5" />
           {duration ?? "–"}
         </span>
-        {current?.sessionId && current.hostRunId ? (
-          <SessionActivity sessionId={current.sessionId} />
+        {current?.sessionId &&
+        current.hostRunId &&
+        (!summaryOnly ||
+          ["preparing", "dispatching", "running", "collecting"].includes(
+            current.phase,
+          )) ? (
+          <SessionActivity
+            key={summaryOnly ? current.attemptId : undefined}
+            sessionId={current.sessionId}
+          />
         ) : null}
         {stepCount > 0 ? (
           <svg
@@ -251,6 +287,78 @@ function WorkflowAttemptProgress({
           </svg>
         ) : null}
       </span>
+    </span>
+  );
+}
+
+/** Ordinary mixed runs use only entered workflow metadata from list-runs. */
+export function BenchmarkWorkflowActivity({
+  run,
+  compact = false,
+}: {
+  run: RunSummary;
+  compact?: boolean;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const definitions = useBenchmarkDefinitions();
+  // Observe the existing coalesced list query's failure without another fetch
+  // or per-workflow polling loop. Cached progress is not proof of availability.
+  const summaries = useQuery({
+    queryKey: [...benchmarkKeys, "runs"],
+    queryFn: benchmarkApi.listRuns,
+    enabled: false,
+  });
+  const versions = useMemo(
+    () =>
+      new Map(
+        (definitions.data ?? []).flatMap((definition) =>
+          definition.versions.map((version) => [version.id, version.manifest]),
+        ),
+      ),
+    [definitions.data],
+  );
+  if (
+    !["running", "pausing", "cancelling", "needs_attention"].includes(run.state)
+  )
+    return null;
+  if (summaries.isError)
+    return (
+      <span className="text-xs text-muted-foreground">
+        {t("activity.checkUnavailable")}
+      </span>
+    );
+  const roots = (run.workflowActivity ?? []).filter((root) =>
+    ["preparing", "dispatching", "running", "collecting"].includes(root.phase),
+  );
+  const shown = compact ? roots.slice(0, 3) : roots;
+  if (roots.length === 0) return null;
+  return (
+    <span className="flex min-w-0 flex-col gap-2">
+      {run.state === "pausing" ? (
+        <span className="text-xs text-muted-foreground">
+          {t("activity.draining")}
+        </span>
+      ) : null}
+      <span className="grid max-h-60 grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3 overflow-y-auto">
+        {shown.map((root) => {
+          const manifest = versions.get(root.versionId);
+          return (
+            <WorkflowProgress
+              key={root.rootAttemptId}
+              root={root}
+              steps={root.steps}
+              totalSteps={manifest?.workflow?.steps.length}
+              title={manifest?.name}
+              summaryOnly
+            />
+          );
+        })}
+      </span>
+      {shown.length < roots.length ? (
+        <span className="text-xs text-muted-foreground">
+          {t("activity.more", { count: roots.length - shown.length })}
+        </span>
+      ) : null}
     </span>
   );
 }

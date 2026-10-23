@@ -485,6 +485,33 @@ pub struct RunSummary {
     /// Run lifecycle (including cancellation) does not replace this evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_result: Option<WorkflowRunResult>,
+    /// Current steps of admitted workflow roots, for activity display only.
+    /// Root execution references and sealed evidence are not replaced by this view.
+    #[serde(default)]
+    pub workflow_activity: Vec<WorkflowActivity>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowActivity {
+    pub root_attempt_id: String,
+    pub version_id: String,
+    pub phase: String,
+    pub outcome: Option<String>,
+    pub steps: Vec<WorkflowStepActivity>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepActivity {
+    pub attempt_id: String,
+    pub index: u32,
+    pub phase: String,
+    pub outcome: Option<String>,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub session_id: Option<String>,
+    pub host_run_id: Option<String>,
+    /// The acknowledged selection where present, otherwise the requested one.
+    pub configuration: Configuration,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
