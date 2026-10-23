@@ -1265,15 +1265,7 @@ impl BenchmarkService {
                 }
                 // Run summaries omit output. Change only lifecycle fields so
                 // superseding never erases the stored answer or paid usage.
-                sqlx::query("UPDATE attempts SET phase=?,data_json=json_set(data_json,'$.phase',?,'$.outcome',?,'$.reason',?,'$.finishedAt',?),repetition=-rowid WHERE id=?")
-                    .bind(&dropped.phase)
-                    .bind(&dropped.phase)
-                    .bind(&dropped.outcome)
-                    .bind(&dropped.reason)
-                    .bind(dropped.finished_at)
-                    .bind(&dropped.id)
-                    .execute(&mut **tx)
-                    .await?;
+                Store::supersede_in_transaction(tx, &dropped).await?;
             }
         }
         if !matches!(run.state.as_str(), "completed" | "cancelled") {
@@ -1461,6 +1453,7 @@ impl BenchmarkService {
                 ));
             }
             let recorded = a.evaluations.len();
+            let diagnostic_identity = runner::diagnostics::identity(&a);
             a = match self
                 .backend
                 .judge(&self.store, a, &v, runner::JudgeStop::manual())
@@ -1468,6 +1461,15 @@ impl BenchmarkService {
             {
                 Ok(judged) => judged,
                 Err(error) => {
+                    let error = runner::diagnostics::record(
+                        &self.store,
+                        &diagnostic_identity,
+                        "manual_judging",
+                        error,
+                        None,
+                        serde_json::json!({"source": "manual_rescore"}),
+                    )
+                    .await;
                     // A panel may have saved its rendering or paid votes
                     // before failing. Update that latest receipt, never the
                     // pre-call copy, and report the original typed error.

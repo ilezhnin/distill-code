@@ -23,6 +23,7 @@ use tokio::sync::watch;
 mod account_pace;
 mod admission_window;
 pub mod collection_context;
+pub(super) mod diagnostics;
 mod judge_corrections;
 mod judge_recovery;
 mod judge_watchdog;
@@ -109,10 +110,22 @@ fn prepare_judge(scope: &str, job: &str) -> Result<admission_window::Preparing> 
 /// The current judging failure, including a manual pass outside a running
 /// plan. Saving it must not leave an older pause/cancel reason on the answer.
 pub(super) fn judge_error_reason(error: &BenchmarkError) -> String {
+    let storage_failed = error
+        .details
+        .as_ref()
+        .is_some_and(|details| details["diagnosticPersistenceFailed"] == true);
     if error.code == JUDGE_QUOTA_WAIT {
-        JUDGE_QUOTA_REASON.into()
+        if storage_failed {
+            format!("{JUDGE_QUOTA_REASON}: {}", error.message)
+        } else {
+            JUDGE_QUOTA_REASON.into()
+        }
     } else if error.code == ACCOUNT_BUSY {
-        JUDGES_BUSY.into()
+        if storage_failed {
+            format!("{JUDGES_BUSY}: {}", error.message)
+        } else {
+            JUDGES_BUSY.into()
+        }
     } else if unstarted_refusal(error) || error.code == JUDGE_ADMISSION_WAIT {
         format!("{JUDGE_DISCOVERY_WAIT}: {}", error.message)
     } else {
@@ -1112,6 +1125,73 @@ async fn judge_inventory(
             Some(kept) => Ok((kept.inventory, Some((kept.age, error)))),
             None => Err(error),
         },
+    }
+}
+
+/// Inventory discovery may legitimately proceed after a refused optional
+/// refresh/account. Persist that original refusal before reducing it to a
+/// panel-availability label or returning a usable cached listing.
+async fn preserve_judge_discovery_refusal(
+    target: Option<(&Store, &Attempt)>,
+    provider: &str,
+    account: &str,
+    stage: &str,
+    error: BenchmarkError,
+    judge: Option<&Configuration>,
+) -> Result<BenchmarkError> {
+    let Some((store, attempt)) = target else {
+        return Ok(error);
+    };
+    let error = diagnostics::record(
+        store,
+        attempt,
+        stage,
+        error,
+        judge,
+        json!({"providerId":provider,"accountId":account,"dispatched":false}),
+    )
+    .await;
+    if error
+        .details
+        .as_ref()
+        .is_some_and(|d| d["diagnosticPersistenceFailed"] == true)
+    {
+        // Before dispatch, a failed diagnostic write must remain visible even
+        // when the optional provider would otherwise be silently skipped.
+        return Err(error);
+    }
+    Ok(error)
+}
+
+async fn preserve_judge_listing(
+    target: Option<(&Store, &Attempt)>,
+    provider: &str,
+    account: &str,
+    result: Result<(Value, Option<(Duration, BenchmarkError)>)>,
+) -> Result<(Value, Option<(Duration, BenchmarkError)>)> {
+    match result {
+        Ok((listed, Some((age, error)))) => {
+            let error = preserve_judge_discovery_refusal(
+                target,
+                provider,
+                account,
+                "judge_inventory_refresh",
+                error,
+                None,
+            )
+            .await?;
+            Ok((listed, Some((age, error))))
+        }
+        Err(error) => Err(preserve_judge_discovery_refusal(
+            target,
+            provider,
+            account,
+            "judge_inventory_listing",
+            error,
+            None,
+        )
+        .await?),
+        result => result,
     }
 }
 /// Host errors read "code: reason". Any other text, such as a provider's own
@@ -3333,6 +3413,14 @@ impl PanelJudges for NativePanel<'_, '_> {
                     admission_window::refused(&scope, &job);
                     return Err(error);
                 }
+                Err(error)
+                    if error
+                        .details
+                        .as_ref()
+                        .is_some_and(|details| details["diagnosticPersistenceFailed"] == true) =>
+                {
+                    return Err(error)
+                }
                 // This seat has not created a paid placeholder or dispatched
                 // a turn. Keep the batch's existing votes for its reset.
                 Err(error) if error.code == JUDGE_QUOTA_WAIT => return Err(error),
@@ -3480,16 +3568,22 @@ impl NativeBackend {
         subject: &str,
         provider: &str,
         account: &str,
+        diagnostic_target: Option<(&Store, &Attempt)>,
     ) -> Result<Value> {
         let serving = host.benchmark_serving_executable(provider, account).await;
         let kept = self
             .inventories
             .latest(provider, account, &serving)
             .map(KeptListing::aged);
-        let (listed, refused) =
-            judge_inventory(kept, self.list_inventory(host, run, provider, account)).await?;
-        if let Some((age, error)) = refused {
+        let result = judge_inventory(kept, self.list_inventory(host, run, provider, account)).await;
+        // Keep the original cache retry policy, including when journal storage
+        // itself is temporarily unavailable.
+        if result.as_ref().is_ok_and(|(_, refused)| refused.is_some()) {
             self.inventories.refused(provider, account);
+        }
+        let (listed, refused) =
+            preserve_judge_listing(diagnostic_target, provider, account, result).await?;
+        if let Some((age, error)) = refused {
             log::info!(
                 "[benchmarks] {subject} seats account {account} from its listing of {} s ago: listing it again failed: {}",
                 age.as_secs(),
@@ -3541,6 +3635,7 @@ impl NativeBackend {
                 // The pool holds only entries that may judge this rubric, a
                 // visual one's those that see images.
                 |provider| pool.iter().any(|entry| entry.provider_id == provider),
+                Some((store, attempt)),
             )
             .await?;
         let deferred = offered.deferred;
@@ -3633,6 +3728,7 @@ impl NativeBackend {
         run: &str,
         subject: &str,
         admit: impl Fn(&str) -> bool,
+        diagnostic_target: Option<(&Store, &Attempt)>,
     ) -> Result<JudgeOffers> {
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
@@ -3685,18 +3781,39 @@ impl NativeBackend {
                     &format!("judge panel for {subject}"),
                     &account.provider_id,
                     &account.id,
+                    diagnostic_target,
                 )
                 .await;
             let models = match listed {
                 Ok(listed) => {
-                    self.inventory_rows(&account.provider_id, &account.id, &listed)
+                    match self
+                        .inventory_rows(&account.provider_id, &account.id, &listed)
                         .await
+                    {
+                        Ok(models) => Ok(models),
+                        Err(error) => Err(preserve_judge_discovery_refusal(
+                            diagnostic_target,
+                            &account.provider_id,
+                            &account.id,
+                            "judge_inventory_rows",
+                            error,
+                            None,
+                        )
+                        .await?),
+                    }
                 }
                 Err(error) => Err(error),
             };
             let models = match models {
                 Ok(models) => models,
                 Err(error) => {
+                    if error
+                        .details
+                        .as_ref()
+                        .is_some_and(|d| d["diagnosticPersistenceFailed"] == true)
+                    {
+                        return Err(error);
+                    }
                     if unstarted_refusal(&error) {
                         deferred = Some(error.clone());
                     }
@@ -3714,6 +3831,20 @@ impl NativeBackend {
                 }
             };
             for model in models {
+                if !model.available && model.configuration.execution_profile == "native_text" {
+                    let error = host_error(model.reason.clone().unwrap_or_else(|| {
+                        "capability_missing: Native text runtime is unavailable".into()
+                    }));
+                    preserve_judge_discovery_refusal(
+                        diagnostic_target,
+                        &account.provider_id,
+                        &account.id,
+                        "judge_inventory_readiness",
+                        error,
+                        Some(&model.configuration),
+                    )
+                    .await?;
+                }
                 diagnostics.extend(JudgeDiscoveryIssue::from_model(&model));
                 if model.available && model.configuration.execution_profile == "native_text" {
                     if let Some(until) = limited_until {
@@ -3784,6 +3915,57 @@ impl NativeBackend {
         criteria: &[RubricCriterion],
         stop: &JudgeStop,
         evidence: &mut JudgeEvidence<'_>,
+    ) -> Result<Evaluation> {
+        let mut trace = diagnostics::JudgeTrace::new(batch, index);
+        let result = self
+            .ask_judge_inner(
+                store, attempt, version, judge, batch, index, prompt, image, response, criteria,
+                stop, evidence, &mut trace,
+            )
+            .await;
+        match result {
+            Err(error) => Err(diagnostics::record(
+                store,
+                attempt,
+                trace.stage,
+                error,
+                Some(judge),
+                trace.context,
+            )
+            .await),
+            Ok(mut evaluation) if evaluation.provenance == "judge_failure" => {
+                let error = diagnostics::record(
+                    store,
+                    attempt,
+                    trace.stage,
+                    BenchmarkError::new("judge_abstained", &evaluation.reason),
+                    Some(judge),
+                    trace.context,
+                )
+                .await;
+                evaluation.reason = error.message;
+                Ok(evaluation)
+            }
+            result => result,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn ask_judge_inner(
+        &self,
+        store: &Store,
+        attempt: &mut Attempt,
+        version: &BenchmarkVersion,
+        judge: &Configuration,
+        batch: &str,
+        index: usize,
+        prompt: &str,
+        image: Option<&OwnedTurnImage>,
+        response: Option<&str>,
+        criteria: &[RubricCriterion],
+        stop: &JudgeStop,
+        evidence: &mut JudgeEvidence<'_>,
+        trace: &mut diagnostics::JudgeTrace,
     ) -> Result<Evaluation> {
         let host = self
             .app
@@ -3867,12 +4049,20 @@ impl NativeBackend {
                 judge.provider_id.as_str(),
                 account.as_str(),
             );
+            let diagnostic_target = Some((store, &*attempt));
             let (offered, _) =
                 with_app_sign_in(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
                     let (host, run, provider, account) = listing;
                     async move {
                         let listed = self
-                            .judge_listing(host, run, "frozen judge", provider, account)
+                            .judge_listing(
+                                host,
+                                run,
+                                "frozen judge",
+                                provider,
+                                account,
+                                diagnostic_target,
+                            )
                             .await?;
                         self.inventory_rows(provider, account, &listed).await
                     }
@@ -3895,6 +4085,9 @@ impl NativeBackend {
         let index = judge_call_index(attempt, batch, index, judge);
         let judge_owner = format!("{}:judge:{batch}:{index}", attempt.id);
         let job = text_execution::attempt_id(&judge_owner);
+        trace.stage = "judge_session";
+        trace.context["judgeIndex"] = json!(index);
+        trace.context["jobId"] = json!(format!("session-{job}"));
         // The sandbox's cgroup leaf names no judge; this line maps it.
         log::info!(
             "[benchmarks] sandbox job session-{job} = judge {index} ({}) of attempt {}",
@@ -3919,6 +4112,7 @@ impl NativeBackend {
             )
             .await
             .map_err(host_error)?;
+        trace.context["sessionId"] = json!(session.session_id);
         admission_window::admitted(
             &store.root.display().to_string(),
             &format!("judge:{}", attempt.id),
@@ -3943,6 +4137,7 @@ impl NativeBackend {
             return Ok(abstention);
         }
         let key = format!("benchmark:{}:judge:{batch}:{index}", attempt.id);
+        trace.context["requestKey"] = json!(key);
         credentials.require(
             NativeProvider::for_harness(&judge.provider_id)
                 .expect("validated judge")
@@ -3984,6 +4179,7 @@ impl NativeBackend {
         }
         let started = Instant::now();
         let deadline = tokio::time::Instant::now() + timeout + Duration::from_secs(15);
+        trace.stage = "judge_dispatch";
         let dispatch = judge_watchdog::until(
             deadline,
             host.dispatch_owned_turn(OwnedTurnRequest {
@@ -3997,6 +4193,13 @@ impl NativeBackend {
             }),
         )
         .await;
+        // A failed dispatch may still have been accepted by the provider.
+        // Keep that state unknown instead of claiming no request was sent.
+        trace.context["dispatched"] = if dispatch.is_ok() {
+            json!(true)
+        } else {
+            Value::Null
+        };
         let mut cursor = 0i64;
         let mut reply = String::new();
         let mut usage = TokenUsage::default();
@@ -4004,6 +4207,7 @@ impl NativeBackend {
         let mut turn_failure = None;
         let mut provider_error = None;
         while failure.is_none() {
+            trace.stage = "judge_status";
             match stop.turn_cancelled(store).await {
                 Ok(true) => {
                     failure = Some("Judging cancelled".into());
@@ -4016,10 +4220,10 @@ impl NativeBackend {
                 Ok(false) => {}
             }
             if started.elapsed() > timeout + Duration::from_secs(15) {
-                let _ = host.cancel_owned_turn(&key).await;
                 failure = Some("Judge exceeded its time budget".to_string());
                 break;
             }
+            trace.stage = "judge_events";
             let page = match judge_watchdog::until(
                 deadline,
                 host.read_owned_events(&session.session_id, cursor, 200),
@@ -4036,6 +4240,7 @@ impl NativeBackend {
                 consume_event(&event.payload, &mut reply, &mut usage);
             }
             cursor = page.cursor;
+            trace.stage = "judge_status";
             let status = match judge_watchdog::until(deadline, host.execution_status(&key)).await {
                 Ok(status) => status,
                 Err(error) => {
@@ -4084,11 +4289,47 @@ impl NativeBackend {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
         let usage_complete = failure.is_none();
+        trace.context["usageComplete"] = json!(usage_complete);
+        trace.context["inFlight"] = json!(!usage_complete);
+        trace.context["elapsedMs"] = json!(started.elapsed().as_millis() as u64);
+        // Save the original turn failure before cancellation or cleanup awaits.
+        // A blocked cleanup must not hide why this turn stopped progressing.
+        if let Some(reason) = failure.as_ref().or(turn_failure.as_ref()) {
+            let recorded = diagnostics::record(
+                store,
+                attempt,
+                trace.stage,
+                BenchmarkError::new("judge_execution_failed", reason),
+                Some(judge),
+                trace.context.clone(),
+            )
+            .await;
+            if failure.is_some() {
+                failure = Some(recorded.message);
+            } else {
+                turn_failure = Some(recorded.message);
+            }
+        }
         if !usage_complete {
             let _ = host.cancel_owned_turn(&key).await;
         }
-        let cleanup_failure = host.stop_owned_sandbox(&session.session_id).await.err();
+        let mut cleanup_failure = host.stop_owned_sandbox(&session.session_id).await.err();
+        if let Some(reason) = cleanup_failure.as_ref() {
+            let recorded = diagnostics::record(
+                store,
+                attempt,
+                "judge_cleanup",
+                BenchmarkError::new("judge_cleanup_failed", reason),
+                Some(judge),
+                trace.context.clone(),
+            )
+            .await;
+            cleanup_failure = Some(recorded.message);
+        }
         let failure = failure.or(turn_failure).or(cleanup_failure);
+        if failure.is_none() {
+            trace.stage = "judge_parse";
+        }
         let parsed = failure
             .is_none()
             .then(|| judge_score_sheet(&version.manifest, &reply, response, criteria))
@@ -4112,6 +4353,7 @@ impl NativeBackend {
         // later audit reads it from the evidence (10-18: the rejected sheets
         // had to be rebuilt from the session events).
         let mut artifacts = Vec::new();
+        let mut diagnostic_notice = None;
         if parsed.is_none() && !reply.trim().is_empty() {
             let directory = evidence.directory(store, attempt);
             let path = directory.join(format!("judge-reply-{placeholder_id}.txt"));
@@ -4127,12 +4369,30 @@ impl NativeBackend {
                     hash: hex::encode(Sha256::digest(reply.as_bytes())),
                     label: "Judge reply".into(),
                 }),
-                Err(error) => log::warn!(
-                    "[benchmarks] the judge reply of {placeholder_id} could not be kept: {error}"
-                ),
+                Err(error) => {
+                    log::warn!(
+                        "[benchmarks] the judge reply of {placeholder_id} could not be kept: {error}"
+                    );
+                    let error = diagnostics::record(
+                        store,
+                        attempt,
+                        "judge_reply_storage",
+                        error.into(),
+                        Some(judge),
+                        trace.context.clone(),
+                    )
+                    .await;
+                    if error
+                        .details
+                        .as_ref()
+                        .is_some_and(|d| d["diagnosticPersistenceFailed"] == true)
+                    {
+                        diagnostic_notice = Some(error.message);
+                    }
+                }
             }
         }
-        let reason = match &parsed {
+        let mut reason = match &parsed {
             Some(sheet) if !sheet.reason.is_empty() => sheet.reason.clone(),
             Some(_) => "Scored by the judge panel".into(),
             None => failure.unwrap_or_else(|| {
@@ -4142,6 +4402,9 @@ impl NativeBackend {
                 )
             }),
         };
+        if let Some(notice) = diagnostic_notice {
+            reason.push_str(&format!(". {notice}"));
+        }
         Ok(Evaluation {
             id: placeholder_id,
             evaluator_revision: version.manifest.evaluator.revision.clone(),
@@ -4254,10 +4517,52 @@ impl NativeBackend {
     async fn judge_response(
         &self,
         store: &Store,
+        attempt: Attempt,
+        version: &BenchmarkVersion,
+        stop: JudgeStop,
+        evidence: JudgeEvidence<'_>,
+    ) -> Result<Attempt> {
+        let identity = diagnostics::identity(&attempt);
+        let mut trace = diagnostics::JudgeTrace {
+            stage: "judge_panel",
+            context: json!({}),
+        };
+        let result = self
+            .judge_response_inner(store, attempt, version, stop, evidence, &mut trace)
+            .await;
+        match result {
+            Err(error) => {
+                Err(
+                    diagnostics::record(store, &identity, trace.stage, error, None, trace.context)
+                        .await,
+                )
+            }
+            Ok(mut attempt) => {
+                if let Some(reason) = attempt.reason.as_deref().filter(|r| *r != JUDGING_STOPPED) {
+                    let recorded = diagnostics::record(
+                        store,
+                        &attempt,
+                        trace.stage,
+                        BenchmarkError::new("judge_panel_wait", reason),
+                        None,
+                        trace.context,
+                    )
+                    .await;
+                    attempt.reason = Some(recorded.message);
+                }
+                Ok(attempt)
+            }
+        }
+    }
+
+    async fn judge_response_inner(
+        &self,
+        store: &Store,
         mut attempt: Attempt,
         version: &BenchmarkVersion,
         stop: JudgeStop,
         mut evidence: JudgeEvidence<'_>,
+        trace: &mut diagnostics::JudgeTrace,
     ) -> Result<Attempt> {
         let criteria = rubric_criteria(&version.manifest);
         if criteria.is_empty() {
@@ -4269,6 +4574,7 @@ impl NativeBackend {
             return Ok(attempt);
         };
         let textual = text_judged(&version.manifest);
+        trace.stage = "judge_renderer_readiness";
         let installed_renderer = if textual {
             None
         } else {
@@ -4283,6 +4589,7 @@ impl NativeBackend {
             return Ok(attempt);
         }
         let prompt = judge_prompt(&version.manifest, &criteria);
+        trace.stage = "judge_recovery";
         let rejected = self
             .rejected_judges(&attempt, &version.manifest, &prompt, &renderer, &evidence)
             .await?;
@@ -4337,6 +4644,7 @@ impl NativeBackend {
                 (open.id, judges, open.expected, open.asked.len(), png)
             }
             None => {
+                trace.stage = "judge_panel_selection";
                 // A calibration seats its one judge; a panel needs two.
                 let discovered = match &evidence {
                     JudgeEvidence::Calibration { judge, .. } => {
@@ -4377,6 +4685,7 @@ impl NativeBackend {
                 let png = if textual {
                     document.as_bytes().to_vec()
                 } else {
+                    trace.stage = "judge_render";
                     match super::worker::render(&document, width, height).await {
                         // The marker names the renderer this very job ran on,
                         // which must still be the one the batch was opened for.
@@ -4392,11 +4701,40 @@ impl NativeBackend {
                         // Nothing rendered and no judge was asked: the panel
                         // waits like one whose judges are busy.
                         Err(error) if unstarted_refusal(&error) => {
-                            log::info!("[benchmarks] judge rendering waits: {}", error.message);
+                            let recorded = diagnostics::record(
+                                store,
+                                &attempt,
+                                "judge_render",
+                                error,
+                                None,
+                                json!({}),
+                            )
+                            .await;
+                            if recorded
+                                .details
+                                .as_ref()
+                                .is_some_and(|d| d["diagnosticPersistenceFailed"] == true)
+                            {
+                                return Err(recorded);
+                            }
+                            log::info!(
+                                "[benchmarks] judge rendering waits for attempt {}: {}",
+                                attempt.id,
+                                recorded.message
+                            );
                             attempt.reason = Some(RENDERER_BUSY.into());
                             return Ok(attempt);
                         }
                         Err(error) => {
+                            let error = diagnostics::record(
+                                store,
+                                &attempt,
+                                "judge_render",
+                                error,
+                                None,
+                                json!({}),
+                            )
+                            .await;
                             attempt.reason = Some(format!("Rendering failed: {}", error.message));
                             return Ok(attempt);
                         }
@@ -4499,6 +4837,7 @@ impl NativeBackend {
             || prompt.clone(),
             |response| text_judge_prompt(&prompt, response, ordinary_critical(&version.manifest)),
         );
+        trace.stage = "judge_panel";
         let (end, votes) = ask_panel(
             &judges,
             expected,
@@ -4562,6 +4901,7 @@ impl ExecutionBackend for NativeBackend {
                     &format!("judge-calibration:{calibration}"),
                     &format!("judge calibration {calibration}"),
                     |provider| provider == entry.provider_id,
+                    None,
                 )
                 .await?;
             let rows = super::judge_pool::seat_rows(std::slice::from_ref(entry), offered.rows);
@@ -8600,6 +8940,10 @@ impl BenchmarkService {
             return Ok(false);
         };
         if let Err(error) = self.backend.resource_admission(&a.configuration).await {
+            let error = diagnostics::record(
+                &self.store, &a, "candidate_admission", error, None,
+                json!({"retryAfterMs": admission_window::RETRY.as_millis() as u64, "dispatched": false}),
+            ).await;
             if error.code == "resource_busy" {
                 admission_window::refused(&scope, &id);
                 let reason = format!("Waiting for local resources: {}", error.message);
@@ -9078,6 +9422,15 @@ impl BenchmarkService {
             }
             Err(error) => {
                 let mut failed = self.store.attempt(&a.id).await?;
+                let error = diagnostics::record(
+                    &self.store,
+                    &failed,
+                    "candidate_execution",
+                    error,
+                    None,
+                    json!({"sessionId": failed.session_id, "hostRunId": failed.host_run_id}),
+                )
+                .await;
                 if never_started(&failed, &error)
                     && run.request.require_dispatch_admission(now()).is_ok()
                     && self.forget_unstarted_try(&failed, &version).await?
@@ -9481,6 +9834,15 @@ impl BenchmarkService {
                 // Nothing graded the paid answer yet: it waits for the sandbox
                 // as long as its run goes on, and is never generated again.
                 Err(error) if unstarted_refusal(&error) && !stop.cancelled() => {
+                    let error = diagnostics::record(
+                        &self.store,
+                        &completed,
+                        "evaluation_admission",
+                        error,
+                        None,
+                        json!({"retryAfterMs": admission_window::RETRY.as_millis() as u64}),
+                    )
+                    .await;
                     preparing.finished();
                     if !waited {
                         log::info!(
@@ -9499,6 +9861,15 @@ impl BenchmarkService {
                 }
                 Err(error) => {
                     preparing.finished();
+                    let error = diagnostics::record(
+                        &self.store,
+                        &completed,
+                        "evaluation_failure",
+                        error,
+                        None,
+                        json!({}),
+                    )
+                    .await;
                     completed.outcome = Some(evaluation_failure_outcome(&error).into());
                     completed.reason = Some(error.message);
                     return Ok(completed);
@@ -9570,6 +9941,15 @@ impl BenchmarkService {
                                 attempt = saved;
                             }
                         }
+                        let error = diagnostics::record(
+                            &self.store,
+                            &attempt,
+                            "judge_attempt",
+                            error,
+                            None,
+                            json!({}),
+                        )
+                        .await;
                         if error.code == JUDGE_QUOTA_WAIT {
                             attempt.reason = Some(judge_error_reason(&error));
                             attempt.wait_until = Some(
@@ -10266,6 +10646,8 @@ mod judge_availability_tests;
 
 #[cfg(test)]
 mod judge_discovery_diagnostics_tests;
+#[cfg(test)]
+mod judge_inventory_diagnostics_tests;
 
 #[cfg(test)]
 mod manual_judge_diagnostics_tests;

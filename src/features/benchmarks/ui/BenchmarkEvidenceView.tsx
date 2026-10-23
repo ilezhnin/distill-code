@@ -55,6 +55,7 @@ import {
   SectionHeading,
   StateBadge,
 } from "./BenchmarkPrimitives";
+import { BenchmarkDiagnosticHistory } from "./BenchmarkDiagnosticHistory";
 
 export function BenchmarkEvidenceView({
   attemptId: openedId,
@@ -71,6 +72,7 @@ export function BenchmarkEvidenceView({
   // A repetition tab changes only what this dialog shows: the page behind it
   // keeps its location, so nothing there redraws.
   const [shownId, setShownId] = useState(openedId);
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set());
   const attemptId = shownId;
   const client = useQueryClient();
   const evidence = useQuery({
@@ -148,14 +150,17 @@ export function BenchmarkEvidenceView({
     attempt.outcome === "completed" ||
     attempt.outcome === "evaluation_error";
   // Identity stays hidden while the frozen rubric is still loading, too.
-  const blind =
+  const anonymousReview =
     !manifest ||
     (Boolean(rubric.trim()) &&
       !reviewed &&
       !judged &&
       (!panelKind || verdictPending));
+  const disclosedReview = anonymousReview && revealed.has(attemptId);
+  const blind = anonymousReview && !disclosedReview;
   // An override replaces a verdict; a visual note only annotates one.
   const canReview =
+    !disclosedReview &&
     Boolean(rubric.trim()) &&
     attempt?.phase === "terminal" &&
     attempt.output !== null &&
@@ -250,7 +255,11 @@ export function BenchmarkEvidenceView({
               : configurationLabel(attempt.configuration)}
           </DialogTitle>
           <DialogDescription>
-            {blind ? t("evidence.blindReview") : t("evidence.description")}
+            {disclosedReview
+              ? t("diagnostics.disclosedReview")
+              : blind
+                ? t("evidence.blindReview")
+                : t("evidence.description")}
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-6">
@@ -360,6 +369,16 @@ export function BenchmarkEvidenceView({
               <SectionHeading title={t("evidence.rubric")} />
               <p className="whitespace-pre-wrap text-sm">{rubric}</p>
             </section>
+          ) : null}
+          {attempt ? (
+            <BenchmarkDiagnosticHistory
+              key={attemptId}
+              attemptId={attemptId}
+              blind={blind}
+              onReveal={() =>
+                setRevealed((previous) => new Set([...previous, attemptId]))
+              }
+            />
           ) : null}
           {preview ? (
             <section className="space-y-2">

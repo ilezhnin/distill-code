@@ -353,6 +353,21 @@ paused time do not count; completed judge calls keep a progressing backlog
 open. These controls preserve answers and votes, never manufacture a score,
 and do not repeat candidate generation.
 
+Attempt evidence includes a diagnostic history for operational refusals and
+failures. It records the original cause, stage, judge identity, correlation
+IDs and available resource measurements before a retry or stop replaces the
+current reason. Reason changes are saved atomically with the attempt. History
+survives retries, cancellation and application restarts; consecutive identical
+observations share a count and first/last timestamps. Pages bound reading, not
+retention. Only operational metadata is copied, with credential redaction;
+answers and judge replies remain in their existing evidence records. A failed
+history write is reported as an error rather than silently discarded.
+
+Open **Diagnostic history** in attempt evidence to inspect or refresh it.
+Pending blind reviews hide identifying messages until **Show technical
+details** is selected; revealing them disables anonymous human scoring in
+that view. Existing overwritten causes cannot be reconstructed retroactively.
+
 A text rubric's critical checks (`environment.criticalChecks`, policy
 `critical-text-v1`) need from each judge a verdict and a reason for every
 condition. A fail must quote the violation from the response. A pass may carry

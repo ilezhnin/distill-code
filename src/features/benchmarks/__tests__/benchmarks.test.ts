@@ -48,6 +48,29 @@ describe("benchmark transport and navigation contracts", () => {
     );
     expect(benchmarkErrorMessage(rejection)).toBe("Draft changed elsewhere");
   });
+  it("reads diagnostic pages with the exclusive cursor and preserves read errors", async () => {
+    const page = { items: [], nextBefore: 17 };
+    vi.mocked(invoke).mockResolvedValueOnce(page);
+    expect(await benchmarkApi.listDiagnostics("invented-attempt")).toBe(page);
+    expect(invoke).toHaveBeenLastCalledWith("benchmark_list_diagnostics", {
+      id: "invented-attempt",
+      before: null,
+      limit: 50,
+    });
+    const failure = {
+      code: "storage",
+      message: "Invented history read failed",
+    };
+    vi.mocked(invoke).mockRejectedValueOnce(failure);
+    await expect(
+      benchmarkApi.listDiagnostics("invented-attempt", 17, 25),
+    ).rejects.toBe(failure);
+    expect(invoke).toHaveBeenLastCalledWith("benchmark_list_diagnostics", {
+      id: "invented-attempt",
+      before: 17,
+      limit: 25,
+    });
+  });
   it("keeps training export held-out outcomes opt-in", async () => {
     await benchmarkApi.exportDataset(false);
     expect(invoke).toHaveBeenLastCalledWith("benchmark_export_dataset", {

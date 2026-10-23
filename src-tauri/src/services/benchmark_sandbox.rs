@@ -278,16 +278,16 @@ static HEADROOM: std::sync::LazyLock<RecentHeadroom> =
 fn check_headroom(headroom: &HostHeadroom, additional_memory: u64) -> io::Result<()> {
     if headroom.available_ram < 12 * GIB + additional_memory {
         return Err(io::Error::new(io::ErrorKind::WouldBlock,
-            "resource_busy: Windows available RAM cannot cover the benchmark reservation and 12 GiB desktop floor"));
+            format!("resource_busy: Windows available RAM cannot cover the benchmark reservation and 12 GiB desktop floor; available_ram_bytes={}; reservation_bytes={additional_memory}; floor_bytes={}", headroom.available_ram, 12 * GIB)));
     }
     if headroom.available_commit < 8 * GIB + additional_memory {
         return Err(io::Error::new(io::ErrorKind::WouldBlock,
-            "resource_busy: Windows commit headroom cannot cover the benchmark reservation and 8 GiB floor"));
+            format!("resource_busy: Windows commit headroom cannot cover the benchmark reservation and 8 GiB floor; available_commit_bytes={}; reservation_bytes={additional_memory}; floor_bytes={}", headroom.available_commit, 8 * GIB)));
     }
     if headroom.sandbox_volume_free < 30 * GIB {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
-            "resource_busy: The registered sandbox volume has less than 30 GiB free",
+            format!("resource_busy: The registered sandbox volume has less than 30 GiB free; volume_free_bytes={}; floor_bytes={}", headroom.sandbox_volume_free, 30 * GIB),
         ));
     }
     Ok(())
@@ -382,7 +382,7 @@ where
         // Registered before the check, so a release between them still wakes it.
         let released = reservations.released.notified();
         let headroom = measure().await.map_err(io::Error::other)??;
-        {
+        let refusal = {
             let mut reserved = reservations
                 .reserved
                 .lock()
@@ -401,26 +401,29 @@ where
                     });
                 }
                 Err(error) if *reserved == 0 || check_headroom(&headroom, bytes).is_err() => {
-                    return Err(error)
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("{error}; reserved_bytes={reserved}"),
+                    ))
                 }
-                Err(_) => {}
+                Err(error) => format!("{error}; reserved_bytes={reserved}"),
             }
-        }
-        let remaining = remaining_ms(deadline_ms).map_err(|_| host_queue_expired())?;
+        };
+        let remaining = remaining_ms(deadline_ms).map_err(|_| host_queue_expired(&refusal))?;
         tokio::select! {
             () = released => {}
             () = tokio::time::sleep(Duration::from_millis(remaining.min(1000))) => {}
         }
         if remaining_ms(deadline_ms).is_err() {
-            return Err(host_queue_expired());
+            return Err(host_queue_expired(&refusal));
         }
     }
 }
 
-fn host_queue_expired() -> io::Error {
+fn host_queue_expired(last_refusal: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::WouldBlock,
-        "resource_busy: benchmark host preparation queue expired before worker startup",
+        format!("resource_busy: benchmark host preparation queue expired before worker startup; last refusal: {last_refusal}"),
     )
 }
 
@@ -3520,6 +3523,61 @@ mod tests {
     }
 
     #[test]
+    fn admission_diagnostics_keep_the_measurement_and_required_floor() {
+        let healthy = HostHeadroom {
+            available_ram: 28 * GIB,
+            available_commit: 20 * GIB,
+            sandbox_volume_free: 57 * GIB,
+        };
+        for (headroom, field, value, floor) in [
+            (
+                HostHeadroom {
+                    available_ram: 13 * GIB,
+                    ..healthy
+                },
+                "available_ram_bytes",
+                13 * GIB,
+                12 * GIB,
+            ),
+            (
+                HostHeadroom {
+                    available_commit: 9 * GIB,
+                    ..healthy
+                },
+                "available_commit_bytes",
+                9 * GIB,
+                8 * GIB,
+            ),
+            (
+                HostHeadroom {
+                    sandbox_volume_free: 29 * GIB,
+                    ..healthy
+                },
+                "volume_free_bytes",
+                29 * GIB,
+                30 * GIB,
+            ),
+        ] {
+            let error = check_headroom(&headroom, 2 * GIB).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            let reason = error.to_string();
+            assert!(reason.contains(&format!("{field}={value}")), "{reason}");
+            assert!(reason.contains(&format!("floor_bytes={floor}")), "{reason}");
+            if field != "volume_free_bytes" {
+                assert!(
+                    reason.contains(&format!("reservation_bytes={}", 2 * GIB)),
+                    "{reason}"
+                );
+            }
+            let expired = host_queue_expired(&reason).to_string();
+            assert!(
+                expired.ends_with(&reason),
+                "Queue expiry must keep its actual admission refusal"
+            );
+        }
+    }
+
+    #[test]
     fn readiness_pins_resources_and_runtime_and_never_infers_a_sign_in() {
         let base = status();
         let ready = parse_status(&base).unwrap();
@@ -3921,10 +3979,12 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
-        assert_eq!(
-            refused.to_string(),
-            "resource_busy: benchmark host preparation queue expired before worker startup"
-        );
+        let refusal = refused.to_string();
+        assert!(refusal.starts_with(
+            "resource_busy: benchmark host preparation queue expired before worker startup; last refusal:"
+        ));
+        assert!(refusal.contains("Windows available RAM"));
+        assert!(refusal.contains(&format!("reserved_bytes={HOST_PREPARATION_BYTES}")));
         let next = tokio::spawn(reserve_host_preparation(
             reservations,
             HOST_PREPARATION_BYTES,

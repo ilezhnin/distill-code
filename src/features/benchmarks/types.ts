@@ -156,6 +156,26 @@ export interface Configuration {
   /** Display name the bridge reported for the model id, for example "Opus 5.5". */
   modelName?: string | null;
 }
+export type DiagnosticConfiguration = Omit<Configuration, "id" | "modelName">;
+export interface BenchmarkDiagnostic {
+  sequence: number;
+  firstAt: number;
+  lastAt: number;
+  occurrences: number;
+  runId: string;
+  attemptId: string;
+  phase: string;
+  stage: string;
+  code: string;
+  message: string;
+  candidate: DiagnosticConfiguration;
+  judge: DiagnosticConfiguration | null;
+  context: Record<string, unknown>;
+}
+export interface BenchmarkDiagnosticPage {
+  items: BenchmarkDiagnostic[];
+  nextBefore: number | null;
+}
 /** Exact authorship identity; account, speed and runtime do not affect it. */
 export type BenchmarkAuthor = Pick<
   Configuration,

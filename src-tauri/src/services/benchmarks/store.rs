@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+mod diagnostics;
+
 #[derive(Clone)]
 pub struct Store {
     pub pool: SqlitePool,
@@ -1090,7 +1092,25 @@ impl Store {
     /// row's slot moves to a value no plan uses; the attempt's own
     /// repetition stays in its data.
     pub async fn supersede_attempt(&self, attempt: &Attempt) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Self::supersede_in_transaction(&mut tx, attempt).await?;
+        event(&mut tx, &attempt.run_id, "run_changed").await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    /// Shared by individual supersession and sealing a sitting. Preserve the
+    /// preceding cause in the same transaction, without loading paid evidence.
+    pub(super) async fn supersede_in_transaction(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        attempt: &Attempt,
+    ) -> Result<()> {
+        let previous =
+            sqlx::query("SELECT json_extract(data_json,'$.reason'),phase FROM attempts WHERE id=?")
+                .bind(&attempt.id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(|| BenchmarkError::new("evidence_missing", "Attempt not found"))?;
+        diagnostics::capture_reason(tx, attempt, previous.get(0), previous.get(1)).await?;
         sqlx::query("UPDATE attempts SET phase=?,data_json=json_set(data_json,'$.phase',?,'$.outcome',?,'$.reason',?,'$.finishedAt',?),repetition=-rowid WHERE id=?")
             .bind(&attempt.phase)
             .bind(&attempt.phase)
@@ -1098,20 +1118,21 @@ impl Store {
             .bind(&attempt.reason)
             .bind(attempt.finished_at)
             .bind(&attempt.id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        event(&mut tx, &attempt.run_id, "run_changed").await?;
-        tx.commit().await?;
         Ok(())
     }
     pub async fn save_attempt(&self, attempt: &Attempt) -> Result<()> {
         // Timing belongs to the stored attempt, not a possibly stale flight copy.
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let previous: Option<String> = sqlx::query_scalar(
-            "SELECT json_extract(data_json,'$.activity') FROM attempts WHERE id=? UNION ALL SELECT json_extract(data_json,'$.activity') FROM workflow_steps WHERE attempt_id=? LIMIT 1"
-        ).bind(&attempt.id).bind(&attempt.id).fetch_optional(&mut *tx).await?.flatten();
+        let previous = sqlx::query(
+            "SELECT json_extract(data_json,'$.activity'),json_extract(data_json,'$.reason'),phase FROM attempts WHERE id=? UNION ALL SELECT json_extract(data_json,'$.activity'),json_extract(data_json,'$.reason'),phase FROM workflow_steps WHERE attempt_id=? LIMIT 1"
+        ).bind(&attempt.id).bind(&attempt.id).fetch_optional(&mut *tx).await?
+            .ok_or_else(|| BenchmarkError::new("evidence_missing", "Attempt not found"))?;
+        diagnostics::capture_reason(&mut tx, attempt, previous.get(1), previous.get(2)).await?;
         let mut attempt = attempt.clone();
         attempt.activity = previous
+            .get::<Option<String>, _>(0)
             .map(|value| serde_json::from_str(&value))
             .transpose()?;
         let state: String = sqlx::query_scalar("SELECT state FROM run_plans WHERE id=?")

@@ -156,10 +156,30 @@ async fn interrupted_panel(error: BenchmarkError, paid_vote: bool, reason: &str)
     let actual = service.rescore(&before.id).await.unwrap_err();
     assert_eq!(
         serde_json::to_value(actual).unwrap(),
-        serde_json::to_value(error).unwrap()
+        serde_json::to_value(&error).unwrap()
     );
     let after = service.store.attempt(&before.id).await.unwrap();
     assert_eq!(after.reason.as_deref(), Some(reason));
+    let history = service
+        .store
+        .diagnostics(&before.id, None, 100)
+        .await
+        .unwrap();
+    let failure = history
+        .items
+        .iter()
+        .find(|entry| entry.stage == "manual_judging")
+        .unwrap();
+    assert_eq!(failure.code, error.code);
+    assert_eq!(failure.message, error.message);
+    assert_eq!(failure.run_id, before.run_id);
+    assert_eq!(failure.context["source"], "manual_rescore");
+    // The new failure and the previous cancellation both survive independently
+    // of the mutable reason displayed for the latest manual attempt.
+    assert!(history
+        .items
+        .iter()
+        .any(|entry| entry.message == JUDGING_STOPPED));
     let mut latest = backend.saved.lock().unwrap().take().unwrap();
     latest.reason = Some(reason.into());
     assert_eq!(

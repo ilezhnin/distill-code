@@ -25,6 +25,7 @@ import type {
   BenchmarkDefinitionSummary,
   BenchmarkChange,
   BenchmarkDraft,
+  BenchmarkDiagnosticPage,
   BenchmarkEvent,
   BenchmarkRun,
   BenchmarkVersion,
@@ -248,6 +249,12 @@ export const benchmarkApi = {
     }),
   getEvidence: (id: string) =>
     invoke<Attempt>("benchmark_get_evidence", { id }),
+  listDiagnostics: (id: string, before: number | null = null, limit = 50) =>
+    invoke<BenchmarkDiagnosticPage>("benchmark_list_diagnostics", {
+      id,
+      before,
+      limit,
+    }),
   eventsSince: (afterSequence: number) =>
     invoke<BenchmarkEvent[]>("benchmark_events_since", { afterSequence }),
   getCapabilities: () => invoke<Capability[]>("benchmark_get_capabilities"),

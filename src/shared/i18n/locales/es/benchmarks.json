@@ -484,6 +484,27 @@
     "override": "Anular el panel",
     "rescoreJudges": "Evaluar de nuevo (hasta 3 llamadas)"
   },
+  "diagnostics": {
+    "title": "Historial de diagnóstico",
+    "description": "Rechazos y errores registrados, del más reciente al más antiguo. Actualiza para ver nuevos eventos.",
+    "refresh": "Actualizar historial",
+    "retry": "Reintentar",
+    "failed": "No se pudo cargar el historial de diagnóstico.",
+    "empty": "No se registraron eventos de diagnóstico para este intento. Los intentos anteriores pueden no tener historial.",
+    "entries": "Eventos de diagnóstico registrados",
+    "stage": "Etapa",
+    "code": "Código",
+    "first": "Primera aparición",
+    "last": "Última aparición",
+    "count": "Apariciones",
+    "judge": "Juez · {{provider}} · {{model}}",
+    "context": "Contexto registrado",
+    "older": "Cargar eventos anteriores",
+    "hiddenLabel": "Detalles ocultos",
+    "blindNotice": "Los mensajes y el contexto pueden revelar la identidad del modelo. Mostrarlos finaliza la revisión anónima en esta vista.",
+    "reveal": "Mostrar detalles técnicos",
+    "disclosedReview": "Se reveló la identidad del modelo para investigar el problema. La revisión anónima de la rúbrica no está disponible en esta vista."
+  },
   "grid": {
     "measuredHint": "Mediana del tiempo de ejecución del modelo por repetición",
     "totalHint": "Tiempo activo de todas las repeticiones, comprobaciones y jueces. Excluye colas y pausas; el trabajo en paralelo cuenta una sola vez.",

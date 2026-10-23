@@ -261,7 +261,8 @@ describe("persistent benchmark runtime", () => {
     const version = ["benchmarks", "version", "version-1"];
     const board = ["benchmarks", "leaderboard", { runId: null }];
     const runs = ["benchmarks", "runs"];
-    for (const key of [history, catalog, version, board, runs])
+    const diagnostics = ["benchmarks", "diagnostics", "attempt-1"];
+    for (const key of [history, catalog, version, board, runs, diagnostics])
       client.setQueryData(key, []);
     const stale = (key: readonly unknown[]) =>
       client.getQueryState(key)?.isInvalidated;
@@ -279,11 +280,13 @@ describe("persistent benchmark runtime", () => {
       expect(stale(catalog)).toBe(false);
       expect(stale(version)).toBe(false);
       expect(stale(board)).toBe(false);
+      expect(stale(diagnostics)).toBe(false);
       await act(() => vi.advanceTimersByTimeAsync(THROTTLED_REFRESH_MS));
       expect(stale(history)).toBe(true);
       expect(stale(catalog)).toBe(true);
       expect(stale(version)).toBe(true);
       expect(stale(board)).toBe(true);
+      expect(stale(diagnostics)).toBe(false);
     } finally {
       vi.useRealTimers();
     }

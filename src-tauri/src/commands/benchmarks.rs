@@ -502,6 +502,19 @@ pub async fn benchmark_get_evidence(app: AppHandle, id: String) -> Result<Attemp
     Ok(attempt)
 }
 #[tauri::command]
+pub async fn benchmark_list_diagnostics(
+    app: AppHandle,
+    id: String,
+    before: Option<i64>,
+    limit: Option<u32>,
+) -> Result<DiagnosticPage> {
+    service(&app)
+        .await?
+        .store
+        .diagnostics(&id, before, limit.unwrap_or(50).clamp(1, 100))
+        .await
+}
+#[tauri::command]
 pub async fn benchmark_events_since(
     app: AppHandle,
     after_sequence: i64,

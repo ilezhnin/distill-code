@@ -38,7 +38,7 @@ export const THROTTLED_REFRESH_MS = 15_000;
  */
 export const USAGE_LEDGER_REFRESH_MS = 300_000;
 const usageLedgerKey = [...benchmarkKeys, "usage-ledger"] as const;
-const OFF_EVENTS = new Set(["usage-ledger"]);
+const OFF_EVENTS = new Set(["usage-ledger", "diagnostics"]);
 const onEvents = (query: { queryKey: readonly unknown[] }) =>
   !OFF_EVENTS.has(String(query.queryKey[1]));
 const THROTTLED_QUERIES = new Set([

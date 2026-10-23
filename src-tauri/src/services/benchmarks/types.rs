@@ -40,6 +40,45 @@ impl From<serde_json::Error> for BenchmarkError {
 }
 pub type Result<T> = std::result::Result<T, BenchmarkError>;
 
+/// Durable operational diagnostics, separate from mutable attempt evidence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticConfiguration {
+    pub provider_id: String,
+    pub account_id: Option<String>,
+    pub model_id: String,
+    pub effort: Option<String>,
+    pub fast_mode: Option<bool>,
+    pub billing_mode: String,
+    pub execution_profile: String,
+    pub inventory_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnostic {
+    pub sequence: i64,
+    pub first_at: i64,
+    pub last_at: i64,
+    pub occurrences: u64,
+    pub run_id: String,
+    pub attempt_id: String,
+    pub phase: String,
+    pub stage: String,
+    pub code: String,
+    pub message: String,
+    pub candidate: DiagnosticConfiguration,
+    pub judge: Option<DiagnosticConfiguration>,
+    pub context: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticPage {
+    pub items: Vec<Diagnostic>,
+    pub next_before: Option<i64>,
+}
+
 /// Only the provider, concrete model and reasoning effort identify an author.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

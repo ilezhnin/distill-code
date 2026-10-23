@@ -5,6 +5,7 @@ import type {
   BenchmarkDefinition,
   BenchmarkDraft,
   BenchmarkRun,
+  BenchmarkDiagnostic,
   Configuration,
   LeaderboardCohort,
   LeaderboardRow,
@@ -58,6 +59,26 @@ export const configuration: Configuration = {
   executionProfile: "native_text",
   inventoryRevision: "inventory-1",
   modelName: null,
+};
+export const diagnostic: BenchmarkDiagnostic = {
+  sequence: 20,
+  firstAt: 1_700_000_000_000,
+  lastAt: 1_700_000_060_000,
+  occurrences: 3,
+  runId: "run-1",
+  attemptId: "attempt-1",
+  phase: "awaiting_judges",
+  stage: "judge_session",
+  code: "resource_busy",
+  message:
+    "Invented judge preparation refused; candidate model-1 was preserved.",
+  candidate: configuration,
+  judge: {
+    ...configuration,
+    providerId: "codex-acp",
+    modelId: "invented-judge",
+  },
+  context: { waitingSlots: 2, reason: "<script>invented context</script>" },
 };
 export const usage: TokenUsage = {
   input: null,

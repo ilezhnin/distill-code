@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import { BenchmarkEvidenceView } from "../ui/BenchmarkEvidenceView";
 import type { Attempt, BenchmarkDefinition } from "../types";
-import { attempt, configuration, definition } from "./fixtures";
+import { attempt, configuration, definition, diagnostic } from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) => String(error),
@@ -20,6 +20,7 @@ vi.mock("../api/benchmarks", () => ({
     getVersion: vi.fn(),
     submitReview: vi.fn(),
     rescore: vi.fn(),
+    listDiagnostics: vi.fn(),
   },
 }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -108,6 +109,44 @@ describe("blind benchmark review", () => {
     vi.clearAllMocks();
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(visualAttempt);
     catalog([visualDefinition]);
+    vi.mocked(benchmarkApi.listDiagnostics).mockResolvedValue({
+      items: [diagnostic],
+      nextBefore: null,
+    });
+  });
+
+  it("loads diagnostic history lazily and reveals identity only after an explicit operator action", async () => {
+    const user = userEvent.setup();
+    showEvidence();
+    await screen.findByText("Score contrast and legible labels from 0 to 1.");
+    expect(benchmarkApi.listDiagnostics).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "Record rubric review" }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Diagnostic history" }),
+    );
+    await screen.findByText(/judge_session/);
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(
+      diagnostic.message,
+    );
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("invented-judge");
+    expect(screen.queryByText("Recorded context")).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Show technical details" }),
+    );
+    expect(await screen.findByText(diagnostic.message)).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveTextContent("invented-judge");
+    expect(
+      screen.getByText(/Anonymous rubric review is unavailable/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /Anonymous review/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Record rubric review" }),
+    ).not.toBeInTheDocument();
+    expect(benchmarkApi.submitReview).not.toHaveBeenCalled();
   });
 
   it("localizes safe discovery diagnostics in visible pending-review evidence", async () => {

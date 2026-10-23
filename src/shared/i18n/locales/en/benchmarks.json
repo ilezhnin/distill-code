@@ -484,6 +484,27 @@
     "override": "Override the panel",
     "rescoreJudges": "Evaluate again (up to 3 model calls)"
   },
+  "diagnostics": {
+    "title": "Diagnostic history",
+    "description": "Recorded refusals and failures, newest first. Refresh to check for new events.",
+    "refresh": "Refresh history",
+    "retry": "Try again",
+    "failed": "Could not load diagnostic history.",
+    "empty": "No diagnostic events were recorded for this attempt. Earlier attempts may have no history.",
+    "entries": "Recorded diagnostic events",
+    "stage": "Stage",
+    "code": "Code",
+    "first": "First seen",
+    "last": "Last seen",
+    "count": "Occurrences",
+    "judge": "Judge · {{provider}} · {{model}}",
+    "context": "Recorded context",
+    "older": "Load older events",
+    "hiddenLabel": "Details hidden",
+    "blindNotice": "Messages and context may reveal model identity. Showing them ends anonymous review for this viewing.",
+    "reveal": "Show technical details",
+    "disclosedReview": "Model identity was revealed for troubleshooting. Anonymous rubric review is unavailable in this viewing."
+  },
   "grid": {
     "measuredHint": "Median model execution time per repetition",
     "totalHint": "Active task time across all repetitions, checks and judges. Queue time and pauses are excluded; parallel work counts once.",
