@@ -423,6 +423,23 @@ fn typed_quota_errors_are_distinct_from_temporary_rate_and_context_limits() {
 }
 
 #[test]
+fn exhausted_usage_balance_is_quota_but_payment_status_alone_is_not() {
+    let mut error = json!({"code":-32603,"message":"Internal error","data":{
+        "http_status":402,"message":"API error (status 402 Payment Required): Grok Build usage balance exhausted"
+    }});
+    assert!(is_quota_error(&error));
+    error["data"]["errorKind"] = json!("authentication_failed");
+    assert!(!is_quota_error(&error));
+    for other in [
+        json!({"data":{"http_status":402,"message":"Payment Required"}}),
+        json!({"data":{"http_status":500,"message":"usage balance exhausted"}}),
+        json!({"data":{"http_status":402},"transcript":"usage balance exhausted"}),
+    ] {
+        assert!(!is_quota_error(&other));
+    }
+}
+
+#[test]
 fn typed_nonquota_failures_override_conflicting_usage_limit_prose() {
     for kind in [
         "provider_failure",

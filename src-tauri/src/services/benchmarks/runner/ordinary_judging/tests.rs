@@ -134,6 +134,141 @@ fn paid_seats_do_not_need_idle_accounts_again() {
 }
 
 #[test]
+fn a_third_seat_can_move_to_another_calibrated_model_of_a_remaining_lab() {
+    let (draft, attempt, mut open) = fixture();
+    let mut codex = judge("gpt-6-sol");
+    codex.provider_id = "codex-acp".into();
+    let mut grok = judge("grok-4.7");
+    grok.provider_id = "grok-acp".into();
+    open.panel = vec![judge("opus[1m]"), codex.clone(), grok];
+    open.expected = 3;
+    let offered = vec![
+        (Some(95.0), codex.clone()),
+        (Some(90.0), judge("opus[1m]")),
+        (Some(90.0), judge("sonnet")),
+    ];
+    // Both an untouched saved rendering and two retained votes can finish.
+    for asked in [vec![], vec![judge("opus[1m]"), codex.clone()]] {
+        open.asked = asked;
+        let panel = available_panel(
+            &open,
+            &[&attempt.configuration],
+            &draft,
+            offered.clone(),
+            |_| true,
+            vec![],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            panel,
+            vec![judge("opus[1m]"), codex.clone(), judge("sonnet")]
+        );
+        assert_eq!(
+            seat_samples(&panel, 1, &open.asked).len(),
+            3 - open.asked.len()
+        );
+    }
+    // An unavailable paid account does not prevent the one outstanding call.
+    let panel = available_panel(
+        &open,
+        &[&attempt.configuration],
+        &draft,
+        offered.clone(),
+        |j| j.model_id == "sonnet",
+        vec![],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        seat_samples(&panel, 1, &open.asked),
+        vec![(2, judge("sonnet"))]
+    );
+
+    // The fallback remains subject to author exclusion, not just model count.
+    let mut authored = draft;
+    authored.environment["authoredBy"] = json!([judge("sonnet")]);
+    let error = available_panel(
+        &open,
+        &[&attempt.configuration],
+        &authored,
+        offered,
+        |_| true,
+        vec![],
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "judge_panel_unavailable");
+}
+
+#[test]
+fn missing_replacement_reports_quota_busy_or_unavailable_from_actual_seats() {
+    let (draft, attempt, open) = fixture();
+    let reset = now() + 60_000;
+    let select = |offered, quota, idle| {
+        available_panel(
+            &open,
+            &[&attempt.configuration],
+            &draft,
+            offered,
+            |_| idle,
+            quota,
+            None,
+        )
+    };
+    let error = select(vec![], vec![(reset, judge("sonnet"))], true).unwrap_err();
+    assert_eq!(error.code, JUDGE_QUOTA_WAIT);
+    assert_eq!(error.details.unwrap()["nextReset"], reset);
+    let error = select(vec![(None, judge("sonnet"))], vec![], false).unwrap_err();
+    assert_eq!(error.code, ACCOUNT_BUSY);
+    // A second account or alias of the already paid model cannot fill a seat.
+    let error = select(vec![], vec![(reset, judge("opus"))], true).unwrap_err();
+    assert_eq!(error.code, "judge_panel_unavailable");
+    assert!(select(
+        vec![(None, judge("sonnet"))],
+        vec![(reset, judge("haiku"))],
+        true
+    )
+    .is_ok());
+}
+
+#[test]
+fn quota_refusal_keeps_the_open_artifact_eligible_for_replacement() {
+    let (_, mut attempt, open) = fixture();
+    let error = json!({"code":-32603,"message":"Internal error", "data":{
+        "http_status":402,"message":"Grok Build usage balance exhausted","dispatchStarted":true
+    }});
+    assert!(exhaust_judge_on_quota(
+        "invented-balance-run",
+        "limited-judge",
+        &error,
+        None
+    ));
+    assert!(exhausted("invented-balance-run", "limited-judge"));
+    assert!(refused_for_quota(&error, "", &TokenUsage::default()));
+    assert!(!lasting_quota(&error));
+    let mut failure = attempt.evaluations[1].clone();
+    failure.id = "quota-failure".into();
+    failure.provenance = "judge_failure".into();
+    failure.verdict = "abstained".into();
+    failure.score = None;
+    failure.judge = Some(judge("sonnet"));
+    failure.details = Some(json!({"judgeBatchId":open.id,"providerError":error,"inFlight":false}));
+    attempt.evaluations.push(failure);
+    assert!(quota_interrupted(&attempt, &open.id));
+    assert!(!quota_interrupted(&attempt, "another-batch"));
+    attempt.reason = Some(JUDGE_RESELECTING.into());
+    assert!(judging_deferred(&attempt));
+    assert_eq!(
+        recoverable(&attempt, &fixture().0, "invented rubric")
+            .unwrap()
+            .asked
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn saved_artifacts_survive_renderer_changes_but_not_rubric_changes() {
     let (mut draft, attempt, open) = fixture();
     assert_eq!(

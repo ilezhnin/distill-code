@@ -664,8 +664,10 @@ claiming an account seat or preparation slot; eligible candidates and judge
 panels can continue while another account waits. Explicitly resuming a stopped
 run rechecks quota and sign-in availability, while resource and transient-error
 backoffs and dispatch admission deadlines remain in force. A judge's quota
-refusal releases its preparation slot and panel lane; its saved abstention
-remains subject to the existing incomplete-panel policy.
+refusal releases its preparation slot and panel lane. An ordinary run retains
+the refusal and selects an eligible replacement for the unfilled seat.
+Grok Build's HTTP 402 with an exhausted usage balance is a quota refusal;
+an unexplained payment status alone is not.
 
 When quota is already known before a judge starts, the saved answer and any
 completed votes wait for the reset without creating an abstention or repeating
@@ -691,6 +693,10 @@ On recovery, completed votes keep their original attribution; only unfilled
 seats rotate. A replacement batch references the same sealed rendering and
 each reused vote, without repeating its provider call or counting usage twice.
 The panel size and sample count stay within the existing run's reservation.
+If one lab is unavailable, another distinct calibrated model from a remaining
+lab may finish a saved panel. Completed votes need no free account or remaining
+quota. Missing seats report their actual quota, busy-account or eligibility
+condition rather than treating every shortage as busy judges.
 Actual judge settings and runtime are recorded with new scores. These ordinary
 panels do not inherit a frozen calibration's authority for research certification.
 

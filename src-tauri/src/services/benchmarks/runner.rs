@@ -75,10 +75,12 @@ pub(super) const HOUSEKEEPING_EVERY: Duration = if cfg!(test) {
 fn judging_deferred(attempt: &Attempt) -> bool {
     matches!(
         attempt.reason.as_deref(),
-        Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY)
+        Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY | JUDGE_RESELECTING)
     ) || judge_discovery_waiting(attempt)
         || judge_quota_waiting(attempt)
 }
+
+const JUDGE_RESELECTING: &str = "Selecting a replacement judge after a usage limit";
 
 fn judge_quota_waiting(attempt: &Attempt) -> bool {
     attempt.reason.as_deref() == Some(JUDGE_QUOTA_REASON)
@@ -3682,7 +3684,7 @@ impl NativeBackend {
         draft: &BenchmarkDraft,
         rejected: &[judge_recovery::Rejection],
         frozen: bool,
-        retained_votes: bool,
+        open: Option<&OpenBatch>,
     ) -> Result<DiscoveredJudgePanel> {
         let contributing = super::workflow::judge_candidates(store, attempt).await?;
         let candidates: Vec<_> = contributing.iter().collect();
@@ -3761,10 +3763,19 @@ impl NativeBackend {
                     .unwrap_or(false)
             })
         };
-        let panel = if retained_votes {
-            ordinary_judging::available_replacements(&candidates, draft, offered, available)
+        let panel = if let Some(open) = open {
+            ordinary_judging::available_panel(
+                open,
+                &candidates,
+                draft,
+                offered,
+                available,
+                quota,
+                deferred,
+            )?
         } else {
-            ordinary_available_judges(&candidates, draft, offered, available)?
+            let panel = ordinary_available_judges(&candidates, draft, offered, available)?;
+            resolve_quota_panel(panel, &candidates, draft, quota, deferred)?
         };
         log::info!(
             "[benchmarks] judge panel for attempt {}: {} of offered {}",
@@ -3780,16 +3791,12 @@ impl NativeBackend {
                 .join(", "),
             seats.join(", ")
         );
-        let mut panel = if retained_votes {
-            // Completed seats need no idle account or remaining quota. A single
-            // available replacement can complete a panel with retained votes.
-            panel
-        } else {
-            resolve_quota_panel(panel, &candidates, draft, quota, deferred)?
-        };
+        let mut panel = panel;
         // Older tasks may have reserved two seats for their calibration panel.
         // Rotate identities without enlarging that run's admitted call budget.
-        panel.truncate(super::judge_execution_count(draft));
+        if open.is_none() {
+            panel.truncate(super::judge_execution_count(draft));
+        }
         Ok(DiscoveredJudgePanel::discovered(panel, diagnostics, &pool))
     }
 
@@ -4767,14 +4774,10 @@ impl NativeBackend {
                             &version.manifest,
                             &rejected,
                             false,
-                            !open.asked.is_empty(),
+                            Some(&open),
                         )
                         .await?;
-                    let Some(panel) = ordinary_judging::replacement_panel(&open, discovered.seats)
-                    else {
-                        attempt.reason = Some(JUDGES_BUSY.into());
-                        return Ok(attempt);
-                    };
+                    let panel = discovered.seats;
                     if ordinary_judging::needs_reseating(&attempt, &open, &panel) {
                         let contributing =
                             super::workflow::judge_candidates(store, &attempt).await?;
@@ -4813,7 +4816,7 @@ impl NativeBackend {
                             &version.manifest,
                             &rejected,
                             !ordinary,
-                            false,
+                            None,
                         )
                         .await?
                     }
@@ -5036,7 +5039,13 @@ impl NativeBackend {
         }
         attempt.reason = panel_reason(end, votes, expected, stop.cancelled()).map(str::to_owned);
         if attempt.reason.as_deref() == Some(PANEL_INCOMPLETE) {
-            attempt.reason = Some(incomplete_panel_reason(&attempt, &batch));
+            attempt.reason = Some(
+                if ordinary && ordinary_judging::quota_interrupted(&attempt, &batch) {
+                    JUDGE_RESELECTING.into()
+                } else {
+                    incomplete_panel_reason(&attempt, &batch)
+                },
+            );
         }
         Ok(attempt)
     }

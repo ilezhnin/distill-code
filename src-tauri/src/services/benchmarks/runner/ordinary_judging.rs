@@ -71,14 +71,61 @@ pub(super) fn available_replacements(
     offered: Vec<(Option<f64>, Configuration)>,
     available: impl Fn(&Configuration) -> bool,
 ) -> Vec<Configuration> {
-    ordinary_judges(
-        candidates,
+    if candidate_vendors(candidates).is_none() {
+        return Vec::new();
+    }
+    // A new panel's one-per-lab shortlist hides same-lab replacements needed
+    // to finish a saved three-seat panel after one provider runs out of quota.
+    seatable(
         draft,
-        offered
-            .into_iter()
-            .filter(|(_, judge)| available(judge))
-            .collect(),
+        by_headroom(
+            offered
+                .into_iter()
+                .filter(|(_, judge)| available(judge))
+                .collect(),
+        ),
+        &[],
     )
+    .into_iter()
+    .map(|(judge, _)| judge)
+    .filter(|judge| super::super::judge_pool::vendor(&judge.provider_id).is_some())
+    .collect()
+}
+
+/// Complete the saved panel before classifying a wait. Paid seats require no
+/// current account capacity; only eligible missing seats may defer on quota.
+pub(super) fn available_panel(
+    open: &OpenBatch,
+    candidates: &[&Configuration],
+    draft: &BenchmarkDraft,
+    offered: Vec<(Option<f64>, Configuration)>,
+    available: impl Fn(&Configuration) -> bool,
+    mut quota: Vec<(i64, Configuration)>,
+    deferred: Option<BenchmarkError>,
+) -> Result<Vec<Configuration>> {
+    let ready = available_replacements(candidates, draft, offered.clone(), available);
+    if let Some(panel) = replacement_panel(open, ready) {
+        return Ok(panel);
+    }
+    let all = available_replacements(candidates, draft, offered.clone(), |_| true);
+    if replacement_panel(open, all).is_some() {
+        return Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGES_BUSY));
+    }
+    quota.sort_by_key(|(until, _)| *until);
+    let mut potential = offered;
+    for (until, judge) in quota {
+        potential.push((None, judge));
+        let eligible = available_replacements(candidates, draft, potential.clone(), |_| true);
+        if replacement_panel(open, eligible).is_some() {
+            return Err(judge_quota_wait(Some(until)));
+        }
+    }
+    Err(deferred.unwrap_or_else(|| {
+        BenchmarkError::new(
+            "judge_panel_unavailable",
+            "The saved panel needs another eligible calibrated judge; add one to the judge pool",
+        )
+    }))
 }
 
 /// Paid seats stay. Only unfilled seats may take a currently eligible judge.
@@ -93,15 +140,34 @@ pub(super) fn replacement_panel(
         .filter(|judge| open.asked.contains(judge) || offered.contains(judge))
         .cloned()
         .collect();
-    for judge in offered {
-        if panel.len() == open.panel.len() {
-            break;
-        }
-        if !panel.iter().any(|paid| same_model(paid, &judge)) {
-            panel.push(judge);
+    // Prefer an unrepresented lab, then another distinct calibrated model.
+    for distinct_lab in [true, false] {
+        for judge in &offered {
+            if panel.len() == open.panel.len() {
+                break;
+            }
+            if !panel.iter().any(|paid| same_model(paid, judge))
+                && (!distinct_lab
+                    || !panel.iter().any(|paid| {
+                        super::super::judge_pool::vendor(&paid.provider_id)
+                            == super::super::judge_pool::vendor(&judge.provider_id)
+                    }))
+            {
+                panel.push(judge.clone());
+            }
         }
     }
     (panel.len() == open.panel.len()).then_some(panel)
+}
+
+pub(super) fn quota_interrupted(attempt: &Attempt, batch: &str) -> bool {
+    attempt.evaluations.iter().any(|e| {
+        e.provenance == "judge_failure"
+            && !in_flight(e)
+            && e.details.as_ref().is_some_and(|d| {
+                d["judgeBatchId"] == batch && judge_quota_stop(&d["providerError"])
+            })
+    })
 }
 
 fn marker<'a>(attempt: &'a Attempt, batch: &str) -> Option<&'a Evaluation> {

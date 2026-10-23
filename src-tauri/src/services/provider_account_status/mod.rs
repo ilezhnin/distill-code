@@ -1000,6 +1000,20 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
     if typed_quota {
         return true;
     }
+    // Grok Build reports an exhausted subscription allowance as HTTP 402.
+    // A payment status alone does not establish a usage limit.
+    if error.pointer("/data/http_status").and_then(Value::as_u64) == Some(402)
+        && error
+            .pointer("/data/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| {
+                message
+                    .to_ascii_lowercase()
+                    .contains("usage balance exhausted")
+            })
+    {
+        return true;
+    }
     // Legacy bridges may only provide text. Restrict fallback to diagnostic
     // fields; arbitrary metadata and quoted transcript content are not errors.
     [
