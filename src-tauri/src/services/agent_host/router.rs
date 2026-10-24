@@ -59,6 +59,18 @@ fn account_validation_id<'a>(
     Ok(account_id)
 }
 
+/// CLI sign-ins have the same quota as their benchmark leases, even though
+/// Flock does not store those accounts or offer automatic switching for them.
+fn account_quota_id<'a>(
+    harness: &str,
+    account_id: Option<&'a str>,
+) -> Result<Option<&'a str>, Value> {
+    if provider_accounts::supports_managed_accounts(harness) {
+        return account_validation_id(harness, account_id);
+    }
+    Ok(account_id.filter(|id| provider_accounts::is_cli_login_account(harness, id)))
+}
+
 /// The prompt of an owned turn: the task text first, behind a fixed marker, so
 /// a task that starts with `/plan` or `$skill` is never read as a native slash
 /// command or skill mention; then the images.
@@ -5531,13 +5543,10 @@ impl Inner {
         record: &SessionRecord,
         credits: bool,
     ) -> Result<(), Value> {
-        if !provider_accounts::supports_managed_accounts(&record.harness) {
+        let Some(account_id) = account_quota_id(&record.harness, record.account_id.as_deref())?
+        else {
             return Ok(());
-        }
-        let account_id = record
-            .account_id
-            .as_deref()
-            .ok_or_else(|| invalid_params("Choose a signed-in account for this chat"))?;
+        };
         let owned = self
             .store
             .execution_owner(&record.id)
@@ -5547,7 +5556,7 @@ impl Inner {
         let automatic = !owned && self.automatic_account_switching(&record.harness)?;
         let mut unavailable = std::collections::HashSet::new();
         loop {
-            let selection = if owned {
+            let selection = if owned || provider_accounts::uses_cli_login(&record.harness) {
                 crate::services::provider_account_status::select_owned_account(
                     &self.app,
                     &record.harness,
@@ -10948,6 +10957,27 @@ mod tests {
             );
         }
         assert_eq!(account_validation_id("kimi", None).unwrap(), None);
+    }
+
+    #[test]
+    fn cli_benchmark_identities_are_checked_before_dispatch() {
+        for provider in ["kimi-acp", "grok-acp"] {
+            let identity = provider_accounts::cli_login_account_id(provider).unwrap();
+            assert_eq!(
+                account_quota_id(provider, Some(&identity)).unwrap(),
+                Some(identity.as_str())
+            );
+            assert_eq!(account_quota_id(provider, None).unwrap(), None);
+            assert_eq!(
+                account_quota_id(provider, Some("cli-login-other")).unwrap(),
+                None
+            );
+        }
+        assert!(account_quota_id("codex-acp", None).is_err());
+        assert_eq!(
+            account_quota_id("codex-acp", Some("saved")).unwrap(),
+            Some("saved")
+        );
     }
 
     #[test]

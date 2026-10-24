@@ -679,6 +679,13 @@ the refusal and selects an eligible replacement for the unfilled seat.
 Grok Build's HTTP 402 with an exhausted usage balance is a quota refusal;
 an unexplained payment status alone is not.
 
+Candidate dispatch checks CLI-owned sign-ins, including Kimi and Grok, against
+the same account usage snapshot shown in the status bar. A spent allowance
+parks the attempt before sending its prompt, even if the provider would still
+accept requests. Running requests finish normally. The run summary exposes
+the quota wait and whether the queue will resume automatically; a stopped run
+instead asks the operator to resume after the reset.
+
 When quota is already known before a judge starts, the saved answer and any
 completed votes wait for the reset without creating an abstention or repeating
 candidate generation. An unknown reset is checked again after five minutes.

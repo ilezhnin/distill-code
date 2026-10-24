@@ -311,7 +311,10 @@ export function configurationDetails(
  */
 export function attentionLabel(
   t: Translate,
-  run: { attention?: { outcome: string | null; reason: string } | null },
+  run: {
+    state?: string;
+    attention?: { outcome: string | null; reason: string } | null;
+  },
   /** When the run's window closes, formatted; the label then names the deadline. */
   until?: string,
 ): string {
@@ -321,7 +324,10 @@ export function attentionLabel(
 
 function attentionCause(
   t: Translate,
-  run: { attention?: { outcome: string | null; reason: string } | null },
+  run: {
+    state?: string;
+    attention?: { outcome: string | null; reason: string } | null;
+  },
 ): string {
   const attention = run.attention;
   if (!attention) return t("attention.unknown");
@@ -331,6 +337,20 @@ function attentionCause(
     return t("attention.restarted");
   if (/benchmark credits/i.test(attention.reason))
     return t("attention.credits");
+  if (attention.outcome == null && attention.reason.startsWith("{")) {
+    try {
+      const error = JSON.parse(attention.reason);
+      if (
+        error.data?.kind === "account_quota_wait" ||
+        error.data?.type === "account_quota_wait"
+      )
+        return t(
+          run.state === "running" ? "attention.quotaWait" : "attention.quota",
+        );
+    } catch {
+      // Other diagnostics retain their existing label.
+    }
+  }
   if (
     attention.outcome === "quota_blocked" ||
     /usage limit|quota|weekly\/monthly limit exhausted/i.test(attention.reason)

@@ -424,6 +424,7 @@
   "attention": {
     "restarted": "The app restarted while a test was in flight. Resume: the run goes on with its other tests, and the lost one starts over.",
     "quota": "The usage limit ran out. Resume when it resets, or cancel.",
+    "quotaWait": "Waiting for the usage limit to reset. The queue will resume automatically.",
     "credits": "Plan usage ran out and tests may not spend more credits. Raise the credit limit in Settings > Benchmarks, resume when plan usage resets, or cancel.",
     "signIn": "The provider could not authorize this run. Check the account's sign-in, then resume.",
     "signInWait": "The account's sign-in is being updated. Wait for the update, then resume.",

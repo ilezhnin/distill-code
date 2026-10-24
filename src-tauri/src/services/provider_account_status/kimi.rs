@@ -274,6 +274,26 @@ mod tests {
     }
 
     #[test]
+    fn spent_cli_allowance_waits_for_reset_without_dispatching() {
+        let account = cli_account();
+        let status = usage(json!({"kind":"ok", "quota":{"usages": {
+            "limit5h": {"usedRatio": 1.0, "resetAt": "2026-09-24T00:00:00Z"},
+            "monthTotal": {"usedRatio": 0.0755}
+        }}}));
+        let reset = status.limits[0].resets_at;
+        for now in [1_000, reset.unwrap() + 1] {
+            assert!(matches!(
+                super::super::choose_account(
+                    std::slice::from_ref(&account), std::slice::from_ref(&status),
+                    &account.id, false, Some("kimi-code/kimi-for-coding-highspeed"), now
+                ).unwrap(),
+                super::super::AccountSelection::Wait { next_reset, .. }
+                    if next_reset == reset.filter(|reset| *reset > now)
+            ));
+        }
+    }
+
+    #[test]
     fn maps_native_profile_and_booster_wallet_without_guessing_missing_balances() {
         let status = usage(json!({"kind":"ok", "userInfo": {
             "email":"kimi@example.test", "nickname":"Personal", "userLevelName":"Kimi Moderato"

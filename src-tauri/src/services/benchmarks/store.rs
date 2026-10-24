@@ -574,6 +574,10 @@ impl Store {
                         AND COALESCE(a.reason,'')<>''
                         AND ((a.phase='terminal' AND a.outcome='pending_review'
                             AND a.has_human_score=0)
+                        OR (a.phase='pending' AND CASE WHEN json_valid(a.reason)
+                            THEN json_extract(a.reason,'$.data.kind')='account_quota_wait'
+                                OR json_extract(a.reason,'$.data.type')='account_quota_wait'
+                            ELSE 0 END)
                         OR ((r.state='needs_attention' OR (a.phase='terminal' AND a.outcome IS NOT NULL)) AND COALESCE(a.outcome,'') NOT IN
                             ('pass','fail','judged','pending_review','completed','budget_reached','budget_timeout',
                              'excluded','selection_changed','unsupported','cancelled','superseded')))
@@ -2552,6 +2556,7 @@ mod tests {
             ("absent", "completed", Some("pass"), "terminal", 0),
             ("multiple", "completed", Some("pass"), "terminal", 2),
             ("pending", "running", None, "pending", 1),
+            ("quota-wait", "running", None, "pending", 1),
             (
                 "paused-infra",
                 "paused",
@@ -2588,8 +2593,14 @@ mod tests {
                 } else {
                     outcome
                 };
+                let reason = if run_id == "quota-wait" {
+                    json!({"data":{"kind":"account_quota_wait","nextReset":9_000_000_000_000_i64}})
+                        .to_string()
+                } else {
+                    "Recorded diagnostic".into()
+                };
                 let attempt = json!({
-                    "outcome":outcome, "reason":"Recorded diagnostic",
+                    "outcome":outcome, "reason":reason,
                     "output":"private output must remain lazy", "evaluations":["private evaluation"],
                     "workflowSteps":["private step evidence"], "sessionId":"private session identity"
                 });
@@ -2614,7 +2625,7 @@ mod tests {
             assert_eq!(summary.workflow_result, expected, "{run_id}");
             assert_eq!(
                 summary.attention.is_some(),
-                outcome == Some("infrastructure_failure"),
+                outcome == Some("infrastructure_failure") || run_id == "quota-wait",
                 "{run_id}"
             );
         }

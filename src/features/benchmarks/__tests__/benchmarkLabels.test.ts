@@ -160,6 +160,7 @@ describe("attentionLabel", () => {
     ({
       "attention.restarted": "restarted",
       "attention.quota": "quota",
+      "attention.quotaWait": "waiting for quota reset",
       "attention.credits": "credits",
       "attention.signIn": "sign in",
       "attention.signInWait": "wait for account update",
@@ -170,6 +171,17 @@ describe("attentionLabel", () => {
     })[key] ?? key) as Parameters<typeof attentionLabel>[0];
 
   it("names the cause and the one action that helps", () => {
+    expect(
+      attentionLabel(t, {
+        state: "running",
+        attention: {
+          outcome: null,
+          reason: JSON.stringify({
+            data: { kind: "account_quota_wait", nextReset: 9_000_000_000_000 },
+          }),
+        },
+      }),
+    ).toBe("waiting for quota reset");
     expect(
       attentionLabel(t, {
         attention: {
