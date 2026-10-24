@@ -50,6 +50,13 @@ and benchmark capabilities; do not copy a model name, effort list or runtime
 revision from another machine. A provider being available for ordinary chat does
 not establish that its benchmark execution profile is ready.
 
+Chats and benchmarks use the same account model catalogue, including effort
+levels and fast-mode support. Sandbox inventory observations only establish
+execution readiness; they do not replace those model definitions. Claude's
+models selected by opening a session with an explicit model name remain
+selectable even when absent from the bridge's short model menu. Dispatch still
+requires the runtime to acknowledge the exact requested model and options.
+
 All benchmark candidates, model inventory probes, judges, repository checks,
 JavaScript checks and browser rendering require the dedicated WSL distribution.
 Ordinary chats keep their existing provider runtime. With WSL

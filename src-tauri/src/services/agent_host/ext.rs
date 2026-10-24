@@ -516,21 +516,29 @@ pub(super) async fn model_inventory(
     Ok(response)
 }
 
-/// Preserve canonical names, order and context while recording what the
-/// isolated runtime actually supports. A missing model stays visible with a
-/// reason, rather than silently disappearing from the benchmark picker.
+/// The account catalogue owns model identities and capabilities for every
+/// consumer. The isolated runtime adds readiness only; its short menu is not
+/// another catalogue. Some harness models are selected when opening a session
+/// and intentionally never appear in that menu.
 pub(super) fn benchmark_models(catalog: &Value, runtime: &[Value]) -> Vec<Value> {
-    catalog["models"].as_array().into_iter().flatten().map(|model| {
-        let mut row = model.clone();
-        if let Some(observed) = runtime.iter().find(|candidate| candidate["id"] == model["id"]) {
-            for key in ["efforts", "defaultEffort", "supportsFast", "capabilitySource"] {
-                row[key] = observed[key].clone();
+    let spec = catalog["providerId"].as_str().and_then(harness::harness);
+    catalog["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|model| {
+            let mut row = model.clone();
+            let listed = runtime.iter().any(|candidate| candidate["id"] == model["id"]);
+            let opens_on_model = !runtime.is_empty()
+                && spec.zip(model["id"].as_str()).is_some_and(|(spec, id)| {
+                    harness::session_model_meta(spec, id).is_some()
+                });
+            if !listed && !opens_on_model {
+                row["unavailable"] = json!("The installed benchmark runtime cannot select this model. Refresh or update its runtime.");
             }
-        } else {
-            row["unavailable"] = json!("The installed benchmark runtime does not advertise this model. Refresh or update its runtime.");
-        }
-        row
-    }).collect()
+            row
+        })
+        .collect()
 }
 
 /// The answer every model-list endpoint returns.
@@ -853,13 +861,44 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["name"], "Current name");
         assert_eq!(rows[0]["contextLimit"], 1048576);
-        assert_eq!(rows[0]["efforts"], json!([{"value":"low"}]));
+        // A Linux menu must not replace the shared catalogue's capabilities.
+        assert_eq!(rows[0], catalog["models"][0]);
         assert!(rows[0].get("unavailable").is_none());
         assert_eq!(rows[1]["id"], "new");
         assert!(rows[1]["unavailable"].is_string());
         let refreshed =
             benchmark_models(&catalog, &[json!({"id":"new","capabilitySource":"probed"})]);
         assert!(refreshed[1].get("unavailable").is_none());
+    }
+
+    #[test]
+    fn benchmarks_use_the_shared_session_open_route_for_unlisted_claude_models() {
+        let runtime = vec![json!({"id":"sonnet","efforts":[{"value":"high"}]})];
+        let catalog = inventory_response("claude-acp", runtime.clone(), None);
+        let rows = benchmark_models(&catalog, &runtime);
+        let sonnet = rows
+            .iter()
+            .find(|row| row["id"] == "claude-sonnet-4-6")
+            .unwrap();
+        let shared = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == sonnet["id"])
+            .unwrap();
+        assert_eq!(sonnet, shared);
+        assert!(sonnet.get("unavailable").is_none());
+        assert_eq!(sonnet["opensOnModel"], true);
+
+        // A catalogue flag cannot invent a route, and a failed runtime probe
+        // cannot establish readiness even for a declared session-open model.
+        let unknown = json!({"providerId":"claude-acp","models":[
+            {"id":"unrecognized-model","opensOnModel":true}
+        ]});
+        assert!(benchmark_models(&unknown, &runtime)[0]["unavailable"].is_string());
+        assert!(benchmark_models(&catalog, &[])
+            .iter()
+            .all(|row| row["unavailable"].is_string()));
     }
 
     fn executable(modified: u64) -> Value {
