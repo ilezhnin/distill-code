@@ -1110,6 +1110,7 @@
     "invalidSheet": "Un juez devolvió una hoja de puntuación no válida.",
     "incompletePanel": "El panel no devolvió todas las puntuaciones necesarias.",
     "notification": "Evaluación fallida: {{model}}",
+    "executionFailed": "La ejecución del benchmark falló: {{model}}",
     "stopped": "Ejecución detenida: {{model}}"
   }
 }

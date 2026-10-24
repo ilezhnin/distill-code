@@ -16128,6 +16128,16 @@ mod tests {
         // A weekly or monthly limit is never waited out.
         let weekly = r#"{"message":"You've reached your weekly usage limit."}"#;
         assert_eq!(quota_plan("run-d", "kimi-acp", weekly, at), QuotaPlan::Stop);
+        let zai = json!({"code":-32603,"data":{"errorName":"APIError",
+            "dispatchStarted":true,"promptNotAccepted":false},
+            "message":"Internal error: Weekly/Monthly Limit Exhausted. Your limit will reset at 2030-01-02 12:00:00"});
+        let mut capture = TurnCapture::new(1024);
+        capture.output = "unfinished solution".into();
+        assert!(stopped_for_quota(&zai, &capture, true));
+        assert_eq!(
+            quota_plan("run-zai", "zai-acp", &zai.to_string(), at),
+            QuotaPlan::Stop
+        );
     }
     #[test]
     fn typed_terminal_outcomes_and_public_fixtures_are_preserved() {

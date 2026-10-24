@@ -568,13 +568,13 @@ impl Store {
                         WHERE a.run_id=r.id AND a.phase<>'terminal'
                         GROUP BY a.configuration_id,a.version_id ORDER BY MIN(a.rowid)) o)
                 END,
-                CASE WHEN r.state IN ('running','pausing','needs_attention','completed') THEN
+                CASE WHEN r.state IN ('running','pausing','paused','needs_attention','completed') THEN
                 (SELECT json_array(a.outcome,a.reason)
                     FROM recent_attempts a WHERE a.run_id=r.id
                         AND COALESCE(a.reason,'')<>''
                         AND ((a.phase='terminal' AND a.outcome='pending_review'
                             AND a.has_human_score=0)
-                        OR (r.state='needs_attention' AND COALESCE(a.outcome,'') NOT IN
+                        OR ((r.state='needs_attention' OR (a.phase='terminal' AND a.outcome IS NOT NULL)) AND COALESCE(a.outcome,'') NOT IN
                             ('pass','fail','judged','pending_review','completed','budget_reached','budget_timeout',
                              'excluded','selection_changed','unsupported','cancelled','superseded')))
                     ORDER BY (a.reason LIKE 'Waiting for local resources%') ASC,
@@ -2552,6 +2552,20 @@ mod tests {
             ("absent", "completed", Some("pass"), "terminal", 0),
             ("multiple", "completed", Some("pass"), "terminal", 2),
             ("pending", "running", None, "pending", 1),
+            (
+                "paused-infra",
+                "paused",
+                Some("infrastructure_failure"),
+                "terminal",
+                1,
+            ),
+            (
+                "running-infra",
+                "running",
+                Some("infrastructure_failure"),
+                "terminal",
+                1,
+            ),
             ("no-outcome", "completed", None, "terminal", 1),
             ("ordinary", "completed", Some("pass"), "terminal", 1),
             ("superseded", "completed", Some("pass"), "terminal", 2),
@@ -2589,15 +2603,20 @@ mod tests {
         for (run_id, state, outcome, _, _) in cases {
             let summary = summaries.iter().find(|row| row.id == run_id).unwrap();
             assert_eq!(summary.state, state);
-            let expected =
-                matches!(run_id, "timeout" | "infra" | "cancelled" | "superseded").then(|| {
-                    WorkflowRunResult {
-                        outcome: outcome.unwrap().into(),
-                        reason: Some("Recorded diagnostic".into()),
-                    }
-                });
+            let expected = matches!(
+                run_id,
+                "timeout" | "infra" | "cancelled" | "superseded" | "paused-infra" | "running-infra"
+            )
+            .then(|| WorkflowRunResult {
+                outcome: outcome.unwrap().into(),
+                reason: Some("Recorded diagnostic".into()),
+            });
             assert_eq!(summary.workflow_result, expected, "{run_id}");
-            assert!(summary.attention.is_none(), "{run_id}");
+            assert_eq!(
+                summary.attention.is_some(),
+                outcome == Some("infrastructure_failure"),
+                "{run_id}"
+            );
         }
         let serialized = serde_json::to_value(&summaries).unwrap();
         assert!(!serialized.to_string().contains("private "));

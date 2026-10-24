@@ -37,6 +37,8 @@ export const THROTTLED_REFRESH_MS = 15_000;
  * whenever Stats opens.
  */
 export const USAGE_LEDGER_REFRESH_MS = 300_000;
+/** Recover a missed terminal event without reloading the full usage ledger. */
+export const RUN_STATUS_REFRESH_MS = 15_000;
 const usageLedgerKey = [...benchmarkKeys, "usage-ledger"] as const;
 const OFF_EVENTS = new Set(["usage-ledger", "diagnostics"]);
 const onEvents = (query: { queryKey: readonly unknown[] }) =>
@@ -226,34 +228,67 @@ export function useBenchmarkRuntime() {
   }, [query.data]);
 }
 
-/** Report newly failed judging from every page, once per cause and stop. */
+/** Reconcile active runs and report failures from every page, once per cause and stop. */
 function useBenchmarkRunNotifications(enabled: boolean) {
   const { t } = useTranslation("benchmarks");
+  const client = useQueryClient();
   const runs = useQuery({
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
     enabled,
+    refetchInterval: (query) =>
+      !query.state.data ||
+      query.state.data.some((run) =>
+        ["running", "pausing", "cancelling"].includes(run.state),
+      )
+        ? RUN_STATUS_REFRESH_MS
+        : false,
+    refetchIntervalInBackground: true,
   });
   const previous = useRef<Map<string, RunSummary> | null>(null);
   useEffect(() => {
     if (!runs.data) return;
     if (previous.current) {
       for (const run of runs.data) {
-        if (run.request.preview || !run.attention) continue;
         const before = previous.current.get(run.id);
-        const stopped = ["needs_attention", "completed"].includes(run.state);
+        if (
+          before &&
+          (before.revision !== run.revision ||
+            before.state !== run.state ||
+            before.settledCount !== run.settledCount ||
+            before.attention?.reason !== run.attention?.reason)
+        ) {
+          void client.invalidateQueries({
+            queryKey: benchmarkKeys,
+            predicate: (query) =>
+              RUN_QUERIES.has(String(query.queryKey[1])) &&
+              query.queryKey[2] === run.id,
+          });
+        }
+        if (run.request.preview || !run.attention) continue;
+        const stopped = ["needs_attention", "completed", "paused"].includes(
+          run.state,
+        );
         if (
           before?.attention?.reason === run.attention.reason &&
-          ["needs_attention", "completed"].includes(before.state) === stopped
+          ["needs_attention", "completed", "paused"].includes(before.state) ===
+            stopped
         )
           continue;
         const model = run.request.configurations
           .map((entry) => modelDisplayName(entry))
           .join(", ");
         toast.error(
-          t(stopped ? "runIssues.stopped" : "runIssues.notification", {
-            model,
-          }),
+          t(
+            stopped
+              ? "runIssues.stopped"
+              : run.attention.outcome === "pending_review"
+                ? "runIssues.notification"
+                : "runIssues.executionFailed",
+            {
+              model,
+            },
+          ),
           {
             id: `benchmark-attention-${run.id}`,
             description:
@@ -267,7 +302,7 @@ function useBenchmarkRunNotifications(enabled: boolean) {
       }
     }
     previous.current = new Map(runs.data.map((run) => [run.id, run]));
-  }, [runs.data, t]);
+  }, [runs.data, t, client]);
 }
 
 /** Mounted by Stats: completed benchmark work is read in as Stats opens. */

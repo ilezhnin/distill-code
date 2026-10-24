@@ -331,7 +331,11 @@ function attentionCause(
     return t("attention.restarted");
   if (/benchmark credits/i.test(attention.reason))
     return t("attention.credits");
-  if (/usage limit|quota/i.test(attention.reason)) return t("attention.quota");
+  if (
+    attention.outcome === "quota_blocked" ||
+    /usage limit|quota|weekly\/monthly limit exhausted/i.test(attention.reason)
+  )
+    return t("attention.quota");
   if (
     /authorization is being changed|account is already being changed|sign-in is being updated|sign-in.*renews once|sign-in.*renewed (?:once|before)/i.test(
       attention.reason,

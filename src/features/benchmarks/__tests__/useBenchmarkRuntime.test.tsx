@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { benchmarkApi } from "../api/benchmarks";
 import {
   COALESCED_REFRESH_MS,
+  RUN_STATUS_REFRESH_MS,
   THROTTLED_REFRESH_MS,
   USAGE_LEDGER_REFRESH_MS,
   useBenchmarkRuntime,
@@ -223,6 +224,64 @@ describe("persistent benchmark runtime", () => {
     );
     expect(toast.error).not.toHaveBeenCalled();
     client.clear();
+  });
+
+  it("recovers a missed terminal event, refreshes the open run and reports its quota failure", async () => {
+    const active = { ...runSummary, state: "pausing", attention: null };
+    const stopped = {
+      ...active,
+      state: "paused",
+      revision: active.revision + 1,
+      attention: {
+        outcome: "infrastructure_failure",
+        reason: "Internal error: Weekly/Monthly Limit Exhausted",
+      },
+    };
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([active]);
+    vi.mocked(benchmarkApi.getUsageLedger).mockResolvedValue([]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const key = ["benchmarks", "run", active.id];
+    const readRun = vi.fn().mockResolvedValue(active);
+    const observer = new QueryObserver(client, {
+      queryKey: key,
+      queryFn: readRun,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let view: ReturnType<typeof render> | undefined;
+    try {
+      view = render(
+        <QueryClientProvider client={client}>
+          <Shell />
+        </QueryClientProvider>,
+      );
+      await waitFor(() =>
+        expect(client.getQueryData(["benchmarks", "runs"])).toEqual([active]),
+      );
+      vi.mocked(benchmarkApi.listRuns).mockResolvedValue([stopped]);
+      readRun.mockResolvedValue(stopped);
+      // No change notice arrives. The bounded status poll must repair both views.
+      await act(() => vi.advanceTimersByTimeAsync(RUN_STATUS_REFRESH_MS));
+      await waitFor(() => expect(client.getQueryData(key)).toEqual(stopped));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining("Run stopped"),
+        expect.objectContaining({
+          description: expect.stringContaining("usage limit"),
+        }),
+      );
+      const reads = vi.mocked(benchmarkApi.listRuns).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(RUN_STATUS_REFRESH_MS * 2));
+      expect(benchmarkApi.listRuns).toHaveBeenCalledTimes(reads);
+      expect(toast.error).toHaveBeenCalledOnce();
+    } finally {
+      view?.unmount();
+      unsubscribe();
+      client.clear();
+      vi.useRealTimers();
+    }
   });
 
   it("reconciles events committed during listener registration", async () => {

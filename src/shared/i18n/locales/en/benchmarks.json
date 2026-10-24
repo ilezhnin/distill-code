@@ -1110,6 +1110,7 @@
     "invalidSheet": "A judge returned an invalid score sheet.",
     "incompletePanel": "The judge panel did not return all required scores.",
     "notification": "Judging failed: {{model}}",
+    "executionFailed": "Benchmark execution failed: {{model}}",
     "stopped": "Run stopped: {{model}}"
   }
 }

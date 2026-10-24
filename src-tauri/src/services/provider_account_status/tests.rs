@@ -423,6 +423,22 @@ fn typed_quota_errors_are_distinct_from_temporary_rate_and_context_limits() {
 }
 
 #[test]
+fn zai_exhausted_subscription_window_is_quota_not_a_temporary_rate_limit() {
+    let mut error = json!({"code":-32603,"data":{
+        "errorName":"APIError","dispatchStarted":true,"promptNotAccepted":false
+    },"message":"Internal error: Weekly/Monthly Limit Exhausted. Your limit will reset at 2030-01-02 12:00:00"});
+    assert!(is_quota_error(&error));
+    error["data"]["errorKind"] = json!("rate_limit");
+    assert!(!is_quota_error(&error));
+    assert!(!is_quota_error(&json!({
+        "message":"Internal error: Rate limit reached for requests"
+    })));
+    assert!(!is_quota_error(&json!({
+        "data":{"transcript":"Weekly/Monthly Limit Exhausted"}
+    })));
+}
+
+#[test]
 fn exhausted_usage_balance_is_quota_but_payment_status_alone_is_not() {
     let mut error = json!({"code":-32603,"message":"Internal error","data":{
         "http_status":402,"message":"API error (status 402 Payment Required): Grok Build usage balance exhausted"

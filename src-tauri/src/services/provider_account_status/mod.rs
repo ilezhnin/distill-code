@@ -1037,6 +1037,7 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
             "usage limit",
             "hit your limit",
             "weekly limit reached",
+            "weekly/monthly limit exhausted",
         ]
         .iter()
         .any(|needle| text.contains(needle))
