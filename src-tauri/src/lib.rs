@@ -41,11 +41,34 @@ fn apply_app_window_icons(app: &tauri::AppHandle) {
     }
 }
 
+/// The config builds the hidden main window unfocused, because wry treats a
+/// failed `MoveFocus` as fatal and WebView2 fails it whenever no window is in
+/// the foreground. But wry registers its file drop target on WebView2's child
+/// windows once, while it builds the webview, and an unfocused hidden webview
+/// does not have the child under the cursor yet: every file drag is then
+/// refused (tauri-apps/wry#1639). Ask for focus whenever it cannot fail, and
+/// say whether it was asked for.
+#[cfg(windows)]
+fn focus_main_window_when_foreground_exists(config: &mut tauri::Config) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    // SAFETY: GetForegroundWindow takes no arguments and only reads state.
+    if unsafe { GetForegroundWindow() }.is_null() {
+        return false;
+    }
+    for window in &mut config.app.windows {
+        window.focus = true;
+    }
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_logging_hook();
 
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    #[cfg(windows)]
+    let main_window_focused = focus_main_window_when_foreground_exists(context.config_mut());
     let e2e_mode = services::e2e_mode::E2eMode::from_process_env(&context.config().identifier)
         .unwrap_or_else(|error| panic!("invalid isolated E2E configuration: {error}"));
     if let Some(mode) = &e2e_mode {
@@ -491,13 +514,21 @@ pub fn run() {
         ])
         .build(context)
         .expect("error while building tauri application")
-        .run(|app, event| match event {
+        .run(move |app, event| match event {
             RunEvent::Exit => {
                 app.state::<commands::terminal::TerminalState>().stop_all();
                 app.state::<services::agent_host::AgentHost>().shutdown();
             }
             RunEvent::Ready => {
                 apply_app_window_icons(app);
+                #[cfg(windows)]
+                {
+                    if !main_window_focused {
+                        log::warn!(
+                            "No window was in the foreground at startup, so file drops stay off until a restart"
+                        );
+                    }
+                }
             }
             _ => {}
         });
