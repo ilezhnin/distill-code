@@ -1,4 +1,18 @@
 {
+  "backgroundTasks": {
+    "interrupted": "Conexión perdida; finalización sin confirmar",
+    "active_one": "{{count}} tarea en segundo plano",
+    "active_other": "{{count}} tareas en segundo plano",
+    "history": "Tareas en segundo plano",
+    "task": "Tarea en segundo plano",
+    "running": "En ejecución en segundo plano",
+    "paused": "En pausa",
+    "completed": "Completada",
+    "failed": "Error",
+    "stopped": "Detenida",
+    "stop": "Detener",
+    "stopFailed": "No se pudo detener la tarea. Inténtalo de nuevo."
+  },
   "history": {
     "resultLoading": "Cargando resultado guardado...",
     "resultFailed": "No se pudo cargar el resultado guardado.",

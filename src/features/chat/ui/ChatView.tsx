@@ -20,6 +20,7 @@ import { ChatSearchBar } from "./ChatSearchBar";
 import { WorkspaceSetupChoice } from "./WorkspaceSetupChoice";
 import { summarizeProjectWorkspaceStartup } from "@/features/projects/lib/projectChatWorkspaces";
 import { ChatInput } from "./ChatInput";
+import { BackgroundTasksPanel } from "./BackgroundTasksPanel";
 import { OwnedTaskLauncher } from "./OwnedTaskLauncher";
 import { Button } from "@/shared/ui/button";
 import { LoadingFlock } from "./LoadingFlock";
@@ -1096,6 +1097,7 @@ export function ChatView({
           nodes={conductorChildren}
           sessionId={sessionId}
         />
+        <BackgroundTasksPanel sessionId={sessionId} />
         <ChatInput
           surface="bare"
           innerBareSurface

@@ -1,3 +1,4 @@
+import { useBackgroundTasksStore } from "../stores/backgroundTasksStore";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -31,8 +32,21 @@ export function handleSessionInfoUpdate(
     : isRecord(info.meta)
       ? info.meta
       : {};
+  if ("backgroundTasks" in meta)
+    useBackgroundTasksStore.getState().replace(sessionId, meta.backgroundTasks);
   observeExecutionOwner(sessionId, meta.executionOwner);
   const ownedTask = taskBindingId(sessionId) !== null;
+  if (meta.backgroundDisconnected === true && !ownedTask) {
+    flushBufferedStreamingUpdatesForSession(sessionId, { flushSubtitle: true });
+    const store = useChatStore.getState();
+    const messageId = store.getSessionRuntime(sessionId).streamingMessageId;
+    if (messageId)
+      store.updateMessage(sessionId, messageId, (message) => ({
+        ...message,
+        metadata: { ...message.metadata, completionStatus: "error" },
+      }));
+    store.setChatState(sessionId, "idle");
+  }
   if ("activeRunId" in meta) {
     const activeRunId =
       typeof meta.activeRunId === "string" ? meta.activeRunId : null;

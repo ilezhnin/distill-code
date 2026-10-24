@@ -1,4 +1,18 @@
 {
+  "backgroundTasks": {
+    "interrupted": "Connection lost; completion not confirmed",
+    "active_one": "{{count}} background task running",
+    "active_other": "{{count}} background tasks running",
+    "history": "Background tasks",
+    "task": "Background task",
+    "running": "Running in background",
+    "paused": "Paused",
+    "completed": "Completed",
+    "failed": "Failed",
+    "stopped": "Stopped",
+    "stop": "Stop",
+    "stopFailed": "Could not stop the task. Try again."
+  },
   "history": {
     "resultLoading": "Loading saved result...",
     "resultFailed": "The saved result could not be loaded.",

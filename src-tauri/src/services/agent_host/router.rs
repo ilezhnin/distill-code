@@ -501,6 +501,7 @@ pub struct SessionRuntime {
     generation: u64,
     loading: bool,
     run: Option<RunState>,
+    background: super::background::BackgroundActivity,
     steer_queue: VecDeque<QueuedPrompt>,
     /// `{ modes, models, configOptions }` as last reported by the bridge.
     snapshot: Value,
@@ -1244,7 +1245,10 @@ impl Inner {
                     .lock()
                     .await
                     .get_mut(&session_id)
-                    .map(SessionRuntime::drop_queued_steers)
+                    .map(|runtime| {
+                        runtime.background.cancel();
+                        runtime.drop_queued_steers()
+                    })
                     .unwrap_or(0);
                 if dropped > 0 {
                     log::info!(
@@ -1915,6 +1919,7 @@ impl Inner {
         resumable
             && !runtime.loading
             && runtime.run.is_none()
+            && !runtime.background.is_busy()
             && runtime.steer_queue.is_empty()
             && now.saturating_duration_since(runtime.last_active) >= SESSION_IDLE_TIMEOUT
     }
@@ -2105,6 +2110,15 @@ impl Inner {
                         self.forget_owned_bridge(&harness, generation);
                     }
                     let mut sessions = self.sessions.lock().await;
+                    for (session_id, runtime) in sessions.runtimes.iter_mut() {
+                        if runtime.served_by(&harness, generation) && runtime.background.is_busy() {
+                            let tasks = runtime.background.disconnected();
+                            pending.push((session_id.clone(), json!({"sessionId": session_id, "update": {
+                                "sessionUpdate": "session_info_update",
+                                "_meta": {"backgroundTasks": tasks, "backgroundDisconnected": true, "activeRunId": null}
+                            }})));
+                        }
+                    }
                     sessions.retain(|runtime| !runtime.served_by(&harness, generation));
                 }
             }
@@ -2318,10 +2332,7 @@ impl Inner {
                 if runtime.loading || runtime.generation != generation {
                     return None;
                 }
-                if Self::is_turn_update(&params)
-                    && (received_run.is_none()
-                        || runtime.run.as_ref().map(|run| run.run_id.as_str()) != received_run)
-                {
+                if !Self::accept_turn_update(runtime, received_run, &mut params) {
                     return None;
                 }
                 if runtime.execution_profile.is_none()
@@ -2432,6 +2443,9 @@ impl Inner {
         match update? {
             "tool_call" | "tool_call_update" => Some("native tool activity in no-tool profile"),
             "plan" => Some("native plan activity in no-tool profile"),
+            kind if kind.starts_with("async_task") => {
+                Some("native background activity in no-tool profile")
+            }
             kind if kind.starts_with("subagent") => {
                 Some("native subagent activity in no-tool profile")
             }
@@ -2442,6 +2456,26 @@ impl Inner {
             "current_mode_update" if running => Some("native mode changed during owned execution"),
             _ => None,
         }
+    }
+
+    fn accept_turn_update(
+        runtime: &mut SessionRuntime,
+        received_run: Option<&str>,
+        params: &mut Value,
+    ) -> bool {
+        let ordinary_claude =
+            runtime.harness == "claude-acp" && runtime.execution_profile.is_none();
+        if ordinary_claude {
+            runtime.background.task_update(params);
+        }
+        if !Self::is_turn_update(params) {
+            return true;
+        }
+        if ordinary_claude && received_run.is_none() {
+            return runtime.background.stamp_continuation(params, &now_iso());
+        }
+        received_run.is_some()
+            && runtime.run.as_ref().map(|run| run.run_id.as_str()) == received_run
     }
 
     fn is_turn_update(params: &Value) -> bool {
@@ -3499,6 +3533,7 @@ impl Inner {
                 generation: bridge.generation(),
                 loading: false,
                 run: None,
+                background: Default::default(),
                 steer_queue: VecDeque::new(),
                 snapshot: snapshot.clone(),
                 has_model_option,
@@ -3645,6 +3680,7 @@ impl Inner {
                 generation: bridge.generation(),
                 loading: true,
                 run: None,
+                background: Default::default(),
                 steer_queue: VecDeque::new(),
                 snapshot: snapshot.clone(),
                 has_model_option: Self::has_model_option(&snapshot),
@@ -3875,6 +3911,16 @@ impl Inner {
             history.as_ref().map_or(0, |page| page.events.len()),
             history.as_ref().map_or(0, |page| page.events.iter().map(|event| event.get().len()).sum::<usize>()),
         );
+        let background_tasks = self
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .map(|runtime| runtime.background.snapshot())
+            .unwrap_or_else(|| json!([]));
+        self.notify_frontend("session/update", json!({"sessionId": session_id, "update": {
+            "sessionUpdate": "session_info_update", "_meta": {"backgroundTasks": background_tasks}
+        }}));
         let attached = self.attached_route(&session_id).await.is_some();
         if attached {
             // Opening a chat whose agent is already awake counts as using it.
@@ -3957,7 +4003,13 @@ impl Inner {
             .lock()
             .await
             .get(session_id)
-            .and_then(|runtime| runtime.run.as_ref().map(|run| run.run_id.clone()))
+            .and_then(|runtime| {
+                runtime
+                    .run
+                    .as_ref()
+                    .map(|run| run.run_id.clone())
+                    .or_else(|| runtime.background.active_run_id().map(str::to_string))
+            })
     }
 
     async fn list_sessions(&self, params: Value) -> Result<Value, Value> {
@@ -4889,6 +4941,7 @@ impl Inner {
                 generation: bridge.generation(),
                 loading: false,
                 run: None,
+                background: Default::default(),
                 steer_queue: VecDeque::new(),
                 snapshot: snapshot.clone(),
                 has_model_option,
@@ -5045,6 +5098,7 @@ impl Inner {
                 generation: bridge.generation(),
                 loading: false,
                 run: None,
+                background: Default::default(),
                 steer_queue: VecDeque::new(),
                 snapshot: snapshot.clone(),
                 has_model_option,
@@ -5764,6 +5818,13 @@ impl Inner {
             if self.shutdown_prepared.load(Ordering::SeqCst) {
                 return Err(invalid_params("Flock is closing"));
             }
+            if let Some(active) = runtime.background.active_run_id() {
+                return Err(protocol::error_with_data(
+                    protocol::INVALID_PARAMS,
+                    "The agent is processing a background result",
+                    json!({"actualRunId": active}),
+                ));
+            }
             match Self::claim_turn(runtime, &ids) {
                 Ok(bridge_session_id) => {
                     self.activity_generations
@@ -5916,6 +5977,7 @@ impl Inner {
                 // that will never get a reply — and the caller keeps the real
                 // error instead of the last steer's.
                 if result.is_err() {
+                    runtime.background.cancel();
                     let dropped = runtime.drop_queued_steers();
                     runtime.run = None;
                     if dropped > 0 {
@@ -5929,6 +5991,9 @@ impl Inner {
                     runtime.run = None;
                     break;
                 };
+                if runtime.harness == "claude-acp" && runtime.execution_profile.is_none() {
+                    runtime.background.allow(&queued.ids.message_id);
+                }
                 runtime.run = Some(RunState::start(&queued.ids));
                 queued
             };
@@ -5973,6 +6038,9 @@ impl Inner {
     fn claim_turn(runtime: &mut SessionRuntime, ids: &TurnIds) -> Result<String, String> {
         if let Some(active) = runtime.run.as_ref() {
             return Err(active.run_id.clone());
+        }
+        if runtime.harness == "claude-acp" && runtime.execution_profile.is_none() {
+            runtime.background.allow(&ids.message_id);
         }
         runtime.run = Some(RunState::start(ids));
         Ok(runtime.bridge_session_id.clone())
@@ -6562,6 +6630,7 @@ impl Inner {
                 generation: bridge.generation(),
                 loading: false,
                 run: None,
+                background: Default::default(),
                 steer_queue: VecDeque::new(),
                 has_model_option: Self::has_model_option(&snapshot),
                 snapshot,
@@ -9189,6 +9258,7 @@ mod tests {
             generation: 1,
             loading,
             run: None,
+            background: Default::default(),
             steer_queue: VecDeque::new(),
             snapshot: json!({}),
             has_model_option: false,
@@ -10853,6 +10923,7 @@ mod tests {
             generation: 0,
             loading: false,
             run: None,
+            background: Default::default(),
             steer_queue: VecDeque::new(),
             snapshot: claude_session(),
             has_model_option: true,
@@ -10920,6 +10991,7 @@ mod tests {
             generation,
             loading: false,
             run: None,
+            background: Default::default(),
             steer_queue: VecDeque::new(),
             snapshot: Value::Null,
             has_model_option: false,
@@ -11163,6 +11235,67 @@ mod tests {
         let mut idle = runtime("claude-acp", "a", 1);
         idle.last_active = last_active;
         idle
+    }
+
+    #[test]
+    fn ordinary_claude_continues_after_prompt_without_accepting_stale_or_cancelled_runs() {
+        let mut live = runtime("claude-acp", "example", 7);
+        let turn = TurnIds::new();
+        Inner::claim_turn(&mut live, &turn).unwrap();
+        live.run = None; // The foreground prompt returned end_turn.
+        let chunk = || json!({"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Verified output"}}});
+        assert!(!Inner::accept_turn_update(
+            &mut live,
+            Some(&turn.run_id),
+            &mut chunk()
+        ));
+        let mut followup = chunk();
+        assert!(Inner::accept_turn_update(&mut live, None, &mut followup));
+        assert_eq!(
+            followup["update"]["_meta"]["distill"]["messageId"],
+            turn.message_id
+        );
+        assert_ne!(
+            followup["update"]["_meta"]["distill"]["assistantMessageId"],
+            turn.assistant_message_id
+        );
+        live.background.cancel();
+        assert!(!Inner::accept_turn_update(&mut live, None, &mut chunk()));
+    }
+
+    #[test]
+    fn unsolicited_events_do_not_open_the_owned_or_other_provider_lanes() {
+        for (provider, owned) in [("claude-acp", true), ("codex-acp", false)] {
+            let mut live = runtime(provider, "example", 7);
+            if owned {
+                live.execution_profile = Some("text-only".into());
+            }
+            Inner::claim_turn(&mut live, &TurnIds::new()).unwrap();
+            live.run = None;
+            let mut chunk = json!({"update":{"sessionUpdate":"agent_message_chunk"}});
+            assert!(!Inner::accept_turn_update(&mut live, None, &mut chunk));
+        }
+    }
+
+    #[test]
+    fn background_jobs_keep_an_idle_chat_attached_until_they_finish() {
+        let now = std::time::Instant::now();
+        let mut live = idle_since(now);
+        let mut spawned =
+            json!({"update":{"sessionUpdate":"async_task_spawned","asyncTaskId":"job"}});
+        assert!(Inner::accept_turn_update(&mut live, None, &mut spawned));
+        assert!(!Inner::session_is_evictable(
+            &live,
+            true,
+            now + SESSION_IDLE_TIMEOUT * 10
+        ));
+        let mut ended = json!({"update":{"sessionUpdate":"async_task_state_update","asyncTaskId":"job","state":"completed"}});
+        assert!(Inner::accept_turn_update(&mut live, None, &mut ended));
+        assert!(Inner::session_is_evictable(
+            &live,
+            true,
+            now + SESSION_IDLE_TIMEOUT * 10
+        ));
     }
 
     #[test]

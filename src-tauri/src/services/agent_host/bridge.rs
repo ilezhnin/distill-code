@@ -1019,7 +1019,7 @@ impl Bridge {
                         "session": { "notices": {}, "compaction": {} },
                         "_meta": {
                             "terminal_output_delta": true,
-                            "jetbrains": { "air": { "version": 1, "capabilities": ["sessionFailure"] } }
+                            "jetbrains": { "air": { "version": 1, "capabilities": ["sessionFailure", "asyncTasks"] } }
                         }
                     },
                     "clientInfo": {

@@ -1,4 +1,9 @@
 import {
+  claimSessionPrompt,
+  ownsSessionPrompt,
+  releaseSessionPrompt,
+} from "../lib/sessionPromptOwnership";
+import {
   clearWorkspaceToolCallObservations,
   observeWorkspaceToolCall,
 } from "./acpWorkspaceObservation";
@@ -414,6 +419,14 @@ function toolCallUpdatePatchFor(
   return patch.locations ? { locations: patch.locations } : {};
 }
 
+const autonomousOwners = new Map<string, { runId: string; owner: symbol }>();
+
+function forgetAutonomousOwner(sessionId: string): void {
+  const current = autonomousOwners.get(sessionId);
+  if (current) releaseSessionPrompt(sessionId, current.owner);
+  autonomousOwners.delete(sessionId);
+}
+
 export async function handleSessionNotification(
   notification: SessionNotification,
 ): Promise<void> {
@@ -458,7 +471,58 @@ export async function handleSessionNotification(
     if (update.sessionUpdate === "agent_message_chunk") {
       recordLiveAgentMessageChunk(sessionId);
     }
+    const hostMeta = isRecord(update._meta?.distill)
+      ? update._meta.distill
+      : null;
+    const autonomous = hostMeta?.autonomous === true;
+    if (autonomous && typeof hostMeta.runId === "string") {
+      const previous = autonomousOwners.get(sessionId);
+      if (previous?.runId !== hostMeta.runId) {
+        // A provider follow-up can beat the foreground prompt's response back
+        // to the renderer. Transfer stream ownership before its finally block
+        // runs, so that old completion cannot settle the new reply.
+        flushBufferedStreamingUpdatesForSession(sessionId, {
+          flushSubtitle: true,
+        });
+        const store = useChatStore.getState();
+        const priorMessage =
+          store.getSessionRuntime(sessionId).streamingMessageId;
+        if (priorMessage)
+          store.updateMessage(
+            sessionId,
+            priorMessage,
+            completeAssistantMessage,
+          );
+        store.setStreamingMessageId(sessionId, null);
+        clearActiveMessageId(sessionId);
+        autonomousOwners.set(sessionId, {
+          runId: hostMeta.runId,
+          owner: claimSessionPrompt(sessionId),
+        });
+      } else if (!ownsSessionPrompt(sessionId, previous.owner)) {
+        // Cancellation or a newer send already owns this surface.
+        return;
+      }
+      useChatStore.getState().setActiveRunId(sessionId, hostMeta.runId);
+      useChatStore.getState().setChatState(sessionId, "streaming");
+    }
     await handleLive(sessionId, update);
+    if (autonomous && hostMeta.autonomousFinished === true) {
+      flushBufferedStreamingUpdatesForSession(sessionId, {
+        flushSubtitle: true,
+      });
+      const store = useChatStore.getState();
+      if (typeof hostMeta.assistantMessageId === "string") {
+        store.updateMessage(
+          sessionId,
+          hostMeta.assistantMessageId,
+          completeAssistantMessage,
+        );
+      }
+      forgetAutonomousOwner(sessionId);
+      store.setChatState(sessionId, "idle");
+      store.settleActiveRun(sessionId);
+    }
   }
 }
 
@@ -1491,6 +1555,8 @@ function adoptHostTurnMessageId(
 }
 
 export function clearMessageTracking(): void {
+  for (const sessionId of autonomousOwners.keys())
+    forgetAutonomousOwner(sessionId);
   loadingLiveUpdates.clear();
   historyBoundaries.clear();
   replayPerf.clear();
@@ -1511,6 +1577,7 @@ export function clearMessageTracking(): void {
  * either is bound again to whoever owns the session at that point.
  */
 export function forgetSessionMessageTracking(sessionId: string): void {
+  forgetAutonomousOwner(sessionId);
   loadingLiveUpdates.delete(sessionId);
   historyBoundaries.delete(sessionId);
   clearSkillReplayChips(sessionId);
