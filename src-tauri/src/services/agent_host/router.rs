@@ -8149,14 +8149,14 @@ impl Inner {
                 match select(config_id.to_string(), model_id.clone()).await {
                     Ok(answer) => Self::record_capabilities(row, &answer),
                     Err(error) => {
-                        // Whatever is wrong with the bridge will be wrong for
-                        // the rest of the list too; the models already walked
-                        // keep what they answered.
+                        // A listed model can be refused independently (for
+                        // example an account cannot confirm one preview model).
+                        // Keep that row unknown and still ask the remaining
+                        // models; one refusal says nothing about their options.
                         log::info!(
-                            "[agent-host] the model probe stopped at {model_id}: {}",
+                            "[agent-host] the model probe skipped {model_id}: {}",
                             error_text(&error)
                         );
-                        break;
                     }
                 }
             }
@@ -9852,6 +9852,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_model_does_not_hide_later_models_reasoning() {
+        let closed = StdMutex::new(false);
+        let rows = Inner::probe_model_rows(
+            &codex_session(),
+            |_, model_id| async move {
+                if model_id == "gpt-5.5" {
+                    Err(protocol::internal(
+                        "Could not confirm this model with the API",
+                    ))
+                } else {
+                    Ok(codex_answer(&["low", "high"], false))
+                }
+            },
+            || async {
+                *closed.lock().unwrap() = true;
+            },
+        )
+        .await;
+        assert_eq!(rows[1]["capabilitySource"], "unknown");
+        assert_eq!(rows[2]["capabilitySource"], "probed");
+        assert_eq!(effort_values(&rows[2]), ["low", "high"]);
+        assert!(*closed.lock().unwrap());
+    }
+
+    #[tokio::test]
     async fn a_probe_that_gives_up_still_closes_its_session() {
         let opened = codex_session();
         let closed = StdMutex::new(false);
@@ -9871,7 +9896,7 @@ mod tests {
         .await;
 
         assert!(*closed.lock().expect("closed"), "closed on the error path");
-        // The list survives the failure; what was never asked stays unknown,
+        // The list survives the failure; what could not be read stays unknown,
         // which is not the same as having no effort control.
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0]["capabilitySource"], "probed");
