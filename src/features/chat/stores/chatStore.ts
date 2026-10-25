@@ -13,6 +13,7 @@ import { clearReplayBuffer } from "../hooks/replayBuffer";
 import { forgetTranscriptItemDescriptorSession } from "@/features/chat/transcript/projection/buildTranscriptItems";
 import { isSessionRunning } from "../lib/sessionActivity";
 import { mergeTokenState } from "@/features/chat/lib/tokenState";
+import { clearTranscriptHydration } from "@/features/chat/lib/transcriptHydration";
 import type {
   ChatState,
   SessionChatRuntime,
@@ -284,6 +285,8 @@ export function onChatSessionReleased(
 function releaseChatSession(sessionId: string): void {
   // Discard any orphaned replay buffer so the module-level map doesn't leak.
   clearReplayBuffer(sessionId);
+  // Whatever fills this chat's messages next is not a loaded transcript.
+  clearTranscriptHydration(sessionId);
   forgetTranscriptItemDescriptorSession(sessionId);
   for (const listener of sessionReleaseListeners) {
     listener(sessionId);

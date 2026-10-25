@@ -10,6 +10,10 @@ import {
   loadSessionMessagesAndPrepare,
 } from "@/features/chat/lib/sessionActivation";
 import { DEFAULT_CHAT_TITLE } from "@/features/chat/lib/sessionTitle";
+import {
+  markTranscriptHydrated,
+  resetTranscriptHydrationForTests,
+} from "@/features/chat/lib/transcriptHydration";
 import { interruptedTurnNoticeId } from "@/features/chat/lib/unansweredSend";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
@@ -139,6 +143,7 @@ describe("loadSessionMessages", () => {
     vi.clearAllMocks();
     reconcile.mockReset().mockResolvedValue(false);
     resetSessionTargetCoordinatorsForTests();
+    resetTranscriptHydrationForTests();
     clearReplayAssistantTracking();
     window.localStorage.clear();
     acpGetSessionInfo.mockResolvedValue(null);
@@ -306,6 +311,8 @@ describe("loadSessionMessages", () => {
     useChatStore
       .getState()
       .addMessage("cached-activation", replayUserMessage());
+    // A cached chat is one whose transcript a replay wrote here.
+    markTranscriptHydrated("cached-activation");
 
     await expect(
       loadSessionMessagesAndPrepare("cached-activation"),
@@ -571,10 +578,55 @@ describe("loadSessionMessages", () => {
       { ...replayUserMessage("canonical-owned-user"), created: 1 },
     ];
     useChatStore.getState().setMessages(id, messages);
+    // A cached transcript is one a replay wrote here; the fixture stands in
+    // for that load.
+    markTranscriptHydrated(id);
     await expect(loadSessionMessages(id)).resolves.toBe(true);
     await expect(loadSessionMessages(id)).resolves.toBe(true);
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(acpLoadSession).not.toHaveBeenCalled();
     expect(messagesFor(id)).toEqual(messages);
+  });
+
+  it("replays a chat whose store holds only live traffic since a reload, then caches it", async () => {
+    const id = "live-tail-after-reload";
+    seedSession({ id, messageCount: 4 });
+    // An agent kept answering while the window reloaded: live handling
+    // rebuilt its reply in the store, and none of the operator's messages.
+    const liveReply: Message = {
+      ...createUserMessage("the reply that arrived live"),
+      id: "live-reply",
+      role: "assistant",
+    };
+    useChatStore.getState().setMessages(id, [liveReply]);
+
+    await expect(loadSessionMessages(id)).resolves.toBe(true);
+    expect(acpLoadSession).toHaveBeenCalledTimes(1);
+    expect(messagesFor(id).map((message) => message.id)).toEqual(["m1"]);
+
+    // Loaded here now: reopening does not replay again.
+    await expect(loadSessionMessages(id)).resolves.toBe(true);
+    expect(acpLoadSession).toHaveBeenCalledTimes(1);
+    expect(messagesFor(id).map((message) => message.id)).toEqual(["m1"]);
+  });
+
+  it("loads again after the store released the chat's messages", async () => {
+    const id = "released-then-refilled";
+    seedSession({ id, messageCount: 2 });
+    await expect(loadSessionMessages(id)).resolves.toBe(true);
+    expect(acpLoadSession).toHaveBeenCalledTimes(1);
+
+    useChatStore.getState().cleanupSession(id);
+    // Live traffic refills the released chat; that is not a loaded transcript.
+    useChatStore
+      .getState()
+      .setMessages(id, [
+        { ...createUserMessage("later reply"), id: "late", role: "assistant" },
+      ]);
+    ensureReplayBuffer(id).push(replayUserMessage("m2"));
+
+    await expect(loadSessionMessages(id)).resolves.toBe(true);
+    expect(acpLoadSession).toHaveBeenCalledTimes(2);
+    expect(messagesFor(id).map((message) => message.id)).toEqual(["m2"]);
   });
 });

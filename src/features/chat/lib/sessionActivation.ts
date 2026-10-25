@@ -1,5 +1,9 @@
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
 import {
+  isTranscriptHydrated,
+  markTranscriptHydrated,
+} from "@/features/chat/lib/transcriptHydration";
+import {
   hasConversationMessages,
   replaceMessagesFromSessionReplay,
 } from "@/features/chat/lib/sessionReplayReplacement";
@@ -359,7 +363,16 @@ async function performSessionMessagesLoad(
 ): Promise<boolean> {
   const sid = logSessionId(sessionId);
   const existingMsgs = useChatStore.getState().messagesBySession[sessionId];
-  if (!options.force && hasConversationMessages(existingMsgs)) {
+  // Messages alone are not a loaded transcript: live traffic for a chat
+  // this renderer never opened (an agent still answering across a reload)
+  // leaves the agent's replies in the store and nothing of the operator's.
+  // Only a transcript a replay wrote here is cached; see
+  // `transcriptHydration`.
+  if (
+    !options.force &&
+    hasConversationMessages(existingMsgs) &&
+    isTranscriptHydrated(sessionId)
+  ) {
     perfLog(`[perf:load] ${sid} skip — has messages`);
     clearIdleStreamingMessageAfterReplay(sessionId);
     useChatSessionStore
@@ -524,6 +537,7 @@ async function performSessionMessagesLoad(
       return false;
     }
 
+    markTranscriptHydrated(sessionId);
     const replayMessages = replayResult.messages;
     // Whether the transcript's last reply is still being written. `session/info`
     // is only fetched for a pinned load, but every `session/list` row carries

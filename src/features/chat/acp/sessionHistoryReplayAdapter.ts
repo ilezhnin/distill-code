@@ -7,6 +7,7 @@ import {
   failHistorySnapshot,
 } from "./acpNotificationHandler";
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
+import { markTranscriptHydrated } from "@/features/chat/lib/transcriptHydration";
 import { replaceMessagesFromSessionReplay } from "@/features/chat/lib/sessionReplayReplacement";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -62,6 +63,7 @@ async function loadWithHistoryAsReplay<T>(
           ? "empty"
           : "unknown",
     });
+    if (result.status === "replaced") markTranscriptHydrated(sessionId);
     useChatStore.getState().setSessionLoading(sessionId, false);
     perfLog(
       `[perf:prepare] ${sid} history replay ${result.status}${
