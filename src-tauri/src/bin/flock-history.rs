@@ -1,19 +1,25 @@
-//! `flock-history compact <path to agent-host.db>`
+//! `flock-history compact <path to agent-host.db> [--again]`
 //!
 //! Rewrites a chat history database Flock is not running on so that every
 //! stored turn takes the form its replay reads (the streamed pieces of a
 //! message joined, running tool calls without the output their final update
 //! repeats), then vacuums the file. The host does the same for each new turn
 //! and, once, in the background; this does it now, on a closed database.
+//! `--again` repeats a pass the database already records as complete, for a
+//! database an older build kept writing to since.
 use std::path::PathBuf;
 use std::time::Instant;
 
 use levocat_flock_lib::history_maintenance::{self, CompactionStats};
 
-const USAGE: &str = "usage: flock-history compact <path to agent-host.db>\n\nClose Flock first: the database must not be open.";
+const USAGE: &str = "usage: flock-history compact <path to agent-host.db> [--again]\n\nClose Flock first: the database must not be open.";
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let again = args.iter().position(|arg| arg == "--again");
+    if let Some(index) = again {
+        args.remove(index);
+    }
     let [command, path] = args.as_slice() else {
         eprintln!("{USAGE}");
         std::process::exit(2);
@@ -22,6 +28,7 @@ fn main() {
         eprintln!("{USAGE}");
         std::process::exit(2);
     }
+    let again = again.is_some();
     let path = PathBuf::from(path);
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
@@ -33,7 +40,7 @@ fn main() {
     let started = Instant::now();
     let mut sessions = 0usize;
     let mut running = CompactionStats::default();
-    let result = runtime.block_on(history_maintenance::compact(&path, |_, stats| {
+    let result = runtime.block_on(history_maintenance::compact(&path, again, |_, stats| {
         sessions += 1;
         running.add(stats);
         if sessions % 500 == 0 {

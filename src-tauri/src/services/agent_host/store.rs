@@ -1713,6 +1713,19 @@ impl SessionStore {
         Ok(total)
     }
 
+    /// Forget the recorded compaction pass, so the next
+    /// [`Self::compact_history`] walks every session again: for a database
+    /// that other, older builds wrote to after the pass.
+    pub async fn forget_history_compaction(&self) -> Result<(), String> {
+        sqlx::query("DELETE FROM kv WHERE scope = ? AND key = ?")
+            .bind(KV_HOST)
+            .bind(HISTORY_COMPACTION_KEY)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to forget the compaction pass", error))?;
+        Ok(())
+    }
+
     /// Run the VACUUM a completed compaction pass left pending, which rewrites
     /// the file without the freed pages: for the moment the database is
     /// opened and nothing else reads it. Says whether it ran.
