@@ -46,6 +46,25 @@ describe("application executor choices", () => {
     );
   });
 
+  it("treats the CLI's default as the unspecified effort, not a level of its own", () => {
+    const unspecified = { target: preferred.target };
+    const cliDefault = { ...unspecified, runSettings: { effort: "default" } };
+    expect(applicationExecutorConfiguration(cliDefault)).toEqual(
+      applicationExecutorConfiguration(unspecified),
+    );
+    const options = applicationExecutorEffortOptions([unspecified], () => ({
+      id: "example-model",
+      efforts: [{ id: "default" }, { id: "high" }],
+      supportsFast: false,
+    }));
+    expect(options.map((option) => option.runSettings)).toEqual([
+      undefined,
+      { fast: false },
+      { effort: "high" },
+      { effort: "high", fast: false },
+    ]);
+  });
+
   it("does not invent capabilities or use another provider's menu", () => {
     for (const model of [
       undefined,

@@ -223,9 +223,13 @@ export async function prepareQueuedInitialChatExecutor(
                   .find((model) => model.id === target.modelId),
             )
           : [];
+    // A task accepted while "default" still counted as a level carries that
+    // variant beside the unspecified one; the native set must stay distinct.
+    const seen = new Set<string>();
     const candidates = options.flatMap((option) => {
       const configuration = applicationExecutorConfiguration(option);
-      if (!configuration) return [];
+      if (!configuration || seen.has(configuration.id)) return [];
+      seen.add(configuration.id);
       const available =
         isCachedModelInventoryAuthoritativeForRouting(
           inventory.providers.get(option.target.harnessId),

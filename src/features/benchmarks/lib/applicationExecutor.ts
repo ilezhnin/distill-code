@@ -9,6 +9,7 @@ import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutio
 import type { SessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import type { RankableModel } from "@/features/agents/lib/modelRanking";
 import type { Configuration } from "../types";
+import { explicitEffort } from "./benchmarkEffort";
 import type { PublicSelectorTask } from "./benchmarkLearning";
 
 export interface ApplicationExecutorOption {
@@ -120,16 +121,19 @@ export function applicationExecutorEffortOptions(
           });
       }
     };
+    const preferredEffort = explicitEffort(option.runSettings?.effort);
     if (
-      !option.runSettings?.effort ||
-      model.efforts?.some((effort) => effort.id === option.runSettings?.effort)
+      !preferredEffort ||
+      model.efforts?.some((effort) => effort.id === preferredEffort)
     )
       addAdvertisedSpeedModes(option);
     for (const effort of model.efforts ?? []) {
-      if (!effort.id.trim()) continue;
+      // The CLI's "default" is not a level: it is the unspecified option.
+      const level = explicitEffort(effort.id.trim());
+      if (!level) continue;
       const choice = {
         target: option.target,
-        runSettings: { ...option.runSettings, effort: effort.id },
+        runSettings: { ...option.runSettings, effort: level },
       };
       add(choice);
       addAdvertisedSpeedModes(choice);
@@ -160,19 +164,23 @@ export function applicationExecutorConfiguration(
 ): Configuration | null {
   const { target, runSettings } = option;
   if (!target.modelId) return null;
+  // The native identity reads an unspecified effort and the CLI's "default"
+  // as one row, so they must share one id here or the candidate set is
+  // rejected as duplicated.
+  const effort = explicitEffort(runSettings?.effort);
   return {
     id: JSON.stringify([
       target.harnessId,
       target.modelProviderId,
       target.modelId,
-      runSettings?.effort ?? null,
+      effort,
       runSettings?.fast ?? null,
     ]),
     providerId: target.harnessId,
     accountId: null,
     modelId: target.modelId,
     modelName: target.modelName ?? null,
-    effort: runSettings?.effort ?? null,
+    effort,
     fastMode: runSettings?.fast ?? null,
     billingMode: "unknown",
     executionProfile: "interactive_acp",
