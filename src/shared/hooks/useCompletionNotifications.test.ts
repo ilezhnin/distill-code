@@ -12,6 +12,16 @@ import { useCompletionNotifications } from "./useCompletionNotifications";
 const mocks = vi.hoisted(() => ({
   getNotificationPrefs: vi.fn(),
   showCompletionNotificationToast: vi.fn(),
+  invoke: vi.fn(),
+  onFocusChanged: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ onFocusChanged: mocks.onFocusChanged }),
 }));
 
 vi.mock("@/features/settings/lib/notificationPrefs", () => ({
@@ -70,6 +80,7 @@ describe("useCompletionNotifications", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    delete window.__TAURI_INTERNALS__;
   });
 
   it("notifies when a chat the operator is not watching finishes its turn", () => {
@@ -127,6 +138,42 @@ describe("useCompletionNotifications", () => {
     setRuntime("s1", runtime("waiting"));
     setRuntime("s1", runtime("idle"));
 
+    expect(mocks.showCompletionNotificationToast).not.toHaveBeenCalled();
+  });
+
+  it("asks the host for an OS toast that names the finished chat when the window is not in front", async () => {
+    mocks.getNotificationPrefs.mockReturnValue({
+      enabled: true,
+      inApp: false,
+      desktop: true,
+      inAppSound: "silent",
+      desktopSound: "silent",
+    });
+    window.__TAURI_INTERNALS__ = {};
+    let focusListener: ((event: { payload: boolean }) => void) | undefined;
+    mocks.onFocusChanged.mockImplementation(
+      async (listener: (event: { payload: boolean }) => void) => {
+        focusListener = listener;
+        return () => {};
+      },
+    );
+    mocks.invoke.mockResolvedValue(undefined);
+
+    renderHook(() => useCompletionNotifications(() => {}));
+    await vi.waitFor(() => expect(focusListener).toBeDefined());
+    focusListener?.({ payload: false });
+
+    setRuntime("s1", runtime("streaming"));
+    setRuntime("s1", runtime("idle"));
+
+    // The host opens this chat when the toast is clicked, so the id is the
+    // part of the payload the click depends on.
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "show_completion_notification",
+        { body: expect.any(String), sessionId: "s1", sound: null },
+      ),
+    );
     expect(mocks.showCompletionNotificationToast).not.toHaveBeenCalled();
   });
 });

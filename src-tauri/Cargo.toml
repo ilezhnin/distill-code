@@ -76,6 +76,9 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # Same version wry already builds; reached through `with_webview` for the
 # renderer-crash reload in renderer_recovery.rs.
 webview2-com = "0.38"
+# The crate the notification plugin raises Windows toasts with, used directly
+# in commands/notifications.rs so the completion toast keeps its click handler.
+tauri-winrt-notification = "0.7"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Globalization",

@@ -23,50 +23,8 @@ import type { SessionChatRuntime } from "@/shared/types/chat";
 import type { Message } from "@/shared/types/messages";
 
 /**
- * Whether a Tauri call failed because the command is not in this build.
- *
- * The notification plugin's `onAction` registers a listener through the
- * `notification.registerListener` command, which a build that ships the plugin
- * without that permission — or without the plugin at all — answers with
- * "not allowed. Command not found". That is a fact about the build, not a
- * fault at runtime: the feature is simply unavailable here.
- *
- * Matched on the text because there is nothing else to match on. Tauri returns
- * these as plain strings from the IPC layer, with no code or class to key off.
- */
-export function isMissingTauriCommandError(error: unknown): boolean {
-  const message = (
-    typeof error === "string" ? error : (error as Error | null)?.message
-  )?.toLowerCase();
-  return Boolean(message?.includes("command not found"));
-}
-
-/**
- * Said once per window, not once per mount.
- *
- * Both notification effects re-run on remount, and the app renders this hook
- * in more than one place, so an unguarded log repeats the same non-event
- * several times a launch — which is how it read as a fault in the first place.
- */
-let loggedNotificationActionsUnavailable = false;
-
-function reportNotificationActionsUnavailable(error: unknown): void {
-  if (isMissingTauriCommandError(error)) {
-    if (!loggedNotificationActionsUnavailable) {
-      loggedNotificationActionsUnavailable = true;
-      console.info(
-        "Notification actions are unavailable in this build; completion notifications will still be shown.",
-      );
-    }
-    return;
-  }
-  console.warn("Failed to subscribe to notification actions:", error);
-}
-
-/**
- * Every subscription in this hook is a nice-to-have: window focus tracking and
- * the notification action handler. Losing one degrades notifications;
- * none of them is worth an unhandled rejection at launch, which is all an
+ * Window focus tracking is a nice-to-have: losing it degrades notifications,
+ * and that is not worth an unhandled rejection at launch, which is all an
  * un-caught `import(...).then(...)` chain can produce.
  */
 function reportSubscriptionFailed(what: string) {
@@ -79,6 +37,12 @@ let warnedDesktopNotificationUnavailable = false;
 
 /**
  * Shows the OS notification for a finished turn.
+ *
+ * The click is the host's: the toast carries `sessionId`, and a click on it
+ * opens that chat the way a `flock://session/<id>` link does, then brings
+ * the window forward (`src-tauri/src/commands/notifications.rs`). Nothing in
+ * the renderer can hear that click: the notification plugin registers no
+ * action listener on desktop.
  *
  * The invoke can reject — Windows toasts need a registered AppUserModelID,
  * which dev builds and some portable installs do not have — and a
@@ -104,19 +68,9 @@ export async function showDesktopCompletionNotification(args: {
   }
 }
 
-/** Test seam: the once-per-window latches would otherwise leak between cases. */
+/** Test seam: the once-per-window latch would otherwise leak between cases. */
 export function resetNotificationAvailabilityLogForTests(): void {
-  loggedNotificationActionsUnavailable = false;
   warnedDesktopNotificationUnavailable = false;
-}
-
-function focusCurrentWindow(): void {
-  import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-    const appWindow = getCurrentWindow();
-    void appWindow.show().catch(() => {});
-    void appWindow.unminimize().catch(() => {});
-    void appWindow.setFocus().catch(() => {});
-  });
 }
 
 export function getCompletionOutcome(
@@ -201,6 +155,13 @@ function getSessionsWithChatStateChanges(
   return changed;
 }
 
+/**
+ * Raises the in-app toast or the OS notification when a chat the operator is
+ * not watching finishes its turn. `onNavigateToSession` serves the in-app
+ * toast's View button; the OS toast's click is handled by the host, which
+ * opens the chat through the same path (see
+ * {@link showDesktopCompletionNotification}).
+ */
 export function useCompletionNotifications(
   onNavigateToSession: (sessionId: string) => void,
 ): void {
@@ -227,42 +188,6 @@ export function useCompletionNotifications(
         else unlisten = fn;
       })
       .catch(reportSubscriptionFailed("window focus changes"));
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  // Keep notification actions working where the plugin exposes them.
-  useEffect(() => {
-    if (!window.__TAURI_INTERNALS__) return;
-
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-    import("@tauri-apps/plugin-notification")
-      .then(({ onAction }) =>
-        onAction((notification) => {
-          // Bringing the window forward is the part that always works: the
-          // host command currently drops `session_id`, so `extra` carries no
-          // session to open and clicking a toast used to do nothing at all.
-          // FOLLOW-UP (src-tauri/src/commands/notifications.rs): pass
-          // `extra: { sessionId }` so the click can open the chat again.
-          focusCurrentWindow();
-          const sessionId =
-            typeof notification.extra?.sessionId === "string"
-              ? notification.extra.sessionId
-              : undefined;
-          if (!sessionId) return;
-          navigateRef.current(sessionId);
-        }),
-      )
-      .then((listener) => {
-        if (cancelled) void listener.unregister();
-        else unlisten = () => void listener.unregister();
-      })
-      // Without this the whole chain is an unhandled rejection on every launch
-      // — twice, once per mount — for a capability the build never had.
-      .catch(reportNotificationActionsUnavailable);
     return () => {
       cancelled = true;
       unlisten?.();

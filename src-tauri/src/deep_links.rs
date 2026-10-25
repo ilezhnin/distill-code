@@ -41,11 +41,15 @@ fn handle_urls<R: Runtime>(app: AppHandle<R>, urls: Vec<Url>) {
     focus_main_window(&app, opened_session);
 }
 
-fn focus_main_window<R: Runtime>(app: &AppHandle<R>, reveal: bool) {
+/// Brings the main window in front of whatever the operator was looking at;
+/// with `reveal`, shows it first. A minimized window is restored either way,
+/// since focus alone leaves it in the taskbar.
+pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>, reveal: bool) {
     if let Some(window) = app.get_webview_window("main") {
         if reveal {
             let _ = window.show();
         }
+        let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
@@ -107,8 +111,12 @@ fn parse_session_deep_link(url: &Url) -> Option<String> {
         .filter(|session_id| !session_id.is_empty())
 }
 
+/// Opens a chat in the renderer through the `sessions open` app command, the
+/// route a session link takes; the completion toast's click takes it too.
+/// Returns whether an open was dispatched; a dispatch that fails is reported
+/// to the renderer as a session-link error.
 #[cfg(feature = "flockctl")]
-fn open_session<R: Runtime>(app: AppHandle<R>, session_id: String) -> bool {
+pub(crate) fn open_session<R: Runtime>(app: AppHandle<R>, session_id: String) -> bool {
     tauri::async_runtime::spawn(async move {
         let requested_session_id = session_id.clone();
         let result = tauri_plugin_flockctl::dispatch_app_command(
@@ -163,7 +171,7 @@ fn emit_session_deep_link_error<R: Runtime>(
 }
 
 #[cfg(not(feature = "flockctl"))]
-fn open_session<R: Runtime>(_app: AppHandle<R>, _session_id: String) -> bool {
+pub(crate) fn open_session<R: Runtime>(_app: AppHandle<R>, _session_id: String) -> bool {
     log::warn!("Ignoring session deep link because the flockctl feature is disabled");
     false
 }

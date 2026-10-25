@@ -30,6 +30,7 @@ import {
 import { AppShell } from "./AppShell";
 import { persistHomeSessionId } from "./lib/homeSessionStorage";
 import { registerPreparedSession } from "@/shared/api/acpSessionRegistry";
+import type { AcpSessionInfo } from "@/shared/api/acpApi";
 import type { NavigationPanesViewProps } from "@/app/views/NavigationPanesView";
 import type { AppShellContent as AppShellContentType } from "./ui/AppShellContent";
 
@@ -1563,6 +1564,82 @@ describe("AppShell global navigation", () => {
     await user.click(
       screen.getByRole("button", { name: "Open session 1 from Home" }),
     );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
+    });
+    expect(useChatSessionStore.getState().activeSessionId).toBe("session-1");
+    await waitFor(() => {
+      expect(mockAcpLoadSession).toHaveBeenCalledWith(
+        "session-1",
+        expect.any(String),
+      );
+    });
+    await waitFor(() => {
+      expect(useChatStore.getState().messagesBySession["session-1"]).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "message-1" })]),
+      );
+    });
+  });
+
+  it("opens the chat the host asks for, as a session link or an OS toast click does, with its transcript", async () => {
+    const session: ChatSession = {
+      id: "session-1",
+      title: "Finished while away",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.flock/artifacts",
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      messageCount: 1,
+    };
+    useChatSessionStore.setState({
+      sessions: [session],
+      activeSessionId: null,
+    });
+    mockAcpGetSessionInfo.mockResolvedValue({
+      sessionId: "session-1",
+      title: "Finished while away",
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      lastMessageAt: null,
+      archivedAt: null,
+      userSetName: true,
+      messageCount: 1,
+      subtitle: null,
+      workingDir: "~/.flock/artifacts",
+      projectId: null,
+      providerId: null,
+      modelId: null,
+      personaId: null,
+    } satisfies AcpSessionInfo);
+    const replayed: Message = {
+      id: "message-1",
+      role: "user",
+      created: Date.now(),
+      content: [{ type: "text", text: "hello" }],
+    };
+    mockAcpLoadSession.mockImplementation(async (sessionId: string) => {
+      ensureReplayBuffer(sessionId).push(replayed);
+    });
+
+    renderAppShell();
+
+    // The host dispatches `sessions open` for a `flock://session/<id>` link
+    // and for a click on the completion toast alike (`deep_links.rs`,
+    // `commands/notifications.rs`); the renderer's command registry is where
+    // both arrive.
+    const { dispatchCommand } = await import(
+      "@/features/flockctl/commands/registry"
+    );
+    await act(async () => {
+      await expect(
+        dispatchCommand(
+          "sessions",
+          { action: "open", session_id: "session-1" },
+          {},
+        ),
+      ).resolves.toEqual({ ok: true });
+    });
 
     await waitFor(() => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
