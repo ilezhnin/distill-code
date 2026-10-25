@@ -3,7 +3,11 @@ import {
   useCollapsedChatTrees,
 } from "@/features/sidebar/lib/sidebarChatTreeCollapse";
 
-import { SidebarChatRow, type SidebarChatRowProps } from "./SidebarChatRow";
+import {
+  hasReservedLeadingSlot,
+  SidebarChatRow,
+  type SidebarChatRowProps,
+} from "./SidebarChatRow";
 import type { SidebarSessionItem } from "./SidebarProjectSection";
 
 /**
@@ -72,9 +76,14 @@ export function SidebarChatBranch({
   const expanded = children.length > 0 && !collapsedTrees.has(session.id);
   // A child of this row sees every line this row sees, plus this row's own
   // line when this row is itself a child with siblings still to come. A chat
-  // in the list contributes a blank column instead: its icon stands above
-  // the line its children hang from.
-  const childGuides = [...ancestorGuides, depth > 0 && !isLastChild];
+  // in the list contributes a blank column instead, so its icon stands above
+  // the line its children hang from — unless the list reserves no leading
+  // slot for its rows, where the icon takes the slot and no column is added
+  // (the same rule the row applies to its own inset).
+  const childGuides =
+    depth === 0 && !hasReservedLeadingSlot(rowProps)
+      ? []
+      : [...ancestorGuides, depth > 0 && !isLastChild];
 
   return (
     <>

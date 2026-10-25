@@ -74,10 +74,37 @@ function rowOf(id: string): HTMLElement {
   return row;
 }
 
+function rowButtonOf(id: string, title: string): HTMLElement {
+  return within(rowOf(id)).getByRole("button", { name: title });
+}
+
+function toggleOf(id: string): HTMLElement {
+  const toggle = rowOf(id).querySelector("[data-sidebar-chat-tree-toggle]");
+  if (!(toggle instanceof HTMLElement)) throw new Error(`no toggle ${id}`);
+  return toggle;
+}
+
+function leadingIconOf(id: string): Element | null {
+  return rowOf(id).querySelector("[data-testid=sidebar-chat-menu-icon]");
+}
+
 function guideShapes(row: HTMLElement): string[] {
   return Array.from(row.querySelectorAll("[data-slot=tree-guide]")).map(
     (guide) =>
       `${guide.getAttribute("data-shape")}@${(guide as HTMLElement).style.left}`,
+  );
+}
+
+function renderProject(onSelectSession?: (sessionId: string) => void) {
+  render(
+    <SidebarProjectSection
+      project={project}
+      projectChats={[conductor, plain]}
+      isExpanded
+      toggleProject={vi.fn()}
+      showChatIcons={false}
+      onSelectSession={onSelectSession}
+    />,
   );
 }
 
@@ -96,15 +123,7 @@ afterEach(() => {
 
 describe("chats nested under the chat that started them", () => {
   it("lists a project's agents under their chat, in tree order, at every depth", () => {
-    render(
-      <SidebarProjectSection
-        project={project}
-        projectChats={[conductor, plain]}
-        isExpanded
-        toggleProject={vi.fn()}
-        showChatIcons={false}
-      />,
-    );
+    renderProject();
     expect(rowIds()).toEqual([
       "conductor",
       "orchestrator",
@@ -124,15 +143,7 @@ describe("chats nested under the chat that started them", () => {
   });
 
   it("indents a parent to its children's column and draws one line down to the last child", () => {
-    render(
-      <SidebarProjectSection
-        project={project}
-        projectChats={[conductor, plain]}
-        isExpanded
-        toggleProject={vi.fn()}
-        showChatIcons={false}
-      />,
-    );
+    renderProject();
     // A chat with children moves one column right, so its icon heads the
     // line and its title lines up with its children's titles.
     expect(rowOf("conductor").style.paddingLeft).toBe("16px");
@@ -153,36 +164,57 @@ describe("chats nested under the chat that started them", () => {
     expect(guideShapes(rowOf("plain"))).toEqual([]);
   });
 
-  it("folds and unfolds a chat's agents from its row, and remembers the fold", async () => {
+  it("keeps a parent's icon in its slot and puts the fold chevron after its name", async () => {
     const user = userEvent.setup();
-    render(
-      <SidebarProjectSection
-        project={project}
-        projectChats={[conductor, plain]}
-        isExpanded
-        toggleProject={vi.fn()}
-        showChatIcons={false}
-      />,
+    renderProject();
+    // The icon is the row's identity and stays put, hover or not; the
+    // chevron sits inside the row button after the title, and a leaf chat
+    // has neither.
+    expect(leadingIconOf("conductor")).not.toBeNull();
+    expect(leadingIconOf("plain")).toBeNull();
+    const button = rowButtonOf("conductor", "Upstream review");
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    const toggle = toggleOf("conductor");
+    expect(button.contains(toggle)).toBe(true);
+    expect(toggle).toHaveAttribute(
+      "title",
+      "Hide the chats Upstream review started",
     );
-    const fold = within(rowOf("conductor")).getByRole("button", {
-      name: "Hide the chats Upstream review started",
-    });
-    expect(fold).toHaveAttribute("aria-expanded", "true");
-    await user.click(fold);
+    expect(
+      rowOf("plain").querySelector("[data-sidebar-chat-tree-toggle]"),
+    ).toBeNull();
+    expect(rowButtonOf("plain", "Backup the Flock folder")).not.toHaveAttribute(
+      "aria-expanded",
+    );
+    await user.hover(button);
+    expect(leadingIconOf("conductor")).not.toBeNull();
+  });
+
+  it("folds and unfolds a chat's agents from the chevron, and remembers the fold", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    renderProject(onSelect);
+    await user.click(toggleOf("conductor"));
+    // Folding is not opening.
+    expect(onSelect).not.toHaveBeenCalled();
     expect(rowIds()).toEqual(["conductor", "plain"]);
+    expect(rowButtonOf("conductor", "Upstream review")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(toggleOf("conductor")).toHaveAttribute(
+      "title",
+      "Show the chats Upstream review started",
+    );
     // A folded parent keeps its column but draws no line below its icon.
     expect(guideShapes(rowOf("conductor"))).toEqual([]);
-    const unfold = within(rowOf("conductor")).getByRole("button", {
-      name: "Show the chats Upstream review started",
-    });
-    expect(unfold).toHaveAttribute("aria-expanded", "false");
     expect(
       JSON.parse(
         window.localStorage.getItem(SIDEBAR_COLLAPSED_CHAT_TREES_STORAGE_KEY) ??
           "[]",
       ),
     ).toEqual(["conductor"]);
-    await user.click(unfold);
+    await user.click(toggleOf("conductor"));
     expect(rowIds()).toEqual([
       "conductor",
       "orchestrator",
@@ -190,15 +222,25 @@ describe("chats nested under the chat that started them", () => {
       "reviewer",
       "plain",
     ]);
-    // A leaf offers no fold.
-    expect(
-      within(rowOf("plain")).queryByRole("button", {
-        name: /the chats .* started/,
-      }),
-    ).toBeNull();
   });
 
-  it("opens an agent's chat from its row without touching the fold", async () => {
+  it("folds and unfolds from the keyboard on the focused row", async () => {
+    const user = userEvent.setup();
+    renderProject();
+    rowButtonOf("conductor", "Upstream review").focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(rowIds()).toEqual(["conductor", "plain"]);
+    await user.keyboard("{ArrowLeft}");
+    expect(rowIds()).toEqual(["conductor", "plain"]);
+    await user.keyboard("{ArrowRight}");
+    expect(rowIds()).toHaveLength(5);
+    // A leaf ignores the keys.
+    rowButtonOf("plain", "Backup the Flock folder").focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(rowIds()).toHaveLength(5);
+  });
+
+  it("opens an agent's chat from its row without touching the fold, and shifts nothing in Recents", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     render(
@@ -222,15 +264,27 @@ describe("chats nested under the chat that started them", () => {
       "worker",
       "reviewer",
     ]);
+    // Recents reserves no leading slot, so the parent stays where its
+    // neighbours are: its icon takes the slot and the line hangs from it.
+    expect(rowOf("conductor").style.paddingLeft).toBe("");
+    expect(rowOf("orchestrator").style.paddingLeft).toBe("16px");
+    expect(rowOf("worker").style.paddingLeft).toBe("16px");
+    expect(rowOf("reviewer").style.paddingLeft).toBe("");
+    expect(guideShapes(rowOf("conductor"))).toEqual(["stub@12px"]);
+    expect(guideShapes(rowOf("orchestrator"))).toEqual([
+      "pass@12px",
+      "stub@28px",
+    ]);
+    expect(guideShapes(rowOf("worker"))).toEqual(["pass@12px", "last@28px"]);
+    expect(guideShapes(rowOf("reviewer"))).toEqual(["last@12px"]);
     await user.click(
       screen.getByRole("button", { name: "Researcher · berd since fork" }),
     );
     expect(onSelect).toHaveBeenCalledWith("worker");
-    expect(
-      within(rowOf("conductor")).getByRole("button", {
-        name: "Hide the chats Upstream review started",
-      }),
-    ).toHaveAttribute("aria-expanded", "true");
+    expect(rowButtonOf("conductor", "Upstream review")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
   });
 
   it("starts folded when the fold was remembered", () => {
@@ -243,5 +297,9 @@ describe("chats nested under the chat that started them", () => {
       />,
     );
     expect(rowIds()).toEqual(["conductor"]);
+    expect(rowButtonOf("conductor", "Upstream review")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 });

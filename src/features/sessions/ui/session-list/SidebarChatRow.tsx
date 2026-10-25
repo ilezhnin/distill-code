@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
   useEffect,
@@ -77,6 +78,26 @@ import { SidebarHoverCard } from "./SidebarHoverCard";
 import { SidebarChatPreview } from "./SidebarChatPreview";
 
 const NO_TREE_GUIDES: readonly boolean[] = [];
+
+/**
+ * Whether a surface keeps a leading slot in front of every row it shows: a
+ * project's chats, rows with chat icons, the flat list's project column.
+ *
+ * It decides where a chat with children goes. Beside rows that have the
+ * slot it moves one column right, so its icon clears their slot and heads
+ * the line its children hang from. Where plain rows have no slot (Recents
+ * without icons) its icon takes the slot itself and nothing moves — a
+ * further shift would only push it deeper than its neighbours.
+ */
+export function hasReservedLeadingSlot(props: {
+  nested?: boolean;
+  showLeadingIcon?: boolean;
+  flatProjectName?: string;
+}): boolean {
+  return Boolean(
+    props.nested || props.showLeadingIcon || props.flatProjectName != null,
+  );
+}
 const INACTIVE_CHAT_ROW_CLASS = cn(
   SIDEBAR_ROW_TEXT_DEFAULT_CLASS,
   SIDEBAR_ROW_HOVER_CLASS,
@@ -299,7 +320,14 @@ export function SidebarChatRow({
   const treeUnitPx = hasFlatProjectColumn
     ? densityClasses.flatProjectIconColumnPx
     : SIDEBAR_CHAT_TREE_INDENT_PX;
-  const treeColumns = treeGuides.length + (hasChildChats ? 1 : 0);
+  const leadingSlotReserved = hasReservedLeadingSlot({
+    nested,
+    showLeadingIcon,
+    flatProjectName,
+  });
+  const treeColumns =
+    treeGuides.length +
+    (hasChildChats && (isChildChat || leadingSlotReserved) ? 1 : 0);
   const treeIndentPx =
     Math.min(treeColumns, SIDEBAR_CHAT_TREE_MAX_INDENT_DEPTH) * treeUnitPx;
   const treeIndentStyle: CSSProperties | undefined =
@@ -385,73 +413,48 @@ export function SidebarChatRow({
   // What the leading slot shows at rest. A nested chat without children
   // shows nothing of its own there: the guide line it hangs from is drawn
   // through that column by the rail, and is its identity in the tree.
-  const leadingIdentity: ReactNode =
-    isChildChat && !hasChildChats
+  // What the leading slot shows. A chat with chats under it always shows
+  // its icon: it heads the line its children hang from. A nested chat
+  // without children shows nothing of its own there; the guide line the
+  // rail draws through that column is its identity in the tree.
+  const leadingIdentity: ReactNode = hasChildChats
+    ? (resolvedLeadingIcon ?? <SidebarChatMenuIcon />)
+    : isChildChat
       ? null
       : showLeadingIcon || isConductor
         ? (resolvedLeadingIcon ?? <SidebarChatMenuIcon />)
         : null;
-  /**
-   * The leading slot of a chat with chats under it: its identity at rest and
-   * the disclosure chevron on hover, the way a project row does it — except
-   * that a folded tree shows the chevron always, so a parent with hidden
-   * rows never looks like a parent with none.
-   */
-  const renderTreeToggleSlot = (
-    slotClassName: string,
-    identity: ReactNode,
-    style?: CSSProperties,
-  ) => {
-    const chevronOnHover = identity != null && treeExpanded;
-    return (
-      <span
-        className={slotClassName}
-        style={style}
-        data-testid={leadingIconTestId}
-        data-sidebar-chat-tree-slot
-      >
-        {chevronOnHover ? (
-          <span
-            aria-hidden="true"
-            className="flex size-full items-center justify-center group-hover/chat-row:hidden group-focus-within/chat-row:hidden"
-          >
-            {identity}
-          </span>
-        ) : null}
-        <span
-          className={
-            chevronOnHover
-              ? "hidden group-hover/chat-row:inline-flex group-focus-within/chat-row:inline-flex"
-              : "inline-flex"
-          }
-        >
-          <Button
-            type="button"
-            variant="ghost"
-            flush
-            size="icon-xxs"
-            aria-expanded={treeExpanded}
-            aria-label={t(treeExpanded ? "tree.collapse" : "tree.expand", {
-              name: displayTitle,
-            })}
-            data-sidebar-drag-ignore
-            data-sidebar-chat-tree-toggle
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleTree?.();
-            }}
-            className="size-4"
-          >
-            {treeExpanded ? (
-              <IconChevronDown className="size-3" aria-hidden="true" />
-            ) : (
-              <IconChevronRight className="size-3" aria-hidden="true" />
-            )}
-          </Button>
-        </span>
-      </span>
-    );
-  };
+  // The fold control sits after the name, the way the Claude app places it:
+  // a chevron that always shows, down while the children are listed and
+  // right while they are folded away. It lives inside the row button, so it
+  // is not a button of its own: the row carries `aria-expanded`, and
+  // ArrowRight / ArrowLeft on the focused row unfold and fold the subtree.
+  const treeToggle = hasChildChats ? (
+    <span
+      role="presentation"
+      data-sidebar-chat-tree-toggle
+      data-sidebar-drag-ignore
+      title={t(treeExpanded ? "tree.collapse" : "tree.expand", {
+        name: displayTitle,
+      })}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleTree?.();
+      }}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      className="ml-1 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+    >
+      {treeExpanded ? (
+        <IconChevronDown className="size-3" aria-hidden="true" />
+      ) : (
+        <IconChevronRight className="size-3" aria-hidden="true" />
+      )}
+    </span>
+  ) : null;
   // Title block shared by the flat and grouped row variants: single-line
   // title, or a two-line title + git branch subtitle when a branch is shown.
   const titleText = animateRunningState ? (
@@ -469,13 +472,16 @@ export function SidebarChatRow({
   );
   const rowTitleContent = hasBranchName ? (
     <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
-      <span
-        className={cn(
-          "truncate leading-snug",
-          titleTone === "muted" && "text-muted-foreground",
-        )}
-      >
-        {titleText}
+      <span className="flex min-w-0 items-center">
+        <span
+          className={cn(
+            "min-w-0 truncate leading-snug",
+            titleTone === "muted" && "text-muted-foreground",
+          )}
+        >
+          {titleText}
+        </span>
+        {treeToggle}
       </span>
       <span className="flex min-w-0 items-center gap-1 truncate text-xs leading-snug text-muted-foreground/70">
         <IconGitBranch className="size-3 shrink-0" aria-hidden="true" />
@@ -483,13 +489,16 @@ export function SidebarChatRow({
       </span>
     </span>
   ) : (
-    <span
-      className={cn(
-        "min-w-0 flex-1 truncate text-left",
-        titleTone === "muted" && "text-muted-foreground",
-      )}
-    >
-      {titleText}
+    <span className="flex min-w-0 flex-1 items-center text-left">
+      <span
+        className={cn(
+          "min-w-0 truncate",
+          titleTone === "muted" && "text-muted-foreground",
+        )}
+      >
+        {titleText}
+      </span>
+      {treeToggle}
     </span>
   );
 
@@ -542,6 +551,19 @@ export function SidebarChatRow({
     onSelect?.(id);
   };
 
+  // The tree-view convention: ArrowRight opens a folded parent, ArrowLeft
+  // folds an open one. Only a row with children listens.
+  const handleRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!hasChildChats) return;
+    if (
+      (event.key === "ArrowRight" && !treeExpanded) ||
+      (event.key === "ArrowLeft" && treeExpanded)
+    ) {
+      event.preventDefault();
+      onToggleTree?.();
+    }
+  };
+
   const handleRowDoubleClick = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -556,7 +578,9 @@ export function SidebarChatRow({
       data-sidebar-chat-row-button
       onClick={handleRowClick}
       onDoubleClick={handleRowDoubleClick}
+      onKeyDown={handleRowKeyDown}
       aria-label={displayTitle}
+      aria-expanded={hasChildChats ? treeExpanded : undefined}
       className={cn(
         "min-w-0 flex-1 justify-start rounded-sm",
         hasFlatProjectColumn ? "pl-0 gap-0" : rowPaddingClass,
@@ -869,13 +893,7 @@ export function SidebarChatRow({
                 )
               : null}
             {treeRail}
-            {showAbsoluteLeadingSlot && hasChildChats ? (
-              renderTreeToggleSlot(
-                absoluteLeadingSlotClass,
-                leadingIdentity,
-                leadingSlotStyle,
-              )
-            ) : showAbsoluteLeadingSlot ? (
+            {showAbsoluteLeadingSlot ? (
               <SidebarLeadingIcon
                 className={absoluteLeadingSlotClass}
                 style={leadingSlotStyle}
@@ -888,26 +906,16 @@ export function SidebarChatRow({
             ) : null}
             {hasFlatProjectColumn ? (
               <>
-                {hasChildChats ? (
-                  renderTreeToggleSlot(
-                    cn(
-                      "rounded-sm text-muted-foreground/70",
-                      flatProjectIconSlotClass,
-                    ),
-                    flatLeadingIdentity,
-                  )
-                ) : (
-                  <SidebarLeadingIcon
-                    activeLabel={t("status.chatActive")}
-                    unreadLabel={t("status.unreadMessages")}
-                    className={cn(
-                      "rounded-sm text-muted-foreground/70",
-                      flatProjectIconSlotClass,
-                    )}
-                  >
-                    {flatLeadingIdentity}
-                  </SidebarLeadingIcon>
-                )}
+                <SidebarLeadingIcon
+                  activeLabel={t("status.chatActive")}
+                  unreadLabel={t("status.unreadMessages")}
+                  className={cn(
+                    "rounded-sm text-muted-foreground/70",
+                    flatProjectIconSlotClass,
+                  )}
+                >
+                  {flatLeadingIdentity}
+                </SidebarLeadingIcon>
                 {rowButton}
               </>
             ) : (
