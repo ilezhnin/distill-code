@@ -51,6 +51,7 @@ of skills, agents, chats, projects or memory.
 | `runtime-config/`, `user-avatars/` | Runtime overrides and uploaded media |
 | `cache/` | Regenerable runtime downloads and packages |
 | `logs/` | The app log, `flock.log`, and its two newest rotated archives |
+| `flockctl/` | The control broker's discovery files, `control-<pid>.json`, one per running app instance, removed when it stops |
 
 The table describes application storage. Personal prompt organization and delivery
 are user configuration, outside the shared application's data model. Startup does
@@ -127,16 +128,18 @@ preserves published versions and results. Interrupted dispatches are reconciled
 against host records and are never automatically resent when acceptance is unknown.
 Restart parks interrupted work and disables missed campaigns until reviewed.
 
-WebView caches, derived avatar thumbnails and CLI discovery may remain
-outside the root: the `flockctl/` discovery files live under the
-identifier-keyed app data folder, and stale files in the earlier
-`distillctl/` directory there are swept too, the directory being removed once
-it is empty. The app log does not: `flock.log` and its rotated archives are
-written to the root's `logs/` (logs an older build wrote stay where it left
-them, under the identifier-keyed log folder). On Windows that folder is not
-one folder for everyone: a process started from the Claude desktop app, every
-agent session's shell among them, sees `%LOCALAPPDATA%` and `%APPDATA%`
-through that app's package redirection, a merged view under
+WebView caches and derived avatar thumbnails may remain outside the root. CLI
+discovery and the app log do not. The `flockctl/` discovery files the control
+broker writes live in the root; builds before this one wrote them under the
+identifier-keyed app data folder, and files a crashed instance of such a build
+left in that folder's `flockctl/` directory and stale files in the earlier
+`distillctl/` directory there are swept too, each directory being removed once
+it is empty. `flock.log` and its rotated archives are written to the root's
+`logs/` (logs an older build wrote stay where it left them, under the
+identifier-keyed log folder). On Windows those identifier-keyed folders are
+not the same folders for everyone: a process started from the Claude desktop
+app, every agent session's shell among them, sees `%LOCALAPPDATA%` and
+`%APPDATA%` through that app's package redirection, a merged view under
 `%LOCALAPPDATA%\Packages\Claude_…\LocalCache\` in which a file such a process
 once wrote hides the real one from every later such process. The home
 directory is not redirected, so the root is the same folder for everyone.

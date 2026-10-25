@@ -156,8 +156,14 @@ pub fn run() {
         builder.plugin(tauri_plugin_app_test_driver::init())
     };
 
+    // The broker's discovery file goes under the Flock root, the folder that
+    // is the same for every process on the machine (see
+    // `services::flockctl_discovery`). The root is registered in `setup`,
+    // before the renderer starts the broker.
     #[cfg(feature = "flockctl")]
-    let builder = builder.plugin(tauri_plugin_flockctl::init());
+    let builder = builder.plugin(tauri_plugin_flockctl::init(|app: &tauri::AppHandle| {
+        services::flock_root::app_root(app)
+    }));
 
     if let Some(mode) = &e2e_mode {
         mode.log_enabled();
@@ -271,7 +277,7 @@ pub fn run() {
 
             deep_links::install(app);
 
-            services::flockctl_discovery::sweep_stale_discovery_files(&app_data_dir);
+            services::flockctl_discovery::sweep_stale_discovery_files(&flock_root, &app_data_dir);
 
             // Seed bundled skills and agents from the distro bundle registered
             // above. This touches the filesystem, so it runs after the state

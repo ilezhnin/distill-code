@@ -156,13 +156,16 @@ to agents for one release, as input only:
   beside them, the compatibility shims `distillctl.cmd` and
   `distill-monitor.cmd`, which run the same binaries. The root adoption pass
   never retires them.
-- Discovery: the broker writes `<app data>/flockctl/control-<pid>.json`. The
-  app tells each session where the file is through `FLOCKCTL_LOCK`, and for
-  one release also through `DISTILLCTL_LOCK` with the same value, so a CLI
-  from the previous build still connects. The CLI reads `--lock-path` or
-  `FLOCKCTL_LOCK`, then `DISTILLCTL_LOCK`. Stale files in the earlier
-  `<app data>/distillctl/` directory are swept too, and that directory is
-  removed once it is empty.
+- Discovery: the broker writes `<Flock root>/flockctl/control-<pid>.json`.
+  The app tells each session where the file is through `FLOCKCTL_LOCK`, and
+  for one release also through `DISTILLCTL_LOCK` with the same value, so a
+  CLI from the previous build still connects. The CLI reads `--lock-path` or
+  `FLOCKCTL_LOCK`, then `DISTILLCTL_LOCK`, and never looks for the file
+  itself, so an app of an earlier build, which names its own file under the
+  identifier-keyed app data folder, is found the same way. Stale files in
+  that folder's `flockctl/` directory, where builds before this one wrote,
+  and in the earlier `<app data>/distillctl/` directory are swept too, and
+  each directory is removed once it is empty.
 - Binary overrides: `FLOCKCTL_BIN` and `FLOCK_MONITOR_BIN` name the binaries
   the app puts on `PATH`; `DISTILLCTL_BIN` and `DISTILL_MONITOR_BIN` are read
   when the new spelling is unset, and the app exports `DISTILLCTL_BIN` beside
@@ -184,9 +187,11 @@ to agents for one release, as input only:
 
 ## Versioning
 
-The broker writes a discovery file (`<app data>/flockctl/control-<pid>.json`)
+The broker writes a discovery file (`<Flock root>/flockctl/control-<pid>.json`)
 with `protocolVersion`, generation, and port. The CLI verifies it via
-`/v1/ping` before calls.
+`/v1/ping` before calls. The file lives under the root rather than the OS app
+data folder because on Windows that folder is not one folder for every
+process; [Flock data storage](flock-root-layout.md) explains the redirection.
 
 Breaking wire reshapes must bump all three constants:
 

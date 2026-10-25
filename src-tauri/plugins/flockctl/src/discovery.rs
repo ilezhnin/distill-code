@@ -1,6 +1,11 @@
 //! Per-instance discovery ("lock") file the flockctl CLI reads to find the
 //! running broker: `{port, pid, generation, protocolVersion}`.
 //!
+//! The file lives under a base folder the host app names at `init` (the Flock
+//! root: the one folder that is the same for every process on the machine,
+//! see the app crate's `services::flockctl_discovery`); this module owns only
+//! the names inside it.
+//!
 //! The path formula and protocol version are exported unconditionally (not
 //! behind the `server` feature) so the app crate can compute the path for the
 //! agent bridges' spawn env and the stale-file sweep without enabling the
@@ -15,7 +20,8 @@ use std::path::{Path, PathBuf};
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub const PROTOCOL_VERSION: u32 = 6;
 
-/// Directory under the app data dir holding the per-instance discovery files.
+/// Directory under the host's base folder (the Flock root) holding the
+/// per-instance discovery files.
 pub const DISCOVERY_DIR_NAME: &str = "flockctl";
 
 const DISCOVERY_FILE_PREFIX: &str = "control-";
@@ -25,11 +31,11 @@ const DISCOVERY_FILE_SUFFIX: &str = ".json";
 /// those orphans too.
 const DISCOVERY_TEMP_SUFFIX: &str = ".json.tmp";
 
-/// `<app_data_dir>/flockctl/control-<pid>.json`. Per-instance (pid
-/// suffix): dev worktrees share a bundle identifier, so a well-known filename
-/// would let two instances overwrite each other's file.
-pub fn discovery_file_path(app_data_dir: &Path, pid: u32) -> PathBuf {
-    app_data_dir.join(DISCOVERY_DIR_NAME).join(format!(
+/// `<base_dir>/flockctl/control-<pid>.json`. Per-instance (pid suffix): a
+/// dev build beside the operator's app shares its root, so a well-known
+/// filename would let two instances overwrite each other's file.
+pub fn discovery_file_path(base_dir: &Path, pid: u32) -> PathBuf {
+    base_dir.join(DISCOVERY_DIR_NAME).join(format!(
         "{DISCOVERY_FILE_PREFIX}{pid}{DISCOVERY_FILE_SUFFIX}"
     ))
 }
