@@ -96,13 +96,6 @@ fn install_flockctl_shims(
 ) {
     let flockctl_bin = resolve_cli_bin(FLOCKCTL_BIN_ENV, &binary_name("flockctl"));
     let flock_monitor_bin = resolve_cli_bin(FLOCK_MONITOR_BIN_ENV, &binary_name("flock-monitor"));
-    let app_data_dir = match app.path().app_data_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            log::warn!("Skipping flockctl PATH shim: failed to resolve app data dir: {error}");
-            return;
-        }
-    };
     let Ok(root) = crate::services::flock_root::app_root(app) else {
         return;
     };
@@ -119,7 +112,10 @@ fn install_flockctl_shims(
     if installed_any {
         prepend_dirs.push(shim_dir);
     }
-    let lock_path = tauri_plugin_flockctl::discovery_file_path(&app_data_dir, std::process::id())
+    // The broker writes its discovery file under the same root (the base the
+    // plugin was handed at `init`), so a session is told the very file this
+    // instance writes, whichever process tree it runs in.
+    let lock_path = tauri_plugin_flockctl::discovery_file_path(&root, std::process::id())
         .to_string_lossy()
         .into_owned();
     extra_env.extend(cli_env_exports(&lock_path, flockctl_bin.as_deref()));

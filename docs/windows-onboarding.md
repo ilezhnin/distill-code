@@ -425,8 +425,12 @@ that app's package redirection, `%LOCALAPPDATA%\Packages\Claude_…\LocalCache\`
 a merged view in which a file such a process once wrote hides the real one
 from every later such process, while the app the operator runs keeps using the
 real file. A dev app started from such a session gets its own copy of the
-identifier-keyed folders, so it is not the app the operator is running, and
-its `flockctl/` discovery file is not the operator's either.
+identifier-keyed folders but shares the root (unless `FLOCK_ROOT` points it
+elsewhere), so it is not the app the operator is running, yet its `flockctl/`
+discovery file lands in the root's `flockctl/` beside the operator's, under
+its own pid; each instance names its own file to the sessions it starts
+through `FLOCKCTL_LOCK`. Files an older build wrote under
+`%LOCALAPPDATA%\<identifier>\flockctl\` are swept once their instance is gone.
 
 If you want a full fresh-machine reset after testing, review the cleanup dry run
 first, then run the full reset command from the cleanup section.

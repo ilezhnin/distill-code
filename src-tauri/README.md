@@ -11,7 +11,7 @@ The Tauri 2 shell: the app crate (`src/`), the flockctl workspace crates
 | What | Standalone CLI binary | Tauri plugin (the broker) |
 | Runs | Outside the app, in agent shells | Inside the app binary |
 | Does | clap tree, `--help`, local errors, exit codes | Loopback HTTP server, global caps, renderer bridge |
-| Ships as | `externalBin` sidecar (`scripts/windows/Stage-Sidecar-Windows.ps1` → `binaries/flockctl-<triple>.exe`) | Compiled in via `tauri_plugin_flockctl::init()` |
+| Ships as | `externalBin` sidecar (`scripts/windows/Stage-Sidecar-Windows.ps1` → `binaries/flockctl-<triple>.exe`) | Compiled in via `tauri_plugin_flockctl::init(…)`; writes `<Flock root>/flockctl/control-<pid>.json` |
 
 The CLI embeds the contract artifacts (`crates/flockctl/api-surface.json` +
 `cli-surface.json`) and builds its clap tree at startup. It locates the

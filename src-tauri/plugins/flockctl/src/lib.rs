@@ -3,7 +3,8 @@
 //! A lazily started, loopback-only HTTP server (`GET /v1/ping`, `POST
 //! /v1/call`) that forwards commands over a request/response bridge into the
 //! main-window renderer. The CLI finds it through a per-instance discovery
-//! file written on start and removed on stop/exit.
+//! file written on start and removed on stop/exit, under the base folder the
+//! host app names at `init` (the Flock root).
 //!
 //! Without the `server` feature this crate is an inert stub: build.rs still
 //! generates the command permissions (so capability validation passes in
@@ -35,6 +36,12 @@ mod plugin {
     use std::time::Duration;
     use tauri::plugin::TauriPlugin;
     use tauri::{AppHandle, Manager, RunEvent, Runtime, State};
+
+    /// How the broker learns the folder its discovery file goes under: the
+    /// host app decides (the Flock root, registered in its own setup), the
+    /// plugin owns the names inside it. Asked at every broker start, not once
+    /// at `init`, because the root exists only after the host's setup has run.
+    type DiscoveryBase = Box<dyn Fn() -> Result<PathBuf, String> + Send + Sync>;
 
     #[derive(Serialize)]
     pub struct StartedEndpoint {
@@ -74,16 +81,18 @@ mod plugin {
         // by /v1/ping, so the CLI can tell a restarted broker from the one the
         // discovery file describes.
         generation: AtomicU64,
+        discovery_base: DiscoveryBase,
         discovery_file: Mutex<Option<PathBuf>>,
     }
 
     impl FlockctlState {
-        fn new() -> Self {
+        fn new(discovery_base: DiscoveryBase) -> Self {
             Self {
                 bridge: Arc::new(Bridge::new()),
                 server: tokio::sync::Mutex::new(None),
                 timeouts: Arc::new(TimeoutStore::new()),
                 generation: AtomicU64::new(0),
+                discovery_base,
                 discovery_file: Mutex::new(None),
             }
         }
@@ -152,6 +161,12 @@ mod plugin {
         if let Some(handle) = server_slot.as_ref() {
             return Ok(StartedEndpoint { port: handle.port });
         }
+        // The CLI can only find the broker through the discovery file, so no
+        // folder to write it in means no start at all.
+        let base_dir = (state.discovery_base)()
+            .map_err(|err| format!("failed to resolve the flockctl discovery folder: {err}"))?;
+        let pid = std::process::id();
+        let path = discovery::discovery_file_path(&base_dir, pid);
         let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
         // Each server gets its own semaphore: graceful shutdown lets the
         // previous server's in-flight handlers outlive `stop`, and their
@@ -171,14 +186,7 @@ mod plugin {
             .map_err(|err| format!("failed to start flockctl server: {err}"))?;
         let port = handle.port;
 
-        // The CLI can only find the broker through the discovery file, so a
-        // failed write means a failed start.
-        let app_data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|err| format!("failed to resolve app data dir: {err}"))?;
-        let pid = std::process::id();
-        let path = discovery::discovery_file_path(&app_data_dir, pid);
+        // A failed write means a failed start, for the same reason.
         if let Err(err) = discovery::write_discovery_file(&path, port, pid, generation) {
             handle.shutdown();
             return Err(format!(
@@ -237,7 +245,12 @@ mod plugin {
         state.bridge.resolve(result);
     }
 
-    pub fn init<R: Runtime>() -> TauriPlugin<R> {
+    /// `discovery_base` names the folder the discovery file goes under
+    /// (`<base>/flockctl/control-<pid>.json`); the host app passes its Flock
+    /// root. It is asked at every broker start.
+    pub fn init<R: Runtime>(
+        discovery_base: impl Fn(&AppHandle<R>) -> Result<PathBuf, String> + Send + Sync + 'static,
+    ) -> TauriPlugin<R> {
         tauri::plugin::Builder::new("flockctl")
             .invoke_handler(tauri::generate_handler![
                 start,
@@ -246,10 +259,13 @@ mod plugin {
                 set_timeouts,
                 submit_result
             ])
-            .setup(|app, _api| {
+            .setup(move |app, _api| {
                 // No server start here: the renderer starts it lazily once the
                 // experiment is enabled.
-                app.manage(FlockctlState::new());
+                let handle = app.clone();
+                app.manage(FlockctlState::new(Box::new(move || {
+                    discovery_base(&handle)
+                })));
                 Ok(())
             })
             .on_event(|app, event| {

@@ -31,8 +31,9 @@ pub const LEGACY_LOCK_ENV: &str = "DISTILLCTL_LOCK";
 const REREAD_DELAY: Duration = Duration::from_millis(200);
 
 /// Shape of the discovery file the flockctl broker writes on start
-/// (`<app-data>/flockctl/control-<app-pid>.json`). Duplicated by hand from
-/// the writer's struct in `tauri-plugin-flockctl`; keep in sync.
+/// (`<Flock root>/flockctl/control-<app-pid>.json`; the app names the exact
+/// path in `FLOCKCTL_LOCK`, this binary never looks for it). Duplicated by
+/// hand from the writer's struct in `tauri-plugin-flockctl`; keep in sync.
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveryFile {
