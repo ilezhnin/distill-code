@@ -745,17 +745,20 @@ function AppShellView({ children }: { children?: React.ReactNode }) {
   const patchSession = useChatSessionStore((s) => s.patchSession);
   const personas = useAgentStore((state) => state.personas);
   const setActiveSession = useChatSessionStore((s) => s.setActiveSession);
-  const handleNavigateToSession = useCallback(
-    (sessionId: string) => {
-      setActiveSession(sessionId);
-      setChatActiveSession(sessionId);
-      setActiveView("chat");
-      useChatStore.getState().markSessionRead(sessionId);
-    },
-    [setActiveSession, setChatActiveSession],
-  );
+  // The one way to open an existing chat: the sidebar, search, Home's
+  // "While you were away" list and completion notifications all land here.
+  // The chat view renders only what the store already holds and never loads
+  // on its own, so every entry point has to restore the transcript itself;
+  // a chat that finished while the operator was away otherwise opens onto
+  // its empty state.
+  const selectSessionDirect = useCallback((id: string) => {
+    activateChatSession(id);
+    clearSettingsSectionUrl();
+    setActiveView("chat");
+    void loadSessionMessagesAndPrepare(id);
+  }, []);
 
-  useCompletionNotifications(handleNavigateToSession);
+  useCompletionNotifications(selectSessionDirect);
 
   useEffect(() => {
     let didCancel = false;
@@ -3330,22 +3333,12 @@ function AppShellView({ children }: { children?: React.ReactNode }) {
         if (homeSessionId === sessionId) {
           setHomeSessionId(null);
         }
-        setActiveSession(sessionId);
-        clearSettingsSectionUrl();
-        setActiveView("chat");
-        setChatActiveSession(sessionId);
-        useChatStore.getState().markSessionRead(sessionId);
+        selectSessionDirect(sessionId);
       });
     },
-    [homeSessionId, guardAppNavigation, setActiveSession, setChatActiveSession],
+    [homeSessionId, guardAppNavigation, selectSessionDirect],
   );
 
-  const selectSessionDirect = useCallback((id: string) => {
-    activateChatSession(id);
-    clearSettingsSectionUrl();
-    setActiveView("chat");
-    void loadSessionMessagesAndPrepare(id);
-  }, []);
   navigateAgentBuilderChatRef.current = selectSessionDirect;
 
   const handleSelectSession = useCallback(

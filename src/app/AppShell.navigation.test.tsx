@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { getAppNavigationController } from "@/features/flockctl/navigation";
 import { resetAgentBuilderSourceLifecycleForTests } from "@/features/agents/lib/agentBuilderSourceLifecycle";
+import { ensureReplayBuffer } from "@/features/chat/hooks/replayBuffer";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { replaceSessionTargetAfterDispatch } from "@/features/chat/lib/sessionTargetCoordinator";
@@ -418,6 +419,7 @@ vi.mock("./ui/AppShellContent", () => ({
     onCreatePersona,
     onAgentBuilderCompleted,
     onExitSearch,
+    onActivateHomeSession,
     onArchiveChat,
     onOpenAgent,
     onSelectSession,
@@ -496,6 +498,12 @@ vi.mock("./ui/AppShellContent", () => ({
         </button>
         <button type="button" onClick={() => onSelectSession?.("session-1")}>
           Open session 1
+        </button>
+        <button
+          type="button"
+          onClick={() => onActivateHomeSession("session-1")}
+        >
+          Open session 1 from Home
         </button>
         <button type="button" onClick={() => onCloseDesignSystem?.()}>
           Close design system
@@ -1521,5 +1529,55 @@ describe("AppShell global navigation", () => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("skills");
     });
     expect(mockDeletePersonaSource).not.toHaveBeenCalled();
+  });
+
+  it("opens a chat from Home's review list with its transcript, as the sidebar does", async () => {
+    const user = userEvent.setup();
+    const session: ChatSession = {
+      id: "session-1",
+      title: "Finished while away",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.flock/artifacts",
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      messageCount: 1,
+    };
+    useChatSessionStore.setState({
+      sessions: [session],
+      activeSessionId: null,
+    });
+    // The chat was never opened in this window, so the store holds no
+    // transcript for it: only a load from the host can produce one.
+    const replayed: Message = {
+      id: "message-1",
+      role: "user",
+      created: Date.now(),
+      content: [{ type: "text", text: "hello" }],
+    };
+    mockAcpLoadSession.mockImplementation(async (sessionId: string) => {
+      ensureReplayBuffer(sessionId).push(replayed);
+    });
+
+    renderAppShell();
+
+    await user.click(
+      screen.getByRole("button", { name: "Open session 1 from Home" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
+    });
+    expect(useChatSessionStore.getState().activeSessionId).toBe("session-1");
+    await waitFor(() => {
+      expect(mockAcpLoadSession).toHaveBeenCalledWith(
+        "session-1",
+        expect.any(String),
+      );
+    });
+    await waitFor(() => {
+      expect(useChatStore.getState().messagesBySession["session-1"]).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "message-1" })]),
+      );
+    });
   });
 });
