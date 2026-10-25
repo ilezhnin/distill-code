@@ -158,12 +158,20 @@ pub fn run() {
 
     // The broker's discovery file goes under the Flock root, the folder that
     // is the same for every process on the machine (see
-    // `services::flockctl_discovery`). The root is registered in `setup`,
-    // before the renderer starts the broker.
+    // `services::flockctl_discovery`). The root is registered in `setup`;
+    // the webview races setup, and the renderer starts the broker once with
+    // no retry, so a start that arrives before the registration takes the
+    // root this launch already resolved for the log, which is the same one.
     #[cfg(feature = "flockctl")]
-    let builder = builder.plugin(tauri_plugin_flockctl::init(|app: &tauri::AppHandle| {
-        services::flock_root::app_root(app)
-    }));
+    let builder = {
+        let resolved_root = startup_root.clone();
+        builder.plugin(tauri_plugin_flockctl::init(
+            move |app: &tauri::AppHandle| {
+                services::flock_root::app_root(app)
+                    .or_else(|error| resolved_root.clone().ok_or(error))
+            },
+        ))
+    };
 
     if let Some(mode) = &e2e_mode {
         mode.log_enabled();
