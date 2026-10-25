@@ -89,6 +89,13 @@ pub fn run() {
             .unwrap_or_else(|refusal| services::identifier_migration::refuse_to_start(&refusal))
     };
 
+    // The log file lives in the Flock root, so the root is resolved here,
+    // before the log plugin opens the file, the way the store resolves it
+    // again in `setup` (see `services::app_log`).
+    let startup_root =
+        services::app_log::startup_root(e2e_mode.as_ref(), &context.config().identifier);
+    let app_log_dir = services::app_log::log_dir(startup_root.as_deref());
+
     let builder = tauri::Builder::default();
 
     // Single-instance enforcement: on Windows, a second launch exits early
@@ -123,9 +130,7 @@ pub fn run() {
                 ))
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
-                        file_name: Some("flock".into()),
-                    }),
+                    services::app_log::file_target(app_log_dir.clone()),
                 ])
                 .build(),
         )
@@ -192,6 +197,24 @@ pub fn run() {
             app.asset_protocol_scope()
                 .allow_directory(&flock_root, true)?;
             log::info!("Flock root: {}", flock_root.display());
+            match &app_log_dir {
+                Some(dir) => log::info!(
+                    "App log: {}",
+                    dir.join(services::app_log::LOG_FILE_NAME).display()
+                ),
+                None => log::warn!(
+                    "App log: the root's logs folder could not be created; this start logs to the OS log folder"
+                ),
+            }
+            if startup_root.as_deref() != Some(flock_root.as_path()) {
+                log::warn!(
+                    "App log root differs from the Flock root: {}",
+                    startup_root
+                        .as_deref()
+                        .map(|root| root.display().to_string())
+                        .unwrap_or_else(|| "none".into())
+                );
+            }
             app.manage(root_state);
 
             let bundled_runtime_config_path = app

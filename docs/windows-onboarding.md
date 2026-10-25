@@ -304,8 +304,8 @@ What the first start of Levocat Flock does:
   could not deliver stays in its pending file, and a monitor started again
   with the same state key delivers it.
 
-Check `%LOCALAPPDATA%\com.levocat.flock\logs\flock.log` after the first
-start for the adoption lines; a second start logs none of them.
+Check `flock.log` in the root's `logs/` folder after the first start for the
+adoption lines; a second start logs none of them.
 
 ## Validation Commands
 
@@ -412,10 +412,21 @@ just setup-windows
 ```
 
 If an agent session will not start, check the app log at
-`%LOCALAPPDATA%\com.levocat.flock\logs\flock.log` (on an install upgraded from
-Distill the folder was renamed from `com.levocat.distill` at first start; see
-[Upgrading from Distill](#upgrading-from-distill)); each harness's stderr is
-logged there prefixed with its id, such as `[claude-acp]`.
+`<root>\logs\flock.log` (`%USERPROFILE%\.flock\logs\flock.log`, or under
+`.distill` on an install upgraded from Distill; the start logs `App log:` with
+the exact path, right after `Flock root:`); each harness's stderr is logged
+there prefixed with its id, such as `[claude-acp]`. Logs an older build wrote
+under `%LOCALAPPDATA%\com.levocat.flock\logs\` stay there.
+
+Read and write Flock's state from an agent session only under the root. A
+process started from the Claude desktop app (every Claude Code session's
+shell, and whatever it launches) sees `%LOCALAPPDATA%` and `%APPDATA%` through
+that app's package redirection, `%LOCALAPPDATA%\Packages\Claude_…\LocalCache\`:
+a merged view in which a file such a process once wrote hides the real one
+from every later such process, while the app the operator runs keeps using the
+real file. A dev app started from such a session gets its own copy of the
+identifier-keyed folders, so it is not the app the operator is running, and
+its `flockctl/` discovery file is not the operator's either.
 
 If you want a full fresh-machine reset after testing, review the cleanup dry run
 first, then run the full reset command from the cleanup section.

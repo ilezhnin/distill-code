@@ -50,6 +50,7 @@ of skills, agents, chats, projects or memory.
 | `artifacts/` | Generated artifacts |
 | `runtime-config/`, `user-avatars/` | Runtime overrides and uploaded media |
 | `cache/` | Regenerable runtime downloads and packages |
+| `logs/` | The app log, `flock.log`, and its two newest rotated archives |
 
 The table describes application storage. Personal prompt organization and delivery
 are user configuration, outside the shared application's data model. Startup does
@@ -126,11 +127,20 @@ preserves published versions and results. Interrupted dispatches are reconciled
 against host records and are never automatically resent when acceptance is unknown.
 Restart parks interrupted work and disables missed campaigns until reviewed.
 
-WebView caches, derived avatar thumbnails, logs and CLI discovery may remain
-outside the root: `flock.log` and the `flockctl/` discovery files live under
-the identifier-keyed app data folder, and stale files in the earlier
+WebView caches, derived avatar thumbnails and CLI discovery may remain
+outside the root: the `flockctl/` discovery files live under the
+identifier-keyed app data folder, and stale files in the earlier
 `distillctl/` directory there are swept too, the directory being removed once
-it is empty. Disposable UI state can remain in localStorage. External
+it is empty. The app log does not: `flock.log` and its rotated archives are
+written to the root's `logs/` (logs an older build wrote stay where it left
+them, under the identifier-keyed log folder). On Windows that folder is not
+one folder for everyone: a process started from the Claude desktop app, every
+agent session's shell among them, sees `%LOCALAPPDATA%` and `%APPDATA%`
+through that app's package redirection, a merged view under
+`%LOCALAPPDATA%\Packages\Claude_…\LocalCache\` in which a file such a process
+once wrote hides the real one from every later such process. The home
+directory is not redirected, so the root is the same folder for everyone.
+Disposable UI state can remain in localStorage. External
 harnesses own their credentials and configuration. Flock-managed Claude and
 Codex accounts keep each harness's credential files in a separate protected
 home under `provider-accounts/`, without falling back to another application's
