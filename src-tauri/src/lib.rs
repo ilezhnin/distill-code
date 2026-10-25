@@ -1,5 +1,6 @@
 mod commands;
 mod deep_links;
+pub mod history_maintenance;
 mod renderer_recovery;
 mod services;
 

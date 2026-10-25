@@ -411,6 +411,33 @@ fn carries_text(update: &Value) -> bool {
     }
 }
 
+/// `kv` scope of the host's own bookkeeping.
+const KV_HOST: &str = "host";
+/// Progress of the one-time pass that stores existing history in its replay
+/// form (`SessionStore::compact_history`); the version is bumped when the
+/// compaction rules change enough to want another pass.
+const HISTORY_COMPACTION_KEY: &str = "history_compaction";
+const HISTORY_COMPACTION_VERSION: u64 = 1;
+
+/// What a history compaction read and what it left.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionStats {
+    pub rows_before: usize,
+    pub rows_after: usize,
+    pub bytes_before: usize,
+    pub bytes_after: usize,
+}
+
+impl CompactionStats {
+    pub fn add(&mut self, other: &Self) {
+        self.rows_before += other.rows_before;
+        self.rows_after += other.rows_after;
+        self.bytes_before += other.bytes_before;
+        self.bytes_after += other.bytes_after;
+    }
+}
+
 #[derive(Clone)]
 pub struct SessionStore {
     pub(super) pool: SqlitePool,
@@ -1505,6 +1532,209 @@ impl SessionStore {
         Ok((compactor.finish(), count))
     }
 
+    /// Rewrite a session's stored events from `from_id` on in their replay
+    /// form (see [`super::replay`]): the streamed pieces of one message
+    /// become one row, and a running tool call's progress updates lose the
+    /// output their final update repeats. A joined row keeps the id and time
+    /// of the last event it stands for, so `MAX(id)`, the history page
+    /// cursors and an owned session's event cursor stay valid. Evidence-only
+    /// rows and rows that are not JSON keep their id and bytes. The rewrite
+    /// covers only the rows it read: anything appended meanwhile is left for
+    /// the next turn's compaction.
+    pub async fn compact_events(
+        &self,
+        session_id: &str,
+        from_id: i64,
+    ) -> Result<CompactionStats, String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start history compaction", error))?;
+        let rows = sqlx::query(
+            "SELECT id, created_at, payload_json FROM session_events WHERE session_id = ? AND id >= ? ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .bind(from_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| db_error("failed to read history for compaction", error))?;
+        let mut stats = CompactionStats::default();
+        let mut compactor = super::replay::Compactor::default();
+        // The rows the compactor read, in order, and the rows it leaves alone.
+        let mut joined: Vec<(i64, String)> = Vec::new();
+        let mut rewritten: Vec<(i64, String, String)> = Vec::new();
+        for row in &rows {
+            let id: i64 = row.get("id");
+            let created_at: String = row.get("created_at");
+            let payload: String = row.get("payload_json");
+            stats.rows_before += 1;
+            stats.bytes_before += payload.len();
+            if payload.contains("\"evidenceOnly\":true") {
+                rewritten.push((id, created_at, payload));
+            } else if compactor.push(payload) {
+                joined.push((id, created_at));
+            } else {
+                rewritten.push((id, created_at, row.get("payload_json")));
+            }
+        }
+        let mut cursor = 0;
+        for (payload, pieces) in compactor.finish_with_counts() {
+            let Some((id, created_at)) = pieces
+                .checked_sub(1)
+                .map(|last| cursor + last)
+                .and_then(|index| joined.get(index))
+            else {
+                return Err(
+                    "history compaction lost track of the rows it joined; nothing was changed"
+                        .into(),
+                );
+            };
+            rewritten.push((*id, created_at.clone(), payload));
+            cursor += pieces;
+        }
+        if cursor != joined.len() {
+            return Err(
+                "history compaction did not account for every row; nothing was changed".into(),
+            );
+        }
+        rewritten.sort_by_key(|(id, _, _)| *id);
+        stats.rows_after = rewritten.len();
+        stats.bytes_after = rewritten.iter().map(|(_, _, payload)| payload.len()).sum();
+        let Some(last_id) = rows.last().map(|row| row.get::<i64, _>("id")) else {
+            return Ok(stats);
+        };
+        if stats.rows_after == stats.rows_before && stats.bytes_after == stats.bytes_before {
+            return Ok(stats);
+        }
+        sqlx::query("DELETE FROM session_events WHERE session_id = ? AND id >= ? AND id <= ?")
+            .bind(session_id)
+            .bind(from_id)
+            .bind(last_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to remove history rows for compaction", error))?;
+        for (id, created_at, payload) in &rewritten {
+            sqlx::query(
+                "INSERT INTO session_events (id, session_id, created_at, payload_json) VALUES (?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(session_id)
+            .bind(created_at)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to write compacted history", error))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit history compaction", error))?;
+        Ok(stats)
+    }
+
+    /// One pass over every session's stored events through
+    /// [`Self::compact_events`], oldest session first, resuming where an
+    /// earlier pass stopped. `skip` names the sessions to leave for a later
+    /// pass (a chat with a running turn); `progress` sees each compacted
+    /// session. A pass that skipped nothing is recorded as complete, with a
+    /// VACUUM left pending for [`Self::vacuum_if_pending`], which is what
+    /// gives the freed pages back to the file system.
+    pub async fn compact_history<Skip, Pending>(
+        &self,
+        mut skip: Skip,
+        mut progress: impl FnMut(&str, &CompactionStats),
+    ) -> Result<CompactionStats, String>
+    where
+        Skip: FnMut(String) -> Pending,
+        Pending: std::future::Future<Output = bool>,
+    {
+        let mut total = CompactionStats::default();
+        let state = self
+            .kv_get(KV_HOST, HISTORY_COMPACTION_KEY)
+            .await?
+            .filter(|state| state["version"] == HISTORY_COMPACTION_VERSION);
+        if state
+            .as_ref()
+            .is_some_and(|state| state["complete"] == true)
+        {
+            return Ok(total);
+        }
+        let mut after = state
+            .as_ref()
+            .and_then(|state| state["afterRowid"].as_i64())
+            .unwrap_or(0);
+        let mut first_skipped: Option<i64> = None;
+        loop {
+            let rows = sqlx::query(
+                "SELECT rowid AS row, id FROM sessions WHERE rowid > ? ORDER BY rowid ASC LIMIT 64",
+            )
+            .bind(after)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to list sessions for compaction", error))?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                let rowid: i64 = row.get("row");
+                let id: String = row.get("id");
+                if skip(id.clone()).await {
+                    first_skipped.get_or_insert(rowid);
+                } else {
+                    let stats = self.compact_events(&id, 0).await?;
+                    total.add(&stats);
+                    progress(&id, &stats);
+                }
+                after = rowid;
+                // A pass over a long history shares the executor with the
+                // host's live work.
+                tokio::task::yield_now().await;
+            }
+            self.kv_set(
+                KV_HOST,
+                HISTORY_COMPACTION_KEY,
+                &serde_json::json!({"version": HISTORY_COMPACTION_VERSION, "afterRowid": after, "complete": false}),
+            )
+            .await?;
+        }
+        let state = match first_skipped {
+            // The next pass starts again at the first session this one left.
+            Some(rowid) => {
+                serde_json::json!({"version": HISTORY_COMPACTION_VERSION, "afterRowid": rowid - 1, "complete": false})
+            }
+            None => {
+                serde_json::json!({"version": HISTORY_COMPACTION_VERSION, "complete": true, "vacuumPending": true})
+            }
+        };
+        self.kv_set(KV_HOST, HISTORY_COMPACTION_KEY, &state).await?;
+        Ok(total)
+    }
+
+    /// Run the VACUUM a completed compaction pass left pending, which rewrites
+    /// the file without the freed pages: for the moment the database is
+    /// opened and nothing else reads it. Says whether it ran.
+    pub async fn vacuum_if_pending(&self) -> Result<bool, String> {
+        let Some(mut state) = self.kv_get(KV_HOST, HISTORY_COMPACTION_KEY).await? else {
+            return Ok(false);
+        };
+        if state["vacuumPending"] != true {
+            return Ok(false);
+        }
+        sqlx::query("VACUUM")
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to vacuum the history database", error))?;
+        state["vacuumPending"] = Value::Bool(false);
+        self.kv_set(KV_HOST, HISTORY_COMPACTION_KEY, &state).await?;
+        Ok(true)
+    }
+
+    /// Close the connection pool: for a tool that opened the database on its
+    /// own and is done with it.
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
     /// A stable snapshot of complete turns, paged backwards by immutable row
     /// id. Legacy prompts with no identity use the entire remaining prefix.
     pub async fn history_page(
@@ -2021,6 +2251,176 @@ fn recorded_before(created_at: &str, cutoff: i64) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn streamed(session: &str, message: &str, text: &str, created: &str) -> Value {
+        json!({
+            "sessionId": session,
+            "update": {
+                "_meta": { "distill": { "assistantMessageId": message, "created": created, "runId": "r" } },
+                "content": { "type": "text", "text": text },
+                "sessionUpdate": "agent_message_chunk",
+            }
+        })
+    }
+
+    async fn event_ids(store: &SessionStore, session: &str) -> Vec<i64> {
+        sqlx::query_scalar("SELECT id FROM session_events WHERE session_id = ? ORDER BY id")
+            .bind(session)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn compaction_joins_streamed_rows_and_keeps_the_last_id_of_each_run() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("compact.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        store.insert_session(&record("chat")).await.unwrap();
+        let prompt = json!({"sessionId": "chat", "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Hi"}, "_meta": {"distill": {"messageId": "m1", "created": "t0"}}}});
+        let evidence_only = json!({"sessionId": "chat", "update": {"sessionUpdate": "provider_note", "_meta": {"distill": {"evidenceOnly": true}}}});
+        let final_call = json!({"sessionId": "chat", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "done"}}]}});
+        let ids = store
+            .append_events(
+                "chat",
+                &[
+                    prompt,
+                    streamed("chat", "a", "Hel", "t1"),
+                    streamed("chat", "a", "lo", "t2"),
+                    evidence_only.clone(),
+                    streamed("chat", "a", ", world", "t3"),
+                    final_call,
+                    streamed("chat", "b", "Ne", "t4"),
+                    streamed("chat", "b", "xt", "t5"),
+                ],
+            )
+            .await
+            .unwrap();
+        // A row that is not JSON is left where it is.
+        sqlx::query("INSERT INTO session_events (session_id, created_at, payload_json) VALUES ('chat', 't6', 'not json')")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let (replay_before, _) = store.replay_payloads("chat").await.unwrap();
+        let max_before: i64 =
+            sqlx::query_scalar("SELECT MAX(id) FROM session_events WHERE session_id = 'chat'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+
+        let stats = store.compact_events("chat", 0).await.unwrap();
+        assert_eq!(stats.rows_before, 9);
+        assert_eq!(stats.rows_after, 6);
+        assert!(stats.bytes_after < stats.bytes_before);
+        let max_after: i64 =
+            sqlx::query_scalar("SELECT MAX(id) FROM session_events WHERE session_id = 'chat'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(max_after, max_before);
+        // The prompt, the evidence-only row, "Hello, world" at the id of its
+        // last piece, the final call, "Next" at the id of its last piece,
+        // the raw row.
+        assert_eq!(
+            event_ids(&store, "chat").await,
+            vec![ids[0], ids[3], ids[4], ids[5], ids[7], max_before]
+        );
+        let (replay_after, _) = store.replay_payloads("chat").await.unwrap();
+        assert_eq!(replay_after, replay_before);
+        let joined: Value = serde_json::from_str(&replay_after[1]).unwrap();
+        assert_eq!(joined["update"]["content"]["text"], "Hello, world");
+        assert_eq!(joined["update"]["_meta"]["distill"]["created"], "t3");
+        let untouched: Vec<String> = sqlx::query_scalar(
+            "SELECT payload_json FROM session_events WHERE id IN (?, ?) ORDER BY id",
+        )
+        .bind(ids[3])
+        .bind(max_before)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            untouched,
+            vec![evidence_only.to_string(), "not json".to_string()]
+        );
+
+        // Compacted rows stay as they are.
+        let again = store.compact_events("chat", 0).await.unwrap();
+        assert_eq!((again.rows_before, again.rows_after), (6, 6));
+        assert_eq!(again.bytes_after, again.bytes_before);
+        assert_eq!(
+            event_ids(&store, "chat").await,
+            vec![ids[0], ids[3], ids[4], ids[5], ids[7], max_before]
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_history_pass_resumes_at_the_first_skipped_session_and_vacuums_once_complete() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("pass.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        for id in ["one", "two", "three"] {
+            store.insert_session(&record(id)).await.unwrap();
+            store
+                .append_events(
+                    id,
+                    &[streamed(id, "a", "x", "t1"), streamed(id, "a", "y", "t2")],
+                )
+                .await
+                .unwrap();
+        }
+        let mut seen = Vec::new();
+        let total = store
+            .compact_history(
+                |id| std::future::ready(id == "two"),
+                |id, _| seen.push(id.to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen, vec!["one", "three"]);
+        assert_eq!((total.rows_before, total.rows_after), (4, 2));
+        let state = store
+            .kv_get("host", "history_compaction")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state["complete"], json!(false));
+        assert!(!store.vacuum_if_pending().await.unwrap());
+
+        let mut seen = Vec::new();
+        store
+            .compact_history(
+                |_| std::future::ready(false),
+                |id, _| seen.push(id.to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen, vec!["two", "three"]);
+        let state = store
+            .kv_get("host", "history_compaction")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state["complete"], json!(true));
+        assert!(store.vacuum_if_pending().await.unwrap());
+        assert!(!store.vacuum_if_pending().await.unwrap());
+
+        // A complete pass is not repeated.
+        let mut seen = Vec::new();
+        store
+            .compact_history(
+                |_| std::future::ready(false),
+                |id, _| seen.push(id.to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(seen.is_empty());
+        dir.close().await;
+    }
 
     #[tokio::test]
     async fn listed_owners_survive_restart_and_ignore_copied_snapshot_ownership() {

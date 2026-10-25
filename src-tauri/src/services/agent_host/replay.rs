@@ -184,10 +184,27 @@ impl PendingPiece {
 #[derive(Default)]
 pub struct Compactor {
     out: Vec<String>,
+    /// How many pushed events each entry of `out` stands for, so a caller
+    /// that rewrites the stored log knows which rows an entry replaces.
+    counts: Vec<usize>,
     pending: Option<PendingPiece>,
 }
 
+/// Close the pending run, if any, as one entry.
+fn flush(out: &mut Vec<String>, counts: &mut Vec<usize>, pending: &mut Option<PendingPiece>) {
+    if let Some(run) = pending.take() {
+        counts.push(run.pieces);
+        out.push(run.into_payload());
+    }
+}
+
 impl Compactor {
+    fn emit(&mut self, payload: String) {
+        flush(&mut self.out, &mut self.counts, &mut self.pending);
+        self.out.push(payload);
+        self.counts.push(1);
+    }
+
     /// Validate and compact each stored row in one pass. Invalid JSON is
     /// skipped, as it cannot be included in a replay notification frame.
     pub fn push(&mut self, payload: String) -> bool {
@@ -202,8 +219,7 @@ impl Compactor {
                     run.created = created.or(run.created.take());
                     run.pieces += 1;
                     if run.text.len() >= MAX_JOINED_PIECE_BYTES {
-                        self.out
-                            .extend(self.pending.take().map(PendingPiece::into_payload));
+                        flush(&mut self.out, &mut self.counts, &mut self.pending);
                     }
                     return true;
                 }
@@ -213,34 +229,30 @@ impl Compactor {
             let Ok(raw) = serde_json::value::RawValue::from_string(payload) else {
                 return false;
             };
-            self.out
-                .extend(self.pending.take().map(PendingPiece::into_payload));
-            self.out.push(String::from(Box::<str>::from(raw)));
+            self.emit(String::from(Box::<str>::from(raw)));
             return true;
         }
         let Ok(value) = payload.parse::<Value>() else {
             return false;
         };
-        let classified = classify(value, payload.len() < MAX_JOINED_PIECE_BYTES);
-        let Self { out, pending } = self;
-        match classified {
+        match classify(value, payload.len() < MAX_JOINED_PIECE_BYTES) {
             Replayed::Piece {
                 shape,
                 text,
                 created,
             } => {
-                if let Some(run) = pending.as_mut().filter(|run| run.shape == shape) {
+                if let Some(run) = self.pending.as_mut().filter(|run| run.shape == shape) {
                     run.text.push_str(&text);
                     run.created = created.or(run.created.take());
                     run.pieces += 1;
                     if run.text.len() >= MAX_JOINED_PIECE_BYTES {
-                        out.extend(pending.take().map(PendingPiece::into_payload));
+                        flush(&mut self.out, &mut self.counts, &mut self.pending);
                     }
                     return true;
                 }
-                out.extend(pending.take().map(PendingPiece::into_payload));
+                flush(&mut self.out, &mut self.counts, &mut self.pending);
                 let text_shape = TextShape::new(&payload, &shape, created.as_ref());
-                *pending = Some(PendingPiece {
+                self.pending = Some(PendingPiece {
                     payload,
                     shape,
                     text,
@@ -249,22 +261,23 @@ impl Compactor {
                     text_shape,
                 });
             }
-            Replayed::Trimmed(trimmed) => {
-                out.extend(pending.take().map(PendingPiece::into_payload));
-                out.push(trimmed);
-            }
-            Replayed::Unchanged => {
-                out.extend(pending.take().map(PendingPiece::into_payload));
-                out.push(payload);
-            }
+            Replayed::Trimmed(trimmed) => self.emit(trimmed),
+            Replayed::Unchanged => self.emit(payload),
         }
         true
     }
 
     pub fn finish(mut self) -> Vec<String> {
+        flush(&mut self.out, &mut self.counts, &mut self.pending);
         self.out
-            .extend(self.pending.map(PendingPiece::into_payload));
-        self.out
+    }
+
+    /// Like [`Self::finish`], with the number of pushed events each entry
+    /// stands for. The counts add up to the number of pushes that returned
+    /// `true`.
+    pub fn finish_with_counts(mut self) -> Vec<(String, usize)> {
+        flush(&mut self.out, &mut self.counts, &mut self.pending);
+        self.out.into_iter().zip(self.counts).collect()
     }
 }
 
@@ -712,5 +725,36 @@ mod tests {
             .map(|event| event["update"]["content"]["text"].as_str().unwrap())
             .collect();
         assert_eq!(text, piece.repeat(200));
+    }
+
+    #[test]
+    fn counts_say_how_many_events_each_compacted_entry_stands_for() {
+        let events = vec![
+            chunk("agent_thought_chunk", "a", "The", "t1"),
+            chunk("agent_thought_chunk", "a", " user", "t2"),
+            chunk("agent_message_chunk", "a", "Hello", "t3"),
+            json!({"sessionId": "s", "update": {"sessionUpdate": "usage_update", "inputTokens": 1}})
+                .to_string(),
+            chunk("agent_message_chunk", "b", "Ne", "t5"),
+            chunk("agent_message_chunk", "b", "xt", "t6"),
+        ];
+        let mut compactor = Compactor::default();
+        for event in events.clone() {
+            assert!(compactor.push(event));
+        }
+        let counted = compactor.finish_with_counts();
+        assert_eq!(
+            counted
+                .iter()
+                .map(|(_, pieces)| *pieces)
+                .collect::<Vec<_>>(),
+            vec![2, 1, 1, 2]
+        );
+        assert_eq!(
+            counted.iter().map(|(_, pieces)| pieces).sum::<usize>(),
+            events.len()
+        );
+        let payloads: Vec<String> = counted.into_iter().map(|(payload, _)| payload).collect();
+        assert_eq!(payloads, compact(events));
     }
 }

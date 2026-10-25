@@ -6287,6 +6287,14 @@ impl ExecutionBackend for NativeBackend {
                 .native_execution_receipt(&host, &attempt, &terminal)
                 .await;
             let evidence = capture.evidence.close(terminal);
+            // Every event of the turn is read: store the session's log the
+            // way its replay reads it.
+            if let Err(error) = host.compact_owned_events(&session.session_id).await {
+                log::warn!(
+                    "[benchmarks] session {} keeps its raw event log: {error}",
+                    session.session_id
+                );
+            }
             let mut evidence = native_receipt::sealed_events(evidence, receipt);
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;
@@ -6490,6 +6498,14 @@ impl ExecutionBackend for NativeBackend {
                 .native_execution_receipt(&host, &attempt, &terminal)
                 .await;
             let evidence = capture.evidence.close(terminal);
+            // Every event of the turn is read: store the session's log the
+            // way its replay reads it.
+            if let Err(error) = host.compact_owned_events(&status.session_id).await {
+                log::warn!(
+                    "[benchmarks] session {} keeps its raw event log: {error}",
+                    status.session_id
+                );
+            }
             let mut evidence = native_receipt::sealed_events(evidence, receipt);
             if let Some(error) = artifact_error {
                 evidence["repositoryArtifactError"] = error;

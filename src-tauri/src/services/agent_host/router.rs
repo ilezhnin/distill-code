@@ -985,6 +985,15 @@ impl Inner {
         let host_dir = flock_root.join("sessions");
         let store = SessionStore::open(&host_dir.join("agent-host.db")).await?;
         store.reconcile_execution_dispatches().await?;
+        match store.vacuum_if_pending().await {
+            Ok(true) => {
+                log::info!("[agent-host] history database vacuumed after its compaction pass")
+            }
+            Ok(false) => {}
+            Err(error) => {
+                log::warn!("[agent-host] history vacuum left for the next start: {error}")
+            }
+        }
         if !isolated {
             match legacy_import::import_goose_sessions_once(&store).await {
                 Ok(0) => {}
@@ -1038,6 +1047,7 @@ impl Inner {
         tokio::spawn(Arc::clone(&inner).accept_loop(listener, token));
         tokio::spawn(Arc::clone(&inner).bridge_event_loop(events_rx));
         tokio::spawn(Self::reap_idle_bridges_periodically(Arc::downgrade(&inner)));
+        tokio::spawn(Self::compact_history_in_background(Arc::downgrade(&inner)));
         if inner
             .app
             .try_state::<crate::services::e2e_mode::E2eMode>()
@@ -1778,6 +1788,40 @@ impl Inner {
     /// stopped itself is no longer in the map when it exits.
     fn exit_ends_route(live: Option<u64>, exited: u64) -> bool {
         live.is_none_or(|generation| generation == exited)
+    }
+
+    /// One pass over the stored history in its replay form (see
+    /// `SessionStore::compact_history`), a session at a time between the
+    /// host's other work, so a database written before turns were compacted
+    /// shrinks to what its chats show. A chat with a running turn is left for
+    /// the next start; once every session is done, the next start vacuums.
+    async fn compact_history_in_background(host: Weak<Inner>) {
+        // Let the renderer open its first chat before the pass reads the log.
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        let Some(host) = host.upgrade() else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        let skip = {
+            let host = Arc::clone(&host);
+            move |session_id: String| {
+                let host = Arc::clone(&host);
+                async move { host.active_run_id(&session_id).await.is_some() }
+            }
+        };
+        let mut sessions = 0usize;
+        match host.store.compact_history(skip, |_, _| sessions += 1).await {
+            Ok(total) if sessions > 0 => log::info!(
+                "[agent-host] history compaction: {sessions} session(s), {} -> {} rows, {:.1} -> {:.1} MB, {:.0?}",
+                total.rows_before,
+                total.rows_after,
+                total.bytes_before as f64 / 1_048_576.0,
+                total.bytes_after as f64 / 1_048_576.0,
+                started.elapsed()
+            ),
+            Ok(_) => {}
+            Err(error) => log::warn!("[agent-host] history compaction stopped: {error}"),
+        }
     }
 
     /// Every [`BRIDGE_REAP_INTERVAL`], shut down the bridges nothing is using.
@@ -5864,6 +5908,9 @@ impl Inner {
                 return Err(error);
             }
         };
+        let turn_start = recorded
+            .as_ref()
+            .and_then(|recorded| recorded.event_ids.first().copied());
         drop(admission);
         if self
             .store
@@ -6021,6 +6068,21 @@ impl Inner {
                 .await;
             if result.is_err() {
                 self.discard_rejected_prompt(&session_id, recorded).await;
+            }
+        }
+        // The turn and the steers it took are in the log in full: `run_prompt`
+        // drains the bridge before a turn ends. Store them the way their
+        // replay reads them. An owned session's runner is still paging the
+        // log and compacts it itself once it has read everything
+        // (`AgentHost::compact_owned_events`).
+        if let Some(from) = turn_start {
+            let compacted = match self.store.execution_owner(&session_id).await {
+                Ok(Some(_)) => Ok(None),
+                Ok(None) => self.store.compact_events(&session_id, from).await.map(Some),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = compacted {
+                log::warn!("[agent-host] turn of {session_id} keeps its raw event rows: {error}");
             }
         }
         if result.is_ok() {
@@ -7292,6 +7354,14 @@ impl Inner {
         limit: u32,
     ) -> Result<OwnedEventPage, String> {
         self.store.owned_events(id, after, limit).await
+    }
+    /// Store an owned session's log the way its replay reads it, once its
+    /// runner has read every event (see `SessionStore::compact_events`).
+    pub async fn compact_owned_events(
+        &self,
+        id: &str,
+    ) -> Result<super::store::CompactionStats, String> {
+        self.store.compact_events(id, 0).await
     }
     pub async fn stop_owned_sandbox(&self, session: &str) -> Result<(), String> {
         if let Some((bridge, _)) = self.attached_route(session).await {
