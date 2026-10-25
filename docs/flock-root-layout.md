@@ -35,7 +35,7 @@ of skills, agents, chats, projects or memory.
 | Path under the root | Purpose |
 | --- | --- |
 | `settings.json` | Global application preferences |
-| `sessions/agent-host.db` | Session records and chat history |
+| `sessions/agent-host.db` | Session records and chat history. A turn is stored in the form its replay reads once it ends: the streamed pieces of one message as one event, a running tool call without the output its final update repeats. A database written before that is compacted once in the background after start, a chat at a time, and the next start vacuums it; `flock-history compact <path to agent-host.db>` (a binary of the app crate) does the same to a closed database at once |
 | `projects/` | Registered project records |
 | `agents/` | Agent definitions: the user's own agents, one Markdown file each |
 | `skills/` | Skills: the built-in skills Flock installs and the user's own |

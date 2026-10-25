@@ -16,7 +16,7 @@ mod harness_env;
 pub(crate) mod kimi;
 mod legacy_import;
 pub mod protocol;
-mod replay;
+pub(crate) mod replay;
 pub(crate) mod repository_execution;
 pub mod router;
 mod sandbox_sign_in;

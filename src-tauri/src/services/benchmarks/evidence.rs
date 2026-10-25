@@ -122,6 +122,18 @@ impl EvidenceLog {
     /// Ends the record with the host's terminal dispatch record, which is
     /// always kept, after the truncation marker when the ceiling was reached.
     pub(crate) fn close(mut self, terminal: Value) -> Value {
+        // The pieces of one streamed message are kept as one event, the way a
+        // chat's replay reads them (`agent_host::replay`). `keptBytes` below
+        // counts the pieces as they were read.
+        let mut compactor = crate::services::agent_host::replay::Compactor::default();
+        for event in self.events {
+            compactor.push(event.to_string());
+        }
+        self.events = compactor
+            .finish()
+            .into_iter()
+            .filter_map(|event| serde_json::from_str(&event).ok())
+            .collect();
         if self.dropped_events > 0 {
             self.events.push(json!({"evidenceTruncated": {
                 "ceilingBytes": self.ceiling,
@@ -212,6 +224,24 @@ mod tests {
     use super::super::analysis::{self, tests::dataset};
     use super::*;
 
+    #[test]
+    fn a_sealed_record_keeps_a_streamed_message_as_one_event() {
+        let mut log = EvidenceLog::default();
+        for (n, text) in ["Hel", "lo", ", world"].into_iter().enumerate() {
+            log.push(grok_chunk("agent_message_chunk", text, n))
+                .unwrap();
+        }
+        log.push(json!({"sessionId": "s", "update": {"sessionUpdate": "usage_update", "inputTokens": 1}}))
+            .unwrap();
+        let record = log.close(json!({"terminalDispatch": {}}));
+        let events = record.as_array().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0]["update"]["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(events[0]["update"]["content"]["text"], "Hello, world");
+        assert_eq!(events[1]["update"]["sessionUpdate"], "usage_update");
+        assert!(events[2].get("terminalDispatch").is_some());
+    }
+
     /// A Grok answer chunk as the host stores it: Grok's per-chunk telemetry
     /// on the notification, the host's stamp and owner on the update.
     fn grok_chunk(kind: &str, text: &str, n: usize) -> Value {
@@ -297,9 +327,14 @@ mod tests {
         }
         let sealed = log.close(json!({"terminalDispatch": {}}));
         let events = sealed.as_array().unwrap();
-        assert_eq!(events.len(), 1_501);
+        // The stream is one event of the record, with the whole text.
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0]["update"]["content"]["text"],
+            " word".repeat(1_500)
+        );
         assert!(events.iter().all(|e| e.get("evidenceTruncated").is_none()));
-        // Less than a quarter of what the stream took with its telemetry.
+        // A fraction of what the stream took with its telemetry.
         assert!(serde_json::to_vec(&sealed).unwrap().len() * 4 < raw);
     }
 
@@ -316,13 +351,17 @@ mod tests {
             .unwrap();
         let sealed = log.close(json!({"terminalDispatch": {"phase": "terminal"}}));
         let events = sealed.as_array().unwrap();
-        let kept = events.len() - 2;
+        // The kept pieces are one event, then the marker, then the terminal.
+        assert_eq!(events.len(), 3);
+        let kept_text = events[0]["update"]["content"]["text"].as_str().unwrap();
+        let kept = kept_text.len() / 10;
         assert!(kept > 0 && kept < 20, "{kept}");
-        let marker = &events[kept]["evidenceTruncated"];
+        assert_eq!(kept_text, "0123456789".repeat(kept));
+        let marker = &events[1]["evidenceTruncated"];
         assert_eq!(marker["ceilingBytes"], 1_000);
         assert_eq!(marker["droppedEvents"], (21 - kept) as u64);
         assert!(marker["keptBytes"].as_u64().unwrap() <= 1_000);
-        assert_eq!(events[kept + 1]["terminalDispatch"]["phase"], "terminal");
+        assert_eq!(events[2]["terminalDispatch"]["phase"], "terminal");
     }
 
     fn capped(output: &str) -> Attempt {
