@@ -1546,9 +1546,12 @@ impl SessionStore {
         session_id: &str,
         from_id: i64,
     ) -> Result<CompactionStats, String> {
+        // Immediate: the rewrite reads and then writes, and a deferred
+        // transaction that read while another connection committed cannot
+        // turn into a writer (SQLITE_BUSY_SNAPSHOT).
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| db_error("failed to start history compaction", error))?;
         let rows = sqlx::query(
