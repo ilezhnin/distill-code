@@ -22,7 +22,7 @@ import {
   SidebarSectionHeader,
   SidebarSectionHeaderAction,
 } from "./SidebarSectionHeader";
-import { SidebarChatRow } from "./SidebarChatRow";
+import { SidebarChatBranch } from "./SidebarChatBranch";
 
 export function SidebarFlatChatsSection({
   groups,
@@ -272,52 +272,40 @@ export function SidebarFlatChatsSection({
                 className={cn("space-y-0", groupIndex > 0 && "mt-1 pt-1")}
                 data-sidebar-flat-chat-group={group.id}
               >
-                {group.sessions.map((session) => {
-                  const isActive = activeSessionId === session.id;
-                  const currentProjectId =
-                    session.projectName != null
-                      ? (session.projectId ?? null)
-                      : null;
-                  return (
-                    <SidebarChatRow
-                      key={session.id}
-                      id={session.id}
-                      title={session.title}
-                      branchName={session.branchName}
-                      activityAt={session.activityAt}
-                      showLeadingIcon={showChatIcons}
-                      showRenameTooltip={false}
-                      isActive={isActive}
-                      clientSessionId={session.clientSessionId}
-                      isRunning={session.isRunning ?? false}
-                      hasUnread={session.hasUnread ?? false}
-                      selected={selectedSessionIds?.has(session.id) ?? false}
-                      selectionEnabled={selectionEnabled}
-                      selectionActionsDisabled={selectionActionsDisabled}
-                      selectedSessionIds={selectedSessionIds}
-                      density="dense"
-                      flatProjectName={
-                        session.projectName ?? t("flat.noProject")
-                      }
-                      flatProjectIcon={session.projectIcon}
-                      flatProjectColor={session.projectColor}
-                      currentProjectId={currentProjectId}
-                      onEditProject={onEditProject}
-                      onSelect={onSelectSession}
-                      onSelectionClear={onSelectionClear}
-                      onSelectionChange={onSelectionChange}
-                      onRangeSelect={onRangeSelect}
-                      onRename={onRenameChat}
-                      onFork={onForkChat}
-                      onMarkRead={onMarkChatRead}
-                      onMarkUnread={onMarkChatUnread}
-                      onArchive={onArchiveChat}
-                      onArchiveSelected={onArchiveSelected}
-                      onMarkSelectedRead={onMarkSelectedRead}
-                      onMarkSelectedUnread={onMarkSelectedUnread}
-                    />
-                  );
-                })}
+                {group.sessions.map((session) => (
+                  <SidebarChatBranch
+                    key={session.id}
+                    session={session}
+                    activeSessionId={activeSessionId}
+                    showLeadingIcon={showChatIcons}
+                    showRenameTooltip={false}
+                    selectionEnabled={selectionEnabled}
+                    selectionActionsDisabled={selectionActionsDisabled}
+                    selectedSessionIds={selectedSessionIds}
+                    density="dense"
+                    flatProjectName={session.projectName ?? t("flat.noProject")}
+                    flatProjectIcon={session.projectIcon}
+                    flatProjectColor={session.projectColor}
+                    currentProjectId={
+                      session.projectName != null
+                        ? (session.projectId ?? null)
+                        : null
+                    }
+                    onEditProject={onEditProject}
+                    onSelect={onSelectSession}
+                    onSelectionClear={onSelectionClear}
+                    onSelectionChange={onSelectionChange}
+                    onRangeSelect={onRangeSelect}
+                    onRename={onRenameChat}
+                    onFork={onForkChat}
+                    onMarkRead={onMarkChatRead}
+                    onMarkUnread={onMarkChatUnread}
+                    onArchive={onArchiveChat}
+                    onArchiveSelected={onArchiveSelected}
+                    onMarkSelectedRead={onMarkSelectedRead}
+                    onMarkSelectedUnread={onMarkSelectedUnread}
+                  />
+                ))}
               </div>
             ))}
             {showViewAllInHistory && onNavigate ? (

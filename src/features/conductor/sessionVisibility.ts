@@ -1,13 +1,28 @@
 import type { SessionNode, SessionRole } from "./types";
 
+/**
+ * Whether a node hangs under another session at all.
+ *
+ * This is the one definition of "nested": a node with a parent link is drawn
+ * under that parent in the sidebar, whatever role either of them carries, and
+ * is kept out of the flat lists that would otherwise show it twice. Role is
+ * deliberately not consulted — every programmatic spawn records its parent,
+ * and a worker that spawned workers of its own is a parent like any other.
+ */
+export function hasParentLink(node: SessionNode): boolean {
+  const parent = node.parentSessionId;
+  return (
+    typeof parent === "string" && parent.length > 0 && parent !== node.sessionId
+  );
+}
+
+/** Sessions shown under the chat that started them rather than on their own. */
 export function nestedExecutorSessionIdSet(
   nodesById: Record<string, SessionNode>,
 ): Set<string> {
   const ids = new Set<string>();
   for (const node of Object.values(nodesById)) {
-    if (node.role === "orchestrator" || node.role === "worker") {
-      ids.add(node.sessionId);
-    }
+    if (hasParentLink(node)) ids.add(node.sessionId);
   }
   return ids;
 }

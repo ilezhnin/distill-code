@@ -1,4 +1,5 @@
 import { isWorkingStatus } from "./brigadeActivity";
+import { hasParentLink } from "./sessionVisibility";
 import type { SessionNode } from "./types";
 
 /**
@@ -142,26 +143,150 @@ export function buildAgentForest(
   }
 
   const seen = new Set<string>();
-  const build = (node: SessionNode, depth: number): AgentTreeNode => {
-    seen.add(node.sessionId);
-    const children =
-      depth >= MAX_AGENT_TREE_DEPTH
-        ? []
-        : (childrenByParent.get(node.sessionId) ?? [])
-            .filter((child) => !seen.has(child.sessionId))
-            .sort(compareSiblings)
-            .map((child) => build(child, depth + 1));
-    const workingInSubtree =
-      (isWorkingStatus(node.status) ? 1 : 0) +
-      children.reduce((sum, child) => sum + child.workingInSubtree, 0);
-    return { node, depth, children, workingInSubtree };
-  };
-
-  const forest = roots.sort(compareSiblings).map((node) => build(node, 0));
+  const forest = roots
+    .sort(compareSiblings)
+    .map((node) => buildSubtree(node, 0, childrenByParent, seen));
   const promoted = excludeRoots
     ? forest.flatMap((root) => root.children.map(reseat))
     : forest;
   return include === "live" ? keepLive(promoted) : promoted;
+}
+
+/**
+ * One subtree, parents before children, siblings in plan order. `seen` is
+ * shared across a whole forest so a persisted cycle ends at its first repeat
+ * instead of in the renderer.
+ */
+function buildSubtree(
+  node: SessionNode,
+  depth: number,
+  childrenByParent: ReadonlyMap<string, readonly SessionNode[]>,
+  seen: Set<string>,
+): AgentTreeNode {
+  seen.add(node.sessionId);
+  const children =
+    depth >= MAX_AGENT_TREE_DEPTH
+      ? []
+      : (childrenByParent.get(node.sessionId) ?? [])
+          .filter((child) => !seen.has(child.sessionId))
+          .sort(compareSiblings)
+          .map((child) =>
+            buildSubtree(child, depth + 1, childrenByParent, seen),
+          );
+  const workingInSubtree =
+    (isWorkingStatus(node.status) ? 1 : 0) +
+    children.reduce((sum, child) => sum + child.workingInSubtree, 0);
+  return { node, depth, children, workingInSubtree };
+}
+
+/**
+ * The session a nested node is drawn under in the sidebar.
+ *
+ * The parent link wins when it names a node. When it does not, either the
+ * parent is an ordinary chat — which registers no node of its own, so its
+ * agents point at a bare session id — or it was an orchestrator the graph
+ * bound has since evicted, in which case the node's conductor is the nearest
+ * surviving ancestor. The two are told apart by whether the conductor link
+ * still names a node: a plain-chat parent is its own `rootConductorId`.
+ */
+function anchorIdOf(
+  node: SessionNode,
+  nodesById: Record<string, SessionNode>,
+): string | null {
+  if (!hasParentLink(node)) return null;
+  const parent = node.parentSessionId as string;
+  if (nodesById[parent]) return parent;
+  const root = node.rootConductorId;
+  if (root && root !== node.sessionId && root !== parent && nodesById[root]) {
+    return root;
+  }
+  return parent;
+}
+
+/**
+ * The graph indexed by the chat each agent hangs under — the shape the
+ * sidebar draws, where every chat lists the agents it started beneath it.
+ *
+ * Unlike `buildAgentForest`, the chat at the top of a subtree needs no node
+ * of its own: an ordinary chat that started an agent has none, and its agents
+ * must still hang under its row rather than float to the top of the list.
+ */
+export interface AgentChildIndex {
+  /**
+   * The subtrees hanging directly under any of the given ids — a session's
+   * own id plus the aliases it may be referenced by (a child registered
+   * before its parent was promoted still points at the pre-promotion id).
+   * Depth 0 is a direct child. Empty and nullish ids are ignored.
+   */
+  forestUnder(rootIds: Iterable<string | null | undefined>): AgentTreeNode[];
+  /** Every node that hangs under some other session, by id. */
+  readonly nestedSessionIds: ReadonlySet<string>;
+  /**
+   * The chain of ids a session hangs under, nearest first; empty for a chat
+   * that nothing started. Ids are whatever the child was registered under, so
+   * a caller matching rows should resolve aliases itself.
+   */
+  ancestorsOf(sessionId: string): string[];
+}
+
+export function indexAgentChildren(
+  nodesById: Record<string, SessionNode>,
+): AgentChildIndex {
+  const childrenByParent = new Map<string, SessionNode[]>();
+  const anchorById = new Map<string, string>();
+  const nestedSessionIds = new Set<string>();
+  for (const key in nodesById) {
+    const node = nodesById[key];
+    // Canonical keys only — see `buildAgentForest`.
+    if (!node || node.sessionId !== key) continue;
+    const anchor = anchorIdOf(node, nodesById);
+    if (anchor === null) continue;
+    nestedSessionIds.add(node.sessionId);
+    anchorById.set(node.sessionId, anchor);
+    const bucket = childrenByParent.get(anchor);
+    if (bucket) bucket.push(node);
+    else childrenByParent.set(anchor, [node]);
+  }
+
+  return {
+    nestedSessionIds,
+    forestUnder(rootIds) {
+      const ids: string[] = [];
+      for (const id of rootIds) {
+        if (typeof id === "string" && id.length > 0 && !ids.includes(id)) {
+          ids.push(id);
+        }
+      }
+      if (ids.length === 0) return [];
+      const seen = new Set(ids);
+      const direct: SessionNode[] = [];
+      for (const id of ids) {
+        for (const child of childrenByParent.get(id) ?? []) direct.push(child);
+      }
+      direct.sort(compareSiblings);
+      const forest: AgentTreeNode[] = [];
+      for (const child of direct) {
+        if (seen.has(child.sessionId)) continue;
+        forest.push(buildSubtree(child, 0, childrenByParent, seen));
+      }
+      return forest;
+    },
+    ancestorsOf(sessionId) {
+      const chain: string[] = [];
+      const visited = new Set<string>([sessionId]);
+      let current = anchorById.get(sessionId);
+      while (
+        current !== undefined &&
+        !visited.has(current) &&
+        chain.length < MAX_AGENT_TREE_DEPTH
+      ) {
+        chain.push(current);
+        visited.add(current);
+        current = anchorById.get(current);
+      }
+      return chain;
+    },
+  };
 }
 
 /** Re-bases a subtree so its own depth becomes 0. */
@@ -204,11 +329,6 @@ export function flattenAgentForest(
 /** Total agents in a forest, at every depth. */
 export function countAgents(forest: readonly AgentTreeNode[]): number {
   return forest.reduce((sum, tree) => sum + 1 + countAgents(tree.children), 0);
-}
-
-/** Working agents in a forest, at every depth. */
-export function countWorkingAgents(forest: readonly AgentTreeNode[]): number {
-  return forest.reduce((sum, tree) => sum + tree.workingInSubtree, 0);
 }
 
 /** The subtree for one session, or `null` when it is not in the forest. */

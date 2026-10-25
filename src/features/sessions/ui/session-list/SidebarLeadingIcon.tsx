@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import { cn } from "@/shared/lib/cn";
 import { ActiveChatFlockIndicator } from "@/shared/ui/SessionActivityIndicator";
@@ -17,6 +17,7 @@ export function SidebarLeadingIcon({
   unreadLabel,
   className,
   baseClassName,
+  style,
   testId,
 }: {
   children?: ReactNode;
@@ -26,6 +27,8 @@ export function SidebarLeadingIcon({
   unreadLabel: string;
   className?: string;
   baseClassName?: string;
+  /** Per-row geometry the class list cannot express, such as a tree indent. */
+  style?: CSSProperties;
   testId?: string;
 }) {
   return (
@@ -34,6 +37,7 @@ export function SidebarLeadingIcon({
         "relative flex size-4 shrink-0 items-center justify-center",
         className,
       )}
+      style={style}
       data-testid={testId}
     >
       {isRunning ? (

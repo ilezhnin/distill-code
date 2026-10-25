@@ -96,8 +96,8 @@
     "title": "Proyectos",
     "body": "Los proyectos agrupan chats relacionados y pueden compartir carpetas e instrucciones."
   },
-  "agents": {
-    "title_one": "1 agente trabajando",
-    "title_other": "{{count}} agentes trabajando"
+  "tree": {
+    "expand": "Mostrar los chats que inició {{name}}",
+    "collapse": "Ocultar los chats que inició {{name}}"
   }
 }

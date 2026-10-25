@@ -97,6 +97,16 @@ export const SIDEBAR_CHAT_ROW_PADDING_CLASS = "pl-3";
  */
 export const SIDEBAR_NESTED_ROW_PADDING_CLASS = "pl-[38px]";
 
+/**
+ * Width of one column of a chat tree: the leading slot's 16px, so a parent's
+ * icon and the guide line its children hang from share one column and the
+ * titles of a parent and its children start on one line.
+ */
+export const SIDEBAR_CHAT_TREE_INDENT_PX = 16;
+
+/** Columns past this share the deepest inset; the tree itself goes deeper. */
+export const SIDEBAR_CHAT_TREE_MAX_INDENT_DEPTH = 4;
+
 /** Density variants for chat rows. Default preserves grouped sidebar rhythm. */
 export type SidebarChatRowDensity = "default" | "dense";
 
@@ -109,6 +119,7 @@ export const SIDEBAR_CHAT_ROW_DENSITY_CLASSES = {
     flatProjectGap: "gap-1",
     flatProjectIconInset: "ml-3",
     flatProjectIconColumn: "size-5",
+    flatProjectIconColumnPx: 20,
   },
   dense: {
     contentPadding: "pl-1",
@@ -121,6 +132,7 @@ export const SIDEBAR_CHAT_ROW_DENSITY_CLASSES = {
     // Align the flat project icon with main-nav icons (px-3 row inset).
     flatProjectIconInset: "ml-3",
     flatProjectIconColumn: "size-5",
+    flatProjectIconColumnPx: 20,
   },
 } satisfies Record<
   SidebarChatRowDensity,
@@ -132,6 +144,8 @@ export const SIDEBAR_CHAT_ROW_DENSITY_CLASSES = {
     flatProjectGap: string;
     flatProjectIconInset: string;
     flatProjectIconColumn: string;
+    /** `flatProjectIconColumn` in px: the tree indent unit of a flat row. */
+    flatProjectIconColumnPx: number;
   }
 >;
 

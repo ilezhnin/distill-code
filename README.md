@@ -76,7 +76,8 @@ are not on disk is not accepted at all. The whole protocol is written down in
 **See every bird in the flock.** Under each message you see who worked on it:
 the conductor, its orchestrators, their subagents, each with a live status,
 its model, and its spend. Open any one and its chat opens in a tab beside
-yours. The sidebar shows the agent tree at every depth.
+yours. In the sidebar, each chat lists the agents it started beneath it,
+at every depth.
 
 ## The lead is earned, not assigned
 

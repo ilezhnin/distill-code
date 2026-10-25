@@ -3254,4 +3254,16 @@ export const designSystemComponentManifest = [
     stateClasses: [],
     sourceTokenClasses: [],
   },
+  {
+    name: "Tree Guide",
+    source: "src/shared/ui/tree-guide.tsx",
+    description:
+      "One column of a tree's guide line, drawn the full height of its row so the\nline reads as continuous from one row to the next:\n\n- `pass`: the line runs straight through — an ancestor's line beside a\n  row, or a child that is not its parent's last;\n- `last`: the line ends here in an elbow — the parent's last child;\n- `stub`: the line starts under a parent's icon and runs to the row's\n  bottom edge, so the children's line hangs from the icon.\n\nAbsolutely positioned inside a `relative` row; the caller sets `left`.",
+    exports: ["TreeGuide", "TreeGuideShape"],
+    slots: ["tree-guide"],
+    cva: [],
+    tokenClasses: ["text-muted-foreground/45"],
+    stateClasses: [],
+    sourceTokenClasses: ["text-muted-foreground/45"],
+  },
 ] as const satisfies readonly DesignSystemComponentManifestItem[];

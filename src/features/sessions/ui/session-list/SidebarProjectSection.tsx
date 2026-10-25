@@ -10,7 +10,6 @@ import type { AppView } from "@/app/AppShell";
 
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { ProjectIcon } from "@/features/projects/ui/ProjectIcon";
-import { SidebarAgentsSection } from "@/features/conductor/ui/SidebarAgentsSection";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { DisclosureButton } from "@/shared/ui/disclosure-button";
@@ -21,7 +20,7 @@ import {
   SIDEBAR_NAV_TEXT_CLASS,
   SIDEBAR_ROW_TEXT_DEFAULT_CLASS,
 } from "@/shared/ui/sidebar-tokens";
-import { SidebarChatRow } from "./SidebarChatRow";
+import { SidebarChatBranch } from "./SidebarChatBranch";
 import { SidebarSectionHeaderAction } from "./SidebarSectionHeader";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
 import { SidebarHoverCard } from "./SidebarHoverCard";
@@ -65,6 +64,12 @@ export interface SidebarSessionItem {
   projectColor?: string | null;
   isRunning?: boolean;
   hasUnread?: boolean;
+  /**
+   * The chats this one started, nested beneath it in the list — its agents,
+   * at every depth, whether or not they are still working. Built once by the
+   * session list; row surfaces only draw it.
+   */
+  children?: SidebarSessionItem[];
 }
 
 export function SidebarProjectSection({
@@ -438,94 +443,65 @@ export function SidebarProjectSection({
       {renderProjectChats ? (
         <CollapseReveal open={showProjectChats}>
           <div data-sidebar-project-chat-list className="pb-2">
-            {/* The project's live agents, above its chats. An agent working on
-                the operator's behalf has to be visible from the place they
-                already look, not only from inside the chat that started it —
-                and every row here opens that agent's own transcript. */}
-            <SidebarAgentsSection
-              projectId={project.id}
-              activeSessionId={activeSessionId}
-              onSelectSession={onSelectSession}
-            />
             {emptyState ? (
               <div className="h-7 py-1 pl-[38px] pr-3 text-sm font-normal leading-normal text-muted-foreground">
                 {t("empty.noChats")}
               </div>
             ) : null}
-            {baseVisibleChats.map((session) => {
-              const isActive = activeSessionId === session.id;
-              return (
-                <SidebarChatRow
-                  key={session.id}
-                  id={session.id}
-                  title={session.title}
-                  branchName={session.branchName}
-                  activityAt={session.activityAt}
-                  isActive={isActive}
-                  clientSessionId={session.clientSessionId}
-                  isRunning={session.isRunning ?? false}
-                  hasUnread={session.hasUnread ?? false}
-                  selected={selectedSessionIds?.has(session.id) ?? false}
-                  selectionEnabled={selectionEnabled}
-                  selectionActionsDisabled={selectionActionsDisabled}
-                  selectedSessionIds={selectedSessionIds}
-                  showLeadingIcon={showChatIcons}
-                  showRenameTooltip={false}
-                  nested
-                  currentProjectId={project.id}
-                  onSelect={onSelectSession}
-                  onSelectionClear={onSelectionClear}
-                  onSelectionChange={onSelectionChange}
-                  onRangeSelect={onRangeSelect}
-                  onRename={onRenameChat}
-                  onFork={onForkChat}
-                  onMarkRead={onMarkChatRead}
-                  onMarkUnread={onMarkChatUnread}
-                  onArchive={onArchiveChat}
-                  onArchiveSelected={onArchiveSelected}
-                  onMarkSelectedRead={onMarkSelectedRead}
-                  onMarkSelectedUnread={onMarkSelectedUnread}
-                />
-              );
-            })}
+            {baseVisibleChats.map((session) => (
+              <SidebarChatBranch
+                key={session.id}
+                session={session}
+                activeSessionId={activeSessionId}
+                nested
+                currentProjectId={project.id}
+                selectionEnabled={selectionEnabled}
+                selectionActionsDisabled={selectionActionsDisabled}
+                selectedSessionIds={selectedSessionIds}
+                showLeadingIcon={showChatIcons}
+                showRenameTooltip={false}
+                onSelect={onSelectSession}
+                onSelectionClear={onSelectionClear}
+                onSelectionChange={onSelectionChange}
+                onRangeSelect={onRangeSelect}
+                onRename={onRenameChat}
+                onFork={onForkChat}
+                onMarkRead={onMarkChatRead}
+                onMarkUnread={onMarkChatUnread}
+                onArchive={onArchiveChat}
+                onArchiveSelected={onArchiveSelected}
+                onMarkSelectedRead={onMarkSelectedRead}
+                onMarkSelectedUnread={onMarkSelectedUnread}
+              />
+            ))}
             {renderExpandedChats ? (
               <CollapseReveal open={showExpandedChats}>
-                {expandedVisibleChats.map((session) => {
-                  const isActive = activeSessionId === session.id;
-                  return (
-                    <SidebarChatRow
-                      key={session.id}
-                      id={session.id}
-                      title={session.title}
-                      branchName={session.branchName}
-                      activityAt={session.activityAt}
-                      isActive={isActive}
-                      clientSessionId={session.clientSessionId}
-                      isRunning={session.isRunning ?? false}
-                      hasUnread={session.hasUnread ?? false}
-                      selected={selectedSessionIds?.has(session.id) ?? false}
-                      selectionEnabled={selectionEnabled}
-                      selectionActionsDisabled={selectionActionsDisabled}
-                      selectedSessionIds={selectedSessionIds}
-                      showLeadingIcon={showChatIcons}
-                      showRenameTooltip={false}
-                      nested
-                      currentProjectId={project.id}
-                      onSelect={onSelectSession}
-                      onSelectionClear={onSelectionClear}
-                      onSelectionChange={onSelectionChange}
-                      onRangeSelect={onRangeSelect}
-                      onRename={onRenameChat}
-                      onFork={onForkChat}
-                      onMarkRead={onMarkChatRead}
-                      onMarkUnread={onMarkChatUnread}
-                      onArchive={onArchiveChat}
-                      onArchiveSelected={onArchiveSelected}
-                      onMarkSelectedRead={onMarkSelectedRead}
-                      onMarkSelectedUnread={onMarkSelectedUnread}
-                    />
-                  );
-                })}
+                {expandedVisibleChats.map((session) => (
+                  <SidebarChatBranch
+                    key={session.id}
+                    session={session}
+                    activeSessionId={activeSessionId}
+                    nested
+                    currentProjectId={project.id}
+                    selectionEnabled={selectionEnabled}
+                    selectionActionsDisabled={selectionActionsDisabled}
+                    selectedSessionIds={selectedSessionIds}
+                    showLeadingIcon={showChatIcons}
+                    showRenameTooltip={false}
+                    onSelect={onSelectSession}
+                    onSelectionClear={onSelectionClear}
+                    onSelectionChange={onSelectionChange}
+                    onRangeSelect={onRangeSelect}
+                    onRename={onRenameChat}
+                    onFork={onForkChat}
+                    onMarkRead={onMarkChatRead}
+                    onMarkUnread={onMarkChatUnread}
+                    onArchive={onArchiveChat}
+                    onArchiveSelected={onArchiveSelected}
+                    onMarkSelectedRead={onMarkSelectedRead}
+                    onMarkSelectedUnread={onMarkSelectedUnread}
+                  />
+                ))}
                 {projectChats.length > MAX_VISIBLE_PROJECT_CHATS ? (
                   <div className="flex items-center pl-[38px] pr-3">
                     <DisclosureButton

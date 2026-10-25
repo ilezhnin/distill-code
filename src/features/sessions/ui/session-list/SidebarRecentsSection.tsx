@@ -19,7 +19,7 @@ import {
   SidebarSectionHeaderAction,
 } from "./SidebarSectionHeader";
 import { SidebarChatMenuIcon } from "./SidebarChatMenuIcon";
-import { SidebarChatRow } from "./SidebarChatRow";
+import { SidebarChatBranch } from "./SidebarChatBranch";
 import { useSidebarChatDrag } from "./SidebarChatDragContext";
 import type { SidebarSessionItem } from "./SidebarProjectSection";
 
@@ -226,41 +226,31 @@ export function SidebarRecentsSection({
         </div>
       ) : !collapsed && sessions.length > 0 ? (
         <CollapseReveal open={isOpen}>
-          {sessions.map((session) => {
-            const isActive = activeSessionId === session.id;
-            return (
-              <SidebarChatRow
-                key={session.id}
-                id={session.id}
-                title={session.title}
-                branchName={session.branchName}
-                activityAt={session.activityAt}
-                showLeadingIcon={showChatIcons}
-                showRenameTooltip={false}
-                isActive={isActive}
-                clientSessionId={session.clientSessionId}
-                isRunning={session.isRunning ?? false}
-                hasUnread={session.hasUnread ?? false}
-                selected={selectedSessionIds?.has(session.id) ?? false}
-                selectionEnabled={selectionEnabled}
-                selectionActionsDisabled={selectionActionsDisabled}
-                selectedSessionIds={selectedSessionIds}
-                currentProjectId={null}
-                onSelect={onSelectSession}
-                onSelectionClear={onSelectionClear}
-                onSelectionChange={onSelectionChange}
-                onRangeSelect={onRangeSelect}
-                onRename={onRenameChat}
-                onFork={onForkChat}
-                onMarkRead={onMarkChatRead}
-                onMarkUnread={onMarkChatUnread}
-                onArchive={onArchiveChat}
-                onArchiveSelected={onArchiveSelected}
-                onMarkSelectedRead={onMarkSelectedRead}
-                onMarkSelectedUnread={onMarkSelectedUnread}
-              />
-            );
-          })}
+          {sessions.map((session) => (
+            <SidebarChatBranch
+              key={session.id}
+              session={session}
+              activeSessionId={activeSessionId}
+              currentProjectId={null}
+              selectionEnabled={selectionEnabled}
+              selectionActionsDisabled={selectionActionsDisabled}
+              selectedSessionIds={selectedSessionIds}
+              showLeadingIcon={showChatIcons}
+              showRenameTooltip={false}
+              onSelect={onSelectSession}
+              onSelectionClear={onSelectionClear}
+              onSelectionChange={onSelectionChange}
+              onRangeSelect={onRangeSelect}
+              onRename={onRenameChat}
+              onFork={onForkChat}
+              onMarkRead={onMarkChatRead}
+              onMarkUnread={onMarkChatUnread}
+              onArchive={onArchiveChat}
+              onArchiveSelected={onArchiveSelected}
+              onMarkSelectedRead={onMarkSelectedRead}
+              onMarkSelectedUnread={onMarkSelectedUnread}
+            />
+          ))}
         </CollapseReveal>
       ) : null}
     </div>

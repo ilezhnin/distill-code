@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   type MouseEvent,
   type ReactNode,
   useEffect,
@@ -8,7 +9,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { MoreHorizontal } from "lucide-react";
-import { IconCheck, IconGitBranch } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconGitBranch,
+} from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import {
   getDisplaySessionTitle,
@@ -35,6 +41,8 @@ import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import {
   SIDEBAR_CHAT_ROW_DENSITY_CLASSES,
+  SIDEBAR_CHAT_TREE_INDENT_PX,
+  SIDEBAR_CHAT_TREE_MAX_INDENT_DEPTH,
   SIDEBAR_MENU_HOVER_TRANSITION_CLASS,
   SIDEBAR_NAV_TEXT_CLASS,
   SIDEBAR_NESTED_ROW_PADDING_CLASS,
@@ -51,6 +59,7 @@ import { SidebarChatMenuIcon } from "./SidebarChatMenuIcon";
 import { DropdownMenu, DropdownMenuTrigger } from "@/shared/ui/dropdown-menu";
 import { ContextMenu, ContextMenuTrigger } from "@/shared/ui/context-menu";
 import { Input } from "@/shared/ui/input";
+import { TreeGuide, type TreeGuideShape } from "@/shared/ui/tree-guide";
 import {
   RESPONDING_SHIMMER_PROPS,
   Shimmer,
@@ -67,6 +76,7 @@ import { useSidebarChatDrag } from "./SidebarChatDragContext";
 import { SidebarHoverCard } from "./SidebarHoverCard";
 import { SidebarChatPreview } from "./SidebarChatPreview";
 
+const NO_TREE_GUIDES: readonly boolean[] = [];
 const INACTIVE_CHAT_ROW_CLASS = cn(
   SIDEBAR_ROW_TEXT_DEFAULT_CLASS,
   SIDEBAR_ROW_HOVER_CLASS,
@@ -100,7 +110,7 @@ const SELECTED_CHAT_ROW_MERGE_CLASS = cn(
   "[[data-selected]:has(+[data-selected])>&]:rounded-b-none [[data-selected]:has(+[data-selected])>&>[data-sidebar-chat-row-button]]:rounded-b-none",
 );
 
-interface SidebarChatRowProps {
+export interface SidebarChatRowProps {
   id: string;
   /**
    * Pre-promotion id for this chat, when it has one. Graph children spawned
@@ -123,6 +133,24 @@ interface SidebarChatRowProps {
   className?: string;
   contentPaddingClassName?: string;
   nested?: boolean;
+  /**
+   * How many chats deep this one sits under the chat that started it; 0 for
+   * a chat in the list itself. A nested row is indented one column per level
+   * and hangs from its parent's guide line.
+   */
+  treeDepth?: number;
+  /**
+   * One entry per column before this row's own: whether an ancestor's guide
+   * line passes through it. Length is the depth.
+   */
+  treeGuides?: readonly boolean[];
+  /** Whether this chat is the last of its parent's: its line ends in an elbow. */
+  treeIsLastChild?: boolean;
+  /** Chats this one started and shows beneath it; 0 draws no disclosure. */
+  childChatCount?: number;
+  /** Whether those chats are shown; only read when there are any. */
+  treeExpanded?: boolean;
+  onToggleTree?: () => void;
   /** Leading pin-control policy for this list surface. */
   /** Rename guidance is omitted on surfaces where rows move under the pointer. */
   showRenameTooltip?: boolean;
@@ -173,6 +201,12 @@ export function SidebarChatRow({
   className,
   contentPaddingClassName,
   nested = false,
+  treeDepth = 0,
+  treeGuides = NO_TREE_GUIDES,
+  treeIsLastChild = true,
+  childChatCount = 0,
+  treeExpanded = true,
+  onToggleTree,
   showRenameTooltip: _showRenameTooltip = true,
   pointerDragEnabled = true,
   density = "default",
@@ -253,11 +287,48 @@ export function SidebarChatRow({
   const hasFlatProjectColumn = flatProjectName != null;
   const trimmedBranchName = branchName?.trim() ?? "";
   const hasBranchName = trimmedBranchName.length > 0;
+  const hasChildChats = childChatCount > 0;
+  const isChildChat = treeDepth > 0;
+  const densityClasses = SIDEBAR_CHAT_ROW_DENSITY_CLASSES[density];
+  // The tree is drawn in columns one leading slot wide. A row gets one
+  // column per ancestor level, and a chat with children one more, so its
+  // icon stands above the line its children hang from and its title starts
+  // where theirs do. The shell carries the inset as padding so the row's
+  // hover fill still spans the panel; the glyphs and the leading slot are
+  // placed by column by hand.
+  const treeUnitPx = hasFlatProjectColumn
+    ? densityClasses.flatProjectIconColumnPx
+    : SIDEBAR_CHAT_TREE_INDENT_PX;
+  const treeColumns = treeGuides.length + (hasChildChats ? 1 : 0);
+  const treeIndentPx =
+    Math.min(treeColumns, SIDEBAR_CHAT_TREE_MAX_INDENT_DEPTH) * treeUnitPx;
+  const treeIndentStyle: CSSProperties | undefined =
+    treeIndentPx > 0 ? { paddingLeft: treeIndentPx } : undefined;
+  // The guide glyphs of this row, by column: the ancestors' lines that pass
+  // it, its own line as a child, and the stub under its icon when its own
+  // children are shown below.
+  const treeGlyphs: Array<{ column: number; shape: TreeGuideShape }> = [];
+  treeGuides.forEach((passes, column) => {
+    if (passes) treeGlyphs.push({ column, shape: "pass" });
+  });
+  if (isChildChat) {
+    treeGlyphs.push({
+      column: treeGuides.length,
+      shape: treeIsLastChild ? "last" : "pass",
+    });
+  }
+  if (hasChildChats && treeExpanded) {
+    treeGlyphs.push({ column: treeColumns, shape: "stub" });
+  }
   // Running and ready/unread states share the trailing menu slot.
   const needsLeadingSlot =
-    nested || showLeadingIcon || isConductor || hasFlatProjectColumn;
+    nested ||
+    showLeadingIcon ||
+    isConductor ||
+    hasFlatProjectColumn ||
+    hasChildChats ||
+    isChildChat;
   const showAbsoluteLeadingSlot = !hasFlatProjectColumn && needsLeadingSlot;
-  const densityClasses = SIDEBAR_CHAT_ROW_DENSITY_CLASSES[density];
   const rowPaddingClass =
     geometry === "project-secondary"
       ? nested
@@ -276,6 +347,24 @@ export function SidebarChatRow({
   // The chat icon and quick-pin action deliberately share the left gutter:
   // pinning replaces the icon rather than creating a second position.
   const leadingControlInsetClass = geometry === "default" ? "left-3" : "left-2";
+  const leadingControlInsetPx = hasFlatProjectColumn
+    ? 12
+    : geometry === "default"
+      ? 12
+      : 8;
+  const leadingSlotStyle: CSSProperties | undefined =
+    treeIndentPx > 0
+      ? { left: leadingControlInsetPx + treeIndentPx }
+      : undefined;
+  const treeRail = treeGlyphs
+    .filter(({ column }) => column < SIDEBAR_CHAT_TREE_MAX_INDENT_DEPTH)
+    .map(({ column, shape }) => (
+      <TreeGuide
+        key={`${column}:${shape}`}
+        shape={shape}
+        style={{ left: leadingControlInsetPx + column * treeUnitPx }}
+      />
+    ));
   const selectionCount = selectedSessionIds?.size ?? 0;
   const shouldApplyToSelection = selected && selectionCount > 1;
   const showSelectionCheck =
@@ -293,6 +382,76 @@ export function SidebarChatRow({
     hasBranchName ? "top-2" : "top-1/2 -translate-y-1/2",
     leadingControlInsetClass,
   );
+  // What the leading slot shows at rest. A nested chat without children
+  // shows nothing of its own there: the guide line it hangs from is drawn
+  // through that column by the rail, and is its identity in the tree.
+  const leadingIdentity: ReactNode =
+    isChildChat && !hasChildChats
+      ? null
+      : showLeadingIcon || isConductor
+        ? (resolvedLeadingIcon ?? <SidebarChatMenuIcon />)
+        : null;
+  /**
+   * The leading slot of a chat with chats under it: its identity at rest and
+   * the disclosure chevron on hover, the way a project row does it — except
+   * that a folded tree shows the chevron always, so a parent with hidden
+   * rows never looks like a parent with none.
+   */
+  const renderTreeToggleSlot = (
+    slotClassName: string,
+    identity: ReactNode,
+    style?: CSSProperties,
+  ) => {
+    const chevronOnHover = identity != null && treeExpanded;
+    return (
+      <span
+        className={slotClassName}
+        style={style}
+        data-testid={leadingIconTestId}
+        data-sidebar-chat-tree-slot
+      >
+        {chevronOnHover ? (
+          <span
+            aria-hidden="true"
+            className="flex size-full items-center justify-center group-hover/chat-row:hidden group-focus-within/chat-row:hidden"
+          >
+            {identity}
+          </span>
+        ) : null}
+        <span
+          className={
+            chevronOnHover
+              ? "hidden group-hover/chat-row:inline-flex group-focus-within/chat-row:inline-flex"
+              : "inline-flex"
+          }
+        >
+          <Button
+            type="button"
+            variant="ghost"
+            flush
+            size="icon-xxs"
+            aria-expanded={treeExpanded}
+            aria-label={t(treeExpanded ? "tree.collapse" : "tree.expand", {
+              name: displayTitle,
+            })}
+            data-sidebar-drag-ignore
+            data-sidebar-chat-tree-toggle
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleTree?.();
+            }}
+            className="size-4"
+          >
+            {treeExpanded ? (
+              <IconChevronDown className="size-3" aria-hidden="true" />
+            ) : (
+              <IconChevronRight className="size-3" aria-hidden="true" />
+            )}
+          </Button>
+        </span>
+      </span>
+    );
+  };
   // Title block shared by the flat and grouped row variants: single-line
   // title, or a two-line title + git branch subtitle when a branch is shown.
   const titleText = animateRunningState ? (
@@ -357,6 +516,15 @@ export function SidebarChatRow({
       testId="sidebar-flat-chat-project-icon"
     />
   );
+  // In the flat list the project glyph is the row's identity — except for a
+  // nested chat without children, which belongs to its parent's project by
+  // construction and hangs from the guide line instead.
+  const flatLeadingIdentity: ReactNode =
+    isChildChat && !hasChildChats ? null : (
+      <span aria-hidden="true" data-sidebar-flat-project-icon>
+        {flatProjectGlyph}
+      </span>
+    );
 
   const handleRowClick = (event: MouseEvent<HTMLButtonElement>) => {
     if (onRangeSelect && isRangeSelectModifier(event)) {
@@ -592,6 +760,7 @@ export function SidebarChatRow({
     return (
       <div
         className={cn("flex items-center group rounded-sm pr-0.5", className)}
+        style={treeIndentStyle}
       >
         <Input
           ref={inputRef}
@@ -679,6 +848,8 @@ export function SidebarChatRow({
               className,
             )}
             data-sidebar-chat-density={density}
+            data-sidebar-chat-tree-depth={isChildChat ? treeDepth : undefined}
+            style={treeIndentStyle}
           >
             {dragging && dragPreviewPosition && typeof document !== "undefined"
               ? createPortal(
@@ -697,32 +868,46 @@ export function SidebarChatRow({
                   document.body,
                 )
               : null}
-            {showAbsoluteLeadingSlot ? (
+            {treeRail}
+            {showAbsoluteLeadingSlot && hasChildChats ? (
+              renderTreeToggleSlot(
+                absoluteLeadingSlotClass,
+                leadingIdentity,
+                leadingSlotStyle,
+              )
+            ) : showAbsoluteLeadingSlot ? (
               <SidebarLeadingIcon
                 className={absoluteLeadingSlotClass}
+                style={leadingSlotStyle}
                 activeLabel={t("status.chatActive")}
                 unreadLabel={t("status.unreadMessages")}
                 testId={leadingIconTestId}
               >
-                {showLeadingIcon || isConductor
-                  ? (resolvedLeadingIcon ?? <SidebarChatMenuIcon />)
-                  : null}
+                {leadingIdentity}
               </SidebarLeadingIcon>
             ) : null}
             {hasFlatProjectColumn ? (
               <>
-                <SidebarLeadingIcon
-                  activeLabel={t("status.chatActive")}
-                  unreadLabel={t("status.unreadMessages")}
-                  className={cn(
-                    "rounded-sm text-muted-foreground/70",
-                    flatProjectIconSlotClass,
-                  )}
-                >
-                  <span aria-hidden="true" data-sidebar-flat-project-icon>
-                    {flatProjectGlyph}
-                  </span>
-                </SidebarLeadingIcon>
+                {hasChildChats ? (
+                  renderTreeToggleSlot(
+                    cn(
+                      "rounded-sm text-muted-foreground/70",
+                      flatProjectIconSlotClass,
+                    ),
+                    flatLeadingIdentity,
+                  )
+                ) : (
+                  <SidebarLeadingIcon
+                    activeLabel={t("status.chatActive")}
+                    unreadLabel={t("status.unreadMessages")}
+                    className={cn(
+                      "rounded-sm text-muted-foreground/70",
+                      flatProjectIconSlotClass,
+                    )}
+                  >
+                    {flatLeadingIdentity}
+                  </SidebarLeadingIcon>
+                )}
                 {rowButton}
               </>
             ) : (

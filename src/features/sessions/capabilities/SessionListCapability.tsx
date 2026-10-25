@@ -68,7 +68,13 @@ import {
   type SessionListDisplayOptions,
 } from "./sessionListDisplayOptions";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
-import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility";
+import { indexAgentChildren } from "@/features/conductor/agentTree";
+import {
+  hasParentLink,
+  isNestedExecutorSession,
+} from "@/features/conductor/sessionVisibility";
+import { childChatItems } from "@/features/sessions/lib/sidebarChatTree";
+import { expandChatTrees } from "@/features/sidebar/lib/sidebarChatTreeCollapse";
 
 const EXPANDED_PROJECTS_STORAGE_KEY = "flock:sidebar:expanded-projects";
 const SECTION_VISIBILITY_STORAGE_KEY = "flock:sidebar:section-visibility";
@@ -158,14 +164,20 @@ function validateExpandedProjects(value: unknown): Record<string, boolean> {
   return Object.fromEntries(entries);
 }
 
+/** The agents a chat started, as the rows nested under it; see `childChatItems`. */
+type ChildChatsOf = (session: ChatSession) => SidebarSessionItem[] | undefined;
+
 function toSessionListItem(
   session: ChatSession,
   sessionStateById: Record<string, SessionListActivity>,
   branchNameBySessionId: ReadonlyMap<string, string>,
+  childrenOf?: ChildChatsOf,
 ): SidebarSessionItem {
   const activity = sessionStateById[session.id];
   const branchName = branchNameBySessionId.get(session.id);
+  const children = childrenOf?.(session);
   return {
+    ...(children ? { children } : {}),
     id: session.id,
     clientSessionId: session.clientSessionId,
     title: session.title,
@@ -185,6 +197,7 @@ function getFlatSessionListItems(
   sessionStateById: Record<string, SessionListActivity>,
   placeholderSessionIds: ReadonlySet<string>,
   branchNameBySessionId: ReadonlyMap<string, string>,
+  childrenOf: ChildChatsOf,
 ): SidebarSessionItem[] {
   const sessions = visibleSessions
     .filter((session) => !session.archivedAt)
@@ -196,6 +209,7 @@ function getFlatSessionListItems(
         session,
         sessionStateById,
         branchNameBySessionId,
+        childrenOf,
       );
       return {
         ...item,
@@ -221,6 +235,7 @@ function getSessionListGroups(
   sessionStateById: Record<string, SessionListActivity>,
   placeholderSessionIds: ReadonlySet<string>,
   branchNameBySessionId: ReadonlyMap<string, string>,
+  childrenOf: ChildChatsOf,
 ): SessionListGroups {
   const byProject: Record<string, SidebarSessionItem[]> = {};
   const standalone: SidebarSessionItem[] = [];
@@ -231,6 +246,7 @@ function getSessionListGroups(
       session,
       sessionStateById,
       branchNameBySessionId,
+      childrenOf,
     );
     if (session.projectId && projectIds.has(session.projectId)) {
       byProject[session.projectId] ??= [];
@@ -427,18 +443,23 @@ export const SessionListCapability = memo(function SessionListCapability({
     () => new Set(conductorSessionIdList),
     [conductorSessionIdList],
   );
+  // Chats shown under the chat that started them. Read as a shallow id list
+  // so a status change inside the graph does not rebuild the visible list.
   const nestedExecutorIdList = useConductorGraphStore(
     useShallow((state) =>
       Object.values(state.nodesById)
-        .filter(
-          (node) => node.role === "orchestrator" || node.role === "worker",
-        )
+        .filter(hasParentLink)
         .map((node) => node.sessionId),
     ),
   );
   const nestedExecutorIds = useMemo(
     () => new Set(nestedExecutorIdList),
     [nestedExecutorIdList],
+  );
+  const nodesById = useConductorGraphStore((state) => state.nodesById);
+  const agentChildren = useMemo(
+    () => indexAgentChildren(nodesById),
+    [nodesById],
   );
   const activeWorkspaceBySession = useChatSessionStore(
     (s) => s.activeWorkspaceBySession,
@@ -524,6 +545,41 @@ export const SessionListCapability = memo(function SessionListCapability({
     activeWorkspaceBySession,
     enabled: false,
   });
+  const sessionsById = useMemo(() => {
+    const byId = new Map<string, ChatSession>();
+    const idByClientId = new Map<string, string>();
+    for (const session of sessions) {
+      byId.set(session.id, session);
+      if (session.clientSessionId) {
+        idByClientId.set(session.clientSessionId, session.id);
+      }
+    }
+    return { byId, idByClientId };
+  }, [sessions]);
+  // The agents a chat started, as the rows nested under it. A child's row is
+  // its chat when that chat is loaded, and its graph node when it is not —
+  // an agent is visible from the moment it is registered.
+  const childrenOf = useCallback<ChildChatsOf>(
+    (session) => {
+      const forest = agentChildren.forestUnder([
+        session.id,
+        session.clientSessionId,
+      ]);
+      if (forest.length === 0) return undefined;
+      const items = childChatItems(forest, (childId) => {
+        const child = sessionsById.byId.get(childId);
+        if (!child) return undefined;
+        if (child.archivedAt) return "archived";
+        return toSessionListItem(
+          child,
+          sessionStateById,
+          branchNameBySessionId,
+        );
+      });
+      return items.length > 0 ? items : undefined;
+    },
+    [agentChildren, branchNameBySessionId, sessionStateById, sessionsById],
+  );
   const selectedCount = selectedSessionIds.size;
   const clearSelection = () => {
     selectionAnchorRef.current = null;
@@ -612,10 +668,12 @@ export const SessionListCapability = memo(function SessionListCapability({
             sessionStateById,
             visibleSessions.placeholderSessionIds,
             branchNameBySessionId,
+            childrenOf,
           )
         : EMPTY_SESSION_LIST_GROUPS,
     [
       branchNameBySessionId,
+      childrenOf,
       groupChatsByProject,
       projectIds,
       sessionStateById,
@@ -630,9 +688,11 @@ export const SessionListCapability = memo(function SessionListCapability({
       sessionStateById,
       visibleSessions.placeholderSessionIds,
       branchNameBySessionId,
+      childrenOf,
     );
   }, [
     branchNameBySessionId,
+    childrenOf,
     groupChatsByProject,
     projectsById,
     sessionStateById,
@@ -736,6 +796,23 @@ export const SessionListCapability = memo(function SessionListCapability({
       return { ...prev, [activeProjectId]: true };
     });
   }, [activeProjectId, projectIds]);
+
+  // Opening an agent's chat unfolds the chats above it, once, at the moment
+  // of opening — a fold the operator makes afterwards is theirs to keep.
+  const unfoldedForActiveSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (unfoldedForActiveSessionRef.current === activeSessionId) return;
+    const ancestors = agentChildren.ancestorsOf(activeSessionId);
+    if (ancestors.length === 0) return;
+    unfoldedForActiveSessionRef.current = activeSessionId;
+    // A child registered before its parent was promoted names the parent by
+    // its pre-promotion id; the fold is keyed by the row's current id.
+    const { byId, idByClientId } = sessionsById;
+    expandChatTrees(
+      ancestors.map((id) => (byId.has(id) ? id : (idByClientId.get(id) ?? id))),
+    );
+  }, [activeSessionId, agentChildren, sessionsById]);
 
   useEffect(() => {
     try {
