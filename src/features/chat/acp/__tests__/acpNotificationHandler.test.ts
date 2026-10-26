@@ -624,6 +624,71 @@ describe("acpNotificationHandler", () => {
     ).toBe("assistant-2");
   });
 
+  it("keeps the output a running tool has reported so far on its request", async () => {
+    registerPreparedSession("acp-session", "goose", "/Users/test");
+    setActiveMessageId("acp-session", "assistant-1");
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-a",
+        title: "bash",
+        rawInput: { command: "python build.py" },
+      },
+    } as never);
+    const reported = (text: string) =>
+      ({
+        sessionId: "acp-session",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool-a",
+          status: "in_progress",
+          content: [{ type: "content", content: { type: "text", text } }],
+        },
+      }) as never;
+
+    await handleSessionNotification(reported("mat: 4000 materials\n"));
+    let [message] = useChatStore.getState().messagesBySession["acp-session"];
+    expect(message.content[0]).toMatchObject({
+      type: "toolRequest",
+      id: "tool-a",
+      status: "in_progress",
+      terminalOutput: "mat: 4000 materials\n",
+    });
+    // Each report is the whole output so far: it replaces, never appends.
+    await handleSessionNotification(
+      reported("mat: 4000 materials\nmat: 10000 materials\n"),
+    );
+    [message] = useChatStore.getState().messagesBySession["acp-session"];
+    expect(message.content[0]).toMatchObject({
+      terminalOutput: "mat: 4000 materials\nmat: 10000 materials\n",
+    });
+    expect(message.content.map((block) => block.type)).toEqual(["toolRequest"]);
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-a",
+        status: "completed",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "mat: 30000 materials\ndone\n" },
+          },
+        ],
+      },
+    } as never);
+    [message] = useChatStore.getState().messagesBySession["acp-session"];
+    expect(message.content[0]).toMatchObject({ status: "completed" });
+    expect(message.content[1]).toMatchObject({
+      type: "toolResponse",
+      id: "tool-a",
+      result: "mat: 30000 materials\ndone\n",
+      isError: false,
+    });
+  });
+
   it("preserves structured tool output when ACP provides rawOutput", async () => {
     registerPreparedSession(
       "acp-session",

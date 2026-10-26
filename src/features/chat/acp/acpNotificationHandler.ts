@@ -109,6 +109,7 @@ import {
   taskBindingId,
 } from "@/features/chat/lib/executionOwnership";
 import { handleSessionEvent } from "./acpSessionEvents";
+import { setStreamedToolOutputOnMessage } from "../lib/terminalOutput";
 import {
   appendTerminalOutput,
   getTerminalOutputData,
@@ -879,6 +880,15 @@ async function handleReplay(
       const msg = existingMsg ?? replayMsg ?? trackedMsg;
       if (msg) {
         msg.content = appendTerminalOutput(msg, update).content;
+        if (update.status !== "completed" && update.status !== "failed") {
+          const reported = extractToolResultText(update);
+          if (reported)
+            msg.content = setStreamedToolOutputOnMessage(
+              msg,
+              update.toolCallId,
+              reported,
+            ).content;
+        }
         if (created !== undefined && !existingMsg && msg === replayMsg) {
           msg.created = created;
         }
@@ -1131,6 +1141,16 @@ async function handleLive(
         store.updateMessage(sessionId, messageId, (msg) =>
           appendTerminalOutput(msg, update),
         );
+      // What the tool has printed so far, on an update that is not its
+      // completion: the whole output each time, kept on the request. Without
+      // it a long command showed only its seconds until it ended.
+      if (update.status !== "completed" && update.status !== "failed") {
+        const reported = extractToolResultText(update);
+        if (reported)
+          store.updateMessage(sessionId, messageId, (msg) =>
+            setStreamedToolOutputOnMessage(msg, update.toolCallId, reported),
+          );
+      }
 
       if (
         update.title ||

@@ -24,6 +24,7 @@ import {
 import type { ToolCallLocation, ToolCallStatus } from "@/shared/types/messages";
 import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
 import { getSubagentToolCallInfo } from "@/features/chat/lib/subagentToolCalls";
+import { lastOutputLine } from "@/features/chat/lib/toolOutputTail";
 import { loadHistoryToolResult } from "../lib/historyToolResult";
 import type { ToolResponseContent } from "@/shared/types/messages";
 
@@ -585,6 +586,12 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
   const hasStructuredArgs = Object.keys(args).length > 0;
   const hasOutput = Boolean(result);
   const hasStructuredContent = !isError && structuredContent !== undefined;
+  // A running tool's last output line in the header: what it is doing, not
+  // only for how long. The body still holds the whole output.
+  const liveTail =
+    status === "in_progress" && hasOutput && !headerTitleParts
+      ? lastOutputLine(result)
+      : null;
 
   // De-dupe + title-hoisting matrix: when both a text result and structured
   // content are present, decide whether the text is a redundant stringified
@@ -636,6 +643,16 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
         <span>{headerTitleParts.fileLabel}</span>
       )}
       <span>{headerTitleParts.suffix}</span>
+    </>
+  ) : liveTail ? (
+    <>
+      <span>{displayName}</span>
+      <span aria-hidden="true" className="text-muted-foreground">
+        {" · "}
+      </span>
+      <span data-tool-title-live className="truncate text-muted-foreground">
+        {liveTail}
+      </span>
     </>
   ) : canHoistResultIntoHeader ? (
     <>
