@@ -181,3 +181,86 @@ describe("ordinary chat background work", () => {
     );
   });
 });
+
+describe("a turn the host runs without a local prompt", () => {
+  const orphan = "reloaded-chat";
+  const orphanMeta = {
+    distill: {
+      messageId: "user-before-reload",
+      assistantMessageId: "reply-after-reload",
+      runId: "host-run",
+    },
+  };
+  const sendOrphan = (update: Record<string, unknown>) =>
+    handleSessionNotification({ sessionId: orphan, update } as never);
+
+  beforeEach(() => {
+    clearMessageTracking();
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      loadingSessionIds: new Set(),
+    });
+  });
+
+  it("adopts the running turn as running and settles it when the host says so", async () => {
+    await sendOrphan({
+      sessionUpdate: "tool_call",
+      toolCallId: "scan",
+      title: "Scan the assets",
+      status: "in_progress",
+      _meta: orphanMeta,
+    });
+    let runtime = useChatStore.getState().getSessionRuntime(orphan);
+    expect(runtime.chatState).toBe("streaming");
+    expect(runtime.activeRunId).toBe("host-run");
+    expect(getSessionPromptOwner(orphan)).not.toBeNull();
+    await sendOrphan({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Moving meshes." },
+      _meta: orphanMeta,
+    });
+    await sendOrphan({
+      sessionUpdate: "session_info_update",
+      _meta: { activeRunId: null },
+    });
+    runtime = useChatStore.getState().getSessionRuntime(orphan);
+    expect(runtime.chatState).toBe("idle");
+    expect(runtime.activeRunId).toBeNull();
+    expect(getSessionPromptOwner(orphan)).toBeNull();
+    const messages = useChatStore.getState().messagesBySession[orphan];
+    const reply = messages.at(-1);
+    expect(reply?.content).toContainEqual({
+      type: "text",
+      text: "Moving meshes.",
+    });
+    expect(reply?.metadata?.completionStatus).toBe("completed");
+  });
+
+  it("leaves a turn alone while a prompt of this renderer owns the chat", async () => {
+    const owner = claimSessionPrompt(orphan);
+    await sendOrphan({
+      sessionUpdate: "tool_call",
+      toolCallId: "scan",
+      title: "Scan the assets",
+      status: "in_progress",
+      _meta: orphanMeta,
+    });
+    expect(useChatStore.getState().getSessionRuntime(orphan).chatState).toBe(
+      "idle",
+    );
+    expect(ownsSessionPrompt(orphan, owner)).toBe(true);
+    releaseSessionPrompt(orphan, owner);
+  });
+
+  it("adopts a run the host names when the chat is loaded", async () => {
+    await sendOrphan({
+      sessionUpdate: "session_info_update",
+      _meta: { activeRunId: "host-run" },
+    });
+    const runtime = useChatStore.getState().getSessionRuntime(orphan);
+    expect(runtime.chatState).toBe("streaming");
+    expect(runtime.activeRunId).toBe("host-run");
+    expect(getSessionPromptOwner(orphan)).not.toBeNull();
+  });
+});

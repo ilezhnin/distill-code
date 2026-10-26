@@ -12,6 +12,13 @@ import {
   taskBindingId,
 } from "../lib/executionOwnership";
 import { reconcileOwnedTaskSession } from "../lib/ownedTaskDispatch";
+import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
+import { isSessionRunning } from "../lib/sessionActivity";
+import {
+  adoptSessionRun,
+  adoptedSessionRun,
+  forgetAdoptedSessionRun,
+} from "../lib/sessionPromptOwnership";
 
 type SessionInfoUpdate = SessionUpdate & {
   sessionUpdate: "session_info_update";
@@ -55,10 +62,34 @@ export function handleSessionInfoUpdate(
       flushBufferedStreamingUpdatesForSession(sessionId, {
         flushSubtitle: true,
       });
+      if (adoptedSessionRun(sessionId)) {
+        // The host settled a turn this renderer only adopted (see the
+        // notification handler): the reply is complete and the chat is idle
+        // again, which no local prompt is left to say.
+        const messageId =
+          chatStore.getSessionRuntime(sessionId).streamingMessageId;
+        if (messageId)
+          chatStore.updateMessage(
+            sessionId,
+            messageId,
+            completeAssistantMessage,
+          );
+        forgetAdoptedSessionRun(sessionId);
+        chatStore.setChatState(sessionId, "idle");
+      }
       completeReplayAssistantMessage(sessionId);
       chatStore.settleActiveRun(sessionId);
     } else if (activeRunId !== null) {
       chatStore.setActiveRunId(sessionId, activeRunId);
+      if (
+        !ownedTask &&
+        adoptSessionRun(sessionId, activeRunId) &&
+        !isSessionRunning(chatStore.getSessionRuntime(sessionId).chatState)
+      ) {
+        // The host names a run of this chat that no prompt here owns (the
+        // chat was loaded while it ran): running, with Stop, until settled.
+        chatStore.setChatState(sessionId, "streaming");
+      }
     }
   }
   if (ownedTask) void reconcileOwnedTaskSession(sessionId);

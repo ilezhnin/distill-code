@@ -1229,10 +1229,35 @@ impl Inner {
     /// connection, so the same id belongs to a different request on the next
     /// socket and the answer would resolve that one. A renderer that dropped
     /// the socket has given up on the answer, so it is dropped with it.
-    fn reply_on(reply_to: &ReplyTo, method: &str, reply: String) {
-        if reply_to.send(reply).is_err() {
+    fn reply_on(reply_to: &ReplyTo, method: &str, reply: String) -> bool {
+        let delivered = reply_to.send(reply).is_ok();
+        if !delivered {
             log::debug!("[agent-host] dropped the answer to {method}: its socket is gone");
         }
+        delivered
+    }
+
+    /// The chat a request runs a turn of, when its answer is the one thing
+    /// that tells the renderer the turn is over.
+    fn turn_request_session(method: &str, params: &Value) -> Option<String> {
+        (method == "session/prompt")
+            .then(|| protocol::session_id(params))
+            .flatten()
+    }
+
+    /// The renderer that sent a turn is gone (it reloaded, or another took
+    /// its place) and the answer that would have ended the turn for it was
+    /// dropped with its socket. Whoever is connected now still shows the chat
+    /// as running (it adopted the host's updates), so it is told the turn is
+    /// over the way a steer's own background turn is: `activeRunId: null`.
+    async fn settle_orphaned_turn(&self, session_id: &str) {
+        if self.active_run_id(session_id).await.is_some() {
+            return;
+        }
+        log::info!(
+            "[agent-host] turn of {session_id} ended after its renderer left; settling it for the current one"
+        );
+        self.notify_frontend("session/update", Self::run_settled_update(session_id));
     }
 
     async fn handle_frontend_line(self: Arc<Self>, line: String, reply_to: ReplyTo) {
@@ -1242,12 +1267,17 @@ impl Inner {
         };
         match message {
             Message::Request { id, method, params } => {
+                let turn_of = Self::turn_request_session(&method, &params);
                 let result = self.handle_request(&method, params).await;
                 let reply = match result {
                     Ok(result) => protocol::response(id, result),
                     Err(error) => protocol::error_response(id, error),
                 };
-                Self::reply_on(&reply_to, &method, reply);
+                if !Self::reply_on(&reply_to, &method, reply) {
+                    if let Some(session_id) = turn_of {
+                        self.settle_orphaned_turn(&session_id).await;
+                    }
+                }
             }
             Message::Notification { method, params } => {
                 self.handle_client_notification(&method, params).await;
@@ -4014,6 +4044,26 @@ impl Inner {
         }
         if let Some(history) = history {
             response["_meta"]["distillHistory"] = json!(history);
+        }
+        // A chat loaded while its turn runs (the renderer reloaded, or another
+        // frontend opened it): name the run, so the renderer shows the work
+        // and offers Stop instead of an idle chat that queues its sends. The
+        // renderer applies it after its replay, the way it applies every
+        // update that arrives during a load.
+        if !owned {
+            if let Some(run_id) = self.active_run_id(&session_id).await {
+                response["_meta"]["activeRunId"] = json!(run_id);
+                self.notify_frontend(
+                    "session/update",
+                    json!({
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "session_info_update",
+                            "_meta": { "activeRunId": run_id }
+                        }
+                    }),
+                );
+            }
         }
         let response = Self::with_substitutions(response, &substitutions);
         Ok(response)
@@ -9828,6 +9878,22 @@ mod tests {
         partial = rejected;
         partial["data"]["errorKind"] = json!("rate_limit");
         assert!(Inner::rejected_quota_wait(&partial, None).is_none());
+    }
+
+    #[test]
+    fn only_an_undelivered_prompt_answer_settles_the_turn_it_ran() {
+        let params = json!({ "sessionId": "s1", "prompt": [] });
+        assert_eq!(
+            Inner::turn_request_session("session/prompt", &params).as_deref(),
+            Some("s1")
+        );
+        // Other answers end no turn; a prompt with no session names none.
+        assert_eq!(Inner::turn_request_session("session/steer", &params), None);
+        assert_eq!(Inner::turn_request_session("session/cancel", &params), None);
+        assert_eq!(
+            Inner::turn_request_session("session/prompt", &json!({ "prompt": [] })),
+            None
+        );
     }
 
     #[test]

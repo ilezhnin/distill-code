@@ -1,8 +1,12 @@
 import {
+  adoptSessionRun,
   claimSessionPrompt,
+  clearAdoptedSessionRuns,
+  getSessionPromptOwner,
   ownsSessionPrompt,
   releaseSessionPrompt,
 } from "../lib/sessionPromptOwnership";
+import { isSessionRunning } from "../lib/sessionActivity";
 import {
   clearWorkspaceToolCallObservations,
   observeWorkspaceToolCall,
@@ -102,6 +106,7 @@ import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion"
 import {
   observeExecutionOwner,
   isBenchmarkExecutionSession,
+  taskBindingId,
 } from "@/features/chat/lib/executionOwnership";
 import { handleSessionEvent } from "./acpSessionEvents";
 import {
@@ -427,6 +432,17 @@ function forgetAutonomousOwner(sessionId: string): void {
   autonomousOwners.delete(sessionId);
 }
 
+/** The updates that are a turn's own work, not session bookkeeping. */
+function isAdoptableTurnUpdate(update: SessionUpdate): boolean {
+  return (
+    update.sessionUpdate === "agent_message_chunk" ||
+    update.sessionUpdate === "agent_thought_chunk" ||
+    update.sessionUpdate === "tool_call" ||
+    update.sessionUpdate === "tool_call_update" ||
+    update.sessionUpdate === "plan"
+  );
+}
+
 export async function handleSessionNotification(
   notification: SessionNotification,
 ): Promise<void> {
@@ -475,6 +491,10 @@ export async function handleSessionNotification(
       ? update._meta.distill
       : null;
     const autonomous = hostMeta?.autonomous === true;
+    const hostRunId =
+      hostMeta !== null && typeof hostMeta.runId === "string"
+        ? hostMeta.runId
+        : null;
     if (autonomous && typeof hostMeta.runId === "string") {
       const previous = autonomousOwners.get(sessionId);
       if (previous?.runId !== hostMeta.runId) {
@@ -505,6 +525,23 @@ export async function handleSessionNotification(
       }
       useChatStore.getState().setActiveRunId(sessionId, hostMeta.runId);
       useChatStore.getState().setChatState(sessionId, "streaming");
+    } else if (
+      hostRunId !== null &&
+      isAdoptableTurnUpdate(update) &&
+      taskBindingId(sessionId) === null &&
+      getSessionPromptOwner(sessionId) === null
+    ) {
+      // A turn the host is running that no prompt of this renderer owns: the
+      // prompt went out before a reload, or from another frontend. The host's
+      // own updates say the work is on, so the chat shows it as running and
+      // offers Stop instead of looking idle while its sends queue up. The
+      // host's settlement (`activeRunId: null`) ends the adoption.
+      adoptSessionRun(sessionId, hostRunId);
+      const store = useChatStore.getState();
+      store.setActiveRunId(sessionId, hostRunId);
+      if (!isSessionRunning(store.getSessionRuntime(sessionId).chatState)) {
+        store.setChatState(sessionId, "streaming");
+      }
     }
     await handleLive(sessionId, update);
     if (autonomous && hostMeta.autonomousFinished === true) {
@@ -1557,6 +1594,7 @@ function adoptHostTurnMessageId(
 export function clearMessageTracking(): void {
   for (const sessionId of autonomousOwners.keys())
     forgetAutonomousOwner(sessionId);
+  clearAdoptedSessionRuns();
   loadingLiveUpdates.clear();
   historyBoundaries.clear();
   replayPerf.clear();
