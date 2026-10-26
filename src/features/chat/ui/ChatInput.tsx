@@ -53,6 +53,10 @@ import {
 import type { ChatAttachmentDraft, MessageChip } from "@/shared/types/messages";
 import { useTextareaAutosize } from "@/shared/hooks/useTextareaAutosize";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import {
+  QueuedAccountQuotaWait,
+  useAccountQuotaWaitUntil,
+} from "./QueuedAccountQuotaWait";
 
 const DOCKED_TEXTAREA_MIN_HEIGHT_PX = 140;
 const DOCKED_TEXTAREA_MAX_HEIGHT_PX = 300;
@@ -1284,6 +1288,9 @@ export function ChatInput({
   const providerDisplayName =
     providers.find((provider) => provider.id === selectedProvider)?.label ??
     formatProviderLabel(selectedProvider);
+  const accountQuotaWaitUntil = useAccountQuotaWaitUntil(
+    agentModelPicker?.accountSessionId,
+  );
   const agentDisplayName = getChatInputAgentLabel(
     activePersona?.displayName,
     providerDisplayName,
@@ -1475,7 +1482,8 @@ export function ChatInput({
                     }
                     className={cn(
                       "overflow-hidden bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)]",
-                      queuedMessagePills.length > 1
+                      queuedMessagePills.length > 1 ||
+                        accountQuotaWaitUntil != null
                         ? "rounded-xs"
                         : "rounded-full",
                     )}
@@ -1583,6 +1591,13 @@ export function ChatInput({
                           ),
                         )}
                       </AnimatePresence>
+                      {accountQuotaWaitUntil != null ? (
+                        <QueuedAccountQuotaWait
+                          sessionId={agentModelPicker?.accountSessionId}
+                          until={accountQuotaWaitUntil}
+                          providerLabel={providerDisplayName}
+                        />
+                      ) : null}
                       {isStreaming && !canSteerMessage ? (
                         // Steering into a live turn is an extension only some
                         // agents implement; on the rest a message can only

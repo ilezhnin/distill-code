@@ -446,7 +446,12 @@
     "createWorktree": "Save",
     "preparingWorkspaceTitle": "Preparing your project workspace.",
     "preparingWorkspaceBody": "Your messages will send when it’s ready.",
-    "noSteeringHere": "This agent picks the message up when its current turn ends — it cannot be interrupted mid-turn."
+    "noSteeringHere": "This agent picks the message up when its current turn ends — it cannot be interrupted mid-turn.",
+    "quotaWaitRecheck": "{{subject}} is out of quota. Checking again at {{time}} ({{countdown}}).",
+    "quotaWaitReset": "{{subject}} is out of quota until the reset at {{time}} ({{countdown}}).",
+    "quotaWaitSubjectAccount": "{{provider}} account {{account}}",
+    "quotaWaitCountdown": "in {{duration}}",
+    "quotaWaitCountdownNow": "any moment now"
   },
   "globalPill": {
     "ariaLabel": "Quick compose",

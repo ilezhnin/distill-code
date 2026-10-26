@@ -651,6 +651,7 @@ describe("account surfaces", () => {
           startedAt: now,
           retryAt: now + 60_000,
           message: "Waiting",
+          resetAt: null,
           resetTokensAvailable: false,
         },
       },

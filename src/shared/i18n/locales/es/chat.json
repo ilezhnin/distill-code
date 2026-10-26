@@ -446,7 +446,12 @@
     "createWorktree": "Guardar",
     "preparingWorkspaceTitle": "Preparando el espacio de trabajo del proyecto.",
     "preparingWorkspaceBody": "Tu mensaje se enviará cuando esté listo.",
-    "noSteeringHere": "Este agente recogerá el mensaje cuando termine su turno actual: no se le puede interrumpir a mitad de turno."
+    "noSteeringHere": "Este agente recogerá el mensaje cuando termine su turno actual: no se le puede interrumpir a mitad de turno.",
+    "quotaWaitRecheck": "{{subject}} ha agotado su cuota. Se volverá a comprobar a las {{time}} ({{countdown}}).",
+    "quotaWaitReset": "{{subject}} ha agotado su cuota hasta el reinicio a las {{time}} ({{countdown}}).",
+    "quotaWaitSubjectAccount": "La cuenta {{account}} de {{provider}}",
+    "quotaWaitCountdown": "en {{duration}}",
+    "quotaWaitCountdownNow": "en cualquier momento"
   },
   "globalPill": {
     "ariaLabel": "Redacción rápida",

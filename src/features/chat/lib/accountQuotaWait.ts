@@ -8,6 +8,8 @@ export interface AccountQuotaWait {
   message: string;
   accountId?: string;
   providerId?: string;
+  /** The provider's reset time when the host named one; null for a blind re-check. */
+  resetAt: number | null;
   resetTokensAvailable: boolean;
 }
 
@@ -134,6 +136,7 @@ export function deferForAccountQuota(
     message: "Waiting for an account quota reset. Your message remains queued.",
     accountId: data.accountId,
     providerId: session?.executionTarget?.harnessId,
+    resetAt: reset > now ? reset : null,
     resetTokensAvailable: data.resetTokensAvailable === true,
   };
   const existing = timers.get(sessionId);
