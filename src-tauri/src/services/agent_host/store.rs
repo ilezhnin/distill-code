@@ -418,6 +418,12 @@ const KV_HOST: &str = "host";
 /// compaction rules change enough to want another pass.
 const HISTORY_COMPACTION_KEY: &str = "history_compaction";
 const HISTORY_COMPACTION_VERSION: u64 = 1;
+/// A VACUUM rewrites the whole file and returns only the freed pages; it
+/// is worth that for a pass that freed at least this much, or a tenth of
+/// what it read once that tenth is itself a real amount: a small file is
+/// cheap to keep as it is.
+const VACUUM_WORTH_BYTES: usize = 256 * 1024 * 1024;
+const VACUUM_SHARE_FLOOR_BYTES: usize = 64 * 1024 * 1024;
 
 /// What a history compaction read and what it left.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -435,6 +441,20 @@ impl CompactionStats {
         self.rows_after += other.rows_after;
         self.bytes_before += other.bytes_before;
         self.bytes_after += other.bytes_after;
+    }
+
+    /// What the pass freed.
+    pub fn freed_bytes(&self) -> usize {
+        self.bytes_before.saturating_sub(self.bytes_after)
+    }
+
+    /// Whether rewriting the file pays for itself: a VACUUM copies the whole
+    /// database (6.7 GB took four minutes on 2026-10-25) to give back the
+    /// freed pages, so only a pass that freed a good share of it asks for one.
+    pub fn vacuum_worthwhile(&self) -> bool {
+        let freed = self.freed_bytes();
+        freed >= VACUUM_WORTH_BYTES
+            || (freed >= VACUUM_SHARE_FLOOR_BYTES && freed.saturating_mul(10) >= self.bytes_before)
     }
 }
 
@@ -1706,7 +1726,7 @@ impl SessionStore {
                 serde_json::json!({"version": HISTORY_COMPACTION_VERSION, "afterRowid": rowid - 1, "complete": false})
             }
             None => {
-                serde_json::json!({"version": HISTORY_COMPACTION_VERSION, "complete": true, "vacuumPending": true})
+                serde_json::json!({"version": HISTORY_COMPACTION_VERSION, "complete": true, "vacuumPending": total.vacuum_worthwhile()})
             }
         };
         self.kv_set(KV_HOST, HISTORY_COMPACTION_KEY, &state).await?;
@@ -1726,9 +1746,28 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Whether a completed compaction pass left a VACUUM pending.
+    pub async fn vacuum_pending(&self) -> Result<bool, String> {
+        Ok(self
+            .kv_get(KV_HOST, HISTORY_COMPACTION_KEY)
+            .await?
+            .is_some_and(|state| state["vacuumPending"] == true))
+    }
+
+    /// Fold the write-ahead log into the file and truncate it: after a
+    /// VACUUM the log holds a copy of the whole database until this runs.
+    /// Answers SQLite's `(busy, log pages, checkpointed pages)`.
+    pub async fn truncate_wal(&self) -> Result<(i64, i64, i64), String> {
+        sqlx::query_as::<_, (i64, i64, i64)>("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to checkpoint the history database", error))
+    }
+
     /// Run the VACUUM a completed compaction pass left pending, which rewrites
-    /// the file without the freed pages: for the moment the database is
-    /// opened and nothing else reads it. Says whether it ran.
+    /// the file without the freed pages. It holds the write lock for as long
+    /// as the copy takes, so the host runs it in the background once the
+    /// window is up, never on the start path. Says whether it ran.
     pub async fn vacuum_if_pending(&self) -> Result<bool, String> {
         let Some(mut state) = self.kv_get(KV_HOST, HISTORY_COMPACTION_KEY).await? else {
             return Ok(false);
@@ -2422,8 +2461,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(state["complete"], json!(true));
-        assert!(store.vacuum_if_pending().await.unwrap());
+        // Two rows of a test database are not worth rewriting the file.
+        assert_eq!(state["vacuumPending"], json!(false));
+        assert!(!store.vacuum_pending().await.unwrap());
         assert!(!store.vacuum_if_pending().await.unwrap());
+        // The checkpoint answers even with nothing to fold back.
+        let (busy, _, _) = store.truncate_wal().await.unwrap();
+        assert_eq!(busy, 0);
 
         // A complete pass is not repeated.
         let mut seen = Vec::new();
@@ -4341,5 +4385,24 @@ mod tests {
         assert_eq!(after.last_message_at, before.last_message_at);
         assert_eq!(after.message_count, before.message_count);
         dir.close().await;
+    }
+
+    #[test]
+    fn a_vacuum_is_worth_only_a_pass_that_freed_a_good_share() {
+        let stats = |before: usize, after: usize| CompactionStats {
+            rows_before: 0,
+            rows_after: 0,
+            bytes_before: before,
+            bytes_after: after,
+        };
+        // 26 MB of 5.7 GB, the 2026-10-25 pass: a four-minute rewrite for nothing.
+        assert!(!stats(5_693_000_000, 5_667_000_000).vacuum_worthwhile());
+        // A tenth of the file, or a quarter gigabyte, pays for the rewrite.
+        assert!(stats(1_000_000_000, 900_000_000).vacuum_worthwhile());
+        assert!(stats(10_000_000_000, 9_700_000_000).vacuum_worthwhile());
+        assert!(!stats(0, 0).vacuum_worthwhile());
+        assert!(!stats(100, 200).vacuum_worthwhile());
+        // Half of a small file is still not worth a rewrite.
+        assert!(!stats(100_000_000, 50_000_000).vacuum_worthwhile());
     }
 }

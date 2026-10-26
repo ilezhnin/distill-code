@@ -26,6 +26,15 @@ pub async fn show_completion_notification(
     show_toast(app, ToastClick::for_session(&session_id), body, sound)
 }
 
+/// A toast about the app's own housekeeping (a long database rewrite, its
+/// end): the one place a wait the host imposes gets named while the window
+/// shows nothing of it. A click only brings the window forward.
+pub(crate) fn show_maintenance_notification(app: AppHandle, body: String) {
+    if let Err(error) = show_toast(app, ToastClick::FocusWindow, body, None) {
+        log::warn!("maintenance toast was not shown: {error}");
+    }
+}
+
 /// What a click on a completion toast does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ToastClick {
