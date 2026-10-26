@@ -71,6 +71,25 @@ fn account_quota_id<'a>(
     Ok(account_id.filter(|id| provider_accounts::is_cli_login_account(harness, id)))
 }
 
+/// The account a chat's allowance is checked against: the one it names, or
+/// for an ordinary chat of a CLI sign-in (such a chat stores no account) the
+/// sign-in itself. `true` marks the sign-in supplied here: it is asked only
+/// whether its allowance is spent, never written onto the chat and never
+/// signed in from here (the bridge's auth flow keeps that).
+fn quota_identity(
+    harness: &str,
+    account_id: Option<&str>,
+) -> Result<Option<(String, bool)>, Value> {
+    if let Some(id) = account_quota_id(harness, account_id)? {
+        return Ok(Some((id.to_string(), false)));
+    }
+    Ok(account_id
+        .is_none()
+        .then(|| provider_accounts::cli_login_account_id(harness))
+        .flatten()
+        .map(|id| (id, true)))
+}
+
 /// The prompt of an owned turn: the task text first, behind a fixed marker, so
 /// a task that starts with `/plan` or `$skill` is never read as a native slash
 /// command or skill mention; then the images.
@@ -5641,10 +5660,12 @@ impl Inner {
         record: &SessionRecord,
         credits: bool,
     ) -> Result<(), Value> {
-        let Some(account_id) = account_quota_id(&record.harness, record.account_id.as_deref())?
+        let Some((account_id, identity_only)) =
+            quota_identity(&record.harness, record.account_id.as_deref())?
         else {
             return Ok(());
         };
+        let account_id = account_id.as_str();
         let owned = self
             .store
             .execution_owner(&record.id)
@@ -5684,8 +5705,15 @@ impl Inner {
                     &unavailable,
                 )
                 .await
-            }
-            .map_err(protocol::internal)?;
+            };
+            let selection = match selection {
+                Ok(selection) => selection,
+                // A sign-in that is missing or unreadable is the bridge's to
+                // report; the chat it did not name is held back only by an
+                // allowance known to be spent.
+                Err(_) if identity_only => return Ok(()),
+                Err(error) => return Err(protocol::internal(error)),
+            };
             match selection {
                 crate::services::provider_account_status::AccountSelection::Ready {
                     account_id: selected,
@@ -5959,9 +5987,13 @@ impl Inner {
                 .cloned()
                 .unwrap_or_default();
             data.insert("dispatchStarted".into(), json!(dispatch_started));
-            data.insert("accountId".into(), json!(record.account_id));
+            let quota_account = quota_identity(&record.harness, record.account_id.as_deref())
+                .ok()
+                .flatten()
+                .map(|(account_id, _)| account_id);
+            data.insert("accountId".into(), json!(quota_account));
             error["data"] = Value::Object(data);
-            if let Some(account_id) = &record.account_id {
+            if let Some(account_id) = &quota_account {
                 crate::services::provider_account_status::record_quota_error(
                     &self.app, account_id, error,
                 )
@@ -6093,6 +6125,37 @@ impl Inner {
         result
     }
 
+    /// The failure a Kimi session recorded for the turn the host sent at
+    /// `sent_at_ms`, if it recorded one (see `kimi::turn_outcome`). The CLI
+    /// writes the record as the turn ends, a moment before it answers the
+    /// prompt, so a record that does not show the turn yet is read again
+    /// shortly; one that shows it ended cleanly settles the question at once.
+    async fn kimi_turn_failure(
+        &self,
+        bridge_session_id: &str,
+        sent_at_ms: i64,
+    ) -> Option<super::kimi::TurnFailure> {
+        let env = self.spawn_env().await;
+        let home = super::kimi::home(&env.shell_env)?;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+            let (home, session_id) = (home.clone(), bridge_session_id.to_string());
+            let outcome = tokio::task::spawn_blocking(move || {
+                super::kimi::turn_outcome(&home, &session_id, sent_at_ms)
+            })
+            .await
+            .ok()?;
+            match outcome {
+                super::kimi::TurnOutcome::Failed(failure) => return Some(failure),
+                super::kimi::TurnOutcome::Ended => return None,
+                super::kimi::TurnOutcome::Unknown => continue,
+            }
+        }
+        None
+    }
+
     /// Register a turn on an idle session and answer with the bridge session
     /// its prompt must go to, both read under one lock. `Err` names the run
     /// already going, which a steered prompt queues behind and an ordinary one
@@ -6193,7 +6256,7 @@ impl Inner {
         if meta.as_object().is_some_and(|meta| !meta.is_empty()) {
             request["_meta"] = meta;
         }
-        let (run_id, receipt_start) = {
+        let (run_id, receipt_start, kimi_record) = {
             let sessions = self.sessions.lock().await;
             let runtime = sessions
                 .get(session_id)
@@ -6213,7 +6276,11 @@ impl Inner {
                 started_at: now_iso(),
                 selection: ReportedSelection::read(&runtime.snapshot),
             });
-            (run.run_id.clone(), receipt)
+            // Kimi answers a failed turn with a plain `end_turn`; an ordinary
+            // chat reads its session record afterwards (`kimi_turn_failure`).
+            // An owned run has its record in the sandbox, out of reach.
+            let kimi_record = runtime.harness == "kimi-acp" && runtime.execution_profile.is_none();
+            (run.run_id.clone(), receipt, kimi_record)
         };
         let mut prompt_admission = task_admission;
         if let Some(start) = &receipt_start {
@@ -6243,6 +6310,7 @@ impl Inner {
                 return Err(invalid_params("This executor decision already claimed a provider dispatch; inspect its recorded run before retrying"));
             }
         }
+        let sent_at_ms = chrono::Utc::now().timestamp_millis();
         let raw_result = match prompt_admission {
             Some(admission) => {
                 bridge
@@ -6278,7 +6346,7 @@ impl Inner {
                 .unwrap_or_else(|| "benchmark".into());
             self.store.append_events(session_id,&[json!({"sessionId":session_id,"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"executionOwner":{"kind":purpose,"id":owner.owner_id},"benchmarkRawResult":raw}}})]).await.map_err(protocol::internal)?;
         }
-        let result = Self::prompt_response(raw_result);
+        let mut result = Self::prompt_response(raw_result);
         // The bridge writes every update of the turn before it answers the
         // prompt, but the two do not travel together: its reader hands the
         // answer straight to this request, while the updates wait in the
@@ -6295,6 +6363,24 @@ impl Inner {
                 error_text(&error)
             );
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        if kimi_record
+            && result
+                .as_ref()
+                .is_ok_and(|response| response["stopReason"].as_str() == Some("end_turn"))
+        {
+            if let Some(failure) = self.kimi_turn_failure(bridge_session_id, sent_at_ms).await {
+                log::warn!(
+                    "[agent-host] kimi-acp turn of {session_id} failed out of band ({}): {}",
+                    if failure.is_quota() {
+                        "quota"
+                    } else {
+                        "provider"
+                    },
+                    failure.message
+                );
+                result = Err(failure.prompt_error());
+            }
         }
         if let Some(start) = &receipt_start {
             let (selection, changes, changes_truncated) = {
@@ -11144,6 +11230,34 @@ mod tests {
         assert_eq!(
             account_quota_id("codex-acp", Some("saved")).unwrap(),
             Some("saved")
+        );
+    }
+
+    #[test]
+    fn an_ordinary_chat_of_a_cli_sign_in_checks_the_sign_ins_allowance() {
+        for provider in ["kimi-acp", "grok-acp"] {
+            let identity = provider_accounts::cli_login_account_id(provider).unwrap();
+            // The chat stores no account: the sign-in is asked, and only asked.
+            assert_eq!(
+                quota_identity(provider, None).unwrap(),
+                Some((identity.clone(), true))
+            );
+            // A benchmark lease names it outright.
+            assert_eq!(
+                quota_identity(provider, Some(&identity)).unwrap(),
+                Some((identity, false))
+            );
+            // An account of some other provider is nobody's allowance here.
+            assert_eq!(
+                quota_identity(provider, Some("cli-login-other")).unwrap(),
+                None
+            );
+        }
+        // Saved-account providers keep their own rule: a chat has to name one.
+        assert!(quota_identity("codex-acp", None).is_err());
+        assert_eq!(
+            quota_identity("claude-acp", Some("saved")).unwrap(),
+            Some(("saved".into(), false))
         );
     }
 
