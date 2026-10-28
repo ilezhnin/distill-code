@@ -67,6 +67,21 @@ it("updates a live clock without rendering the pool's settled cards each second"
   expect(repetitions).toHaveBeenCalledTimes(2);
 });
 
+it("labels a stopped panel and freezes its time beside an advancing test", () => {
+  const stopped: TaskCell = {
+    ...cell(1),
+    dots: ["stopped"],
+    verdict: "queued",
+    status: { kind: "unscored", outcome: "pending_review", durationMs: 2_000 },
+  };
+  render(<TaskGrid cells={[cell(0, true), stopped]} onOpen={vi.fn()} />);
+  expect(screen.getByText("Awaiting review")).toBeInTheDocument();
+  expect(screen.getByText("2 s")).toBeInTheDocument();
+  act(() => vi.advanceTimersByTime(1_000));
+  expect(screen.getByText("6 s")).toBeInTheDocument();
+  expect(screen.getByText("2 s")).toBeInTheDocument();
+});
+
 it("freezes at a recorded pause and resumes live clocks while keeping fresh evidence handlers", () => {
   const cells = [cell(0, true), cell(1)];
   const oldOpen = vi.fn();

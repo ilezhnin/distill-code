@@ -18,6 +18,19 @@ const attempt = (
 });
 
 describe("task grid repetitions", () => {
+  it("stops failed judge panels while other cells in their run keep working", () => {
+    const [cell] = taskCells(
+      [{ id: "version-1", name: "Task" }],
+      [attempt("a", 0, "pending_review"), attempt("b", 1, "pending_review")],
+      "running",
+      2,
+    );
+    expect(cell.dots).toEqual(["stopped", "stopped"]);
+    expect(cell.verdict).toBe("queued");
+    expect(cell.clock).toBe(false);
+    expect(cell.status?.kind).toBe("unscored");
+  });
+
   it("marks only quality outcomes failed and leaves unscored ones as gaps", () => {
     const [cell] = taskCells(
       [{ id: "version-1", name: "Task" }],

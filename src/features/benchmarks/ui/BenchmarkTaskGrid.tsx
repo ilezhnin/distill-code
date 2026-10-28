@@ -189,12 +189,14 @@ export function taskCells(
     const dots: DotState[] = list.map((a) => {
       const score = a.score ?? null;
       if (score != null) return passed(score) ? "passed" : "failed";
-      // A rendering owed its panel works on while its run can resume; in a
-      // finished run it awaits review and counts nowhere.
+      // Only an active phase works. A settled answer whose panel stopped
+      // needs attention even when unrelated cells in its run still work.
       if (
         WORKING.has(a.phase) ||
         a.phase === "awaiting_judges" ||
-        (a.outcome === "pending_review" && !finished(a))
+        (a.outcome === "pending_review" &&
+          a.phase !== "terminal" &&
+          !finished(a))
       )
         return "running";
       // Before its score arrives a settled attempt reads by its outcome, as
@@ -521,7 +523,8 @@ const TaskCardBody = memo(function TaskCardBody({
       </span>
       {cell.status?.kind === "waiting" ||
       cell.status?.kind === "judging" ||
-      cell.status?.kind === "paused" ? (
+      cell.status?.kind === "paused" ||
+      cell.status?.kind === "unscored" ? (
         <TestStatusMark
           status={cell.status}
           now={clockAt ?? now}

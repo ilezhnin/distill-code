@@ -5777,14 +5777,9 @@ impl ExecutionBackend for NativeBackend {
             Some(model_id),
         ))
     }
-    fn resource_admission<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
+    fn resource_admission<'a>(&'a self, _: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let class = if c.execution_profile == "protected_repository" {
-                sandbox::ResourceClass::Repository
-            } else {
-                sandbox::ResourceClass::Text
-            };
-            sandbox::host_admission_for(class)
+            sandbox::host_admission()
                 .await
                 .map_err(|error| host_error(error.to_string()))
         })

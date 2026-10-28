@@ -50,6 +50,19 @@ function validators(source) {
 
 const fields = (gate) => gate.split(",").length;
 
+test("the app and broker preserve the same shared memory floor", () => {
+  const rust = read("src-tauri/src/services/benchmark_sandbox.rs").match(
+    /const HOST_MEMORY_FLOOR: u64 = (\d+) \* GIB;/u,
+  );
+  const broker = read(
+    "src-tauri/resources/benchmark-sandbox/bench-budget",
+  ).match(/^HOST_MEMORY_FLOOR = (\d+) \* GIB$/mu);
+  assert.ok(rust);
+  assert.ok(broker);
+  assert.equal(rust[1], broker[1]);
+  assert.equal(rust[1], "2");
+});
+
 const SCRIPTS = [
   "scripts/benchmark-sandbox.mjs",
   "scripts/benchmark-sandbox-selftest.mjs",

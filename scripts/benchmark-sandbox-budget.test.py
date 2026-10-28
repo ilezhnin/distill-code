@@ -913,7 +913,7 @@ class BudgetTests(unittest.TestCase):
         self.assertTrue(budget.priority_waiting('repository'))
         self.assertFalse(budget.priority_waiting('text'))
         # A check waiting for memory holds every attempt back.
-        self.headroom = (23, 60)
+        self.headroom = (13, 60)
         with self.assertRaisesRegex(BlockingIOError, 'available RAM'):
             self.reserve('pair', 'fictional-pair')
         self.headroom = (60, 60)
@@ -937,10 +937,10 @@ class BudgetTests(unittest.TestCase):
         # fits, but the unlearned browser's 2 GiB does not. A refused browser
         # must keep its room at that floor, not only at the Linux line.
         if floor == 'ram':
-            self.headroom = (18, 60)
+            self.headroom = (8, 60)
             reason = 'Windows available RAM'
         elif floor == 'commit':
-            self.headroom = (60, 14)
+            self.headroom = (60, 8)
             reason = 'Windows commit headroom'
         else:
             budget.Path('/proc/meminfo').write_text('MemAvailable: 8388608 kB\n')
@@ -1370,18 +1370,41 @@ class BudgetTests(unittest.TestCase):
         gate = self.gate(ram=29, commit=40)
         self.reserve('repository', 'fictional-a', gate)
         self.reserve('repository', 'fictional-b', gate)
-        # Nothing has started using memory yet: the third job needs the 12 GiB
+        # Nothing has started using memory yet: the third job needs the 2 GiB
         # desktop floor, its own 2.5 GiB and both earlier 2.5 GiB claims.
-        with self.assertRaisesRegex(BlockingIOError, 'available RAM .* 12 GiB desktop floor'):
-            self.reserve('repository', 'fictional-c', self.gate(ram=19, commit=40))
+        with self.assertRaisesRegex(BlockingIOError, 'available RAM .* 2 GiB desktop floor'):
+            self.reserve('repository', 'fictional-c', self.gate(ram=9, commit=40))
         # Once both run, their memory already left Windows' available RAM.
         for name in ('session-fictional-a', 'session-fictional-b'):
             (budget.ROOT / name / 'memory.current').write_text(str(int(2.5 * budget.GIB)))
-        self.reserve('repository', 'fictional-c', self.gate(ram=15, commit=40))
-        with self.assertRaisesRegex(BlockingIOError, 'commit headroom .* 8 GiB floor'):
-            self.reserve('text', 'fictional-light', self.gate(ram=28, commit=9))
+        self.reserve('repository', 'fictional-c', self.gate(ram=5, commit=40))
+        with self.assertRaisesRegex(BlockingIOError, 'commit headroom .* 2 GiB floor'):
+            self.reserve('text', 'fictional-light', self.gate(ram=28, commit=3))
         with self.assertRaisesRegex(BlockingIOError, 'less than 30 GiB free'):
             self.reserve('text', 'fictional-light', self.gate(ram=28, commit=40, disk=29))
+
+    def test_one_two_or_four_sessions_start_when_their_measured_claims_fit(self):
+        self.learn(repository=512 * MIB, check=256 * MIB, prep=256 * MIB)
+        recorded = budget.peaks()
+        need = budget.expected_memory('repository', recorded)
+        kept = budget.kept_room('repository', recorded)[0]
+        for count in (1, 2, 4):
+            # Even the largest example is below the old 12 GiB host reserve.
+            available = budget.HOST_MEMORY_FLOOR + count * need + kept
+            self.assertLess(available, 12 * budget.GIB)
+            gate = f'{int(time.time()*1000)},{available},{available},{57*budget.GIB},0'
+            leases = []
+            try:
+                for index in range(count):
+                    leases.append(self.reserve('repository', f'fictional-{count}-{index}', gate))
+                    self.settle()
+                with self.assertRaisesRegex(BlockingIOError, 'Windows available RAM'):
+                    self.reserve('repository', f'fictional-{count}-excess', gate)
+            finally:
+                for lease in leases:
+                    budget.release(lease)
+                # Forget the rejected extra job's temporary priority hold.
+                (budget.STATE / 'priority.json').unlink(missing_ok=True)
 
     def test_finished_jobs_teach_their_class_peak(self):
         (budget.ROOT / 'session-fictional').mkdir()
@@ -1553,11 +1576,11 @@ class BudgetTests(unittest.TestCase):
         self.assertFalse((budget.ROOT / 'probe-fictional-pair').exists())
 
     def test_pending_reservations_close_near_floor_admission_race(self):
-        # Both metadata snapshots report 15 GiB available. The first 2 GiB
+        # Both metadata snapshots report 5 GiB available. The first 2 GiB
         # claim is charged before the second can take the same headroom.
-        self.reserve('text', 'fictional-first', self.gate(ram=15))
+        self.reserve('text', 'fictional-first', self.gate(ram=5))
         with self.assertRaises(BlockingIOError):
-            self.reserve('text', 'fictional-second', self.gate(ram=15))
+            self.reserve('text', 'fictional-second', self.gate(ram=5))
 
     def test_simultaneous_claims_cannot_both_spend_the_same_windows_headroom(self):
         outcomes = []
@@ -1566,7 +1589,7 @@ class BudgetTests(unittest.TestCase):
         def attempt(identifier):
             barrier.wait()
             try:
-                budget.reserve('text', identifier, int(time.time()*1000)+60000, self.gate(ram=15))
+                budget.reserve('text', identifier, int(time.time()*1000)+60000, self.gate(ram=5))
                 outcomes.append('admitted')
             except BlockingIOError:
                 outcomes.append('waiting')
@@ -1581,7 +1604,7 @@ class BudgetTests(unittest.TestCase):
             del budget.print
 
     def test_stale_gate_commit_and_actual_sandbox_volume_fail_before_spawn(self):
-        for gate in (self.gate(age=61000), self.gate(age=-61000), self.gate(commit=9), self.gate(disk=29)):
+        for gate in (self.gate(age=61000), self.gate(age=-61000), self.gate(commit=3), self.gate(disk=29)):
             with self.assertRaises(BlockingIOError):
                 self.reserve('text', 'fictional-rejected', gate)
             self.assertEqual(budget.receipts(), [])

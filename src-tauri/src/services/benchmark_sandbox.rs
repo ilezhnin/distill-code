@@ -229,14 +229,6 @@ impl ResourceClass {
             Self::Check => "check",
         }
     }
-    fn memory(self) -> u64 {
-        match self {
-            Self::Text | Self::Browser | Self::Preparation => 2 * GIB,
-            Self::Repository => 6 * GIB,
-            Self::PairedCheck => 8 * GIB,
-            Self::Check => 4 * GIB,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -275,14 +267,18 @@ impl RecentHeadroom {
 static HEADROOM: std::sync::LazyLock<RecentHeadroom> =
     std::sync::LazyLock::new(RecentHeadroom::default);
 
+// Shared with bench-budget: leave a small host reserve after measured job
+// claims, instead of holding an idle workstation-sized allowance per queue.
+const HOST_MEMORY_FLOOR: u64 = 2 * GIB;
+
 fn check_headroom(headroom: &HostHeadroom, additional_memory: u64) -> io::Result<()> {
-    if headroom.available_ram < 12 * GIB + additional_memory {
+    if headroom.available_ram < HOST_MEMORY_FLOOR + additional_memory {
         return Err(io::Error::new(io::ErrorKind::WouldBlock,
-            format!("resource_busy: Windows available RAM cannot cover the benchmark reservation and 12 GiB desktop floor; available_ram_bytes={}; reservation_bytes={additional_memory}; floor_bytes={}", headroom.available_ram, 12 * GIB)));
+            format!("resource_busy: Windows available RAM cannot cover the benchmark reservation and 2 GiB desktop floor; available_ram_bytes={}; reservation_bytes={additional_memory}; floor_bytes={HOST_MEMORY_FLOOR}", headroom.available_ram)));
     }
-    if headroom.available_commit < 8 * GIB + additional_memory {
+    if headroom.available_commit < HOST_MEMORY_FLOOR + additional_memory {
         return Err(io::Error::new(io::ErrorKind::WouldBlock,
-            format!("resource_busy: Windows commit headroom cannot cover the benchmark reservation and 8 GiB floor; available_commit_bytes={}; reservation_bytes={additional_memory}; floor_bytes={}", headroom.available_commit, 8 * GIB)));
+            format!("resource_busy: Windows commit headroom cannot cover the benchmark reservation and 2 GiB floor; available_commit_bytes={}; reservation_bytes={additional_memory}; floor_bytes={HOST_MEMORY_FLOOR}", headroom.available_commit)));
     }
     if headroom.sandbox_volume_free < 30 * GIB {
         return Err(io::Error::new(
@@ -294,20 +290,17 @@ fn check_headroom(headroom: &HostHeadroom, additional_memory: u64) -> io::Result
 }
 
 /// Metadata-only host admission. It reserves no account or paid model turn.
-/// The Linux broker separately owns fair, atomic process/resource leases.
+/// The Linux broker adds each job's measured claim and outstanding leases
+/// to these floors atomically. A class ceiling is not a memory reservation.
 pub(crate) async fn host_admission() -> io::Result<()> {
-    host_admission_for(ResourceClass::Text).await
-}
-
-pub(crate) async fn host_admission_for(class: ResourceClass) -> io::Result<()> {
     if let Some(headroom) = HEADROOM.reuse(Instant::now()) {
-        return check_headroom(&headroom, class.memory());
+        return check_headroom(&headroom, 0);
     }
     tokio::task::spawn_blocking(move || {
         let at = Instant::now();
         let headroom = host_headroom()?;
         HEADROOM.keep(at, headroom);
-        check_headroom(&headroom, class.memory())
+        check_headroom(&headroom, 0)
     })
     .await
     .map_err(io::Error::other)?
@@ -607,7 +600,7 @@ async fn admission_answer(
 ) -> io::Result<serde_json::Value> {
     valid_id(id)?;
     remaining_ms(deadline_ms)?;
-    host_admission_for(class).await?;
+    host_admission().await?;
     let gate = host_gate()?;
     let deadline = deadline_ms.to_string();
     let host_buffers = host_buffers.to_string();
@@ -1307,17 +1300,12 @@ fn invoke_raw<'a>(
                     | "/usr/local/sbin/bench-status"
             )
         {
-            let class = reservation.map(|lease| lease.class).unwrap_or_else(|| {
-                if program == "/usr/local/sbin/bench-judge" {
-                    ResourceClass::PairedCheck
-                } else if program == "/usr/local/sbin/bench-browser" {
-                    ResourceClass::Browser
-                } else {
-                    ResourceClass::Preparation
-                }
-            });
+            // Protect the transport's Windows allocations here. Every workload
+            // enters through bench-budget, which adds its measured Linux claim
+            // and existing reservations to the fresh host gate. Charging its
+            // full class ceiling here would reject otherwise admitted work.
             tokio::task::spawn_blocking(move || {
-                check_headroom(&host_headroom()?, class.memory() + host_buffers as u64)
+                check_headroom(&host_headroom()?, host_buffers as u64)
             })
             .await
             .map_err(io::Error::other)??;
@@ -3145,7 +3133,7 @@ mod tests {
         );
         let reused = recent.reuse(at + Duration::from_millis(900)).unwrap();
         assert_eq!(reused.available_ram, 20 * GIB);
-        assert!(check_headroom(&reused, ResourceClass::Repository.memory()).is_ok());
+        assert!(check_headroom(&reused, 0).is_ok());
         // A second later the host is measured again.
         assert!(recent.reuse(at + HEADROOM_REUSE).is_none());
     }
@@ -3489,16 +3477,36 @@ mod tests {
     }
 
     #[test]
+    fn metadata_and_transport_do_not_charge_a_linux_class_ceiling() {
+        let headroom = HostHeadroom {
+            available_ram: 3 * GIB,
+            available_commit: 3 * GIB,
+            sandbox_volume_free: 40 * GIB,
+        };
+        assert!(check_headroom(&headroom, 0).is_ok());
+        assert!(check_headroom(&headroom, 512 * 1024 * 1024).is_ok());
+        assert!(check_headroom(&headroom, 2 * GIB).is_err());
+        assert!(check_headroom(
+            &HostHeadroom {
+                available_ram: GIB,
+                ..headroom
+            },
+            0
+        )
+        .is_err());
+    }
+
+    #[test]
     fn admission_keeps_desktop_ram_commit_and_actual_sandbox_volume_floors() {
         let healthy = HostHeadroom {
             available_ram: 28 * GIB,
             available_commit: 20 * GIB,
             sandbox_volume_free: 57 * GIB,
         };
-        assert!(check_headroom(&healthy, ResourceClass::PairedCheck.memory()).is_ok());
+        assert!(check_headroom(&healthy, 8 * GIB).is_ok());
         assert!(check_headroom(
             &HostHeadroom {
-                available_ram: 13 * GIB,
+                available_ram: 3 * GIB,
                 ..healthy
             },
             2 * GIB
@@ -3506,7 +3514,7 @@ mod tests {
         .is_err());
         assert!(check_headroom(
             &HostHeadroom {
-                available_commit: 9 * GIB,
+                available_commit: 3 * GIB,
                 ..healthy
             },
             2 * GIB
@@ -3532,21 +3540,21 @@ mod tests {
         for (headroom, field, value, floor) in [
             (
                 HostHeadroom {
-                    available_ram: 13 * GIB,
+                    available_ram: 3 * GIB,
                     ..healthy
                 },
                 "available_ram_bytes",
-                13 * GIB,
-                12 * GIB,
+                3 * GIB,
+                HOST_MEMORY_FLOOR,
             ),
             (
                 HostHeadroom {
-                    available_commit: 9 * GIB,
+                    available_commit: 3 * GIB,
                     ..healthy
                 },
                 "available_commit_bytes",
-                9 * GIB,
-                8 * GIB,
+                3 * GIB,
+                HOST_MEMORY_FLOOR,
             ),
             (
                 HostHeadroom {
@@ -3960,13 +3968,13 @@ mod tests {
             }
         };
         let now = || now_ms().unwrap();
-        // 17 GiB free: one preparation's 3.5 GiB fits above the 12 GiB floor,
+        // 7 GiB free: one preparation's 3.5 GiB fits above the 2 GiB floor,
         // a second beside it does not.
         let first = reserve_host_preparation(
             reservations,
             HOST_PREPARATION_BYTES,
             now() + 60_000,
-            measure(17 * GIB),
+            measure(7 * GIB),
         )
         .await
         .unwrap();
@@ -3974,7 +3982,7 @@ mod tests {
             reservations,
             HOST_PREPARATION_BYTES,
             now() + 50,
-            measure(17 * GIB),
+            measure(7 * GIB),
         )
         .await
         .unwrap_err();
@@ -3989,7 +3997,7 @@ mod tests {
             reservations,
             HOST_PREPARATION_BYTES,
             now() + 60_000,
-            measure(17 * GIB),
+            measure(7 * GIB),
         ));
         tokio::task::yield_now().await;
         drop(first);
@@ -4000,12 +4008,12 @@ mod tests {
             reservations,
             HOST_PREPARATION_BYTES,
             now() + 60_000,
-            measure(13 * GIB),
+            measure(3 * GIB),
         )
         .await
         .unwrap_err();
         assert_eq!(short.kind(), io::ErrorKind::WouldBlock);
-        assert!(short.to_string().contains("12 GiB"), "{short}");
+        assert!(short.to_string().contains("2 GiB"), "{short}");
         // A deadline already gone before the queue is the caller's own.
         let late = reserve_host_preparation(
             reservations,

@@ -160,7 +160,8 @@ $volume=[System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($distro.BasePat
 $ram=[uint64]$os.FreePhysicalMemory*1024
 $commit=[uint64]$memory.CommitLimit-[uint64]$memory.CommittedBytes
 $disk=[uint64]$volume.AvailableFreeSpace
-if ($ram -lt 14GB -or $commit -lt 10GB -or $disk -lt 30GB) { throw 'resource_busy: Windows headroom is below policy qualification floor' }
+# bench-budget adds the probe's measured claim and outstanding reservations.
+if ($ram -lt 2GB -or $commit -lt 2GB -or $disk -lt 30GB) { throw 'resource_busy: Windows headroom is below policy qualification floor' }
 # The fifth field is the host CPU share in thousandths; 1001 = not sampled.
 Write-Output "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$ram,$commit,$disk,1001"
 `;
@@ -269,7 +270,9 @@ function checkStatus(status, expected) {
   );
 }
 
-const PREPARE = await source(`${resources}benchmark-linux-text-probe-prepare.py`);
+const PREPARE = await source(
+  `${resources}benchmark-linux-text-probe-prepare.py`,
+);
 
 async function qualify(provider) {
   assert(

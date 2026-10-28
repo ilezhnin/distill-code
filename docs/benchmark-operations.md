@@ -293,8 +293,8 @@ naming the line that holds it, while it does not:
   shares, a victim the last poll did not see, or no kernel record stay the
   infrastructure's. The app logs `sandbox job session-ID = attempt ATTEMPT
   (PROFILE)` once per try, so a cgroup name maps to its attempt.
-- Windows and the guest. The controller preserves at least 12 GiB of Windows
-  available memory, 8 GiB of commit headroom and 30 GiB free on the registered
+- Windows and the guest. The controller preserves at least 2 GiB of Windows
+  available memory, 2 GiB of commit headroom and 30 GiB free on the registered
   sandbox volume, and 2 GiB free in the WSL guest. Each memory floor must also
   cover the claims of earlier jobs not yet in use. Commit headroom is the commit
   limit (physical memory plus page file) minus committed memory; with a small
@@ -302,6 +302,9 @@ naming the line that holds it, while it does not:
   wait names that cause. A larger page file raises the commit limit without
   lowering the RAM floor. Admission evidence also carries how busy the host's
   CPUs were over the last second.
+  The Windows preflight checks these shared floors and its actual transport
+  buffers; the broker adds measured job claims and outstanding reservations.
+  Per-job memory ceilings are never charged as additional admission claims.
 
 No count bounds how many jobs run: as many run as the measured CPUs, memory
 and pressure admit without errors in the sandbox, and as the providers take
@@ -311,8 +314,8 @@ resource class at a time, the others waiting in the app in turn for each ask
 starts processes inside the distribution, and a burst of waiting renders
 asking each second once exhausted its process budget (10-18). A render
 refused room before it started cleans nothing. The only fixed amounts are safety margins,
-fairness ceilings and starting points, never counts of jobs: the 12 GiB
-available-RAM and 8 GiB commit floors on Windows, the 2 GiB guest-memory floor
+fairness ceilings and starting points, never counts of jobs: the 2 GiB
+available-RAM and commit floors on Windows, the 2 GiB guest-memory floor
 and the 30 GiB sandbox-volume floor; each job's own ceilings by class (a
 repository session two CPUs and 6 GiB, a text session one CPU and 2 GiB, a
 check two CPUs), which keep measurements fair; the benchmark root's own

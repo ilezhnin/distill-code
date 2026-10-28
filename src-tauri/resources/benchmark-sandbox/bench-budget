@@ -53,6 +53,9 @@ import time
 
 GIB = 1024 ** 3
 MIB = 1024 ** 2
+# Shared host headroom, not a per-job reservation. Workload claims below
+# already include measured peaks, safety margins and unconsumed leases.
+HOST_MEMORY_FLOOR = 2 * GIB
 ROOT = Path('/sys/fs/cgroup/distill-bench')
 STATE = Path('/run/distill-bench-budget')
 SCRATCH = Path('/srv/bench')
@@ -1485,8 +1488,8 @@ def admission(active, kind, observed):
 
 # How far the Windows evidence's time may be from the sandbox clock. WSL2's
 # clock can fall behind Windows after sleep or hibernation until it is
-# resynchronised; a minute-old RAM figure is harmless beside the 12 GiB and
-# 8 GiB floors, while a refusal would stop every admission until then.
+# resynchronised. The host samples again for every admission; the skew
+# allowance is for clock drift, not permission to reuse an old measurement.
 GATE_SKEW_MS = 60_000
 
 
@@ -1514,10 +1517,10 @@ def host_gate(gate, unused, memory):
             'from the sandbox clock, beyond 60 s either way (resynchronise the WSL clock if this lasts); '
             'no provider process started')
     additional = memory + unused
-    if available_ram < 12 * GIB + additional:
-        raise refused('Windows available RAM cannot cover benchmark reservations and its 12 GiB desktop floor', 'memory', memory)
-    if commit < 8 * GIB + additional:
-        raise refused('Windows commit headroom cannot cover benchmark reservations and its 8 GiB floor', 'memory', memory)
+    if available_ram < HOST_MEMORY_FLOOR + additional:
+        raise refused('Windows available RAM cannot cover benchmark reservations and its 2 GiB desktop floor', 'memory', memory)
+    if commit < HOST_MEMORY_FLOOR + additional:
+        raise refused('Windows commit headroom cannot cover benchmark reservations and its 2 GiB floor', 'memory', memory)
     if disk < 30 * GIB:
         raise refused('the registered sandbox volume has less than 30 GiB free')
     # Other WSL distributions share the guest VM. Parent caps alone do not
