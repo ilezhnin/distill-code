@@ -305,7 +305,7 @@ async fn a_cell_the_broker_refused_starts_again_within_the_tick() {
             .wait_until
             .unwrap();
         let scope = service.store.root.display().to_string();
-        assert!(first >= now() + 110_000);
+        assert!(first >= now() + admission_window::RETRY.as_millis() as i64 - 5_000);
         admission_window::expire_wait(&scope);
         service.wake.notify_one();
         if !workflow {
@@ -313,7 +313,10 @@ async fn a_cell_the_broker_refused_starts_again_within_the_tick() {
                 waiting(a) && a.wait_until != Some(first)
             })
             .await;
-            assert!(again.wait_until.unwrap() >= now() + 110_000);
+            assert!(
+                again.wait_until.unwrap()
+                    >= now() + admission_window::RETRY.as_millis() as i64 - 5_000
+            );
             admission_window::expire_wait(&scope);
             service.wake.notify_one();
         }

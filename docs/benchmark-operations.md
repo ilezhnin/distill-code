@@ -251,8 +251,8 @@ naming the line that holds it, while it does not:
   candidate's fail) stays the candidate's fail unless its leaves waited for
   CPUs other jobs held more than a tenth of its run, which makes it the
   infrastructure's too. Light jobs and preparations need the jobs' measured
-  load plus the host's load outside the VM below three quarters of the guest's
-  CPUs and, where Linux reports it, CPU pressure below a quarter. CPU pressure
+  load plus the host's load outside the VM to leave their own CPU ceiling and
+  one supervisor CPU free, with measured CPU pressure below a quarter. CPU pressure
   and check stalls count only the time a job's tasks waited for CPUs another
   job held, never its own `cpu.max` throttling (a check sees all the guest's
   CPUs and starts that many workers on its two); a check's recorded stall

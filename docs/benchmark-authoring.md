@@ -301,7 +301,7 @@ under an hour old it is not listed again, and up to twelve hours old it still
 seats the judge when a refresh is refused, as the sandbox refuses a listing
 under load. If no recent listing is available and local resource admission
 refuses discovery, an otherwise incomplete panel waits with the resource queue.
-A local resource refusal parks its preparation lane for two minutes. Native
+A local resource refusal parks its preparation lane for fifteen seconds. Native
 repository and browser checks use one lane; candidates, judges and local answer
 comparisons use the other. A queued or running checker cannot occupy the other
 lane, and a check stops counting as preparation once its native workload has

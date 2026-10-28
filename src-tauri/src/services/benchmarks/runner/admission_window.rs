@@ -4,7 +4,7 @@
 //! one plus the admissions since the sandbox last refused one, counted over
 //! the last minute. Candidate/judge and evaluator preparation use two fixed
 //! lanes, both subject to the same native CPU, memory and timing broker.
-//! A refusal parks its lane for two minutes; a
+//! A refusal parks its lane for fifteen seconds; a
 //! completed job releases that wait early. Then one job probes admission,
 //! and successes widen the window until the available capacity is filled.
 //! An attempt preparing for
@@ -19,7 +19,7 @@ const FRESH: Duration = Duration::from_secs(60);
 /// How long a preparation counts against the window before it is taken to
 /// wait for something other than the sandbox.
 const STALE: Duration = Duration::from_secs(5 * 60);
-pub(super) const RETRY: Duration = Duration::from_secs(2 * 60);
+pub(super) const RETRY: Duration = Duration::from_secs(15);
 
 #[derive(Default)]
 struct Window {
@@ -377,11 +377,11 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_parks_every_cell_and_only_one_probes_after_two_minutes() {
+    fn a_refusal_parks_every_cell_and_only_one_probes_after_the_retry() {
         let mut window = Window::default();
         let at = Instant::now();
         window.refused("refused", at);
-        for second in 0..120 {
+        for second in 0..RETRY.as_secs() {
             assert!(!window.begin_ok("next", at + Duration::from_secs(second)));
         }
         assert!(!window.finished("never-started"));

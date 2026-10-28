@@ -13299,7 +13299,9 @@ mod tests {
                 .count(),
             1
         );
-        assert!(admission_window::remaining(&scope) > Duration::from_secs(110));
+        assert!(
+            admission_window::remaining(&scope) > admission_window::RETRY - Duration::from_secs(5)
+        );
         admission_window::expire_wait(&scope);
         service.tick().await.unwrap();
         assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 2);

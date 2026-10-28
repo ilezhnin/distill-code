@@ -25,7 +25,8 @@ sandbox measures leaves room for it, not up to a fixed number of lanes.
   pressure or check stalls exceed a tenth); a timed job while its ceiling, the other
   timed jobs' and the sessions' allowances fit them. Timed jobs carry
   cpu.weight 10000 against the sessions' 100, so they take the CPU first.
-  Light jobs need the measured load below the light line.
+  Light jobs need their CPU ceiling beside measured use and one supervisor
+  CPU, with no fixed percentage of otherwise idle cores held back.
 - Scratch: the filesystem's free space must cover the new job's
   reservation, half a GiB, and the reservations of jobs admitted in the last
   two minutes; an older job's use already shows in the free space.
@@ -94,9 +95,7 @@ AGGREGATE_IO = (1024 * MIB, 256 * MIB)
 # room holds new attempts back for this long, and asks again within it.
 CHECK_CPUS = 2
 PRIORITY_HOLD = 10
-# Light jobs start while the measured load stays below this share of the
-# guest's CPUs and, where Linux reports it, CPU pressure below this share.
-LIGHT_LOAD = 0.75
+# Light jobs keep a supervisor CPU free and respect measured job pressure.
 LIGHT_PRESSURE = 0.25
 # Recorded per class: peaks kept, and how many before they replace the
 # ceiling. The expectation is the 95th percentile with a quarter on top.
@@ -1453,7 +1452,7 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
                               'cpu', cpu)
     else:
         busy = (measured if measured is not None else ceilings) + outside
-        if busy + cpu > LIGHT_LOAD * (os.cpu_count() or 1) or (
+        if busy + cpu + SUPERVISOR_CPUS > (os.cpu_count() or 1) or (
                 not continuing and pressure is not None and pressure > LIGHT_PRESSURE):
             raise refused('measured CPU load is above the light-job admission line')
     observed.update(expectedMemory=needed, claimedMemory=claims, cpuLine=line, heavyCpus=ceilings,

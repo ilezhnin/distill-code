@@ -192,10 +192,22 @@ class BudgetTests(unittest.TestCase):
         (budget.ROOT / 'session-fictional-a' / 'memory.current').write_text(str(6 * budget.GIB))
         claims = sum(budget.claim(row, budget.peaks()) for row in budget.receipts())
         self.assertEqual(claims, 6 * budget.GIB + int(2.5 * budget.GIB) + 12 * 625 * MIB)
-        # Light jobs stop at the measured load line instead of a count.
-        self.busy = 700
+        # Light jobs stop when their ceiling and a supervisor no longer fit.
+        self.busy = 950
         with self.assertRaisesRegex(BlockingIOError, 'measured CPU load'):
             self.reserve('text', 'fictional-text-over-load')
+
+    def test_light_work_uses_free_cores_above_the_old_percentage_line(self):
+        self.roomy()
+        self.measure(0.0)
+        budget.guest_cores = lambda: 0.0
+        self.busy = 850
+        # 2.4 idle CPUs cover a one-CPU model listing and its supervisor.
+        self.reserve('text', 'fictional-listing')
+        self.busy = 950
+        # Only 0.8 CPUs remain: a new job cannot take the supervisor's CPU.
+        with self.assertRaisesRegex(BlockingIOError, 'light-job admission line'):
+            self.reserve('prep', 'fictional-over-capacity')
 
     def test_without_a_host_sample_the_summed_ceilings_rule_still_decides(self):
         self.roomy()
@@ -1248,7 +1260,7 @@ class BudgetTests(unittest.TestCase):
         self.roomy()
         self.measure(1.0)
         budget.guest_cores = lambda: 1.0
-        self.busy = 750  # 12 of 16 logical CPUs busy: 11 outside the VM
+        self.busy = 950  # Fewer than two of sixteen CPUs remain free.
         with self.assertRaisesRegex(BlockingIOError, 'light-job admission line'):
             self.reserve('prep', 'fictional-prep')
         self.assertNotIn('cpu', budget.priority_state())
