@@ -317,6 +317,10 @@ naming the line that holds it, while it does not:
   The Windows preflight checks these shared floors and its actual transport
   buffers; the broker adds measured job claims and outstanding reservations.
   Per-job memory ceilings are never charged as additional admission claims.
+- Provider transport. Owned protocol frames are limited to 16 MiB and share
+  bounded event queues. Stdout permits 128 MiB per minute; a long repository
+  turn can continue streaming tool progress beyond 128 MiB in total. A burst
+  over that window still stops with a transport-budget diagnostic.
 
 No count bounds how many jobs run: as many run as the measured CPUs, memory
 and pressure admit without errors in the sandbox, and as the providers take

@@ -44,6 +44,32 @@ const OWNED_STDERR_LINE_BYTES: usize = 16 * 1024;
 const OWNED_STDERR_TOTAL_BYTES: usize = 2 * 1024 * 1024;
 const TRANSPORT_WAIT: Duration = Duration::from_secs(30);
 
+/// Protocol traffic may be much larger than the retained answer: repository
+/// turns stream tool progress for hours. Bound each minute rather than the
+/// bridge's lifetime; frame and queue limits separately bound resident memory.
+const OWNED_STDOUT_WINDOW: Duration = Duration::from_secs(60);
+const OWNED_STDOUT_WINDOW_BYTES: usize = 128 * 1024 * 1024;
+
+struct StdoutBudget {
+    started: Instant,
+    bytes: usize,
+}
+
+impl StdoutBudget {
+    fn new(started: Instant) -> Self {
+        Self { started, bytes: 0 }
+    }
+
+    fn admit(&mut self, bytes: usize, now: Instant) -> bool {
+        if now.saturating_duration_since(self.started) >= OWNED_STDOUT_WINDOW {
+            self.started = now;
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.bytes <= OWNED_STDOUT_WINDOW_BYTES
+    }
+}
+
 fn outgoing_budget() -> Arc<Semaphore> {
     static BUDGET: OnceLock<Arc<Semaphore>> = OnceLock::new();
     BUDGET
@@ -840,7 +866,7 @@ impl Bridge {
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout);
                 let mut buf = Vec::new();
-                let mut total = 0usize;
+                let mut budget = StdoutBudget::new(Instant::now());
                 loop {
                     let line = tokio::select! {
                         _ = cancelled.changed() => break,
@@ -859,13 +885,12 @@ impl Bridge {
                             break;
                         }
                     };
-                    total = total.saturating_add(buf.len());
-                    if bounded && total > 128 * 1024 * 1024 {
+                    if bounded && !budget.admit(buf.len(), Instant::now()) {
                         transport_failed(
                             &pending,
                             &alive,
                             &failed,
-                            "benchmark stdout lifetime budget exceeded",
+                            "benchmark stdout rate budget exceeded",
                         );
                         break;
                     }
@@ -1562,6 +1587,26 @@ pub fn is_installed(spec: &HarnessSpec, env: &SpawnEnv) -> bool {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn long_repository_protocol_streams_outlive_the_old_total_limit() {
+        let start = Instant::now();
+        let mut budget = StdoutBudget::new(start);
+        // Five minutes of tool progress, exceeding twice the former lifetime allowance.
+        for second in (0..300).step_by(15) {
+            assert!(budget.admit(OWNED_FRAME_BYTES, start + Duration::from_secs(second)));
+        }
+    }
+
+    #[test]
+    fn stdout_flood_is_bounded_and_the_next_window_recovers() {
+        let start = Instant::now();
+        let mut budget = StdoutBudget::new(start);
+        assert!(budget.admit(OWNED_STDOUT_WINDOW_BYTES, start));
+        assert!(!budget.admit(1, start + OWNED_STDOUT_WINDOW - Duration::from_millis(1)));
+        assert!(budget.admit(OWNED_FRAME_BYTES, start + OWNED_STDOUT_WINDOW));
+        assert!(!budget.admit(usize::MAX, start + OWNED_STDOUT_WINDOW));
+    }
 
     #[tokio::test]
     async fn protocol_frames_stop_before_allocating_oversized_or_unterminated_lines() {
