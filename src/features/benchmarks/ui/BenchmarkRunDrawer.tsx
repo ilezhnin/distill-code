@@ -50,7 +50,7 @@ import {
   taskCells,
   type TaskReference,
 } from "./BenchmarkTaskGrid";
-import { FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
+import { ACTIVE_RUN, FINISHED_RUN, listByIds } from "./BenchmarkTestStatus";
 import {
   BenchmarkWorkflowActivity,
   BenchmarkWorkflowProgress,
@@ -91,7 +91,8 @@ export function BenchmarkRunDrawer({
     queryKey: [...benchmarkKeys, "run", runId],
     queryFn: () => benchmarkApi.getRun(runId),
   });
-  // The summary names what parked a run that waits for the operator.
+  // Keep the same unresolved cause visible here as in the activity strip,
+  // including a failed attempt while other tests are still running.
   const summary = useBenchmarkRuns().data?.find((entry) => entry.id === runId);
   const definitions = useBenchmarkDefinitions();
   const names = useMemo(
@@ -306,15 +307,18 @@ export function BenchmarkRunDrawer({
                     </span>
                   ) : null}
                 </div>
-                {run.state === "needs_attention" ? (
-                  <p className="text-xs text-muted-foreground">
+                {run.state === "needs_attention" ||
+                (ACTIVE_RUN.has(run.state) && summary?.attention) ? (
+                  <p className="text-xs text-destructive">
                     {attentionLabel(
                       t,
-                      summary ?? { attention: null },
-                      formatDate(runWindowCloses(run), {
-                        dateStyle: "short",
-                        timeStyle: "short",
-                      }),
+                      { state: run.state, attention: summary?.attention },
+                      run.state === "needs_attention"
+                        ? formatDate(runWindowCloses(run), {
+                            dateStyle: "short",
+                            timeStyle: "short",
+                          })
+                        : undefined,
                     )}
                   </p>
                 ) : null}

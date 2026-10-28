@@ -1,16 +1,24 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
+import { benchmarkKeys } from "../hooks/useBenchmarks";
 import type { Attempt, BenchmarkDefinition, BenchmarkRun } from "../types";
 import { BenchmarkRunDrawer } from "../ui/BenchmarkRunDrawer";
 import { compactElapsed, type TaskReference } from "../ui/BenchmarkTaskGrid";
-import { attempt, configuration, definition, run } from "./fixtures";
+import {
+  attempt,
+  configuration,
+  definition,
+  run,
+  runSummary,
+} from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: String,
   benchmarkApi: {
     getRun: vi.fn(),
+    listRuns: vi.fn(),
     listAttempts: vi.fn(),
     listDefinitions: vi.fn(),
     pauseRun: vi.fn(),
@@ -69,12 +77,11 @@ function attempts(): Attempt[] {
 
 function show(subject: BenchmarkRun, taskOrder?: TaskReference[]) {
   vi.mocked(benchmarkApi.getRun).mockResolvedValue(subject);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   render(
-    <QueryClientProvider
-      client={
-        new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      }
-    >
+    <QueryClientProvider client={client}>
       <BenchmarkRunDrawer
         taskOrder={taskOrder}
         runId={subject.id}
@@ -83,6 +90,7 @@ function show(subject: BenchmarkRun, taskOrder?: TaskReference[]) {
       />
     </QueryClientProvider>,
   );
+  return client;
 }
 
 /** A test's block: named by its number and name for the reader. */
@@ -111,6 +119,7 @@ const listing = (revision: string) => [
 ];
 
 beforeEach(() => {
+  vi.mocked(benchmarkApi.listRuns).mockResolvedValue([]);
   vi.clearAllMocks();
   Element.prototype.scrollIntoView = vi.fn();
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue(
@@ -139,6 +148,32 @@ beforeEach(() => {
   ]);
 });
 afterEach(cleanup);
+
+it("shows and clears the same active attempt issue as the activity strip", async () => {
+  const reason = "Invented local memory reservation refused";
+  const summary = {
+    ...runSummary,
+    state: "running",
+    attention: { outcome: "resource_busy", reason },
+  };
+  vi.mocked(benchmarkApi.listRuns).mockResolvedValue([summary]);
+  const client = show({ ...run, state: "running", attempts: attempts() });
+  const message = `The run continues with other tests. An attempt needs attention: ${reason}`;
+  expect(await screen.findByText(message)).toBeVisible();
+  expect(screen.getByText("Running")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+  expect(screen.queryByText(/Finish before/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Resume to try it again/)).not.toBeInTheDocument();
+  await act(async () => {
+    client.setQueryData(
+      [...benchmarkKeys, "runs"],
+      [{ ...summary, attention: null }],
+    );
+  });
+  expect(screen.queryByText(message)).not.toBeInTheDocument();
+  expect(screen.getByText("Running")).toBeInTheDocument();
+});
 
 it("lists one model's run by test, in its order, timing the test running now", async () => {
   show({ ...run, state: "running", attempts: attempts() });

@@ -331,6 +331,18 @@ function attentionCause(
 ): string {
   const attention = run.attention;
   if (!attention) return t("attention.unknown");
+  // A settled attempt can need attention while other repetitions keep going.
+  // Resume is unavailable until the run stops; keep the cause visible without
+  // presenting an attempt failure as a stopped run.
+  if (run.state === "running" && attention.outcome != null) {
+    const reason =
+      attention.outcome === "pending_review"
+        ? judgingFailureLabel(t, attention.reason)
+        : attention.reason.startsWith("{")
+          ? stateLabel(t, attention.outcome)
+          : attention.reason;
+    return t("attention.continuing", { reason });
+  }
   if (attention.outcome === "pending_review")
     return judgingFailureLabel(t, attention.reason);
   if (attention.outcome === "dispatch_uncertain")

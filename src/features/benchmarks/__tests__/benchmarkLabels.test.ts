@@ -166,6 +166,7 @@ describe("attentionLabel", () => {
       "attention.signInWait": "wait for account update",
       "attention.signInDuration": "shorter time limit",
       "attention.failed": `failed: ${options?.reason}`,
+      "attention.continuing": `continuing: ${options?.reason}`,
       "attention.unknown": "unknown",
       "states.infrastructure_failure": "Infrastructure failure",
     })[key] ?? key) as Parameters<typeof attentionLabel>[0];
@@ -251,5 +252,37 @@ describe("attentionLabel", () => {
       }),
     ).toBe("failed: Bridge exited with code 3");
     expect(attentionLabel(t, { attention: null })).toBe("unknown");
+  });
+
+  it("keeps active attempt failures visible without asking to resume a running run", () => {
+    const attention = {
+      outcome: "resource_busy",
+      reason: "Invented memory reservation refused",
+    };
+    expect(attentionLabel(t, { state: "running", attention })).toBe(
+      `continuing: ${attention.reason}`,
+    );
+    expect(attentionLabel(t, { state: "needs_attention", attention })).toBe(
+      `failed: ${attention.reason}`,
+    );
+    expect(
+      attentionLabel(t, {
+        state: "running",
+        attention: {
+          outcome: "infrastructure_failure",
+          reason: '{"code":-32010}',
+        },
+      }),
+    ).toBe("continuing: Infrastructure failure");
+    expect(
+      attentionLabel(t, {
+        state: "running",
+        attention: {
+          outcome: "pending_review",
+          reason:
+            "No judge panel: 1 eligible judge(s), at least 2 are required",
+        },
+      }),
+    ).toBe("continuing: runIssues.noPanel");
   });
 });

@@ -81,6 +81,19 @@ it("does not label an active run without failures as needing attention", () => {
   expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
 });
 
+it("distinguishes a failed attempt from the run continuing other tests", () => {
+  const reason = "Invented local memory reservation refused";
+  show({ attention: { outcome: "resource_busy", reason } });
+  expect(screen.getByTitle(reason)).toHaveTextContent(
+    `The run continues with other tests. An attempt needs attention: ${reason}`,
+  );
+  expect(screen.queryByText(/Resume to try it again/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+  expect(
+    screen.queryByRole("button", { name: "Resume" }),
+  ).not.toBeInTheDocument();
+});
+
 it("removes a stalled-run banner when its last current case is measured", () => {
   const onOpenRun = vi.fn();
   const stopped = { ...runSummary, state: "needs_attention", openCells: [] };
