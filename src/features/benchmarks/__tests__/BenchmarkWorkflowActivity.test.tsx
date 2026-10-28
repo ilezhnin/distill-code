@@ -50,6 +50,7 @@ const onOpenRun = vi.fn();
 const workflow = (): WorkflowActivity => ({
   rootAttemptId: "workflow-root",
   versionId: "version-1",
+  repetition: 1,
   phase: "preparing",
   outcome: null,
   steps: [
@@ -199,7 +200,9 @@ describe.each([
     expect(
       await screen.findByRole("img", { name: "Step 2 of 3 · Running" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Worker B")).toBeInTheDocument();
+    if (kind === "drawer")
+      expect(screen.getByText("Worker B")).toBeInTheDocument();
+    else expect(screen.queryByText("Worker B")).not.toBeInTheDocument();
     expect(screen.getByText(/^1 \/ 2/)).toBeInTheDocument();
     expect(
       screen.getByRole("progressbar", { name: "Settled tests" }),
@@ -251,7 +254,9 @@ describe.each([
     expect(
       await screen.findByRole("img", { name: "Step 3 of 3 · Running" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Worker C")).toBeInTheDocument();
+    if (kind === "drawer")
+      expect(screen.getByText("Worker C")).toBeInTheDocument();
+    else expect(screen.queryByText("Worker C")).not.toBeInTheDocument();
     expect(screen.queryByText("Worker B")).not.toBeInTheDocument();
     expect(screen.getByTitle("Elapsed 2 s")).toBeInTheDocument();
     await waitFor(() =>
@@ -385,4 +390,35 @@ it.each([
   );
   expect(screen.queryByRole("img", { name: /^Step / })).not.toBeInTheDocument();
   expect(readHistoryPage).not.toHaveBeenCalled();
+});
+
+it("groups compact repetitions by test and preserves each attempt's time, activity and steps", async () => {
+  const third = { ...workflow(), rootAttemptId: "root-third", repetition: 3 };
+  third.steps = [
+    {
+      ...third.steps[1],
+      index: 0,
+      startedAt: Date.now() - 2_000,
+      sessionId: "session-third",
+      hostRunId: "turn-third",
+    },
+  ];
+  summary = { ...summary, workflowActivity: [workflow(), third] };
+  client.setQueryData(key, [summary]);
+  show("strip");
+  await screen.findByRole("img", { name: "Step 2 of 3 · Running" });
+  expect(
+    screen.getByRole("img", { name: "Step 1 of 3 · Running" }),
+  ).toBeInTheDocument();
+  expect(screen.getAllByText("Workflow task")).toHaveLength(1);
+  expect(screen.queryByText("Worker B")).not.toBeInTheDocument();
+  expect(screen.getByTitle("repetition 1")).toBeInTheDocument();
+  expect(screen.getByTitle("repetition 3")).toBeInTheDocument();
+  expect(screen.queryByTitle("repetition 2")).not.toBeInTheDocument();
+  expect(screen.getByTitle("Elapsed 2 s")).toBeInTheDocument();
+  expect(screen.getByTitle("Elapsed 1:05")).toBeInTheDocument();
+  await waitFor(() =>
+    expect(readHistoryPage).toHaveBeenCalledWith("session-third", 1),
+  );
+  expect(readHistoryPage).toHaveBeenCalledWith("session-b", 1);
 });

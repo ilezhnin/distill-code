@@ -132,6 +132,8 @@ function WorkflowProgress({
   title,
   taskName,
   summaryOnly = false,
+  compact = false,
+  repetition,
 }: {
   root: Pick<Attempt, "phase" | "outcome">;
   steps: WorkflowActivityStep[];
@@ -139,6 +141,8 @@ function WorkflowProgress({
   title?: string;
   taskName?: string;
   summaryOnly?: boolean;
+  compact?: boolean;
+  repetition?: number;
 }) {
   const { t } = useTranslation("benchmarks");
   const now = useClock();
@@ -189,15 +193,17 @@ function WorkflowProgress({
   });
   return (
     <span className="flex min-w-0 flex-col gap-2 text-xs">
-      <span className="flex items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium" title={taskName}>
-          {title ?? stateLabel(t, phase)}
+      {!compact ? (
+        <span className="flex items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium" title={taskName}>
+            {title ?? stateLabel(t, phase)}
+          </span>
+          <span title={stateLabel(t, phase)}>
+            <RepetitionDots states={[dot]} />
+          </span>
         </span>
-        <span title={stateLabel(t, phase)}>
-          <RepetitionDots states={[dot]} />
-        </span>
-      </span>
-      {configuration ? (
+      ) : null}
+      {!compact && configuration ? (
         <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
           <span className="shrink-0">
             {getProviderIcon(configuration.providerId, "size-3.5")}
@@ -207,6 +213,21 @@ function WorkflowProgress({
         </span>
       ) : null}
       <span className="flex items-center justify-between gap-3 text-muted-foreground">
+        {compact ? (
+          <span
+            className="inline-flex shrink-0 items-center gap-1"
+            title={
+              repetition == null
+                ? stateLabel(t, phase)
+                : t("fields.repetitionValue", { value: repetition })
+            }
+          >
+            <RepetitionDots states={[dot]} />
+            {repetition == null ? null : (
+              <span className="tabular-nums">{repetition}</span>
+            )}
+          </span>
+        ) : null}
         <span
           className="inline-flex items-center gap-1 tabular-nums"
           title={
@@ -331,6 +352,12 @@ export function BenchmarkWorkflowActivity({
     ["preparing", "dispatching", "running", "collecting"].includes(root.phase),
   );
   const shown = compact ? roots.slice(0, 3) : roots;
+  const groups = new Map<string, typeof shown>();
+  for (const root of shown) {
+    const group = groups.get(root.versionId) ?? [];
+    group.push(root);
+    groups.set(root.versionId, group);
+  }
   if (roots.length === 0) return null;
   return (
     <span className="flex min-w-0 flex-col gap-2">
@@ -339,20 +366,53 @@ export function BenchmarkWorkflowActivity({
           {t("activity.draining")}
         </span>
       ) : null}
-      <span className="grid max-h-60 grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3 overflow-y-auto">
-        {shown.map((root) => {
-          const manifest = versions.get(root.versionId);
-          return (
-            <WorkflowProgress
-              key={root.rootAttemptId}
-              root={root}
-              steps={root.steps}
-              totalSteps={manifest?.workflow?.steps.length}
-              title={manifest?.name}
-              summaryOnly
-            />
-          );
-        })}
+      <span
+        className={cn(
+          "grid max-h-60 gap-3 overflow-y-auto",
+          !compact && "grid-cols-[repeat(auto-fit,minmax(12rem,1fr))]",
+        )}
+      >
+        {compact
+          ? [...groups].map(([versionId, attempts]) => (
+              <span key={versionId} className="flex min-w-0 flex-col gap-2">
+                <span
+                  className="truncate text-sm font-medium"
+                  title={versions.get(versionId)?.name}
+                >
+                  {versions.get(versionId)?.name ?? t("activity.workflowTask")}
+                </span>
+                <span className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3">
+                  {[...attempts]
+                    .sort((a, b) => (a.repetition ?? 0) - (b.repetition ?? 0))
+                    .map((root) => (
+                      <WorkflowProgress
+                        key={root.rootAttemptId}
+                        root={root}
+                        steps={root.steps}
+                        totalSteps={
+                          versions.get(versionId)?.workflow?.steps.length
+                        }
+                        summaryOnly
+                        compact
+                        repetition={root.repetition}
+                      />
+                    ))}
+                </span>
+              </span>
+            ))
+          : shown.map((root) => {
+              const manifest = versions.get(root.versionId);
+              return (
+                <WorkflowProgress
+                  key={root.rootAttemptId}
+                  root={root}
+                  steps={root.steps}
+                  totalSteps={manifest?.workflow?.steps.length}
+                  title={manifest?.name}
+                  summaryOnly
+                />
+              );
+            })}
       </span>
       {shown.length < roots.length ? (
         <span className="text-xs text-muted-foreground">

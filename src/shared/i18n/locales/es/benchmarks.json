@@ -438,6 +438,7 @@
     "window": "Termínala antes de {{until}}; después la ejecución queda registrada tal como está."
   },
   "activity": {
+    "workflowTask": "Prueba de flujo de trabajo",
     "attention": "Requiere atención: {{count}} ejecuciones",
     "title": "Ejecuciones en curso",
     "progress": "{{settled}} / {{total}}",
@@ -1116,6 +1117,10 @@
     "incompletePanel": "El panel no devolvió todas las puntuaciones necesarias.",
     "notification": "Evaluación fallida: {{model}}",
     "executionFailed": "La ejecución del benchmark falló: {{model}}",
+    "temporaryWarning": "Aviso temporal del proveedor: {{model}}",
+    "rateLimited": "El proveedor ha limitado temporalmente las solicitudes.",
+    "providerOverloaded": "El proveedor está sobrecargado temporalmente.",
+    "quotaWait": "La cuota de uso del proveedor se ha agotado temporalmente. El trabajo en cola podrá continuar cuando se restablezca.",
     "stopped": "Ejecución detenida: {{model}}"
   }
 }

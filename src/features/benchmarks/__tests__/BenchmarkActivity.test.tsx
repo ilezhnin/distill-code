@@ -94,6 +94,17 @@ it("distinguishes a failed attempt from the run continuing other tests", () => {
   ).not.toBeInTheDocument();
 });
 
+it("does not turn transient warning history into a persistent attention banner", () => {
+  show({
+    attention: null,
+    warning: { attemptId: "rate", occurredAt: 100, kind: "rate_limited" },
+  });
+  expect(
+    screen.queryByText(/needs attention|rate limit|Resume to try/i),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+});
+
 it("removes a stalled-run banner when its last current case is measured", () => {
   const onOpenRun = vi.fn();
   const stopped = { ...runSummary, state: "needs_attention", openCells: [] };

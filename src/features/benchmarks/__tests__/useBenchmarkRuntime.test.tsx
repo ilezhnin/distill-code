@@ -19,7 +19,7 @@ import { projectBenchmarkUsageBatch } from "@/features/stats/lib/usageLedger";
 import type { BenchmarkChange, UsageLedgerEntry } from "../types";
 import { runSummary } from "./fixtures";
 
-vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), warning: vi.fn() } }));
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkApi: {
@@ -218,6 +218,11 @@ describe("persistent benchmark runtime", () => {
       {
         ...runSummary,
         state: "completed",
+        warning: {
+          attemptId: "old-rate",
+          occurredAt: 10,
+          kind: "rate_limited",
+        },
         attention: {
           outcome: "pending_review",
           reason:
@@ -238,6 +243,77 @@ describe("persistent benchmark runtime", () => {
       expect(client.getQueryData(["benchmarks", "runs"])).toBeDefined(),
     );
     expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.warning).not.toHaveBeenCalled();
+    client.clear();
+  });
+
+  it("shows a temporary warning once, expires it and keeps actionable errors separate", async () => {
+    const active = { ...runSummary, state: "running", attention: null };
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([active]);
+    vi.mocked(benchmarkApi.getUsageLedger).mockResolvedValue([]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <Shell />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(["benchmarks", "runs"])).toEqual([active]),
+    );
+    const warned = {
+      ...active,
+      warning: {
+        attemptId: "rate-a",
+        occurredAt: 100,
+        kind: "rate_limited" as const,
+      },
+    };
+    act(() => client.setQueryData(["benchmarks", "runs"], [warned]));
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledOnce());
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringContaining("Temporary provider warning"),
+      expect.objectContaining({
+        id: `benchmark-warning-${active.id}`,
+        duration: 6000,
+        description: "The provider temporarily limited requests.",
+      }),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+    for (const state of ["pausing", "paused", "running", "completed"]) {
+      await act(() =>
+        client.setQueryData(
+          ["benchmarks", "runs"],
+          [{ ...warned, state, revision: 20 }],
+        ),
+      );
+    }
+    expect(toast.warning).toHaveBeenCalledOnce();
+    const next = {
+      ...warned,
+      warning: { ...warned.warning, attemptId: "rate-b", occurredAt: 200 },
+    };
+    await act(() => client.setQueryData(["benchmarks", "runs"], [next]));
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(2));
+    // Revealing an older warning again must not replay it.
+    await act(() => client.setQueryData(["benchmarks", "runs"], [warned]));
+    expect(toast.warning).toHaveBeenCalledTimes(2);
+    await act(() =>
+      client.setQueryData(
+        ["benchmarks", "runs"],
+        [
+          {
+            ...warned,
+            attention: {
+              outcome: "infrastructure_failure",
+              reason: "Sign-in required",
+            },
+          },
+        ],
+      ),
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
     client.clear();
   });
 

@@ -520,6 +520,10 @@ pub struct RunSummary {
     /// still pending comes before anything that settled.
     #[serde(default)]
     pub attention: Option<RunAttention>,
+    /// Latest temporary provider refusal, shown once as an expiring warning.
+    /// Its full diagnostic remains on the attempt, outside actionable attention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<RunWarning>,
     /// The recorded result of a workflow run's sole retained terminal root.
     /// Run lifecycle (including cancellation) does not replace this evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -534,6 +538,7 @@ pub struct RunSummary {
 pub struct WorkflowActivity {
     pub root_attempt_id: String,
     pub version_id: String,
+    pub repetition: u32,
     pub phase: String,
     pub outcome: Option<String>,
     pub steps: Vec<WorkflowStepActivity>,
@@ -564,6 +569,13 @@ pub struct WorkflowRunResult {
 pub struct RunAttention {
     pub outcome: Option<String>,
     pub reason: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWarning {
+    pub attempt_id: String,
+    pub occurred_at: i64,
+    pub kind: String,
 }
 /// A requested configuration and case with an attempt not yet terminal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

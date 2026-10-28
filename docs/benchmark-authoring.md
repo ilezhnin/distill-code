@@ -511,6 +511,14 @@ keeps leaving them out, including when it resumes or grows. Missing
 measurements, infrastructure failures and unsupported configurations are explicit
 states, not automatic failures or free execution. Preserve every planned outcome.
 
+Temporary provider rate limits, overloads and automatic quota waits produce a
+short warning notification, not a persistent operator-attention banner. Their
+diagnostics remain in attempt history; an older actionable failure stays visible
+even when a newer transient warning occurs. The compact activity strip groups
+active repetitions under one test name, with separate attempt indicators, clocks
+and step progress. Provider, model and effort remain in the run header and the
+detailed workflow view.
+
 The leaderboard lists each combination of provider, model, effort and fast
 mode once, and every row names its effort and fast mode: they are what a
 selection chooses, so each is scored only from its own cells. Accounts,

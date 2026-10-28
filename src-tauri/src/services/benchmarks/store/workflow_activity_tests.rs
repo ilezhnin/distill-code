@@ -96,6 +96,7 @@ async fn workflow_activity_uses_current_child_without_rewriting_root_or_evidence
     let (directory, store, version, configuration) = fixture().await;
     run(&store, &version, &configuration, "run", "pausing", 0).await;
     let mut root = attempt(&version, &configuration, "run", "root", "preparing", 0);
+    root.repetition = 3;
     root.session_id = Some("old-session".into());
     root.host_run_id = Some("old-turn".into());
     store.insert_attempt(&root).await.unwrap();
@@ -119,6 +120,7 @@ async fn workflow_activity_uses_current_child_without_rewriting_root_or_evidence
     assert_eq!(summary.workflow_activity.len(), 1);
     let activity = &summary.workflow_activity[0];
     assert_eq!(activity.root_attempt_id, "root");
+    assert_eq!(activity.repetition, 3);
     assert_eq!(activity.phase, "preparing");
     assert!(activity.outcome.is_none());
     assert_eq!(activity.steps.len(), 2);
@@ -138,7 +140,7 @@ async fn workflow_activity_uses_current_child_without_rewriting_root_or_evidence
     let projected = serde_json::to_value(activity).unwrap();
     assert!(projected["outcome"].is_null());
     assert!(projected["steps"][1]["finishedAt"].is_null());
-    assert_eq!(projected.as_object().unwrap().len(), 5);
+    assert_eq!(projected.as_object().unwrap().len(), 6);
     assert_eq!(projected["steps"][1].as_object().unwrap().len(), 9);
     assert!(!projected.to_string().contains("INVENTED_PRIVATE_"));
     assert_eq!(before, evidence_rows(&store).await);

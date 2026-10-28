@@ -302,6 +302,12 @@ export interface RunSummary {
   openCells?: OpenRunCell[];
   /** A judging failure during a run, or why the run waits for the operator. */
   attention?: { outcome: string | null; reason: string } | null;
+  /** Latest transient provider issue, announced once without a persistent banner. */
+  warning?: {
+    attemptId: string;
+    occurredAt: number;
+    kind: "rate_limited" | "provider_overloaded" | "quota_wait";
+  } | null;
   /** Recorded result of the sole retained terminal workflow root, independent of run lifecycle. */
   workflowResult?: { outcome: string; reason: string | null } | null;
   /** Entered workflows still executing or collecting; absent on older hosts. */
@@ -311,6 +317,7 @@ export interface RunSummary {
 export interface WorkflowActivity {
   rootAttemptId: string;
   versionId: string;
+  repetition?: number;
   phase: string;
   outcome: string | null;
   steps: WorkflowActivityStep[];

@@ -534,7 +534,7 @@ impl Store {
             "WITH recent_runs AS MATERIALIZED (
                 SELECT * FROM run_plans ORDER BY created_at DESC,id LIMIT 100
              ), recent_attempts AS MATERIALIZED (
-                SELECT a.run_id,a.configuration_id,a.version_id,a.phase,a.rowid,
+                SELECT a.id,a.run_id,a.configuration_id,a.version_id,a.phase,a.rowid,
                     json_extract(a.data_json,'$.outcome') AS outcome,
                     json_extract(a.data_json,'$.reason') AS reason,
                     json_extract(a.data_json,'$.observed.effort') AS observed_effort,
@@ -569,7 +569,8 @@ impl Store {
                         GROUP BY a.configuration_id,a.version_id ORDER BY MIN(a.rowid)) o)
                 END,
                 CASE WHEN r.state IN ('running','pausing','paused','needs_attention','completed') THEN
-                (SELECT json_array(a.outcome,a.reason)
+                (SELECT json_group_array(json_array(issue.outcome,issue.reason,issue.id,issue.finished_at))
+                 FROM (SELECT a.outcome,a.reason,a.id,a.finished_at
                     FROM recent_attempts a WHERE a.run_id=r.id
                         AND COALESCE(a.reason,'')<>''
                         AND ((a.phase='terminal' AND a.outcome='pending_review'
@@ -585,7 +586,7 @@ impl Store {
                         (a.phase='pending') DESC,
                         (a.reason LIKE 'No judge panel:%') DESC,
                         COALESCE(a.finished_at,0) DESC, a.rowid DESC
-                    LIMIT 1)
+                    ) issue)
                 END,
                 r.baked_at,
                 CASE WHEN json_extract(r.request_json,'$.workflowPolicy') IS NOT NULL
@@ -614,6 +615,7 @@ impl Store {
         tx.commit().await?;
         rows.into_iter()
             .map(|r| {
+                let (attention, warning) = run_issues(r.get(10));
                 Ok(RunSummary {
                     id: r.get(0),
                     state: r.get(1),
@@ -630,7 +632,8 @@ impl Store {
                     settled_cell_count: settled_cells(r.get(16))?,
                     observed_selections: observed_selections(r.get(8)),
                     open_cells: open_cells(r.get(9)),
-                    attention: run_attention(r.get(10)),
+                    attention,
+                    warning,
                     workflow_result: r
                         .get::<Option<String>, _>(12)
                         .and_then(|raw| serde_json::from_str(&raw).ok()),
@@ -1510,17 +1513,84 @@ fn observed_selections(rows: Option<&str>) -> Vec<ObservedRunSelection> {
     selections
 }
 
-/// The cells a run still has work on, from distinct rows of
-/// `[configuration id, version id, 1 while an attempt of it runs]`.
-/// The attempt that parked a run, as the summary query lists it.
-fn run_attention(raw: Option<String>) -> Option<RunAttention> {
-    let value: serde_json::Value = serde_json::from_str(raw.as_deref()?).ok()?;
-    let pair = value.as_array()?;
-    let reason = pair.get(1)?.as_str()?.to_owned();
-    Some(RunAttention {
-        outcome: pair.first().and_then(|v| v.as_str()).map(str::to_owned),
-        reason,
-    })
+/// Keep the first actionable cause in query priority order and the newest
+/// transient failure or current quota wait separately. Neither hides an older blocker.
+fn run_issues(raw: Option<String>) -> (Option<RunAttention>, Option<RunWarning>) {
+    type Issue = (Option<String>, String, String, Option<i64>);
+    let issues: Vec<Issue> = raw
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let mut attention = None;
+    let mut warning: Option<RunWarning> = None;
+    for (outcome, reason, attempt_id, finished_at) in issues {
+        if let Some(kind) = temporary_provider_issue(outcome.as_deref(), &reason) {
+            let occurred_at = finished_at.unwrap_or_default();
+            if warning.as_ref().is_none_or(|before| {
+                before.kind != "quota_wait"
+                    && (kind == "quota_wait" || occurred_at > before.occurred_at)
+            }) {
+                warning = Some(RunWarning {
+                    attempt_id,
+                    occurred_at,
+                    kind: kind.into(),
+                });
+            }
+        } else if attention.is_none() {
+            attention = Some(RunAttention { outcome, reason });
+        }
+    }
+    (attention, warning)
+}
+
+fn temporary_provider_issue(outcome: Option<&str>, reason: &str) -> Option<&'static str> {
+    if !matches!(outcome, None | Some("infrastructure_failure")) {
+        return None;
+    }
+    // Inspect only the error message, never identifiers or quoted payload data.
+    let parsed: serde_json::Value;
+    let message = if reason.trim_start().starts_with('{') {
+        parsed = serde_json::from_str(reason).ok()?;
+        if outcome.is_none()
+            && ["kind", "type"]
+                .iter()
+                .any(|key| parsed["data"][key] == "account_quota_wait")
+        {
+            return Some("quota_wait");
+        }
+        parsed.get("message")?.as_str()?
+    } else {
+        reason
+    }
+    .to_ascii_lowercase();
+    if outcome.is_none() {
+        return None;
+    }
+    if [
+        "rate limit",
+        "rate_limit",
+        "ratelimit",
+        "rate-limit",
+        "too many requests",
+    ]
+    .iter()
+    .any(|signal| message.contains(signal))
+    {
+        Some("rate_limited")
+    } else if [
+        "overloaded_error",
+        "model is overloaded",
+        "server is overloaded",
+        "service may be temporarily overloaded",
+        "currently overloaded",
+    ]
+    .iter()
+    .any(|signal| message.contains(signal))
+    {
+        Some("provider_overloaded")
+    } else {
+        // HTTP 429 alone can also mean exhausted quota or insufficient funds.
+        None
+    }
 }
 
 /// Only entered roots can contribute live child metadata. The run/phase index
@@ -1528,6 +1598,7 @@ fn run_attention(raw: Option<String>) -> Option<RunAttention> {
 /// root/index key. Protected step inputs and outputs never leave SQLite.
 const WORKFLOW_ACTIVITY_SQL: &str = "WITH selected_roots AS MATERIALIZED (
     SELECT a.id,a.run_id,a.version_id,a.phase,a.rowid AS root_order,
+        a.repetition,
         json_extract(a.data_json,'$.outcome') AS outcome
     FROM json_each(?) listed
     JOIN run_plans r ON r.id=listed.value
@@ -1549,7 +1620,7 @@ const WORKFLOW_ACTIVITY_SQL: &str = "WITH selected_roots AS MATERIALIZED (
                 'configuration',json(COALESCE(json_extract(s.data_json,'$.observed'),
                     json_extract(s.data_json,'$.configuration')))) AS step
             FROM workflow_steps s WHERE s.root_attempt_id=a.id ORDER BY s.step_index
-        ))
+        )), a.repetition
     FROM selected_roots a JOIN benchmark_versions v ON v.id=a.version_id
     WHERE json_type(v.manifest_json,'$.workflow')='object'
     ORDER BY a.root_order";
@@ -1576,6 +1647,7 @@ async fn workflow_activity(
                 phase: row.get(3),
                 outcome: row.get(4),
                 steps: serde_json::from_str(row.get(5))?,
+                repetition: row.get::<i64, _>(6) as u32,
             });
     }
     Ok(activity)
@@ -2430,18 +2502,100 @@ mod tests {
     }
     #[test]
     fn a_run_summary_names_the_attempt_that_parked_it() {
-        let parsed = run_attention(Some(
-            r#"["dispatch_uncertain","Remote acceptance cannot be established after restart"]"#
+        let parsed = run_issues(Some(
+            r#"[["dispatch_uncertain","Remote acceptance cannot be established after restart","attempt",100]]"#
                 .into(),
         ))
-        .unwrap();
+        .0.unwrap();
         assert_eq!(parsed.outcome.as_deref(), Some("dispatch_uncertain"));
         assert!(parsed.reason.starts_with("Remote acceptance"));
         // A pending quota wait carries no outcome yet.
-        let waiting = run_attention(Some(r#"[null,"the usage limit ran out"]"#.into())).unwrap();
+        let waiting = run_issues(Some(
+            r#"[[null,"the usage limit ran out","attempt",null]]"#.into(),
+        ))
+        .0
+        .unwrap();
         assert_eq!(waiting.outcome, None);
-        assert_eq!(run_attention(None), None);
-        assert_eq!(run_attention(Some("[]".into())), None);
+        assert_eq!(run_issues(None), (None, None));
+        assert_eq!(run_issues(Some("[]".into())), (None, None));
+    }
+    #[test]
+    fn temporary_warnings_require_provider_evidence_and_keep_quota_failures_actionable() {
+        for reason in [
+            r#"{"message":"Internal error: Rate limit reached for requests","data":{"accountId":"private-account"}}"#,
+            "Too many requests",
+        ] {
+            assert_eq!(
+                temporary_provider_issue(Some("infrastructure_failure"), reason),
+                Some("rate_limited")
+            );
+            assert_eq!(
+                temporary_provider_issue(Some("budget_timeout"), reason),
+                None
+            );
+        }
+        assert_eq!(
+            temporary_provider_issue(
+                Some("infrastructure_failure"),
+                "The service may be temporarily overloaded, please try again later"
+            ),
+            Some("provider_overloaded")
+        );
+        assert_eq!(
+            temporary_provider_issue(None, r#"{"data":{"kind":"account_quota_wait"}}"#),
+            Some("quota_wait")
+        );
+        for reason in [
+            "Weekly/Monthly Limit Exhausted",
+            "HTTP 429: Insufficient balance",
+            "Authentication failed",
+            r#"{"message":"Request failed","data":{"accountId":"rate limit"}}"#,
+            r#"{"message":"rate limit""#,
+        ] {
+            assert_eq!(
+                temporary_provider_issue(Some("infrastructure_failure"), reason),
+                None,
+                "{reason}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_warnings_do_not_mask_actionable_errors_or_change_attempt_history() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let definition = store
+            .save_draft(None, None, super::super::seeds::definitions().remove(0))
+            .await
+            .unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        let config = json!({"id":"c","providerId":"provider","accountId":null,"modelId":"model","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+        let req = json!({"requestKey":"warnings","versionIds":[version.id],"configurations":[config],"repetitions":3,"timeoutSeconds":30,"maxExecutions":3});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES('run','warnings','running',1,0,0,?)").bind(req.to_string()).execute(&store.pool).await.unwrap();
+        let rate_reason = json!({"code":-32603,"message":"Internal error: Rate limit reached for requests","data":{"dispatchStarted":true,"promptNotAccepted":false}}).to_string();
+        let rate = json!({"outcome":"infrastructure_failure","reason":rate_reason,"finishedAt":200,"output":"retained private evidence","evaluations":[]}).to_string();
+        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES('rate','run',?,'c',1,'terminal',?)").bind(&version.id).bind(&rate).execute(&store.pool).await.unwrap();
+        for state in ["running", "pausing", "paused", "completed"] {
+            store.set_run_state("run", state).await.unwrap();
+            let summary = store.runs().await.unwrap().remove(0);
+            assert!(summary.attention.is_none(), "{state}");
+            let warning = summary.warning.unwrap();
+            assert_eq!(warning.attempt_id, "rate");
+            assert_eq!(warning.occurred_at, 200);
+            assert_eq!(warning.kind, "rate_limited");
+        }
+        let blocker = json!({"outcome":"infrastructure_failure","reason":"Sign-in required","finishedAt":100,"evaluations":[]});
+        sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES('blocker','run',?,'c',2,'terminal',?)").bind(&version.id).bind(blocker.to_string()).execute(&store.pool).await.unwrap();
+        let summary = store.runs().await.unwrap().remove(0);
+        assert_eq!(summary.attention.unwrap().reason, "Sign-in required");
+        assert_eq!(summary.warning.unwrap().kind, "rate_limited");
+        let retained: String = sqlx::query_scalar("SELECT data_json FROM attempts WHERE id='rate'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(retained, rate);
+        directory.close().await;
     }
     #[tokio::test]
     async fn catalog_seed_sets_insert_new_vendors_once() {
@@ -2694,8 +2848,15 @@ mod tests {
             assert_eq!(summary.workflow_result, expected, "{run_id}");
             assert_eq!(
                 summary.attention.is_some(),
-                outcome == Some("infrastructure_failure") || run_id == "quota-wait",
+                outcome == Some("infrastructure_failure"),
                 "{run_id}"
+            );
+            assert_eq!(
+                summary
+                    .warning
+                    .as_ref()
+                    .map(|warning| warning.kind.as_str()),
+                (run_id == "quota-wait").then_some("quota_wait")
             );
         }
         let serialized = serde_json::to_value(&summaries).unwrap();

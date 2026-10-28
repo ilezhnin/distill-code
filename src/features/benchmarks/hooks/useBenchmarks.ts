@@ -246,6 +246,7 @@ function useBenchmarkRunNotifications(enabled: boolean) {
     refetchIntervalInBackground: true,
   });
   const previous = useRef<Map<string, RunSummary> | null>(null);
+  const warned = useRef(new Set<string>());
   useEffect(() => {
     if (!runs.data) return;
     if (previous.current) {
@@ -256,7 +257,8 @@ function useBenchmarkRunNotifications(enabled: boolean) {
           (before.revision !== run.revision ||
             before.state !== run.state ||
             before.settledCount !== run.settledCount ||
-            before.attention?.reason !== run.attention?.reason)
+            before.attention?.reason !== run.attention?.reason ||
+            before.warning?.attemptId !== run.warning?.attemptId)
         ) {
           void client.invalidateQueries({
             queryKey: benchmarkKeys,
@@ -265,7 +267,33 @@ function useBenchmarkRunNotifications(enabled: boolean) {
               query.queryKey[2] === run.id,
           });
         }
-        if (run.request.preview || !run.attention) continue;
+        if (run.request.preview) continue;
+        const model = [
+          ...new Set(
+            run.request.configurations.map((entry) => modelDisplayName(entry)),
+          ),
+        ].join(", ");
+        if (
+          run.warning &&
+          !warned.current.has(
+            `${run.id}:${run.warning.attemptId}:${run.warning.kind}`,
+          )
+        ) {
+          toast.warning(t("runIssues.temporaryWarning", { model }), {
+            id: `benchmark-warning-${run.id}`,
+            description: t(
+              run.warning.kind === "rate_limited"
+                ? "runIssues.rateLimited"
+                : run.warning.kind === "quota_wait"
+                  ? "runIssues.quotaWait"
+                  : "runIssues.providerOverloaded",
+            ),
+            duration: 6000,
+            closeButton: true,
+            classNames: { icon: "text-warning" },
+          });
+        }
+        if (!run.attention) continue;
         const stopped = ["needs_attention", "completed", "paused"].includes(
           run.state,
         );
@@ -275,11 +303,6 @@ function useBenchmarkRunNotifications(enabled: boolean) {
             stopped
         )
           continue;
-        const model = [
-          ...new Set(
-            run.request.configurations.map((entry) => modelDisplayName(entry)),
-          ),
-        ].join(", ");
         toast.error(
           t(
             stopped
@@ -304,6 +327,12 @@ function useBenchmarkRunNotifications(enabled: boolean) {
       }
     }
     previous.current = new Map(runs.data.map((run) => [run.id, run]));
+    for (const run of runs.data) {
+      if (run.warning)
+        warned.current.add(
+          `${run.id}:${run.warning.attemptId}:${run.warning.kind}`,
+        );
+    }
   }, [runs.data, t, client]);
 }
 

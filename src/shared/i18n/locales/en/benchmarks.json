@@ -438,6 +438,7 @@
     "window": "Finish before {{until}}; after that the run is recorded as it stands."
   },
   "activity": {
+    "workflowTask": "Workflow test",
     "attention": "Needs attention: {{count}} runs",
     "title": "Runs in progress",
     "progress": "{{settled}} / {{total}}",
@@ -1116,6 +1117,10 @@
     "incompletePanel": "The judge panel did not return all required scores.",
     "notification": "Judging failed: {{model}}",
     "executionFailed": "Benchmark execution failed: {{model}}",
+    "temporaryWarning": "Temporary provider warning: {{model}}",
+    "rateLimited": "The provider temporarily limited requests.",
+    "providerOverloaded": "The provider is temporarily overloaded.",
+    "quotaWait": "The provider's usage allowance is temporarily exhausted. Queued work can continue after it resets.",
     "stopped": "Run stopped: {{model}}"
   }
 }
