@@ -57,6 +57,18 @@ models selected by opening a session with an explicit model name remain
 selectable even when absent from the bridge's short model menu. Dispatch still
 requires the runtime to acknowledge the exact requested model and options.
 
+After a sandbox or CLI update, explicit Resume validates the same account,
+model, profile, billing mode and options against the current catalogue. Only
+unstarted work and fresh replacements adopt the installed runtime revision.
+Sealed answers return to judging without being generated again, and completed
+measurements retain their original evidence. Research workflows and runs that
+forbid retries keep their frozen conditions. An unavailable selection stops
+continuation instead of substituting another model.
+
+Run cards distinguish queued judges from accepted judge calls. Resource waits
+have their own clock; stopped queues do not animate. Accepted calls that are
+still finishing retain their execution clock when another test needs attention.
+
 All benchmark candidates, model inventory probes, judges, repository checks,
 JavaScript checks and browser rendering require the dedicated WSL distribution.
 Ordinary chats keep their existing provider runtime. With WSL

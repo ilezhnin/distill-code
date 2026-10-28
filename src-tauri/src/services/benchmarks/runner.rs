@@ -10374,6 +10374,8 @@ pub struct FakeBackend {
     #[cfg(test)]
     inventory_delay_ms: std::sync::atomic::AtomicU64,
     #[cfg(test)]
+    inventory_revision: std::sync::Mutex<Option<String>>,
+    #[cfg(test)]
     resource_busy: std::sync::atomic::AtomicBool,
     /// Host headroom probes the dispatcher made.
     #[cfg(test)]
@@ -10594,6 +10596,14 @@ impl ExecutionBackend for FakeBackend {
                 .lock()
                 .map(|levels| levels.clone())
                 .unwrap_or_default();
+            let revision = "fake-v1".to_owned();
+            #[cfg(test)]
+            let revision = self
+                .inventory_revision
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(revision);
             Ok(["fake-pass", "fake-fail"]
                 .into_iter()
                 .map(|id| InventoryModel {
@@ -10606,7 +10616,7 @@ impl ExecutionBackend for FakeBackend {
                         fast_mode: None,
                         billing_mode: "simulated".into(),
                         execution_profile: "native_text".into(),
-                        inventory_revision: Some("fake-v1".into()),
+                        inventory_revision: Some(revision.clone()),
                         model_name: None,
                     },
                     name: id.into(),
@@ -15173,7 +15183,21 @@ mod tests {
         assert!(capture.violation.is_none());
         let record = capture.evidence.close(json!({"terminalDispatch": {}}));
         let events = record.as_array().unwrap();
-        assert_eq!(events.len(), 1_501);
+        // Adjacent chunks are compacted without losing their text or the
+        // distinction between the answer and reasoning.
+        let recorded_answer: String = events
+            .iter()
+            .filter(|event| event["update"]["sessionUpdate"] == "agent_message_chunk")
+            .filter_map(|event| event["update"]["content"]["text"].as_str())
+            .collect();
+        assert_eq!(recorded_answer, answer);
+        let thoughts: String = events
+            .iter()
+            .filter(|event| event["update"]["sessionUpdate"] == "agent_thought_chunk")
+            .filter_map(|event| event["update"]["content"]["text"].as_str())
+            .collect();
+        assert_eq!(thoughts, " thinking".repeat(150));
+        assert_eq!(events.last().unwrap(), &json!({"terminalDispatch": {}}));
         assert!(events.iter().all(|e| e.get("evidenceTruncated").is_none()));
         assert!(events[1].get("_meta").is_none() && events[1]["update"].get("_meta").is_none());
     }
@@ -16923,6 +16947,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_refreshes_only_pending_and_replacement_runtime_pins() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        let mut failed = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        failed.phase = "terminal".into();
+        failed.outcome = Some("execution_failed".into());
+        s.store.save_attempt(&failed).await.unwrap();
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        *backend.inventory_revision.lock().unwrap() = Some("fake-v2".into());
+        let resumed = s.control(&run.id, "resume").await.unwrap();
+        assert_eq!(resumed.state, "running");
+        let pending: Vec<_> = resumed
+            .attempts
+            .iter()
+            .filter(|a| a.phase == "pending")
+            .collect();
+        assert_eq!(pending.len(), 2);
+        for attempt in pending {
+            assert_eq!(
+                attempt.configuration.inventory_revision.as_deref(),
+                Some("fake-v2")
+            );
+            assert_eq!(
+                attempt.configuration.model_id,
+                failed.configuration.model_id
+            );
+            assert_eq!(
+                attempt.configuration.account_id,
+                failed.configuration.account_id
+            );
+        }
+        let original = s.store.attempt(&failed.id).await.unwrap();
+        assert_eq!(
+            original.configuration.inventory_revision.as_deref(),
+            Some("fake-v1")
+        );
+        assert_eq!(original.outcome.as_deref(), Some("superseded"));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn resume_refuses_changed_model_options_without_mutating_the_run() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        *backend.inventory_revision.lock().unwrap() = Some("fake-v2".into());
+        *backend.effort_levels.lock().unwrap() = vec!["high".into()];
+        let error = s.control(&run.id, "resume").await.unwrap_err();
+        assert_eq!(error.code, "selection_changed");
+        let unchanged = s.store.run(&run.id).await.unwrap();
+        assert_eq!(unchanged.state, "paused");
+        assert_eq!(
+            unchanged.request.configurations[0]
+                .inventory_revision
+                .as_deref(),
+            Some("fake-v1")
+        );
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    #[tokio::test]
     async fn resume_retries_an_incomplete_panel_without_regenerating_the_sealed_answer() {
         let (dir, s, backend) = setup().await;
         let run = s.start_run(creative_request(&s).await).await.unwrap();
@@ -16940,8 +17030,19 @@ mod tests {
             .set_run_state(&run.id, "needs_attention")
             .await
             .unwrap();
+        *backend.inventory_revision.lock().unwrap() = Some("fake-v2".into());
         s.control(&run.id, "resume").await.unwrap();
         let queued = s.store.attempt(id).await.unwrap();
+        assert_eq!(
+            queued.configuration.inventory_revision.as_deref(),
+            Some("fake-v1")
+        );
+        assert_eq!(
+            s.store.run(&run.id).await.unwrap().request.configurations[0]
+                .inventory_revision
+                .as_deref(),
+            Some("fake-v1")
+        );
         assert_eq!(queued.phase, AWAITING_JUDGES);
         assert_eq!(queued.output, output);
         s.tick().await.unwrap();

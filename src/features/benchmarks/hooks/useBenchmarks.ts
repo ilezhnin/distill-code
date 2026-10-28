@@ -275,9 +275,11 @@ function useBenchmarkRunNotifications(enabled: boolean) {
             stopped
         )
           continue;
-        const model = run.request.configurations
-          .map((entry) => modelDisplayName(entry))
-          .join(", ");
+        const model = [
+          ...new Set(
+            run.request.configurations.map((entry) => modelDisplayName(entry)),
+          ),
+        ].join(", ");
         toast.error(
           t(
             stopped

@@ -71,6 +71,19 @@ it("ticks waiting beside the yellow label while active work stays fixed, includi
 it("continues only active work after waiting ends and fixes it when the task settles", () => {
   const running = attempt({
     reason: null,
+    evaluations: [
+      {
+        id: "invented-judge",
+        evaluatorRevision: "1",
+        verdict: "pending_review",
+        score: null,
+        reason: "",
+        createdAt: start + 4 * 3_600_000,
+        provenance: "judge",
+        artifacts: [],
+        details: { inFlight: true },
+      },
+    ],
     activity: {
       recordedFrom: start,
       spans: [

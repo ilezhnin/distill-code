@@ -200,6 +200,13 @@ function Get-LiveTauriDevProcesses {
 
 function Show-ExistingApp {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
+    # AppActivate alone cannot reveal the hidden main window after an early
+    # renderer failure. A second instance invokes the app's native show/focus
+    # callback and exits without creating another host or touching its turns.
+    $existing = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -ne $existing -and -not [string]::IsNullOrWhiteSpace($existing.Path)) {
+        Start-Process -FilePath $existing.Path -WindowStyle Hidden | Out-Null
+    }
     try {
         Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop
         [Microsoft.VisualBasic.Interaction]::AppActivate($ProcessId)

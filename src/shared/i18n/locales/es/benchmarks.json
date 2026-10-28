@@ -353,7 +353,8 @@
     "start": "Iniciar lote",
     "preview": "Vista previa de desarrollo. Excluida de los tableros y del gráfico histórico.",
     "budgetTitle": "Ajustes de ejecución",
-    "outdatedHint": "Esta ejecución se creó para una versión anterior del sandbox o de la CLI que la aplicación ya no tiene, así que no puede continuar: reanudarla solo sería rechazado. Cancélala y luego inicia una nueva ejecución para las pruebas pendientes desde la página del modelo."
+    "frozenRuntimeHint": "Esta ejecución de investigación requiere su entorno original, que ya no está disponible. Sus condiciones no pueden cambiar al reanudar.",
+    "outdatedHint": "El sandbox o la CLI cambió desde el inicio. Reanudar comprueba los mismos modelos en la versión instalada y continúa las pruebas pendientes. Se conservan las respuestas y los resultados guardados."
   },
   "modelRun": {
     "allTests": "Todas las pruebas",
@@ -374,6 +375,7 @@
     "stoppedCredits": "Uso del plan agotado, créditos no permitidos, detenida",
     "running": "En curso",
     "judging": "Jueces",
+    "waitingJudges": "Esperando a los jueces",
     "paused": "En pausa",
     "start": "Iniciar",
     "stop": "Detener",
@@ -398,9 +400,9 @@
     "measured": "Medidas",
     "remaining": "Pendientes",
     "archivedNotice": "Esta ejecución está archivada. Inicia otra para las pruebas pendientes.",
-    "runtimeUpdated": "Hace falta una nueva ejecución",
-    "runtimeNotice": "Esta ejecución usó un entorno anterior. Deténla e inicia otra para las pruebas pendientes.",
-    "runtimeStoppedNotice": "Esta ejecución usó un entorno anterior. Inicia otra para las pruebas pendientes.",
+    "runtimeUpdated": "Entorno de ejecución actualizado",
+    "runtimeNotice": "El entorno cambió. Pausa y reanuda para comprobar los mismos modelos en la versión instalada y continuar las pruebas pendientes. Se conservan las respuestas y los resultados.",
+    "runtimeStoppedNotice": "El entorno cambió. Continúa para comprobar los mismos modelos en la versión instalada y terminar esta ejecución. Se conservan las respuestas y los resultados.",
     "completeNotice": "Todas las pruebas están medidas. Medir de nuevo inicia una ejecución de pago.",
     "waitingResources": "Esperando recursos locales",
     "readinessBlocked": "No se puede iniciar ni continuar",

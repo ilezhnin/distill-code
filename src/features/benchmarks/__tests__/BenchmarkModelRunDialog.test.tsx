@@ -1106,7 +1106,7 @@ it("says a run's window closed and offers a new run for the tests it still owed"
   expect(benchmarkApi.resumeRun).not.toHaveBeenCalled();
 });
 
-it("says a paused run made for an older runtime cannot go on and offers only Stop", async () => {
+it("resumes a paused run after checking the current runtime", async () => {
   const user = userEvent.setup();
   const old = stoppedRun("paused", [
     { versionId: "version-1", outcome: "pass", score: 1 },
@@ -1124,16 +1124,14 @@ it("says a paused run made for an older runtime cannot go on and offers only Sto
   });
   show({ runId: "run-2" });
   expect(
-    await screen.findByText(/This run used an earlier execution environment/),
-  ).toHaveTextContent(/Stop it, then start a new run for the remaining tests/);
-  for (const name of ["Resume", "Pause", "Start run", "Start"])
-    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Stop" }));
-  expect(benchmarkApi.cancelRun).toHaveBeenCalledWith("run-2");
-  expect(benchmarkApi.resumeRun).not.toHaveBeenCalled();
+    await screen.findByText(/The execution environment changed/),
+  ).toHaveTextContent(/Saved answers and results are kept/);
+  await user.click(screen.getByRole("button", { name: "Resume" }));
+  expect(benchmarkApi.resumeRun).toHaveBeenCalledWith("run-2");
+  expect(benchmarkApi.cancelRun).not.toHaveBeenCalled();
 });
 
-it("offers a new run for the owed tests once a run made for an older runtime is stopped", async () => {
+it("continues the same cancelled run after a runtime update", async () => {
   const user = userEvent.setup();
   const old = stoppedRun("cancelled", [
     { versionId: "version-1", outcome: "pass", score: 1 },
@@ -1151,29 +1149,19 @@ it("offers a new run for the owed tests once a run made for an older runtime is 
       attemptIds: old.summaries.map((entry) => entry.id),
     },
   });
-  const start = await screen.findByRole("button", { name: "Start" });
+  const start = await screen.findByRole("button", { name: "Start run" });
   await waitFor(() => expect(start).toBeEnabled());
-  expect(
-    screen.getByText(/This run used an earlier execution environment/),
-  ).toBeInTheDocument();
-  expect(screen.getByText("New run required")).toBeInTheDocument();
-  expect(screen.queryByText(/Stop it/)).toBeNull();
-  expect(
-    screen.queryByRole("button", { name: "Start run" }),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText("New run required")).toBeNull();
   const row = (name: string) =>
     within(screen.getByText(name).closest("label") as HTMLElement);
-  expect(row("Alpha").getByRole("checkbox")).not.toBeChecked();
+  // Completed cells stay in the same run and cannot be selected for replay.
+  expect(row("Alpha").getByRole("checkbox")).toBeChecked();
+  expect(row("Alpha").getByRole("checkbox")).toBeDisabled();
   expect(row("Echo").getByRole("checkbox")).toBeChecked();
   await user.click(start);
-  await waitFor(() => expect(benchmarkApi.startRun).toHaveBeenCalledTimes(1));
-  const [request, replacing] = vi.mocked(benchmarkApi.startRun).mock.calls[0];
-  expect(replacing).toBeUndefined();
-  expect(request.versionIds).toHaveLength(5);
-  expect(request.versionIds).not.toContain("version-1");
-  // The new run is pinned to today's runtime.
-  expect(request.configurations[0].inventoryRevision).toBe("runtime-now");
-  expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
+  await waitFor(() => expect(benchmarkApi.extendRun).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(benchmarkApi.extendRun).mock.calls[0][0]).toBe("run-2");
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
 });
 
 it("owes exactly what the board names incomplete, a carried cell included", async () => {
@@ -1399,7 +1387,7 @@ it("keeps a run going when only a profile with nothing left went stale", async (
   expect(screen.queryByText(/older sandbox or CLI version/)).toBeNull();
 });
 
-it("stops a run whose repository configuration went stale", async () => {
+it("allows continuation when the repository configuration needs a runtime refresh", async () => {
   bothProfiles("repository-newer");
   const paused = stoppedRun("paused", [
     { versionId: "version-1", outcome: "pass", score: 1 },
@@ -1421,9 +1409,9 @@ it("stops a run whose repository configuration went stale", async () => {
     definitions: [test(1, "Alpha"), repositoryTest(2, "Ledger")],
   });
   expect(
-    await screen.findByText(/This run used an earlier execution environment/),
+    await screen.findByText(/The execution environment changed/),
   ).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
 });
 

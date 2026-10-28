@@ -107,7 +107,11 @@ function verdictOf(
   dots: DotState[],
   status: TestStatus | null,
 ): TaskCell["verdict"] {
-  if (dots.includes("running") || status?.kind === "waiting") return "running";
+  if (
+    dots.includes("running") ||
+    (status?.kind === "waiting" && !status.stopped)
+  )
+    return "running";
   // An unscored test failed only on a quality outcome; one that stopped on
   // infrastructure or admission is not done yet.
   if (
@@ -198,7 +202,12 @@ export function taskCells(
           a.phase !== "terminal" &&
           !finished(a))
       )
-        return "running";
+        return stateOf(a) === "needs_attention" &&
+          !["running", "judging"].includes(
+            testStatus([a], scores, stateOf(a))?.kind ?? "",
+          )
+          ? "stopped"
+          : "running";
       // Before its score arrives a settled attempt reads by its outcome, as
       // the ledger counts it; one that never started, was cancelled or
       // stopped on infrastructure is a gap, not a failure.

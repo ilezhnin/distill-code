@@ -5,6 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockInstallRendererDiagnostics = vi.hoisted(() => vi.fn());
 const mockReportRendererError = vi.hoisted(() => vi.fn());
 const mockInvoke = vi.hoisted(() => vi.fn());
+const mockShowMainWindow = vi.hoisted(() => vi.fn());
+
+vi.mock("@/app/lib/showMainWindow", () => ({
+  showMainWindow: mockShowMainWindow,
+}));
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("@/shared/styles/globals.css", () => ({}));
@@ -61,6 +66,7 @@ describe("main entrypoint telemetry startup", () => {
     vi.resetModules();
     vi.clearAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
     mockInvoke.mockResolvedValue("fresh-with-landing-v1");
     globalThis.fetch = vi.fn() as typeof globalThis.fetch;
   });
@@ -68,11 +74,14 @@ describe("main entrypoint telemetry startup", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     localStorage.clear();
+    sessionStorage.clear();
+    vi.doUnmock("@/app/renderRoot");
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
   });
 
   it("renders the main app without native boot work or telemetry traffic", async () => {
+    sessionStorage.setItem("flock:startup-module-retry", "1");
     await loadMainAt("");
 
     await screen.findByTestId("main-app");
@@ -81,5 +90,23 @@ describe("main entrypoint telemetry startup", () => {
     expect(mockInstallRendererDiagnostics).toHaveBeenCalledWith({
       windowKind: "main",
     });
+    expect(sessionStorage.getItem("flock:startup-module-retry")).toBeNull();
+  });
+
+  it("reveals a recovery window when the renderer module cannot load", async () => {
+    const error = new TypeError(
+      "Failed to fetch dynamically imported module: invented-renderer",
+    );
+    sessionStorage.setItem("flock:startup-module-retry", "1");
+    vi.doMock("@/app/renderRoot", () => ({
+      get renderApp() {
+        throw error;
+      },
+    }));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await loadMainAt("");
+    expect(screen.getByRole("alert")).toHaveTextContent(error.message);
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    expect(mockShowMainWindow).toHaveBeenCalledOnce();
   });
 });

@@ -464,19 +464,20 @@ it("keeps a partially scored case unsettled while another repetition awaits revi
   });
   await found("Alpha");
   expect(screen.getByText("0 / 1 tests settled")).toBeInTheDocument();
-  expect(screen.getByText("In progress").nextSibling?.textContent).toBe("1");
+  expect(screen.getByText("In progress").nextSibling?.textContent).toBe("0");
+  expect(screen.getByText("Not counted").nextSibling?.textContent).toBe("1");
 });
 
-it("offers a paused run made for an older runtime only Cancel, and says why", async () => {
+it("offers to resume a paused run on the current runtime while keeping its results", async () => {
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue(
     listing("sandbox-now"),
   );
   show({ ...run, id: "run-old", state: "paused", attempts: attempts() });
   expect(
-    await screen.findByText(/made for an older sandbox or CLI version/),
+    await screen.findByText(/The sandbox or CLI changed/),
   ).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Cancel run" })).toBeEnabled();
   expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
     configuration.providerId,

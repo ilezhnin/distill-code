@@ -146,7 +146,22 @@ describe("persistent benchmark runtime", () => {
   });
 
   it("reports failed judging from another page and reports its stop without notification spam", async () => {
-    const active = { ...runSummary, state: "running", attention: null };
+    const active = {
+      ...runSummary,
+      state: "running",
+      attention: null,
+      request: {
+        ...runSummary.request,
+        configurations: runSummary.request.configurations.flatMap((entry) => [
+          entry,
+          {
+            ...entry,
+            id: `${entry.id}:repository`,
+            executionProfile: "native_repository",
+          },
+        ]),
+      },
+    };
     vi.mocked(benchmarkApi.listRuns).mockResolvedValue([active]);
     vi.mocked(benchmarkApi.getUsageLedger).mockResolvedValue([]);
     const client = new QueryClient({
@@ -192,7 +207,7 @@ describe("persistent benchmark runtime", () => {
     );
     await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2));
     expect(toast.error).toHaveBeenLastCalledWith(
-      expect.stringContaining("Run stopped"),
+      `Run stopped: ${runSummary.request.configurations[0].modelName ?? runSummary.request.configurations[0].modelId}`,
       expect.objectContaining({ id: `benchmark-attention-${active.id}` }),
     );
     client.clear();

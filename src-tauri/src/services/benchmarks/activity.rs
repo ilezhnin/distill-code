@@ -2,7 +2,23 @@
 use super::types::{ActivityKind, ActivitySpan, Attempt, AttemptActivity};
 
 pub(super) fn kind(attempt: &Attempt, state: &str) -> Option<ActivityKind> {
-    if !matches!(state, "running" | "pausing" | "cancelling")
+    let judging = attempt.phase_times.as_ref().is_some_and(|times| {
+        times
+            .get("judgeStarted")
+            .is_some_and(|start| times.get("judgeFinished").is_none_or(|end| start > end))
+    });
+    let resource_wait = attempt
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.starts_with("Waiting for local resources"));
+    // An unrelated attempt can stop dispatch while accepted calls still drain.
+    let draining = state == "needs_attention"
+        && !resource_wait
+        && (matches!(
+            attempt.phase.as_str(),
+            "preparing" | "dispatching" | "running" | "collecting"
+        ) || attempt.phase == "awaiting_judges" && judging);
+    if !(matches!(state, "running" | "pausing" | "cancelling") || draining)
         || matches!(attempt.phase.as_str(), "terminal" | "interrupted")
     {
         return None;
@@ -15,11 +31,6 @@ pub(super) fn kind(attempt: &Attempt, state: &str) -> Option<ActivityKind> {
     {
         return Some(ActivityKind::Waiting);
     }
-    let judging = attempt.phase_times.as_ref().is_some_and(|times| {
-        times
-            .get("judgeStarted")
-            .is_some_and(|start| times.get("judgeFinished").is_none_or(|end| start > end))
-    });
     if attempt.phase == "awaiting_judges" && !judging {
         return Some(ActivityKind::Waiting);
     }

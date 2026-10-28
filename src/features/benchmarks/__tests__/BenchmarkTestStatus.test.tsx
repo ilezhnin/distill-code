@@ -16,6 +16,19 @@ const judging: StatusAttempt = {
   finishedAt: null,
   durationMs: null,
   startedAt: 0,
+  evaluations: [
+    {
+      id: "judge",
+      evaluatorRevision: "1",
+      verdict: "pending_review",
+      score: null,
+      reason: "",
+      createdAt: 5_000,
+      provenance: "judge",
+      artifacts: [],
+      details: { inFlight: true },
+    },
+  ],
 };
 const collecting: StatusAttempt = { ...judging, phase: "collecting" };
 
@@ -56,6 +69,52 @@ it("shows recorded execution instead of hours since the old attempt started", ()
 });
 
 describe("test status in a stopped run", () => {
+  it("shows an accepted judge call even when an earlier repetition waits for resources", () => {
+    const waiting = {
+      ...judging,
+      id: "waiting",
+      evaluations: [],
+      reason: "Waiting for local resources",
+    };
+    expect(testStatus([waiting, judging], new Map(), "running")).toEqual({
+      kind: "judging",
+      startedAt: 5_000,
+    });
+    expect(
+      testStatus(
+        [
+          { ...judging, phase: "terminal" },
+          { ...judging, evaluations: [] },
+        ],
+        new Map(),
+        "needs_attention",
+      )?.kind,
+    ).toBe("paused");
+  });
+  it("shows queued judges without claiming a judge is working", () => {
+    const status = testStatus(
+      [{ ...judging, evaluations: [] }],
+      new Map(),
+      "running",
+    );
+    expect(status?.kind).toBe("waiting");
+    render(<TestStatusMark status={status} now={60_000} />);
+    expect(screen.getByText("Waiting for judges")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+  it("stops queued judges when the run needs attention", () => {
+    const status = testStatus(
+      [{ ...judging, evaluations: [] }],
+      new Map(),
+      "needs_attention",
+    );
+    expect(status).toEqual({ kind: "paused", runState: "needs_attention" });
+    const { container } = render(
+      <TestStatusMark status={status} now={60_000} />,
+    );
+    expect(container).toHaveTextContent("Needs attention");
+    expect(container.querySelector("svg")).toBeNull();
+  });
   it.each([
     "Waiting for local resources to list judge models: measured CPU load is above the light-job admission line",
     "Waiting for local resources to judge: the local queue is full",

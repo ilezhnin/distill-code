@@ -353,7 +353,8 @@
     "start": "Start batch",
     "preview": "Development preview. Excluded from the boards and the history chart.",
     "budgetTitle": "Run settings",
-    "outdatedHint": "This run was made for an older sandbox or CLI version that the app no longer has, so it cannot continue: resuming would only be refused. Cancel it, then start a new run for the tests still owed from the model's page."
+    "frozenRuntimeHint": "This research run requires its original execution environment, which is no longer available. Its conditions cannot change on resume.",
+    "outdatedHint": "The sandbox or CLI changed since this run started. Resume checks the same models on the installed version and continues unfinished tests. Saved answers and results are kept."
   },
   "modelRun": {
     "allTests": "All tests",
@@ -374,6 +375,7 @@
     "stoppedCredits": "Plan usage spent, credits not allowed, stopped",
     "running": "Running",
     "judging": "Judges",
+    "waitingJudges": "Waiting for judges",
     "paused": "Paused",
     "start": "Start",
     "stop": "Stop",
@@ -398,9 +400,9 @@
     "measured": "Measured",
     "remaining": "Remaining",
     "archivedNotice": "This run is archived. Start a new run for the remaining tests.",
-    "runtimeUpdated": "New run required",
-    "runtimeNotice": "This run used an earlier execution environment. Stop it, then start a new run for the remaining tests.",
-    "runtimeStoppedNotice": "This run used an earlier execution environment. Start a new run for the remaining tests.",
+    "runtimeUpdated": "Execution environment updated",
+    "runtimeNotice": "The execution environment changed. Pause, then resume to check the same models on the installed version and continue unfinished tests. Saved answers and results are kept.",
+    "runtimeStoppedNotice": "The execution environment changed. Continue to check the same models on the installed version and finish this run. Saved answers and results are kept.",
     "completeNotice": "All tests measured. Measuring again starts a new paid run.",
     "waitingResources": "Waiting for resources",
     "readinessBlocked": "Cannot start or continue",

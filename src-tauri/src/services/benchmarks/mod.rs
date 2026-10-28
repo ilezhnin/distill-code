@@ -851,6 +851,7 @@ impl BenchmarkService {
                         window_closed_message(&run),
                     ));
                 }
+                self.refresh_run_runtime(&run).await?;
                 let unfinished = self.restart_unfinished_cells(&run).await?;
                 if !unfinished && !run.request.automatic_retry() {
                     return Err(BenchmarkError::new(
@@ -889,6 +890,88 @@ impl BenchmarkService {
         self.wake.notify_one();
         self.changed().await;
         self.store.run(id).await
+    }
+    /// Explicit resume may adopt an installed runtime for work not yet done.
+    /// Model, account, options and paid evidence retain their original identity.
+    async fn refresh_run_runtime(&self, run: &BenchmarkRun) -> Result<()> {
+        if run.request.workflow_policy.is_some() || !run.request.automatic_retry() {
+            return Ok(());
+        }
+        let mut request = run.request.clone();
+        let mut changed = false;
+        let mut inventories: HashMap<(String, Option<String>), Vec<InventoryModel>> =
+            HashMap::new();
+        for configuration in &mut request.configurations {
+            let unmeasured = run.attempts.iter().any(|attempt| {
+                attempt.configuration.id == configuration.id
+                    && (attempt.phase == "pending"
+                        || attempt.phase == "terminal"
+                            && !analysis::is_measured(attempt)
+                            && !matches!(
+                                attempt.outcome.as_deref(),
+                                Some("excluded" | "unsupported" | "superseded")
+                            )
+                            && !(attempt.outcome.as_deref() == Some("pending_review")
+                                && attempt.evidence_hash.is_some()))
+            });
+            if configuration.inventory_revision.is_none() || !unmeasured {
+                continue;
+            }
+            let key = (
+                configuration.provider_id.clone(),
+                configuration.account_id.clone(),
+            );
+            if !inventories.contains_key(&key) {
+                inventories.insert(
+                    key.clone(),
+                    self.backend
+                        .inventory(&key.0, key.1.as_deref(), false)
+                        .await?,
+                );
+            }
+            let model = inventories[&key].iter().find(|model| {
+                let current = &model.configuration;
+                current.provider_id == configuration.provider_id
+                    && current.account_id == configuration.account_id
+                    && current.model_id == configuration.model_id
+                    && current.execution_profile == configuration.execution_profile
+                    && current.billing_mode == configuration.billing_mode
+            }).ok_or_else(|| BenchmarkError::new("selection_changed", "The selected model and execution profile are no longer available on this account"))?;
+            if configuration.inventory_revision == model.configuration.inventory_revision {
+                continue;
+            }
+            if !model.available {
+                return Err(BenchmarkError::new(
+                    "capability_missing",
+                    model
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "The selected model is unavailable".into()),
+                ));
+            }
+            if model.configuration.inventory_revision.is_none()
+                || configuration.fast_mode == Some(true) && !model.supports_fast_mode
+                || configuration
+                    .effort
+                    .as_ref()
+                    .is_some_and(|effort| !model.efforts.contains(effort))
+                || effort::left_to_the_cli(configuration, model)
+            {
+                return Err(BenchmarkError::new(
+                    "selection_changed",
+                    "The installed runtime no longer supports the selected model options",
+                ));
+            }
+            configuration.inventory_revision = model.configuration.inventory_revision.clone();
+            self.backend.readiness(configuration).await?;
+            changed = true;
+        }
+        if changed {
+            self.store
+                .refresh_pending_runtime(&run.id, &request)
+                .await?;
+        }
+        Ok(())
     }
     /// Adds cases to a run inside its window and goes on with it, so the
     /// sitting grows instead of a second run starting beside it. A case the
@@ -1099,6 +1182,7 @@ impl BenchmarkService {
             self.store.set_run_request(id, &request).await?;
         }
         let run = self.store.run(id).await?;
+        self.refresh_run_runtime(&run).await?;
         let unfinished = self.restart_unfinished_cells(&run).await?;
         if !unfinished && matches!(run.state.as_str(), "completed" | "cancelled") {
             return Err(BenchmarkError::new(
@@ -1203,7 +1287,11 @@ impl BenchmarkService {
                 let fresh = pending_attempt(
                     &run.id,
                     &attempt.version_id,
-                    &attempt.configuration,
+                    run.request
+                        .configurations
+                        .iter()
+                        .find(|configuration| configuration.id == attempt.configuration.id)
+                        .unwrap_or(&attempt.configuration),
                     attempt.repetition,
                 );
                 let mut superseded = attempt;

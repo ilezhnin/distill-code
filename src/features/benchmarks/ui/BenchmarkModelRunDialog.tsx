@@ -550,9 +550,8 @@ export function BenchmarkModelRunDialog({
           )
           .map((entry) => entry.executionProfile),
   );
-  // A run that can no longer go on, its window closed or its runtime gone,
-  // with tests it did not finish, is over: it says so, it can only be
-  // stopped, and a new run takes what the model still owes.
+  // A closed window needs a new run. A changed runtime can be validated on
+  // explicit continuation without replacing already measured work.
   const unfinishedInRun = eligible.some(
     (version) => !cells.complete.has(version.id),
   );
@@ -575,7 +574,7 @@ export function BenchmarkModelRunDialog({
     mine.length > 0 &&
     !summaries.isPending &&
     unfinishedInRun;
-  const over = expired || outdated;
+  const over = expired;
   // Saved run pins do not establish today's availability. Every dispatch
   // action waits for a successful current listing, including after an error.
   const inventoryFailure = inventory.error

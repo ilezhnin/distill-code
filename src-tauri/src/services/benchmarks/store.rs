@@ -1194,6 +1194,26 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+    /// Rebind only unstarted work on explicit resume. Sealed answers, prior
+    /// attempts and their observed runtime remain immutable evidence.
+    pub async fn refresh_pending_runtime(&self, id: &str, request: &RunRequest) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for configuration in &request.configurations {
+            sqlx::query("UPDATE attempts SET data_json=json_set(data_json,'$.configuration',json(?)) WHERE run_id=? AND configuration_id=? AND phase='pending' AND json_extract(data_json,'$.evidenceHash') IS NULL AND json_extract(data_json,'$.output') IS NULL")
+                .bind(serde_json::to_string(configuration)?)
+                .bind(id)
+                .bind(&configuration.id)
+                .execute(&mut *tx).await?;
+        }
+        sqlx::query("UPDATE run_plans SET request_json=?,revision=revision+1 WHERE id=?")
+            .bind(serde_json::to_string(request)?)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        event(&mut tx, id, "run_changed").await?;
+        tx.commit().await?;
+        Ok(())
+    }
     pub async fn set_run_state(&self, id: &str, state: &str) -> Result<()> {
         self.set_run_state_at(id, state, now()).await
     }
@@ -1234,6 +1254,16 @@ impl Store {
                 continue;
             }
             let kind = match effective.as_str() {
+                "needs_attention"
+                    if activity
+                        .as_ref()
+                        .and_then(|history| history.spans.last())
+                        .is_some_and(|span| {
+                            span.kind == ActivityKind::Execution && span.finished_at.is_none()
+                        }) =>
+                {
+                    continue
+                }
                 "running" if matches!(row.get::<&str, _>(1), "pending" | "awaiting_judges") => {
                     Some(ActivityKind::Waiting)
                 }
@@ -1735,6 +1765,45 @@ mod tests {
         assert_eq!(spans.len(), 4);
         assert_eq!(spans.last().unwrap().started_at, resumed_at);
         assert_eq!(resumed.output.as_deref(), Some("Retained example answer"));
+        store
+            .set_run_state("clock", "needs_attention")
+            .await
+            .unwrap();
+        let stopped = store.attempt(&attempt.id).await.unwrap();
+        assert!(stopped
+            .activity
+            .as_ref()
+            .unwrap()
+            .spans
+            .last()
+            .unwrap()
+            .finished_at
+            .is_some());
+        // Accepted calls keep draining when another cell stops dispatch.
+        store.set_run_state("clock", "running").await.unwrap();
+        attempt.phase = "running".into();
+        attempt.reason = None;
+        store.save_attempt(&attempt).await.unwrap();
+        store
+            .set_run_state("clock", "needs_attention")
+            .await
+            .unwrap();
+        store.save_attempt(&attempt).await.unwrap();
+        let draining = store.attempt(&attempt.id).await.unwrap();
+        let last = draining.activity.as_ref().unwrap().spans.last().unwrap();
+        assert_eq!(last.kind, ActivityKind::Execution);
+        assert!(last.finished_at.is_none());
+        attempt.phase = "terminal".into();
+        store.save_attempt(&attempt).await.unwrap();
+        let finished = store.attempt(&attempt.id).await.unwrap();
+        assert!(finished
+            .activity
+            .unwrap()
+            .spans
+            .last()
+            .unwrap()
+            .finished_at
+            .is_some());
         dir.close().await;
     }
 

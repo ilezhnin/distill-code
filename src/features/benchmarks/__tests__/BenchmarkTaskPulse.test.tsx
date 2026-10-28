@@ -20,6 +20,22 @@ function attempt(phase: string): CellAttempt {
     finishedAt: null,
     durationMs: 2_000,
     cost: 0.01,
+    evaluations:
+      phase === "awaiting_judges"
+        ? [
+            {
+              id: "invented-judge",
+              evaluatorRevision: "1",
+              verdict: "pending_review",
+              score: null,
+              reason: "",
+              createdAt: 4_000,
+              provenance: "judge",
+              artifacts: [],
+              details: { inFlight: true },
+            },
+          ]
+        : [],
   };
 }
 
@@ -120,8 +136,8 @@ it("does not animate a settled answer that still has no panel verdict", () => {
   expect(cells[0].clock).toBe(false);
   const open = vi.fn();
   const view = render(<TaskGrid cells={cells} onOpen={open} />);
-  const dot = view.container.querySelector('[data-dot="running"]');
-  expect(dot).toHaveClass("bg-info");
+  const dot = view.container.querySelector('[data-dot="stopped"]');
+  expect(dot).not.toHaveClass("bg-info");
   expect(dot).not.toHaveClass("animate-pulse");
   fireEvent.click(screen.getByRole("button"));
   expect(open).toHaveBeenCalledWith(cells[0]);

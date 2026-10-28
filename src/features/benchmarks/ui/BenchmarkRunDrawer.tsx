@@ -126,8 +126,8 @@ export function BenchmarkRunDrawer({
   };
   const run = query.data;
   const terminal = run ? FINISHED_RUN.has(run.state) : false;
-  // A run planned on a runtime the inventory no longer lists cannot go on:
-  // every further test would be refused, so it is only stopped.
+  // Explicit resume validates the same selection against today's runtime.
+  // Research workflow conditions remain frozen.
   const inventories = useQueries({
     queries: (terminal ? [] : (run?.request.configurations ?? [])).map(
       (entry) => ({
@@ -232,7 +232,9 @@ export function BenchmarkRunDrawer({
   const settled = cells.filter(
     (cell) =>
       (cell.status?.kind === "scored" || cell.status?.kind === "unscored") &&
-      !cell.dots.some((dot) => dot === "running" || dot === "queued"),
+      !cell.dots.some(
+        (dot) => dot === "running" || dot === "queued" || dot === "stopped",
+      ),
   ).length;
   const runningKey = grids.find((grid) =>
     grid.cells.some(
@@ -283,7 +285,11 @@ export function BenchmarkRunDrawer({
           ) : null}
           {outdated ? (
             <BenchmarkAlert tone="warning">
-              {t("run.outdatedHint")}
+              {t(
+                run?.request.workflowPolicy
+                  ? "run.frozenRuntimeHint"
+                  : "run.outdatedHint",
+              )}
             </BenchmarkAlert>
           ) : null}
           {query.isPending ? (
@@ -384,7 +390,7 @@ export function BenchmarkRunDrawer({
           </Button>
           {run && !terminal ? (
             <>
-              {outdated ? null : (
+              {outdated && run.request.workflowPolicy ? null : (
                 <>
                   <Button
                     type="button"

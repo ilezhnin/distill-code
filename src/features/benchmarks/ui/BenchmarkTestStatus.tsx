@@ -24,6 +24,7 @@ export type StatusAttempt = Pick<
   startedAt?: number | null;
   reason?: string | null;
   waitUntil?: number | null;
+  evaluations?: Attempt["evaluations"];
 };
 
 /** Attempt phases between dispatch and a settled answer. */
@@ -173,7 +174,12 @@ export function testStatus(
 ): TestStatus | null {
   if (attempts.length === 0) return null;
   const runFinished = runState != null && FINISHED_RUN.has(runState);
-  const working = attempts.find((a) => WORKING.has(a.phase));
+  const working =
+    attempts.find(
+      (a) =>
+        WORKING.has(a.phase) &&
+        !a.reason?.startsWith("Waiting for local resources"),
+    ) ?? attempts.find((a) => WORKING.has(a.phase));
   // A rendering still owed its panel waits for judges only while its run
   // can resume; in a finished run it stays open to Evaluate, awaiting review.
   const judging = runFinished
@@ -188,6 +194,19 @@ export function testStatus(
   // cells keep their clock.
   if ((working || judging) && runState === "paused")
     return { kind: "paused", runState };
+  const flight = attempts
+    .filter(
+      (a) =>
+        a.phase === "awaiting_judges" &&
+        !a.reason?.startsWith("Waiting for local resources"),
+    )
+    .flatMap((a) => a.evaluations ?? [])
+    .find((evaluation) => evaluation.details?.inFlight === true);
+  if (
+    flight &&
+    (!working || working.reason?.startsWith("Waiting for local resources"))
+  )
+    return { kind: "judging", startedAt: flight.createdAt };
   if (working?.reason?.startsWith("Waiting for local resources"))
     return {
       kind: "waiting",
@@ -203,7 +222,15 @@ export function testStatus(
       stopped: runState == null || !ACTIVE_RUN.has(runState),
       until: judging.waitUntil ?? null,
     };
-  if (judging) return { kind: "judging", startedAt: judging.startedAt ?? null };
+  if (judging) {
+    if (runState === "needs_attention") return { kind: "paused", runState };
+    return {
+      kind: "waiting",
+      reason: "Waiting for judges",
+      stopped: runState == null || !ACTIVE_RUN.has(runState),
+      until: judging.waitUntil ?? null,
+    };
+  }
   // A test the runner put back in the queue with a reason waits on its
   // provider: a usage limit, a sign-in renewal or the operator.
   const returned = attempts.find((a) => a.phase === "pending" && a.reason);
@@ -275,6 +302,7 @@ function waitingLabel(
     return timed ? "modelRun.waitingQuotaUntil" : "modelRun.waitingQuota";
   }
   if (stopped) return "modelRun.stopped";
+  if (reason === "Waiting for judges") return "modelRun.waitingJudges";
   // A renewal that waits for other tests on its sign-in names what it waits
   // for; the time it records is only when the runner asks again.
   if (SIGN_IN_BUSY.test(reason)) return "modelRun.waitingSignIn";
@@ -411,7 +439,7 @@ export function TestStatusMark({
     case "paused":
       return (
         <span className="shrink-0 text-xs text-muted-foreground">
-          {t("modelRun.paused")}
+          {stateLabel(t, status.runState)}
         </span>
       );
     case "scored":
