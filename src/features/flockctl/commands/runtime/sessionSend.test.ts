@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearMessageTracking } from "@/features/chat/acp/acpNotificationHandler";
 import { clearBufferedStreamingUpdatesForSession } from "@/features/chat/acp/liveStreamingUpdates";
-import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
+import {
+  clearReplayBuffer,
+  ensureReplayBuffer,
+} from "@/features/chat/hooks/replayBuffer";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
@@ -41,6 +44,14 @@ const mocks = vi.hoisted(() => ({
   listSkills: vi.fn(),
   listProjectDocuments: vi.fn(),
   listProjects: vi.fn(),
+}));
+
+// Cold hydration checks directories before loading the provider transcript.
+vi.mock("@/shared/api/pathResolver", () => ({
+  resolvePath: async ({ parts }: { parts: string[] }) => ({
+    path: parts.join("/"),
+  }),
+  checkDirectoriesExist: async () => [],
 }));
 
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
@@ -247,6 +258,13 @@ describe("sendPromptToExistingSessionInBackground", () => {
         ],
       });
       mocks.listProjects.mockResolvedValue(useProjectStore.getState().projects);
+      mocks.acpLoadSession.mockImplementation(async () => {
+        ensureReplayBuffer(SESSION_ID).push(
+          ...(
+            useChatStore.getState().messagesBySession[SESSION_ID] ?? []
+          ).filter((message) => message.role !== "system"),
+        );
+      });
     });
 
     function dispatchedSystemPrompt(): string {

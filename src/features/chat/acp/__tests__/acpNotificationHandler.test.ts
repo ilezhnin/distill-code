@@ -128,6 +128,44 @@ describe("acpNotificationHandler", () => {
   // Reopening a chat replays every usage_update the host persisted. Feeding
   // those to the ledger moves the chat's activity to today and rewrites the
   // whole ledger once per replayed turn; only the live turn is real usage.
+  it.each([
+    "steer",
+    "steer_failed",
+    "steer_unconfirmed",
+  ] as const)("replays native steering receipt %s without duplicating the input", async (delivery) => {
+    markSessionReplayLoading();
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: "background event" },
+        _meta: {
+          origin: "distillctl_cross_session",
+          distillSenderLabel: "flock-monitor",
+          distillDeliveryId: "event-1",
+          distill: { messageId: "native-input", delivery: "steer_unconfirmed" },
+        },
+      },
+    } as never);
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { steeringDelivery: { messageId: "native-input", delivery } },
+      },
+    } as never);
+    const messages = getReplayBuffer("acp-session");
+    expect(messages).toHaveLength(1);
+    expect(messages?.[0].metadata).toMatchObject({
+      delivery,
+      distillSenderLabel: "flock-monitor",
+      distillDeliveryId: "event-1",
+    });
+    expect(messages?.[0].content).toEqual([
+      { type: "text", text: "background event" },
+    ]);
+  });
+
   it("does not record usage into the ledger while replaying history", async () => {
     const usageUpdate = {
       sessionUpdate: "usage_update",

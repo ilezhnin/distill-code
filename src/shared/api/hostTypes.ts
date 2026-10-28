@@ -188,6 +188,7 @@ export interface ProviderInventoryEntry {
 }
 
 export interface SteerSessionResponse {
+  delivery?: "queued" | "steer" | "steer_failed" | "steer_unconfirmed";
   runId: string;
   messageId: string;
   /** The steered turn's reply; hosts before it was introduced omit it. */

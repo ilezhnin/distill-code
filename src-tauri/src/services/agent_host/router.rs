@@ -2,6 +2,8 @@
 //! renderer, routed onto one bridge process per harness, with sessions,
 //! history, and settings persisted in SQLite.
 
+mod steering;
+
 use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -522,6 +524,7 @@ pub struct SessionRuntime {
     run: Option<RunState>,
     background: super::background::BackgroundActivity,
     steer_queue: VecDeque<QueuedPrompt>,
+    native_steers: Vec<steering::PendingSteer>,
     /// `{ modes, models, configOptions }` as last reported by the bridge.
     snapshot: Value,
     has_model_option: bool,
@@ -2507,6 +2510,7 @@ impl Inner {
                 if runtime.loading || runtime.generation != generation {
                     return None;
                 }
+                steering::acknowledge_echo(&mut runtime.native_steers, received_run, &mut params);
                 if !Self::accept_turn_update(runtime, received_run, &mut params) {
                     return None;
                 }
@@ -3710,6 +3714,7 @@ impl Inner {
                 run: None,
                 background: Default::default(),
                 steer_queue: VecDeque::new(),
+                native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
                 has_model_option,
                 substitutions: substitutions.clone(),
@@ -3857,6 +3862,7 @@ impl Inner {
                 run: None,
                 background: Default::default(),
                 steer_queue: VecDeque::new(),
+                native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
                 has_model_option: Self::has_model_option(&snapshot),
                 substitutions: Vec::new(),
@@ -5138,6 +5144,7 @@ impl Inner {
                 run: None,
                 background: Default::default(),
                 steer_queue: VecDeque::new(),
+                native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
                 has_model_option,
                 substitutions: Vec::new(),
@@ -5295,6 +5302,7 @@ impl Inner {
                 run: None,
                 background: Default::default(),
                 steer_queue: VecDeque::new(),
+                native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
                 has_model_option,
                 substitutions: Vec::new(),
@@ -5639,8 +5647,16 @@ impl Inner {
     ) -> Vec<Value> {
         let mut distill =
             json!({ "messageId": ids.message_id, "runId": ids.run_id, "created": created });
+        for key in ["origin", "distillSenderLabel", "distillDeliveryId"] {
+            if let Some(value) = meta.get(key) {
+                distill[key] = value.clone();
+            }
+        }
         if let Some(persona_id) = meta.get("personaId") {
             distill["personaId"] = persona_id.clone();
+        }
+        if meta.get("nativeSteering") == Some(&Value::Bool(true)) {
+            distill["delivery"] = json!("steer_unconfirmed");
         }
         if steer {
             distill["steer"] = json!(true);
@@ -6575,84 +6591,6 @@ impl Inner {
         result
     }
 
-    /// Queue a message behind the running turn (or start one when idle).
-    /// The answer's ids are the ones the message is recorded and run under.
-    pub async fn steer(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
-        let session_id =
-            protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
-        let expected_run = params
-            .get("expectedRunId")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let prompt = params
-            .get("prompt")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(vec![]));
-        let meta = params.get("_meta").cloned().unwrap_or_else(|| json!({}));
-        let ids = TurnIds::new();
-        let queued = {
-            let mut sessions = self.sessions.lock().await;
-            if self.shutdown_prepared.load(Ordering::SeqCst) {
-                return Err(invalid_params("Flock is closing"));
-            }
-            match sessions.get_mut(&session_id).and_then(|runtime| {
-                runtime
-                    .run
-                    .as_ref()
-                    .map(|run| run.run_id.clone())
-                    .map(|active| (runtime, active))
-            }) {
-                Some((runtime, active_run)) => {
-                    if expected_run != active_run && expected_run != "__flock_unknown_active_run__"
-                    {
-                        return Err(protocol::error_with_data(
-                            protocol::INVALID_PARAMS,
-                            format!("expected run `{expected_run}` but found `{active_run}`"),
-                            json!({ "actualRunId": active_run }),
-                        ));
-                    }
-                    runtime.steer_queue.push_back(QueuedPrompt {
-                        prompt: prompt.clone(),
-                        meta: meta.clone(),
-                        ids: ids.clone(),
-                    });
-                    true
-                }
-                None => false,
-            }
-        };
-        if !queued {
-            // Nothing is running: this becomes a turn of its own. Attach now
-            // so a session that cannot be woken fails the steer instead of
-            // being acknowledged and then dropped.
-            let record = self.session_record(&session_id).await?;
-            self.attach_session(&record).await?;
-            let host = Arc::clone(self);
-            let turn = ids.clone();
-            let settle_id = session_id.clone();
-            tokio::spawn(async move {
-                let params =
-                    json!({ "sessionId": settle_id.clone(), "prompt": prompt, "_meta": meta });
-                if let Err(error) = host.start_turn(params, turn, true).await {
-                    log::warn!("[agent-host] steer prompt failed: {}", error_text(&error));
-                }
-                // Nobody is awaiting this turn's answer — the renderer got its
-                // ids from the `session/steer` reply and nothing else will ever
-                // tell it the turn is over. Only settle when the session is
-                // genuinely idle: a steer that raced a prompt was queued behind
-                // it and that turn is still running.
-                if host.active_run_id(&settle_id).await.is_none() {
-                    host.notify_frontend("session/update", Self::run_settled_update(&settle_id));
-                }
-            });
-        }
-        Ok(json!({
-            "runId": ids.run_id,
-            "messageId": ids.message_id,
-            "assistantMessageId": ids.assistant_message_id,
-        }))
-    }
-
     /// Opens the owned session `request` names, or returns the one its owner
     /// already has. `turn_limit_ms` is the longest its turn may run, which the
     /// sign-in of a bridge that cannot refresh it must outlast.
@@ -6912,6 +6850,7 @@ impl Inner {
                 run: None,
                 background: Default::default(),
                 steer_queue: VecDeque::new(),
+                native_steers: Vec::new(),
                 has_model_option: Self::has_model_option(&snapshot),
                 snapshot,
                 substitutions: substitutions.clone(),
@@ -9548,6 +9487,7 @@ mod tests {
             run: None,
             background: Default::default(),
             steer_queue: VecDeque::new(),
+            native_steers: Vec::new(),
             snapshot: json!({}),
             has_model_option: false,
             substitutions: Vec::new(),
@@ -11229,6 +11169,7 @@ mod tests {
             run: None,
             background: Default::default(),
             steer_queue: VecDeque::new(),
+            native_steers: Vec::new(),
             snapshot: claude_session(),
             has_model_option: true,
             substitutions: Vec::new(),
@@ -11297,6 +11238,7 @@ mod tests {
             run: None,
             background: Default::default(),
             steer_queue: VecDeque::new(),
+            native_steers: Vec::new(),
             snapshot: Value::Null,
             has_model_option: false,
             substitutions: Vec::new(),

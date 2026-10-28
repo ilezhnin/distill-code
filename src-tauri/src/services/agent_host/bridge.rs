@@ -1048,12 +1048,26 @@ impl Bridge {
                 .get("agentCapabilities")
                 .cloned()
                 .unwrap_or(Value::Null);
+            if !capabilities.is_object() {
+                *capabilities = json!({});
+            }
+            capabilities["_steering"] = init
+                .pointer("/_meta/steering")
+                .cloned()
+                .unwrap_or(Value::Null);
         }
         Ok(bridge)
     }
 
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    pub fn supports_steering(&self) -> bool {
+        self.agent_capabilities
+            .read()
+            .ok()
+            .is_some_and(|caps| caps.pointer("/_steering/supported") == Some(&Value::Bool(true)))
     }
 
     /// Which bridge process this is; see the field's comment.

@@ -401,15 +401,18 @@
     },
     "flockctlCrossSessionLabel": "Sent by Flock from another session",
     "flockctlCrossSessionNamedLabel": "Sent by Flock from another session · source: {{sender}}",
-    "steerLabel": "Steered",
-    "steerPendingLabel": "Steering — waiting for the agent's next step",
+    "steerLabel": "Delivered to the running agent",
+    "steerPendingLabel": "Waiting for delivery confirmation",
     "viewMore": "View more",
     "viewLess": "View less",
     "voiceSpeechSpeakingLabel": "Speaking",
     "voiceSpeechSpokenLabel": "Spoken",
     "voiceSpeechInterruptedLabel": "Interrupted",
     "voiceSpeechNotSpokenLabel": "Not spoken",
-    "voiceSpeechFailedLabel": "Failed"
+    "voiceSpeechFailedLabel": "Failed",
+    "monitorLabel": "Background task update",
+    "steerUnconfirmedLabel": "Delivery not confirmed. Check before resending.",
+    "steerFailedLabel": "Could not deliver to the running agent."
   },
   "persona": {
     "chooseAssistant": "Choose assistant",

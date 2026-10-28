@@ -82,7 +82,10 @@ describe("steerPromptInSession commit callback", () => {
 
   it("does not fire for a steer that is rolled back", async () => {
     const onUserMessageCommitted = vi.fn();
-    mockAcpSteerMessage.mockRejectedValue(new Error("backend down"));
+    mockAcpSteerMessage.mockRejectedValue({
+      code: -32602,
+      message: "Invalid input",
+    });
 
     const accepted = await steerPromptInSession(
       "session-1",
@@ -127,5 +130,136 @@ describe("steerPromptInSession commit callback", () => {
 
     expect(accepted).toBe(true);
     expect(onUserMessageCommitted).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("steering delivery ownership", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      queuedMessageBySession: {},
+      activeSessionId: null,
+      isConnected: true,
+    });
+  });
+  it("keeps uncertain input in a durable review hold instead of resending", async () => {
+    mockAcpSteerMessage.mockRejectedValue(new Error("connection lost"));
+    const receipt = vi.fn();
+    expect(
+      await steerPromptInSession("s", "inspect this", undefined, undefined, {
+        onDelivery: receipt,
+      }),
+    ).toBe(true);
+    expect(receipt).toHaveBeenCalledWith("steer_unconfirmed");
+    expect(
+      useChatStore.getState().messagesBySession.s[0].metadata?.delivery,
+    ).toBe("steer_unconfirmed");
+    expect(useChatStore.getState().queuedMessageBySession.s).toHaveLength(1);
+    expect(useChatStore.getState().queuedMessageBySession.s[0]).toMatchObject({
+      kind: "deferred",
+      state: { type: "steering-review", status: "held" },
+      payload: { text: "inspect this" },
+    });
+  });
+  it("holds uncertain queued input before later messages until the user reviews it", async () => {
+    const store = useChatStore.getState();
+    const sendOptions = {
+      userMessageMetadata: {
+        origin: "distillctl_cross_session" as const,
+        distillDeliveryId: "event-1",
+      },
+      acpPromptMetadata: { distillDeliveryId: "event-1" },
+    };
+    store.enqueueTransportReadyMessage("s", {
+      text: "first",
+      persona: { kind: "inherit" },
+      sendOptions,
+    });
+    store.enqueueTransportReadyMessage("s", {
+      text: "later",
+      persona: { kind: "inherit" },
+    });
+    const originalId =
+      useChatStore.getState().queuedMessageBySession.s[0].recordId;
+    mockAcpSteerMessage.mockRejectedValue(new Error("connection lost"));
+    expect(
+      await steerPromptInSession("s", "first", undefined, sendOptions),
+    ).toBe(true);
+    store.dismissQueuedMessage("s", originalId);
+    const queue = useChatStore.getState().queuedMessageBySession.s;
+    expect(queue.map((entry) => entry.payload.text)).toEqual([
+      "first",
+      "later",
+    ]);
+    expect(queue[0].kind).toBe("deferred");
+    store.setQueuedMessageEditing("s", queue[0].recordId, true);
+    store.updateQueuedMessage("s", queue[0].recordId, queue[0].payload);
+    const reviewed = useChatStore.getState().queuedMessageBySession.s[0];
+    expect(reviewed).toMatchObject({
+      kind: "transport-ready",
+      releasedFromDeferred: true,
+    });
+    expect(
+      reviewed.payload.sendOptions?.userMessageMetadata?.delivery,
+    ).toBeUndefined();
+    expect(
+      reviewed.payload.sendOptions?.userMessageMetadata?.distillDeliveryId,
+    ).toBeUndefined();
+    expect(
+      reviewed.payload.sendOptions?.acpPromptMetadata?.distillDeliveryId,
+    ).toBeUndefined();
+  });
+
+  it("queues unsupported direct input with its attachments and provenance", async () => {
+    mockAcpSteerMessage.mockResolvedValue({
+      runId: "unused",
+      messageId: "unused",
+      delivery: "queued",
+    });
+    const sendOptions = {
+      userMessageMetadata: {
+        origin: "distillctl_cross_session" as const,
+        distillSenderLabel: "flock-monitor",
+        distillDeliveryId: "event-1",
+      },
+    };
+    expect(
+      await steerPromptInSession("s", "event", undefined, sendOptions, {
+        queueIfUnavailable: true,
+      }),
+    ).toBe(true);
+    expect(useChatStore.getState().messagesBySession.s).toHaveLength(0);
+    expect(useChatStore.getState().queuedMessageBySession.s).toHaveLength(1);
+    expect(
+      useChatStore.getState().queuedMessageBySession.s[0].payload,
+    ).toMatchObject({ text: "event", sendOptions });
+  });
+  it("leaves an already queued input in place when native steering is unavailable", async () => {
+    mockAcpSteerMessage.mockResolvedValue({
+      runId: "unused",
+      messageId: "unused",
+      delivery: "queued",
+    });
+    expect(await steerPromptInSession("s", "first queued message")).toBe(false);
+    expect(useChatStore.getState().queuedMessageBySession.s ?? []).toHaveLength(
+      0,
+    );
+  });
+  it("uses an explicit provider receipt without waiting forever for an echo", async () => {
+    mockAcpSteerMessage.mockResolvedValue({
+      runId: "active",
+      messageId: "native",
+      delivery: "steer",
+    });
+    expect(await steerPromptInSession("s", "event")).toBe(true);
+    expect(
+      useChatStore.getState().messagesBySession.s[0].metadata?.delivery,
+    ).toBe("steer");
+    expect(
+      useChatStore.getState().getSessionRuntime("s")
+        .pendingInterventionBoundary,
+    ).toBeNull();
   });
 });

@@ -646,6 +646,7 @@ function extractActualRunId(error: unknown): string | null {
 }
 
 export interface AcpSteerResponse {
+  delivery?: "queued" | "steer" | "steer_failed" | "steer_unconfirmed";
   runId: string;
   messageId: string;
   /** The id the steered turn's reply streams under, when the host names it. */
@@ -675,6 +676,11 @@ export async function steerSession(
     return {
       runId: response.runId,
       messageId: response.messageId,
+      ...(["queued", "steer", "steer_failed", "steer_unconfirmed"].includes(
+        response.delivery as string,
+      )
+        ? { delivery: response.delivery as AcpSteerResponse["delivery"] }
+        : {}),
       ...(typeof response.assistantMessageId === "string" &&
       response.assistantMessageId.length > 0
         ? { assistantMessageId: response.assistantMessageId }

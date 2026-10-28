@@ -131,16 +131,27 @@ export function getReplayUserMetadata(
     return undefined;
   }
 
-  const delivery = meta.steer === true ? "steer" : undefined;
+  const delivery =
+    meta.steer === true
+      ? "steer"
+      : meta.delivery === "steer_unconfirmed"
+        ? "steer_unconfirmed"
+        : undefined;
   const origin =
-    meta.origin === "distillctl_cross_session"
+    (meta.origin ?? source._meta?.origin) === "distillctl_cross_session"
       ? "distillctl_cross_session"
       : undefined;
   const distillSenderLabel = origin
-    ? boundedSingleLineString(meta.distillSenderLabel, 120)
+    ? boundedSingleLineString(
+        meta.distillSenderLabel ?? source._meta?.distillSenderLabel,
+        120,
+      )
     : undefined;
   const distillDeliveryId = origin
-    ? boundedSingleLineString(meta.distillDeliveryId, 200)
+    ? boundedSingleLineString(
+        meta.distillDeliveryId ?? source._meta?.distillDeliveryId,
+        200,
+      )
     : undefined;
   if (!delivery && !origin) {
     return undefined;

@@ -45,8 +45,16 @@ The producer's stdout is the event API:
 - put verbose output and diagnostics in durable logs or stderr;
 - avoid NUL bytes and emit a final summary when practical.
 
-Default `--if-running steer` adds an event to an active run or starts a new
-turn. Use `--if-running queue` only when the active run must not be steered.
+Default `--if-running steer` injects an event when the provider supports safe
+in-flight delivery. Otherwise Flock saves it in the chat queue and sends it
+when the current turn ends. An idle chat starts a normal turn. Use
+`--if-running queue` to always wait for the current turn.
+
+`steered` confirms provider acceptance, while `queued` confirms queue admission.
+`delivery_unconfirmed` and `not_delivered` keep the input visible for inspection;
+never blindly resend either outcome with a fresh delivery id. A timeout does
+not prove that the provider rejected an event. Monitor messages use a compact
+background-task preview; expand it to inspect the complete output.
 Pending events retry without being dropped, and a trailing partial line is
 delivered when the producer exits.
 

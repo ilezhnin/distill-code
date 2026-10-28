@@ -1515,6 +1515,10 @@ export function ChatInput({
                               className="flex items-center gap-2"
                             >
                               <span className="flex-1 truncate pl-1.5 text-sm opacity-75">
+                                {payload.sendOptions?.userMessageMetadata
+                                  ?.delivery === "steer_unconfirmed"
+                                  ? `${t("message.steerUnconfirmedLabel")} `
+                                  : ""}
                                 {payload.text}
                               </span>
                               {index === 0 &&

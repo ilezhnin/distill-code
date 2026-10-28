@@ -1648,7 +1648,10 @@ const createChatStore: StateCreator<
   // Message queue
   enqueueDeferredMessage: (sessionId, payload, deferredState) => {
     const queue = get().queuedMessageBySession[sessionId] ?? [];
-    if (queue.some((record) => record.kind === "deferred")) return null;
+    const steeringReview =
+      (deferredState as { type?: unknown } | null)?.type === "steering-review";
+    if (!steeringReview && queue.some((record) => record.kind === "deferred"))
+      return null;
     const record: QueuedMessageRecord = {
       kind: "deferred",
       recordId: crypto.randomUUID(),
@@ -1658,10 +1661,7 @@ const createChatStore: StateCreator<
     set((state) => ({
       queuedMessageBySession: {
         ...state.queuedMessageBySession,
-        [sessionId]: [
-          ...(state.queuedMessageBySession[sessionId] ?? []),
-          record,
-        ],
+        [sessionId]: steeringReview ? [record, ...queue] : [...queue, record],
       },
     }));
     persistMessageQueues(get().queuedMessageBySession, [sessionId]);
@@ -1800,6 +1800,27 @@ const createChatStore: StateCreator<
           ? record.payload.executorRequestKey
           : `chat:${crypto.randomUUID()}`,
     };
+    if (
+      record.kind === "deferred" &&
+      (record.state as { type?: unknown }).type === "steering-review" &&
+      payload.sendOptions
+    ) {
+      // Editing a held input is explicit review. Give the reviewed send its
+      // own identity instead of deduplicating it against uncertain history.
+      const {
+        delivery: _delivery,
+        steeringRequestId: _steeringRequestId,
+        distillDeliveryId: _deliveryId,
+        ...metadata
+      } = payload.sendOptions.userMessageMetadata ?? {};
+      const { distillDeliveryId: _promptDeliveryId, ...promptMetadata } =
+        payload.sendOptions.acpPromptMetadata ?? {};
+      payload.sendOptions = {
+        ...payload.sendOptions,
+        userMessageMetadata: metadata,
+        acpPromptMetadata: promptMetadata,
+      };
+    }
     const deferredState =
       record.kind === "deferred"
         ? (record.state as { status?: unknown })

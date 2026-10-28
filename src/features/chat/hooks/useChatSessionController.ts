@@ -3245,13 +3245,18 @@ export function useChatSessionController({
         return false;
       }
 
-      return steerMessage(text, attachments, {
-        ...sendOptions,
-        // Same telemetry anchor as dispatchSend; see steerQueuedMessage.
-        onUserMessageCommitted: () => {
-          sendOptions?.onUserMessageCommitted?.();
+      return steerMessage(
+        text,
+        attachments,
+        {
+          ...sendOptions,
+          // Same telemetry anchor as dispatchSend; see steerQueuedMessage.
+          onUserMessageCommitted: () => {
+            sendOptions?.onUserMessageCommitted?.();
+          },
         },
-      });
+        { queueIfUnavailable: true },
+      );
     },
     [chatState, readOnly, sessionId, steerMessage, supportsSteering],
   );

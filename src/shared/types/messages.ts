@@ -280,7 +280,7 @@ export interface MessageChip {
 export interface MessageMetadata {
   userVisible?: boolean;
   agentVisible?: boolean;
-  delivery?: "steering" | "steer";
+  delivery?: "steering" | "steer" | "steer_failed" | "steer_unconfirmed";
   steeringRequestId?: string;
   origin?:
     | "distillctl_cross_session"

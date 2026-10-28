@@ -1245,10 +1245,19 @@ describe("sessions.send", () => {
     await vi.waitFor(() => expect(loadCount).toBe(2));
     releaseLoads?.();
 
-    await expect(Promise.all([first, retry])).resolves.toEqual([
-      { session_id: "session-1", send_status: "dispatched" },
-      { session_id: "session-1", send_status: "deduplicated" },
-    ]);
+    const outcomes = await Promise.allSettled([first, retry]);
+    expect(outcomes[0]).toEqual({
+      status: "fulfilled",
+      value: { session_id: "session-1", send_status: "dispatched" },
+    });
+    expect(outcomes[1]).toMatchObject({
+      status: "rejected",
+      reason: { message: expect.stringContaining("delivery is still pending") },
+    });
+    await expect(send("retry after admission")).resolves.toEqual({
+      session_id: "session-1",
+      send_status: "deduplicated",
+    });
     expect(
       (useChatStore.getState().messagesBySession["session-1"] ?? []).length +
         (useChatStore.getState().queuedMessageBySession["session-1"]?.length ??

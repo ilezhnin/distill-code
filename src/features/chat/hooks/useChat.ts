@@ -280,8 +280,15 @@ export function useChat(
       text: string,
       attachments?: ChatAttachmentDraft[],
       sendOptions?: ChatSendOptions,
+      options?: { queueIfUnavailable?: boolean },
     ) => {
-      return steerPromptInSession(sessionId, text, attachments, sendOptions);
+      return steerPromptInSession(
+        sessionId,
+        text,
+        attachments,
+        sendOptions,
+        options,
+      );
     },
     [sessionId],
   );

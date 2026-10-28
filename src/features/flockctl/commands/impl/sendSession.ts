@@ -65,7 +65,13 @@ const sendSessionSchema = z
 
 interface SendSessionResult {
   session_id: string;
-  send_status: "dispatched" | "steered" | "queued" | "deduplicated";
+  send_status:
+    | "dispatched"
+    | "steered"
+    | "queued"
+    | "deduplicated"
+    | "delivery_unconfirmed"
+    | "not_delivered";
 }
 
 function runningTargetMessage(sessionId: string): string {
@@ -81,7 +87,7 @@ export const sendSessionCommand = defineCommand({
     "Send a prompt into an existing chat session without opening or focusing it. " +
     "Idle sends are fire-and-forget and visibly add a user message marked as sent " +
     "by Flock from another session. Running sessions are refused by default; use " +
-    "--if-running steer to add context to the active run, or --if-running queue " +
+    "--if-running steer to add context when the provider supports safe steering (otherwise queue), or --if-running queue " +
     "to send one follow-up after the current run finishes. Use --from to give " +
     "the sending session or tool a concise visible label in the transcript. " +
     "Use --delivery-id when retries must create at most one user turn.",
@@ -91,7 +97,8 @@ export const sendSessionCommand = defineCommand({
     --from "the Flock session handling CI" --delivery-id <stable-id> --json
 
 Result:
-  {"session_id": "...", "send_status": "dispatched"|"steered"|"queued"|"deduplicated"}
+  {"session_id": "...", "send_status": "dispatched"|"steered"|"queued"|"deduplicated"|"delivery_unconfirmed"|"not_delivered"}
+  Unconfirmed input is saved for inspection and is not retried automatically.
   The user's current view does not change.`,
   schema: sendSessionSchema,
   bridgeTimeoutMs: 60_000,
@@ -166,7 +173,8 @@ Result:
               runningTargetMessage(args.session_id),
             );
 
-          case "steer":
+          case "steer": {
+            let sendStatus: SendSessionResult["send_status"] = "steered";
             if (runtime.isRunCancellationPending) {
               throw new CommandError(
                 "target_session_running",
@@ -178,9 +186,23 @@ Result:
               args.prompt,
               undefined,
               sendOptions,
-              { throwOnError: true },
+              {
+                throwOnError: true,
+                queueIfUnavailable: true,
+                onDelivery: (delivery) => {
+                  sendStatus =
+                    delivery === "queued"
+                      ? "queued"
+                      : delivery === "steer_failed"
+                        ? "not_delivered"
+                        : delivery === "steer_unconfirmed"
+                          ? "delivery_unconfirmed"
+                          : "steered";
+                },
+              },
             );
-            return { session_id: session.id, send_status: "steered" };
+            return { session_id: session.id, send_status: sendStatus };
+          }
 
           case "queue":
             chatStore.enqueueTransportReadyMessage(

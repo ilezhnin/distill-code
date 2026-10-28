@@ -37,6 +37,9 @@ function isQueuedRecord(value: unknown): value is QueuedMessageRecord {
   if (record.kind === "deferred") {
     const state = record.state;
     if (!state || typeof state !== "object") return false;
+    if ((state as Record<string, unknown>).type === "steering-review") {
+      return (state as Record<string, unknown>).status === "held";
+    }
     return (
       (state as Record<string, unknown>).type === "workspace-first-send" &&
       ["choice", "naming", "creating", "held", "failed"].includes(

@@ -347,6 +347,23 @@ describe("steerSession", () => {
     });
   });
 
+  it.each([
+    "queued",
+    "steer",
+    "steer_failed",
+    "steer_unconfirmed",
+  ])("preserves the host delivery outcome %s", async (delivery) => {
+    mocks.extMethod.mockResolvedValueOnce({
+      runId: "active",
+      messageId: "input",
+      delivery,
+    });
+    const { steerSession } = await import("../acpApi");
+    await expect(
+      steerSession("s", [{ type: "text", text: "event" }], "active"),
+    ).resolves.toMatchObject({ delivery });
+  });
+
   it("keeps the delivery message id when retrying with the actual run", async () => {
     mocks.extMethod
       .mockRejectedValueOnce({ data: { actualRunId: "run-2" } })

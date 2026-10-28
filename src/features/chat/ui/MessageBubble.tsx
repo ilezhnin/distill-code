@@ -1004,13 +1004,17 @@ export const MessageBubble = memo(function MessageBubble({
       (assistantDisplayName || hasPersonaAvatar || assistantProviderIcon),
   );
   const isSteeredMessage = isUser && message.metadata?.delivery === "steer";
-  // "steering" is the accepted-but-not-yet-collected state: Goose has the
-  // message and hands it to the agent at its next step. Saying so is the
-  // difference between a steer that looks ignored and one that is waiting.
   const isPendingSteerMessage =
     isUser && message.metadata?.delivery === "steering";
   const isFlockctlCrossSessionMessage =
     isUser && message.metadata?.origin === "distillctl_cross_session";
+  const isMonitorMessage =
+    isFlockctlCrossSessionMessage &&
+    message.metadata?.distillSenderLabel === "flock-monitor";
+  const isUnconfirmedSteerMessage =
+    isUser && message.metadata?.delivery === "steer_unconfirmed";
+  const isFailedSteerMessage =
+    isUser && message.metadata?.delivery === "steer_failed";
   // A brigade digest is a real cross-session user message; contract 3 says it
   // renders as a compact card rather than a chat bubble. The marker lives in
   // the text rather than in metadata on purpose — metadata does not survive
@@ -1140,23 +1144,36 @@ export const MessageBubble = memo(function MessageBubble({
             >
               {isFlockctlCrossSessionMessage ||
               isSteeredMessage ||
-              isPendingSteerMessage ? (
+              isPendingSteerMessage ||
+              isUnconfirmedSteerMessage ||
+              isFailedSteerMessage ? (
                 <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
                   {isFlockctlCrossSessionMessage ? (
                     <span
                       data-role="flockctl-cross-session-message-label"
                       className="leading-4"
                     >
-                      {distillSenderLabel
-                        ? t("message.flockctlCrossSessionNamedLabel", {
-                            sender: distillSenderLabel,
-                          })
-                        : t("message.flockctlCrossSessionLabel")}
+                      {isMonitorMessage
+                        ? t("message.monitorLabel")
+                        : distillSenderLabel
+                          ? t("message.flockctlCrossSessionNamedLabel", {
+                              sender: distillSenderLabel,
+                            })
+                          : t("message.flockctlCrossSessionLabel")}
                     </span>
                   ) : null}
                   {isSteeredMessage ? (
                     <span data-role="steer-message-label" className="leading-4">
                       {t("message.steerLabel")}
+                    </span>
+                  ) : null}
+                  {isUnconfirmedSteerMessage || isFailedSteerMessage ? (
+                    <span data-role="steer-delivery-status">
+                      {t(
+                        isFailedSteerMessage
+                          ? "message.steerFailedLabel"
+                          : "message.steerUnconfirmedLabel",
+                      )}
                     </span>
                   ) : null}
                   {isPendingSteerMessage ? (
@@ -1217,11 +1234,13 @@ export const MessageBubble = memo(function MessageBubble({
                 const block = section.items[0] as MessageContent;
                 if (isUser && block.type === "text") {
                   if (!block.text.trim()) return null;
-                  return couldOverflowUserMessagePreview(block.text) ? (
+                  return isMonitorMessage ||
+                    couldOverflowUserMessagePreview(block.text) ? (
                     <UserMessageClamp
                       key={`${message.id}-${section.key}`}
                       text={block.text}
                       stateKey={section.key}
+                      compact={isMonitorMessage}
                     />
                   ) : (
                     <LinkifiedText

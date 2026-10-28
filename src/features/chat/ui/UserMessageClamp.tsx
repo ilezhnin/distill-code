@@ -57,10 +57,13 @@ export function couldOverflowUserMessagePreview(text: string): boolean {
 export function UserMessageClamp({
   text,
   stateKey,
+  compact = false,
 }: {
   text: string;
   stateKey: string;
+  compact?: boolean;
 }) {
+  const maxBlockSize = compact ? 80 : USER_MESSAGE_CLAMP_MAX_BLOCK_SIZE;
   const { t } = useTranslation("chat");
   const { rowState, updateRowState, markRowInteracted, pinScrollAnchor } =
     useTranscriptRowStateAdapter();
@@ -80,7 +83,7 @@ export function UserMessageClamp({
   // biome-ignore lint/correctness/useExhaustiveDependencies: text changes intentionally restart the pre-paint measurement phase.
   useLayoutEffect(() => {
     setNeedsMeasurement(true);
-  }, [text]);
+  }, [text, compact]);
 
   // Durable state can arrive after first paint when a virtual row rehydrates.
   useEffect(() => {
@@ -96,16 +99,15 @@ export function UserMessageClamp({
     }
 
     const overflowing =
-      content.scrollHeight >
-      USER_MESSAGE_CLAMP_MAX_BLOCK_SIZE + OVERFLOW_TOLERANCE_PX;
+      content.scrollHeight > maxBlockSize + OVERFLOW_TOLERANCE_PX;
     const nextPreviewEnd = overflowing
-      ? findPreviewEnd(content, text, USER_MESSAGE_CLAMP_MAX_BLOCK_SIZE)
+      ? findPreviewEnd(content, text, maxBlockSize)
       : text.length;
 
     setIsOverflowing(overflowing);
     setPreviewEnd(nextPreviewEnd);
     setNeedsMeasurement(false);
-  }, [needsMeasurement, text]);
+  }, [needsMeasurement, text, maxBlockSize]);
 
   // Recompute wrapping when the available message width changes. Observe only
   // width so swapping full text for its prefix cannot create a resize loop.
@@ -173,11 +175,7 @@ export function UserMessageClamp({
     >
       <div
         className={isCollapsed ? "overflow-hidden" : undefined}
-        style={
-          isCollapsed
-            ? { maxHeight: USER_MESSAGE_CLAMP_MAX_BLOCK_SIZE }
-            : undefined
-        }
+        style={isCollapsed ? { maxHeight: maxBlockSize } : undefined}
       >
         <div ref={contentRef} data-role="user-message-clamp-content">
           <LinkifiedText text={text} endOffset={visibleEnd} />

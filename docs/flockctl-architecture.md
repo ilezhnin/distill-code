@@ -224,3 +224,25 @@ bump. Adding a command or optional field is not a wire reshape.
 
 Review-only rules: single renderer dispatch point, detecting breaking wire
 reshapes, and product judgment for no-auth command eligibility.
+
+
+### Steering delivery
+
+`session/steer` does not acknowledge an in-memory next-turn queue. The host
+uses `_session/steering` only with an advertised capability and a supported
+idle-race contract. Claude's `promptRequired` opt-in lets the renderer retain
+input in its durable queue if the active turn finishes before injection. The
+installed Codex bridge can instead start a detached turn without an awaited
+completion response, so its input uses the durable queue until that lifecycle
+is supported. Other providers use the same queue fallback.
+
+Native input is saved before dispatch. Provider echoes update its delivery
+receipt instead of appending duplicate text. Transport uncertainty keeps the
+saved input marked unconfirmed; it does not authorize automatic re-dispatch.
+When the renderer loses the host response, it also saves a held review item
+in the durable queue. Reopening the chat does not dispatch that item. The
+user must review and edit it before a new send is admitted.
+The message and its receipt replay together, including monitor provenance and
+idempotency keys. An already queued input retains its place when injection is
+unavailable. Queue admission and provider acceptance are distinct command
+results.

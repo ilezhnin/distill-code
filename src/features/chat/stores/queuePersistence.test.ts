@@ -20,6 +20,31 @@ describe("queuePersistence", () => {
     useChatSessionStore.setState({ sessions: [] });
   });
 
+  it("restores uncertain steering as held input that cannot auto-dispatch", async () => {
+    mockInvoke.mockResolvedValue(
+      JSON.stringify({
+        s: [
+          {
+            kind: "deferred",
+            recordId: "review",
+            payload: { text: "inspect this", persona: { kind: "inherit" } },
+            state: { type: "steering-review", status: "held" },
+          },
+        ],
+      }),
+    );
+    const queues = await loadPersistedMessageQueues();
+    expect(queues.s[0]).toMatchObject({
+      kind: "deferred",
+      state: { type: "steering-review", status: "held" },
+      payload: { text: "inspect this" },
+    });
+    const { isQueuedMessageAttemptable } = await import(
+      "../lib/queuedMessageAttemptOwnership"
+    );
+    expect(isQueuedMessageAttemptable(queues.s[0])).toBe(false);
+  });
+
   it("does not replace a failed native read with stale browser commands", async () => {
     window.localStorage.setItem("flock:chat-message-queues:v1", '{"s1":[]}');
     mockInvoke.mockRejectedValue(new Error("read denied"));

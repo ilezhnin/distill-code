@@ -1,3 +1,5 @@
+import { isRecord } from "@/shared/lib/isRecord";
+import { admitSystemInheritedQueuedMessage } from "./admittedSend";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { acpSteerMessage } from "@/shared/api/acp";
@@ -35,7 +37,13 @@ export async function steerPromptInSession(
   text: string,
   attachments?: ChatAttachmentDraft[],
   sendOptions?: ChatSendOptions,
-  options: { throwOnError?: boolean } = {},
+  options: {
+    throwOnError?: boolean;
+    queueIfUnavailable?: boolean;
+    onDelivery?: (
+      delivery: "queued" | "steer" | "steer_failed" | "steer_unconfirmed",
+    ) => void;
+  } = {},
 ): Promise<boolean> {
   const images = buildAcpImages(attachments);
   const hasAttachments = (attachments?.length ?? 0) > 0;
@@ -113,6 +121,32 @@ export async function steerPromptInSession(
         ),
       },
     );
+    if (steerResponse.delivery === "queued") {
+      const store = useChatStore.getState();
+      store.removeMessage(sessionId, userMessage.id);
+      store.setPendingInterventionBoundary(sessionId, null);
+      if (!options.queueIfUnavailable) return false;
+      const accepted = store.enqueueTransportReadyMessage(
+        sessionId,
+        admitSystemInheritedQueuedMessage({
+          text,
+          attachments,
+          sendOptions,
+          executorRequestKey: sendOptions?.executorRequestKey,
+        }),
+      );
+      if (accepted) {
+        options.onDelivery?.("queued");
+      } else if (options.throwOnError) {
+        throw Object.assign(
+          new Error("The message queue could not accept this input."),
+          { code: -32602 },
+        );
+      }
+      return accepted;
+    }
+    options.onDelivery?.(steerResponse.delivery ?? "steer");
+    const acknowledgedDelivery = steerResponse.delivery ?? "steering";
     const steeredRunId = steerResponse.runId;
     const liveStore = useChatStore.getState();
     liveStore.replaceMessageId(
@@ -134,13 +168,14 @@ export async function steerPromptInSession(
           ...message,
           metadata: {
             ...message.metadata,
-            delivery: "steering",
+            delivery: acknowledgedDelivery,
           },
         }),
       );
     }
     if (
-      deliveryArrivedBeforeAcknowledgement &&
+      (deliveryArrivedBeforeAcknowledgement ||
+        steerResponse.delivery !== undefined) &&
       liveStore.getSessionRuntime(sessionId).pendingInterventionBoundary
         ?.interventionMessageId === steerResponse.messageId
     ) {
@@ -171,7 +206,45 @@ export async function steerPromptInSession(
         message.metadata?.steeringRequestId === userMessage.id,
     );
     const deliveryWasEstablished = liveMessage?.metadata?.delivery === "steer";
-    if (!deliveryWasEstablished) {
+    const rejectedBeforeDispatch =
+      isRecord(err) &&
+      (err.code === -32602 ||
+        err.code === -32601 ||
+        (isRecord(err.data) &&
+          err.data.promptNotAccepted === true &&
+          err.data.dispatchStarted === false));
+    if (!deliveryWasEstablished && !rejectedBeforeDispatch) {
+      // A timeout or broken socket says nothing about provider acceptance.
+      // Keep the input visible and stop automatic retries of this delivery id.
+      liveStore.updateMessage(
+        sessionId,
+        liveMessage?.id ?? userMessage.id,
+        (message) => ({
+          ...message,
+          metadata: { ...message.metadata, delivery: "steer_unconfirmed" },
+        }),
+      );
+      liveStore.setPendingInterventionBoundary(sessionId, null);
+      // The socket may have failed before the host saved anything. Retain a
+      // separate durable review item; deferred records never auto-dispatch.
+      liveStore.enqueueDeferredMessage(
+        sessionId,
+        admitSystemInheritedQueuedMessage({
+          text,
+          attachments,
+          sendOptions: {
+            ...sendOptions,
+            userMessageMetadata: {
+              ...sendOptions?.userMessageMetadata,
+              delivery: "steer_unconfirmed",
+            },
+          },
+          executorRequestKey: sendOptions?.executorRequestKey,
+        }),
+        { type: "steering-review", status: "held" },
+      );
+      options.onDelivery?.("steer_unconfirmed");
+    } else if (!deliveryWasEstablished) {
       const liveMessageId = liveMessage?.id ?? userMessage.id;
       liveStore.removeMessage(sessionId, liveMessageId);
       if (
@@ -191,13 +264,9 @@ export async function steerPromptInSession(
       return false;
     }
   }
-  // Unlike sendCore, the user-message append above is provisional — the catch
-  // rolls it back when the steer never reached the backend. The commit
-  // callback therefore fires here instead, once the message is durably
-  // committed: after acknowledgement, or after delivery was established
-  // despite an acknowledgement error. It runs outside the try so a throwing
-  // callback cannot trip the rollback of an acknowledged steer. Callers that
-  // do not wire it (flockctl, voice conversation) get no commit notification.
+  // The input was accepted or retained for inspection after an uncertain
+  // transport result. A queued fallback fires its commit callback later,
+  // through normal dispatch, and an explicitly rejected input never fires it.
   sendOptions?.onUserMessageCommitted?.();
   return true;
 }

@@ -77,7 +77,9 @@ export function hasAcceptedFlockctlDeliveryInTranscript(
   deliveryId: string,
 ): boolean {
   return (useChatStore.getState().messagesBySession[sessionId] ?? []).some(
-    (message) => message.metadata?.distillDeliveryId === deliveryId,
+    (message) =>
+      message.metadata?.distillDeliveryId === deliveryId &&
+      message.metadata?.delivery !== "steering",
   );
 }
 
@@ -86,12 +88,14 @@ export function reserveFlockctlDelivery(
   deliveryId: string,
 ): (() => void) | null {
   const key = JSON.stringify([sessionId, deliveryId]);
-  if (
-    reservedDeliveryIds.has(key) ||
-    hasAcceptedFlockctlDelivery(sessionId, deliveryId)
-  ) {
-    return null;
+  if (reservedDeliveryIds.has(key)) {
+    // In flight is not accepted: acknowledging this retry could make a
+    // monitor drop its spool entry before the original attempt is rejected.
+    throw new Error(
+      "This delivery is still pending. Retry with the same delivery id after it settles.",
+    );
   }
+  if (hasAcceptedFlockctlDelivery(sessionId, deliveryId)) return null;
   reservedDeliveryIds.add(key);
   let released = false;
   return () => {

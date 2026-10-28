@@ -1352,6 +1352,32 @@ function recordMessageUsageNotification(
 function handleShared(sessionId: string, update: SessionUpdate): void {
   switch (update.sessionUpdate) {
     case "session_info_update": {
+      const receipt = update._meta?.steeringDelivery as
+        | { messageId?: unknown; delivery?: unknown }
+        | undefined;
+      if (
+        receipt &&
+        typeof receipt.messageId === "string" &&
+        (receipt.delivery === "steer" ||
+          receipt.delivery === "steer_failed" ||
+          receipt.delivery === "steer_unconfirmed")
+      ) {
+        const delivery = receipt.delivery;
+        const buffered = getBufferedMessage(sessionId, receipt.messageId);
+        if (buffered) buffered.metadata = { ...buffered.metadata, delivery };
+        const store = useChatStore.getState();
+        store.updateMessage(sessionId, receipt.messageId, (message) => ({
+          ...message,
+          metadata: { ...message.metadata, delivery },
+        }));
+        if (
+          store.getSessionRuntime(sessionId).pendingInterventionBoundary
+            ?.interventionMessageId === receipt.messageId
+        ) {
+          store.setPendingInterventionBoundary(sessionId, null);
+        }
+        break;
+      }
       handleSessionInfoUpdate(sessionId, update);
       break;
     }
