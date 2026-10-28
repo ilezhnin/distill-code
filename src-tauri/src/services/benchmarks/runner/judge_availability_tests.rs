@@ -1,5 +1,5 @@
-//! Invented ordinary panels: interactive account work must not block other
-//! eligible judges before the panel has reserved any paid votes.
+//! Invented ordinary panels: use idle accounts without silently shrinking
+//! an eligible three-judge panel while an account is temporarily occupied.
 use super::*;
 
 fn judge(provider: &str, model: &str, account: &str) -> Configuration {
@@ -32,7 +32,7 @@ fn idle(judge: &Configuration) -> bool {
 }
 
 #[test]
-fn busy_optional_lab_does_not_block_two_available_judges() {
+fn busy_third_lab_defers_the_panel_instead_of_silently_using_two_judges() {
     let candidate = judge("grok-acp", "invented-candidate", "candidate");
     let busy = judge("claude-acp", "invented-judge-a", "interactive-busy");
     let first = judge("codex-acp", "invented-judge-b", "idle-first");
@@ -42,12 +42,15 @@ fn busy_optional_lab_does_not_block_two_available_judges() {
         (Some(80.0), first.clone()),
         (Some(60.0), second.clone()),
     ];
-    // The previous selection included the optional busy seat, so the later
-    // whole-panel idle check refused all three instead of starting these two.
     assert!(ordinary_judges(&[&candidate], &brief(), offered.clone()).contains(&busy));
-    let panel = ordinary_available_judges(&[&candidate], &brief(), offered, idle).unwrap();
-    assert_eq!(panel, vec![first, second]);
-    assert!(panel.iter().all(idle));
+    let error =
+        ordinary_available_judges(&[&candidate], &brief(), offered.clone(), idle).unwrap_err();
+    assert_eq!(error.code, ACCOUNT_BUSY);
+    assert_eq!(error.message, JUDGES_BUSY);
+    assert_eq!(
+        ordinary_available_judges(&[&candidate], &brief(), offered, |_| true).unwrap(),
+        vec![busy, first, second]
+    );
 }
 
 #[test]
@@ -56,15 +59,17 @@ fn busy_roomiest_account_does_not_hide_an_idle_account_of_the_same_model() {
     let busy = judge("claude-acp", "invented-judge", "interactive-busy");
     let alternate = judge("claude-acp", "invented-judge", "idle-alternate");
     let other = judge("codex-acp", "invented-other", "idle-other");
+    let third = judge("grok-acp", "invented-third", "idle-third");
     let offered = vec![
         (Some(99.0), busy.clone()),
         (Some(70.0), alternate.clone()),
         (Some(50.0), other.clone()),
+        (Some(40.0), third.clone()),
     ];
     assert!(ordinary_judges(&[&candidate], &brief(), offered.clone()).contains(&busy));
     assert_eq!(
         ordinary_available_judges(&[&candidate], &brief(), offered, idle).unwrap(),
-        vec![alternate, other]
+        vec![alternate, other, third]
     );
 }
 
@@ -142,7 +147,7 @@ fn idle_selection_keeps_headroom_order_and_same_lab_fallback() {
 }
 
 #[test]
-fn optional_busy_seat_keeps_other_quota_and_discovery_deferrals_optional() {
+fn unavailable_quota_seat_keeps_other_discovery_deferrals_optional() {
     let candidate = judge("grok-acp", "invented-candidate", "candidate");
     let first = judge("claude-acp", "invented-first", "idle-first");
     let second = judge("codex-acp", "invented-second", "idle-second");
@@ -153,7 +158,6 @@ fn optional_busy_seat_keeps_other_quota_and_discovery_deferrals_optional() {
         vec![
             (Some(80.0), first.clone()),
             (Some(60.0), second.clone()),
-            (Some(99.0), busy.clone()),
         ],
         idle,
     )

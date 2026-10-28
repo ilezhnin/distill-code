@@ -1325,9 +1325,9 @@ pub(crate) fn ordinary_judges(
     panel
 }
 
-/// Pick an ordinary panel from accounts that can work now. A busy optional
-/// seat, or the roomiest account of one model, must not block usable seats.
-/// Only eligible busy seats can turn a short panel into a temporary wait.
+/// Pick an ordinary panel from accounts that can work now, keeping the size
+/// of the eligible panel. Another idle account may cover a busy account,
+/// but temporary occupancy must not silently remove the third judge.
 fn ordinary_available_judges(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
@@ -1340,7 +1340,8 @@ fn ordinary_available_judges(
         .cloned()
         .collect();
     let panel = ordinary_judges(candidates, draft, ready);
-    if panel.len() < MIN_JUDGES && ordinary_judges(candidates, draft, offered).len() >= MIN_JUDGES {
+    let eligible_size = ordinary_judges(candidates, draft, offered).len();
+    if eligible_size >= MIN_JUDGES && panel.len() < eligible_size {
         return Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGES_BUSY));
     }
     Ok(panel)

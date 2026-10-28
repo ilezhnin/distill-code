@@ -336,8 +336,11 @@ recipe, panel size and set of labs is one ruler. Calibrations count for their
 own recipe (`strong-pool-v1`). A qualification or preregistered workflow panel
 names its own seats and is not subject to this rule.
 
-A new ordinary panel chooses idle eligible accounts. A busy optional seat
-cannot delay two available judges. An ordinary open panel retains paid votes
+A new ordinary panel chooses idle eligible accounts and preserves the eligible
+panel size: if a third lab is temporarily busy, judging waits for it instead of
+silently using only two judges. Another idle account of the same model can
+cover a busy account. Other candidate attempts continue while judging waits.
+An ordinary open panel retains paid votes
 and can replace unfilled seats with currently eligible judges; qualification
 and preregistered workflow panels keep their exact seats. Waiting answers take
 turns by their last scheduling opportunity, and a selected panel reserves preparation
