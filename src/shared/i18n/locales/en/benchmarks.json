@@ -433,6 +433,7 @@
     "signInDuration": "The selected time limit exceeds the provider sign-in's lifetime. Choose a shorter limit.",
     "failed": "A test stopped on an error: {{reason}}. Resume to try it again, or cancel.",
     "continuing": "The run continues with other tests. An attempt needs attention: {{reason}}",
+    "rateLimited": "The provider's request rate limit was reached",
     "unknown": "A test did not finish. Resume to try it again, or cancel.",
     "window": "Finish before {{until}}; after that the run is recorded as it stands."
   },

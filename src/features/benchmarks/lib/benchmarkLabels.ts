@@ -335,13 +335,9 @@ function attentionCause(
   // Resume is unavailable until the run stops; keep the cause visible without
   // presenting an attempt failure as a stopped run.
   if (run.state === "running" && attention.outcome != null) {
-    const reason =
-      attention.outcome === "pending_review"
-        ? judgingFailureLabel(t, attention.reason)
-        : attention.reason.startsWith("{")
-          ? stateLabel(t, attention.outcome)
-          : attention.reason;
-    return t("attention.continuing", { reason });
+    return t("attention.continuing", {
+      reason: attentionReason(t, attention),
+    });
   }
   if (attention.outcome === "pending_review")
     return judgingFailureLabel(t, attention.reason);
@@ -381,9 +377,33 @@ function attentionCause(
   )
     return t("attention.signInDuration");
   if (/sign-in/i.test(attention.reason)) return t("attention.signIn");
-  // A raw bridge error reads better by its kind than by its JSON.
-  const reason = attention.reason.startsWith("{")
-    ? stateLabel(t, attention.outcome)
-    : attention.reason;
-  return t("attention.failed", { reason });
+  return t("attention.failed", { reason: attentionReason(t, attention) });
+}
+
+/** Name known provider errors without exposing bridge payloads or account IDs. */
+function attentionReason(
+  t: Translate,
+  attention: { outcome: string | null; reason: string },
+): string {
+  if (attention.outcome === "pending_review")
+    return judgingFailureLabel(t, attention.reason);
+  const reason = attention.reason.trim();
+  const structured = reason.startsWith("{");
+  let message = structured ? "" : reason;
+  if (structured) {
+    try {
+      const error = JSON.parse(reason);
+      if (typeof error.message === "string") message = error.message;
+    } catch {
+      // Unrecognized diagnostics keep their outcome label.
+    }
+  }
+  if (
+    attention.outcome === "infrastructure_failure" &&
+    /\brate[ _-]?limit(?:s|ed|ing)?(?:\b|_)|\btoo many requests\b|\b(?:http|status(?: code)?)\s*[:=]?\s*429\b/i.test(
+      message,
+    )
+  )
+    return t("attention.rateLimited");
+  return structured ? stateLabel(t, attention.outcome) : attention.reason;
 }

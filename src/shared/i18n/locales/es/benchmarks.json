@@ -433,6 +433,7 @@
     "signInDuration": "El tiempo límite elegido supera la duración del inicio de sesión del proveedor. Elige un límite menor.",
     "failed": "Una prueba se detuvo por un error: {{reason}}. Reanuda para intentarla de nuevo, o cancela.",
     "continuing": "La ejecución continúa con las demás pruebas. Un intento requiere atención: {{reason}}",
+    "rateLimited": "Se alcanzó el límite de frecuencia de solicitudes del proveedor",
     "unknown": "Una prueba no terminó. Reanuda para intentarla de nuevo, o cancela.",
     "window": "Termínala antes de {{until}}; después la ejecución queda registrada tal como está."
   },

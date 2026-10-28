@@ -168,6 +168,7 @@ describe("attentionLabel", () => {
       "attention.failed": `failed: ${options?.reason}`,
       "attention.continuing": `continuing: ${options?.reason}`,
       "attention.unknown": "unknown",
+      "attention.rateLimited": "provider request rate limit",
       "states.infrastructure_failure": "Infrastructure failure",
     })[key] ?? key) as Parameters<typeof attentionLabel>[0];
 
@@ -284,5 +285,61 @@ describe("attentionLabel", () => {
         },
       }),
     ).toBe("continuing: runIssues.noPanel");
+  });
+
+  it.each([
+    "running",
+    "needs_attention",
+  ])("names accepted provider rate limits in a %s run without exposing payloads", (state) => {
+    const reason = JSON.stringify({
+      code: -32603,
+      message: "Internal error: Rate limit reached for requests",
+      data: {
+        accountId: "private-account",
+        dispatchStarted: true,
+        promptNotAccepted: false,
+        errorName: "APIError",
+        service: "session",
+      },
+      nativeExecutionMs: 1200,
+    });
+    expect(
+      attentionLabel(t, {
+        state,
+        attention: { outcome: "infrastructure_failure", reason },
+      }),
+    ).toBe(
+      `${state === "running" ? "continuing" : "failed"}: provider request rate limit`,
+    );
+  });
+
+  it.each([
+    "Rate limit reached for requests",
+    "rate_limit_error",
+    "Too many requests",
+    "HTTP 429",
+    '  {"message":"status: 429"}',
+  ])("recognizes rate limits from the provider message: %s", (reason) => {
+    expect(
+      attentionLabel(t, {
+        state: "running",
+        attention: { outcome: "infrastructure_failure", reason },
+      }),
+    ).toBe("continuing: provider request rate limit");
+  });
+
+  it.each([
+    '{"message":"Request failed","data":{"accountId":"rate limit"}}',
+    '{"message":"Request failed","nativeExecutionMs":429810}',
+    '{"message":"HTTP 4290"}',
+    '{"message":{"nested":"rate limit"}}',
+    '{"message":"rate limit"',
+  ])("keeps unknown diagnostics private without false rate limits: %s", (reason) => {
+    expect(
+      attentionLabel(t, {
+        state: "running",
+        attention: { outcome: "infrastructure_failure", reason },
+      }),
+    ).toBe("continuing: Infrastructure failure");
   });
 });
