@@ -108,6 +108,48 @@ describe("dispatchPrompt account quota deferral", () => {
     ).toBe(true);
     expect(isAccountQuotaWaiting("quota-session")).toBe(false);
   });
+
+  it("records a terminal capacity error as readable text and preserves the original failure", async () => {
+    const title =
+      "Selected model is at capacity. Please try a different model.";
+    const error = {
+      message: title,
+      data: {
+        accountId: "fixture-account",
+        dispatchStarted: true,
+        promptNotAccepted: false,
+        errorKind: "provider_failure",
+        sessionFailure: {
+          title,
+          severity: "error",
+          category: "service",
+          actions: ["retry"],
+        },
+      },
+    };
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _id: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.reject(error);
+      },
+    );
+    await expect(dispatchPrompt("quota-session", "hello", {})).rejects.toBe(
+      error,
+    );
+    const messages = useChatStore.getState().messagesBySession["quota-session"];
+    expect(messages?.at(-1)?.content).toEqual([
+      { type: "systemNotification", notificationType: "error", text: title },
+    ]);
+    expect(messages?.filter((message) => message.role === "user")).toHaveLength(
+      1,
+    );
+    expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
+    expect(isAccountQuotaWaiting("quota-session")).toBe(false);
+  });
 });
 
 vi.mock("@/shared/api/acp", () => ({

@@ -19,14 +19,6 @@ function getErrorMessage(error: unknown): string {
   return "";
 }
 
-function stringifyData(data: unknown): string {
-  try {
-    return JSON.stringify(data);
-  } catch {
-    return String(data);
-  }
-}
-
 export function formatAcpErrorMessage(
   error: unknown,
   fallback = "Unknown error",
@@ -39,8 +31,22 @@ export function formatAcpErrorMessage(
       if (detail) {
         return detail;
       }
-    } else if (data !== undefined && data !== null) {
-      return `${message || String(error)}: ${stringifyData(data)}`;
+    } else if (typeof data === "object" && data !== null) {
+      // ACP failure titles are intended for the operator. Keep transport and
+      // account metadata on the original error, out of the transcript/toasts.
+      if ("sessionFailure" in data) {
+        const failure = data.sessionFailure;
+        if (
+          typeof failure === "object" &&
+          failure !== null &&
+          "title" in failure &&
+          typeof failure.title === "string" &&
+          failure.title.trim()
+        ) {
+          return failure.title.trim();
+        }
+      }
+      return getErrorMessage(data) || message || fallback;
     }
   }
 
