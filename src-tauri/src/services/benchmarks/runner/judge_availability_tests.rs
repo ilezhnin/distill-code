@@ -54,6 +54,25 @@ fn busy_third_lab_defers_the_panel_instead_of_silently_using_two_judges() {
 }
 
 #[test]
+fn a_busy_lab_can_be_replaced_by_another_calibrated_model_without_losing_a_seat() {
+    let candidate = judge("grok-acp", "invented-candidate", "candidate");
+    let first = judge("claude-acp", "invented-first", "idle-first");
+    let replacement = judge("claude-acp", "invented-replacement", "idle-first");
+    let other = judge("grok-acp", "invented-other", "idle-other");
+    let busy = judge("codex-acp", "invented-busy", "interactive-busy");
+    let offered = vec![
+        (Some(99.0), busy),
+        (Some(90.0), first.clone()),
+        (Some(80.0), replacement.clone()),
+        (Some(70.0), other.clone()),
+    ];
+    assert_eq!(
+        ordinary_available_judges(&[&candidate], &brief(), offered, idle).unwrap(),
+        vec![first, other, replacement]
+    );
+}
+
+#[test]
 fn busy_roomiest_account_does_not_hide_an_idle_account_of_the_same_model() {
     let candidate = judge("grok-acp", "invented-candidate", "candidate");
     let busy = judge("claude-acp", "invented-judge", "interactive-busy");

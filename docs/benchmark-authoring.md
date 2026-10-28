@@ -323,10 +323,11 @@ by the other labs', and the rendering evaluation is marked `sameVendor` or
 that authored the case never judges it (provider, model and effort, as for
 candidates): an author's lab with no other calibrated judge leaves the panel to
 the other labs, and a panel with the model of an exact author at another effort
-is marked `authorModel`. With fewer than two labs offered, more models of the
-seated labs fill the panel to two (a visual rubric's Opus and Sonnet while no
-other lab passed its visual calibration); with fewer than two judges a
-rendering stays unjudged (pending review, with the panel's reason). Each seat
+is marked `authorModel`. With fewer than three labs offered, other distinct
+calibrated models of the seated labs fill the panel to three when available.
+Two eligible models can still judge when no third model is eligible; with fewer
+than two judges a rendering stays unjudged (pending review, with the panel's
+reason). Each seat
 runs at its entry's effort, which its account must offer, and a judge turn has
 ten minutes for its sheet (Grok 4.7 high takes two to three). The ordinary panel's
 recipe (`three-lab-v1`) and the labs it seated enter its protocol and its hash,
@@ -337,9 +338,10 @@ own recipe (`strong-pool-v1`). A qualification or preregistered workflow panel
 names its own seats and is not subject to this rule.
 
 A new ordinary panel chooses idle eligible accounts and preserves the eligible
-panel size: if a third lab is temporarily busy, judging waits for it instead of
-silently using only two judges. Another idle account of the same model can
-cover a busy account. Other candidate attempts continue while judging waits.
+panel size: a busy third lab can be covered by another idle calibrated model,
+or another idle account of the same model. Without such a replacement, judging
+waits instead of silently using only two judges. Other candidate attempts
+continue while judging waits.
 An ordinary open panel retains paid votes
 and can replace unfilled seats with currently eligible judges; qualification
 and preregistered workflow panels keep their exact seats. Waiting answers take

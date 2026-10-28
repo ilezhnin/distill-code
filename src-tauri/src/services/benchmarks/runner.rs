@@ -1291,9 +1291,9 @@ pub(crate) fn by_headroom(mut offered: Vec<(Option<f64>, Configuration)>) -> Vec
 /// the other labs dilute its score, and [`same_vendor`] and [`own_model`]
 /// mark the panel. An exact author of the case never sits (see
 /// [`frozen_seats`]); an author's lab with no other calibrated judge leaves
-/// the panel to the other labs. With fewer than two labs offered, more
-/// models of the seated labs fill it to two (a visual rubric's Opus and
-/// Sonnet while only Claude passed a visual calibration). A candidate of no
+/// the panel to the other labs. With fewer than three labs offered, distinct
+/// calibrated models of the seated labs fill it to three when available.
+/// A rubric with only two eligible models can still use both. A candidate of no
 /// known vendor admits no judge.
 pub(crate) fn ordinary_judges(
     candidates: &[&Configuration],
@@ -1318,7 +1318,7 @@ pub(crate) fn ordinary_judges(
         }
     }
     for (judge, _) in &admitted {
-        if panel.len() < MIN_JUDGES && !panel.iter().any(|seated| seated.id == judge.id) {
+        if panel.len() < MAX_JUDGES && !panel.iter().any(|seated| seated.id == judge.id) {
             panel.push(judge.clone());
         }
     }
@@ -12819,7 +12819,7 @@ mod tests {
             .all(|judge| judge.effort.as_deref() == Some("high")));
     }
     #[test]
-    fn ordinary_seats_are_one_per_lab_whoever_the_candidate_is() {
+    fn ordinary_seats_prefer_each_lab_then_fill_with_distinct_calibrated_models() {
         // Owner, 10-18: every ordinary panel seats one calibrated judge per
         // lab, the candidate's own lab and model included, marked.
         let row = |provider: &str, model: &str| {
@@ -12869,11 +12869,11 @@ mod tests {
         assert_eq!(ids(&panel), labs);
         assert!(own_model(&[&both[0], &both[1]], &panel));
         // An author never judges; its lab without another calibrated judge
-        // leaves the panel to the other two, and with one it sits instead.
+        // leaves the panel to the other labs, and with one it sits instead.
         text.environment["authoredBy"] = json!([row("codex-acp", "invented-sol")]);
         assert_eq!(
             ids(&seat(haiku.clone(), &text)),
-            ["opus[1m]", "invented-grok"]
+            ["opus[1m]", "invented-grok", "sonnet"]
         );
         text.environment["authoredBy"] = json!([row("claude-acp", "opus[1m]")]);
         assert_eq!(
@@ -12883,11 +12883,11 @@ mod tests {
         // A candidate of no known vendor admits no judge.
         text.environment["authoredBy"] = json!([]);
         assert!(seat(row("invented-provider", "model"), &text).is_empty());
-        // Two labs offered: one each, no fill needed.
+        // Two labs offered: the third seat uses another calibrated model.
         let two_labs = || offered().into_iter().take(3).collect::<Vec<_>>();
         assert_eq!(
             ids(&ordinary_judges(&[&haiku], &text, two_labs())),
-            ["opus[1m]", "invented-sol"]
+            ["opus[1m]", "invented-sol", "sonnet"]
         );
         // One lab offered (a visual rubric while only Claude passed a visual
         // calibration): its models fill the panel to two, marked.
