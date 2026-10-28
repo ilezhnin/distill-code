@@ -128,25 +128,33 @@ export function BenchmarkRunDrawer({
   const terminal = run ? FINISHED_RUN.has(run.state) : false;
   // Explicit resume validates the same selection against today's runtime.
   // Research workflow conditions remain frozen.
+  const inventoryGroups = useMemo(() => {
+    const groups = new Map<string, Configuration[]>();
+    for (const entry of terminal ? [] : (run?.request.configurations ?? [])) {
+      const key = JSON.stringify([entry.providerId, entry.accountId ?? null]);
+      groups.set(key, [...(groups.get(key) ?? []), entry]);
+    }
+    return [...groups.values()];
+  }, [run?.request.configurations, terminal]);
   const inventories = useQueries({
-    queries: (terminal ? [] : (run?.request.configurations ?? [])).map(
-      (entry) => ({
-        queryKey: [
-          "benchmark-catch-up-inventory",
-          entry.providerId,
-          entry.accountId ?? null,
-        ],
-        queryFn: () =>
-          benchmarkApi.getInventory(entry.providerId, entry.accountId ?? null),
-        staleTime: Number.POSITIVE_INFINITY,
-      }),
-    ),
+    queries: inventoryGroups.map(([entry]) => ({
+      queryKey: [
+        "benchmark-catch-up-inventory",
+        entry.providerId,
+        entry.accountId ?? null,
+      ],
+      queryFn: () =>
+        benchmarkApi.getInventory(entry.providerId, entry.accountId ?? null),
+      staleTime: Number.POSITIVE_INFINITY,
+    })),
   });
   const outdated =
     !terminal &&
-    (run?.request.configurations ?? []).some((entry, index) => {
+    inventoryGroups.some((entries, index) => {
       const inventory = inventories[index]?.data;
-      return inventory != null && stalePin(entry, inventory);
+      return (
+        inventory != null && entries.some((entry) => stalePin(entry, inventory))
+      );
     });
   const attempts = run?.attempts ?? [];
   // Summaries carry each attempt's score.

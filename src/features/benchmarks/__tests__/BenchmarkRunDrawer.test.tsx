@@ -491,6 +491,42 @@ it("keeps Resume for a paused run on today's runtime", async () => {
   expect(screen.queryByText(/made for an older sandbox/)).toBeNull();
 });
 
+it("shares one account inventory across profiles while detecting a stale second profile", async () => {
+  const repository = {
+    ...configuration,
+    id: "repository-config",
+    executionProfile: "protected_repository",
+    inventoryRevision: "repository-old",
+  };
+  vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
+    ...listing(configuration.inventoryRevision as string),
+    {
+      ...listing("unused")[0],
+      configuration: { ...repository, inventoryRevision: "repository-now" },
+    },
+  ]);
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    show({
+      ...run,
+      state: "paused",
+      request: { ...run.request, configurations: [configuration, repository] },
+      attempts: attempts(),
+    });
+    expect(
+      await screen.findByText(/The sandbox or CLI changed/),
+    ).toBeInTheDocument();
+    expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
+    expect(
+      warning.mock.calls.some((args) =>
+        String(args[0]).includes("Duplicate Queries"),
+      ),
+    ).toBe(false);
+  } finally {
+    warning.mockRestore();
+  }
+});
+
 it("uses the persisted pause timestamp for an unfinished task's clock", async () => {
   const startedAt = Date.now() - 2 * 3_600_000;
   show({
