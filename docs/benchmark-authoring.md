@@ -522,6 +522,10 @@ Each test contributes its newest scored cell, retaining one
 run's configuration and repetitions together. Repeated tests count once,
 infrastructure errors do not erase measured results, and scores are never
 selected for being higher. Execution conditions remain in individual evidence.
+An explicit runtime refresh within the same run and requested configuration
+preserves completed repetitions in that cell, so model and configuration
+coverage agree. Separate requests, billing modes and execution profiles still
+cannot fill each other's repetitions; strict comparison keys retain runtime pins.
 Coverage labels count measured tests against the full eligible pool; hover
 details separate passed, not passed and untested cases. Scores with incomplete
 coverage are preliminary; untested cases are not failed cases. Speed and cost

@@ -1479,7 +1479,8 @@ impl<'a> PreparedMeasurements<'a> {
 }
 
 /// Model scores count a test once. Its newest scored run/configuration supplies
-/// the entire cell; billing, profiles and runtime never pool its repetitions.
+/// the entire cell. Billing and profiles stay separate, while a runtime refresh
+/// or account move within that request preserves its measured repetitions.
 fn model_cell_attempts<'a>(
     by_run: &BTreeMap<&str, Vec<&'a Attempt>>,
     runs: &BTreeMap<&str, &BenchmarkRun>,
@@ -1494,11 +1495,11 @@ fn model_cell_attempts<'a>(
                     &attempt.version_id,
                     run,
                     &attempt.configuration.id,
-                    // A model row spans configurations, so a cell keeps to
-                    // one execution; a configuration row's attempts already
-                    // share it, auxiliary relabels included.
+                    // Use the same execution identity as configuration rows.
+                    // Strict runtime pins belong to comparison evidence, not
+                    // to completion after an explicitly resumed runtime update.
                     if by_execution {
-                        configuration_key(&execution_configuration(attempt))
+                        leaderboard_key(&execution_configuration(attempt))
                     } else {
                         String::new()
                     },
@@ -3602,6 +3603,45 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn resumed_runtime_refresh_keeps_a_complete_model_cell() {
+        let mut data = dataset();
+        data.required_repetitions = 3;
+        data.versions.retain(|v| v.id == "v0");
+        data.runs.retain(|run| run.id == "before");
+        data.runs[0].request.repetitions = 3;
+        data.attempts.retain(|a| a.id == "before-v0");
+        let original = data.attempts[0].clone();
+        for repetition in 1..3 {
+            let mut resumed = original.clone();
+            resumed.id = format!("resumed-{repetition}");
+            resumed.repetition = repetition;
+            resumed.started_at = Some(3);
+            resumed.finished_at = Some(4);
+            resumed.configuration.inventory_revision = Some("updated-runtime".into());
+            resumed.observed = Some(resumed.configuration.clone());
+            data.attempts.push(resumed);
+        }
+        let report = leaderboard(&data, &ResultQuery::default());
+        let configuration_row = &report.rows[0];
+        let model_row = &report.models[0].row;
+        assert_eq!(configuration_row.suite_complete, 1);
+        assert_eq!(model_row.suite_complete, configuration_row.suite_complete);
+        assert_eq!(model_row.complete_version_ids, ["v0"]);
+        assert_eq!(model_row.result_attempt_ids.len(), 3);
+        assert_eq!(model_row.fully_tested_at, Some(4));
+        assert_eq!(model_row.status, "comparable");
+        // Runtime evidence stays untouched, including for paired comparisons.
+        assert_ne!(
+            configuration_key(&data.attempts[0].configuration),
+            configuration_key(&data.attempts[1].configuration)
+        );
+        // A separately requested configuration still cannot fill this cell.
+        data.attempts[1].configuration.id = "separate-request".into();
+        let report = leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.models[0].row.suite_complete, 0);
+    }
+
+    #[test]
     fn model_cells_never_combine_repetitions_from_different_settings() {
         let mut data = dataset();
         data.required_repetitions = 3;
@@ -3612,7 +3652,7 @@ pub(super) mod tests {
         second.observed = Some(second.configuration.clone());
         data.attempts.push(second.clone());
         second.id = "third-setting".into();
-        second.configuration.inventory_revision = Some("another-runtime".into());
+        second.configuration.execution_profile = "protected_repository".into();
         second.observed = Some(second.configuration.clone());
         data.attempts.push(second);
         let report = leaderboard(&data, &ResultQuery::default());
