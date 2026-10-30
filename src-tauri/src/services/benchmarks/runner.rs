@@ -527,6 +527,20 @@ pub trait ExecutionBackend: Send + Sync {
         })
     }
     fn unsupported(&self, configuration: &Configuration, draft: &BenchmarkDraft) -> Option<String>;
+    /// The benchmark sessions the host no longer needs for itself (see
+    /// `session_retention`). Fixture backends open no host sessions.
+    fn settled_sessions<'a>(
+        &'a self,
+    ) -> BoxFuture<'a, Result<Vec<crate::services::agent_host::store::BenchmarkSessionEntry>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// Removes finished benchmark sessions from the host.
+    fn purge_sessions<'a>(
+        &'a self,
+        _sessions: &'a [String],
+    ) -> BoxFuture<'a, Result<crate::services::agent_host::store::PurgeStats>> {
+        Box::pin(async { Ok(Default::default()) })
+    }
     fn readiness<'a>(&'a self, _configuration: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
@@ -5718,6 +5732,35 @@ impl ExecutionBackend for NativeBackend {
             Ok(attempt)
         })
     }
+    fn settled_sessions<'a>(
+        &'a self,
+    ) -> BoxFuture<'a, Result<Vec<crate::services::agent_host::store::BenchmarkSessionEntry>>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            host.settled_benchmark_sessions().await.map_err(host_error)
+        })
+    }
+    fn purge_sessions<'a>(
+        &'a self,
+        sessions: &'a [String],
+    ) -> BoxFuture<'a, Result<crate::services::agent_host::store::PurgeStats>> {
+        Box::pin(async move {
+            let host = self
+                .app
+                .state::<AgentHost>()
+                .get_or_start(&self.app)
+                .await
+                .map_err(host_error)?;
+            host.purge_benchmark_sessions(sessions)
+                .await
+                .map_err(host_error)
+        })
+    }
     fn unsupported(&self, c: &Configuration, d: &BenchmarkDraft) -> Option<String> {
         if let Err(error) = super::judge_panel::frozen(d, &[c]) {
             return Some(error.message);
@@ -8272,6 +8315,9 @@ impl BenchmarkService {
                 error.message
             );
         }
+        // Chats of attempts that settled while Flock was closed, and those
+        // earlier builds kept, go once the judges above are reconciled.
+        self.sweep_settled_sessions(true);
         loop {
             if let Err(error) = self.tick().await {
                 log::warn!("[benchmarks] runner paused: {}", error.message);
@@ -8353,6 +8399,7 @@ impl BenchmarkService {
     ) -> Result<()> {
         self.store.beat(now()).await?;
         self.recover_interrupted(flights, tried).await?;
+        self.sweep_settled_sessions(false);
         self.bake_closed_windows().await?;
         super::campaigns::tick(self).await?;
         super::workflow_campaign::tick(self).await
@@ -8959,6 +9006,9 @@ impl BenchmarkService {
         admission_window::finished(&scope, &job);
         admission_window::ended(&scope, &job);
         self.changed().await;
+        // A final attempt keeps its turn in the sealed evidence; its chats go
+        // now (see `session_retention`). One still owed judges keeps them.
+        self.release_settled_sessions_logged(Some(id)).await;
     }
     /// Hands the lane and account of a finished turn to the next attempt of
     /// its configuration while its sealed answer is checked, so the run's

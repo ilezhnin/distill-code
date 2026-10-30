@@ -56,6 +56,7 @@ import {
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { BenchmarkDiagnosticHistory } from "./BenchmarkDiagnosticHistory";
+import { BenchmarkTranscriptDialog } from "./BenchmarkTranscriptDialog";
 
 export function BenchmarkEvidenceView({
   attemptId: openedId,
@@ -217,8 +218,15 @@ export function BenchmarkEvidenceView({
       setBusy(false);
     }
   };
+  const [sealedTranscript, setSealedTranscript] = useState(false);
   const openTranscript = async () => {
     if (blind || !attempt?.sessionId) return;
+    // A finished attempt keeps no chat; its turn replays from the sealed
+    // evidence. A running one opens its live chat.
+    if (attempt.phase === "terminal") {
+      setSealedTranscript(true);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -695,6 +703,12 @@ export function BenchmarkEvidenceView({
             </Button>
           ) : null}
         </DialogFooter>
+        {sealedTranscript && !blind ? (
+          <BenchmarkTranscriptDialog
+            attemptId={attemptId}
+            onClose={() => setSealedTranscript(false)}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );

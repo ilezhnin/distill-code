@@ -17,6 +17,7 @@ vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) => String(error),
   benchmarkApi: {
     getEvidence: vi.fn(),
+    getTranscript: vi.fn(),
     getVersion: vi.fn(),
     submitReview: vi.fn(),
     rescore: vi.fn(),
@@ -538,6 +539,32 @@ describe("creative rubric review", () => {
     expect(
       screen.getByRole("button", { name: "Open transcript" }),
     ).toBeInTheDocument();
+  });
+
+  it("replays a finished attempt's turn from its sealed evidence, with no chat to open", async () => {
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...panel(2, [0.6, 0.8]),
+      sessionId: "removed-session",
+    });
+    vi.mocked(benchmarkApi.getTranscript).mockResolvedValue([
+      {
+        sessionId: "removed-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Sealed answer text" },
+        },
+      },
+    ]);
+    catalog([creativeDefinition]);
+    showEvidence();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Open transcript" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Transcript" }),
+    ).toBeInTheDocument();
+    expect(benchmarkApi.getTranscript).toHaveBeenCalledWith(attempt.id);
+    expect(await screen.findByText("Sealed answer text")).toBeInTheDocument();
   });
 
   it("does not spend panel calls on a rendering a human override decides", async () => {

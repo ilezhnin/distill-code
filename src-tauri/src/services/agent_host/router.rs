@@ -7520,6 +7520,50 @@ impl Inner {
     ) -> Result<super::store::CompactionStats, String> {
         self.store.compact_events(id, 0).await
     }
+    /// The benchmark sessions the host itself no longer needs (see
+    /// `SessionStore::settled_benchmark_sessions`).
+    pub async fn settled_benchmark_sessions(
+        &self,
+    ) -> Result<Vec<super::store::BenchmarkSessionEntry>, String> {
+        self.store.settled_benchmark_sessions().await
+    }
+    /// Delete finished benchmark sessions: a session with a turn loading or
+    /// running here is left, any other lets go of its bridge session the way
+    /// a deleted chat does, and the store removes it with its records. The
+    /// space counts toward the next start's VACUUM.
+    pub async fn purge_benchmark_sessions(
+        &self,
+        ids: &[String],
+    ) -> Result<super::store::PurgeStats, String> {
+        let mut total = super::store::PurgeStats::default();
+        for chunk in ids.chunks(32) {
+            let mut idle = Vec::with_capacity(chunk.len());
+            for id in chunk {
+                let busy = self
+                    .sessions
+                    .lock()
+                    .await
+                    .get(id)
+                    .is_some_and(|runtime| runtime.loading || runtime.run.is_some());
+                if busy {
+                    continue;
+                }
+                let attached = self.attached_route(id).await;
+                self.sessions.lock().await.remove(id);
+                self.attach_locks.lock().await.remove(id);
+                if let Some((bridge, bridge_session_id)) = attached {
+                    Self::close_in_background(bridge, bridge_session_id);
+                }
+                idle.push(id.clone());
+            }
+            let purged = self.store.delete_benchmark_sessions(&idle).await?;
+            total.add(&purged);
+            // A long backlog shares the database with live chats and turns.
+            tokio::task::yield_now().await;
+        }
+        self.store.record_freed_history(total.bytes).await?;
+        Ok(total)
+    }
     pub async fn stop_owned_sandbox(&self, session: &str) -> Result<(), String> {
         if let Some((bridge, _)) = self.attached_route(session).await {
             if bridge.is_sandbox() {

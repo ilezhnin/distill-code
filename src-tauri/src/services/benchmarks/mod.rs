@@ -26,6 +26,7 @@ pub mod routing;
 pub mod runner;
 pub mod seeds;
 pub mod selector;
+mod session_retention;
 pub mod store;
 pub mod task_execution;
 pub mod types;

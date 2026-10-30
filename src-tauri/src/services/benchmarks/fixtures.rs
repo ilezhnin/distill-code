@@ -151,6 +151,45 @@ pub async fn seal(root: &Path, attempt: &Attempt, events: &serde_json::Value) ->
     write_synced(&path.join(format!("{digest}.json")), &bytes).await?;
     Ok(digest)
 }
+/// The sealed evidence record `digest` of attempt `attempt_id` in run
+/// `run_id`: read only from inside the root, and only when its bytes still
+/// hash to the digest and it names that attempt and `session_id`. The error
+/// says which check failed.
+pub(super) async fn sealed_record(
+    root: &Path,
+    run_id: &str,
+    attempt_id: &str,
+    session_id: Option<&str>,
+    digest: &str,
+) -> std::result::Result<serde_json::Value, String> {
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("invalid evidence hash".into());
+    }
+    if [run_id, attempt_id]
+        .iter()
+        .any(|id| !safe_relative(id) || id.contains('/'))
+    {
+        return Err("invalid evidence location".into());
+    }
+    let path = root
+        .join("runs")
+        .join(run_id)
+        .join(attempt_id)
+        .join("evidence")
+        .join(format!("{digest}.json"));
+    crate::services::flock_root::reject_document_links(root, &path)?;
+    let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+    if hash(&bytes) != digest {
+        return Err("evidence failed hash verification".into());
+    }
+    let evidence: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if evidence.get("attemptId").and_then(|v| v.as_str()) != Some(attempt_id)
+        || evidence.get("sessionId") != Some(&serde_json::json!(session_id))
+    {
+        return Err("evidence belongs to a different attempt or session".into());
+    }
+    Ok(evidence)
+}
 /// Recover an answer erased by an older summary save from its original receipt.
 /// Never replace an answer or manufacture a new seal during recovery.
 pub(super) async fn restore_sealed_output(root: &Path, attempt: &mut Attempt) -> Result<()> {
@@ -166,39 +205,15 @@ pub(super) async fn restore_sealed_output(root: &Path, attempt: &mut Attempt) ->
             ),
         )
     };
-    let digest = attempt
-        .evidence_hash
-        .as_deref()
-        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-        .ok_or_else(|| missing("invalid evidence hash"))?;
-    if [&attempt.run_id, &attempt.id]
-        .iter()
-        .any(|id| !safe_relative(id) || id.contains('/'))
-    {
-        return Err(missing("invalid evidence location"));
-    }
-    let path = root
-        .join("runs")
-        .join(&attempt.run_id)
-        .join(&attempt.id)
-        .join("evidence")
-        .join(format!("{digest}.json"));
-    crate::services::flock_root::reject_document_links(root, &path).map_err(|e| missing(&e))?;
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|e| missing(&e.to_string()))?;
-    if hash(&bytes) != digest {
-        return Err(missing("evidence failed hash verification"));
-    }
-    let evidence: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| missing(&e.to_string()))?;
-    if evidence.get("attemptId").and_then(|v| v.as_str()) != Some(attempt.id.as_str())
-        || evidence.get("sessionId") != Some(&serde_json::json!(attempt.session_id))
-    {
-        return Err(missing(
-            "evidence belongs to a different attempt or session",
-        ));
-    }
+    let evidence = sealed_record(
+        root,
+        &attempt.run_id,
+        &attempt.id,
+        attempt.session_id.as_deref(),
+        attempt.evidence_hash.as_deref().unwrap_or_default(),
+    )
+    .await
+    .map_err(|detail| missing(&detail))?;
     let output = evidence
         .get("output")
         .and_then(|v| v.as_str())
