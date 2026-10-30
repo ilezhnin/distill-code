@@ -3,6 +3,7 @@ pub mod agent_host;
 pub(crate) mod app_log;
 pub(crate) mod benchmark_policy_check;
 pub(crate) mod benchmark_sandbox;
+pub(crate) mod benchmark_sandbox_setup;
 pub mod benchmarks;
 pub mod bundled_agents;
 pub mod bundled_skills;

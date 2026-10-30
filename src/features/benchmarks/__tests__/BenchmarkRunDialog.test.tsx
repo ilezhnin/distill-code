@@ -38,12 +38,22 @@ vi.mock("../api/benchmarks", () => ({
     startRun: vi.fn(),
     providerDataUse: vi.fn(),
     renewPolicyCheck: vi.fn(),
+    sandboxSetupStatus: vi.fn(),
+    runSandboxSetup: vi.fn(),
+    listenSandboxSetup: vi.fn(),
   },
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(benchmarkApi.renewPolicyCheck).mockReset();
+  vi.mocked(benchmarkApi.sandboxSetupStatus).mockResolvedValue({
+    stage: "ready",
+    action: null,
+    detail: null,
+    running: null,
+  });
+  vi.mocked(benchmarkApi.listenSandboxSetup).mockResolvedValue(() => {});
   Element.prototype.scrollIntoView = vi.fn();
   Element.prototype.hasPointerCapture = vi.fn(() => false);
   vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([

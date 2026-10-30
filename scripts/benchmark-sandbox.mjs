@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Creates and provisions the WSL distribution repository benchmark cases run
-// in (see src-tauri/resources/benchmark-sandbox/provision.sh).
+// in (see src-tauri/resources/benchmark-sandbox/provision.sh). The installed
+// app sets the same sandbox up itself (Settings > Benchmarks > Sandbox, or
+// the run dialogs); this script is the development equivalent.
 //
 //   node scripts/benchmark-sandbox.mjs            provision (create if missing)
 //   node scripts/benchmark-sandbox.mjs status     print bench-status
@@ -58,12 +60,11 @@ function resolveFlockRoot() {
   return path.join(home, ".flock");
 }
 const location = path.join(root, "benchmarks", "sandbox");
-// Versions pinned by the native benchmark policies.
-const SPECS = {
-  kimi: "@moonshot-ai/kimi-code@2.1.0",
-  grok: "@xai-official/grok@1.0.40",
-  zai: "opencode-linux-x64@1.18.35",
-};
+// Versions pinned by the native benchmark policies, shared with the app's
+// own sandbox setup (and, with Node and git, with provision.sh).
+const SPECS = JSON.parse(
+  fs.readFileSync(path.join(resources, "runtime-sources.json"), "utf8"),
+).tools;
 function wsl(args, options = {}) {
   const result = spawnSync("wsl.exe", args, { encoding: "utf8", ...options });
   if (result.error) throw result.error;

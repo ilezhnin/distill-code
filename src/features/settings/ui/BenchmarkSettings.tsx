@@ -43,6 +43,11 @@ import {
   Field,
   SelectField,
 } from "@/features/benchmarks/ui/BenchmarkPrimitives";
+import {
+  SandboxSetupActions,
+  SandboxSetupStatus,
+  useSandboxSetup,
+} from "@/features/benchmarks/ui/BenchmarkSandboxSetup";
 import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
@@ -98,10 +103,30 @@ export function BenchmarkSettings() {
           </SettingsRow>
           <CreditLimitRow />
         </SettingsSection>
+        <SandboxSection />
         <ProviderDataUseSection />
         <JudgePoolSections />
       </SettingsSections>
     </SettingsPage>
+  );
+}
+
+/** The benchmark sandbox: what it needs, and the app setting it up. */
+function SandboxSection() {
+  const { t } = useTranslation("benchmarks");
+  const setup = useSandboxSetup();
+  return (
+    <SettingsSection title={t("sandbox.title")}>
+      <div className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          {t("sandbox.description")}
+        </p>
+        <SandboxSetupStatus setup={setup} />
+        <div className="flex flex-wrap gap-2">
+          <SandboxSetupActions setup={setup} />
+        </div>
+      </div>
+    </SettingsSection>
   );
 }
 

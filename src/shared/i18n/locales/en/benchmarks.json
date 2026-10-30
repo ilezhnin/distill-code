@@ -414,6 +414,78 @@
     "readinessRetry": "Check again",
     "readinessChecking": "Checking…"
   },
+  "sandbox": {
+    "title": "Benchmark sandbox",
+    "description": "Benchmarks run in a separate Linux sandbox in WSL. Flock sets it up and keeps it at the version this release expects.",
+    "checking": "Checking…",
+    "checkAgain": "Check again",
+    "open": "Open sandbox setup",
+    "showProgress": "Show progress",
+    "log": "Setup log",
+    "runningHelp": "You can close this window; setup goes on and the run dialogs show when it is done.",
+    "stages": {
+      "unsupported": {
+        "title": "Benchmarks need Windows with WSL 2",
+        "description": "The benchmark sandbox runs in WSL 2, which is available on Windows only."
+      },
+      "wslMissing": {
+        "title": "WSL is not installed",
+        "description": "The sandbox runs in WSL 2. Flock can install it together with the Virtual Machine Platform it needs."
+      },
+      "restartRequired": {
+        "title": "Restart Windows to finish enabling WSL",
+        "description": "WSL is installed, but Windows has not restarted since. Restart the computer, open Flock and check again."
+      },
+      "virtualizationOff": {
+        "title": "Turn on virtualization",
+        "description": "WSL 2 needs hardware virtualization (Intel VT-x or AMD-V, sometimes named SVM). Turn it on in the computer's UEFI or BIOS settings, start Windows and check again."
+      },
+      "notSetUp": {
+        "title": "The benchmark sandbox is not set up",
+        "description": "Flock installs Ubuntu 24.04 as its own WSL distribution and puts the pinned tools and test browser in it. Other WSL distributions are not touched."
+      },
+      "needsRepair": {
+        "title": "The sandbox differs from this version of Flock",
+        "description": "Flock updates what differs. Sign-ins kept in the sandbox and all results stay."
+      },
+      "lowDisk": {
+        "title": "Not enough free disk space",
+        "description": "Benchmarks need at least 30 GiB free on the drive that holds the sandbox. Free some space and check again."
+      },
+      "busy": {
+        "title": "The computer is busy",
+        "description": "There is not enough free memory right now, or benchmark jobs are still finishing. Check again in a moment."
+      },
+      "unavailable": {
+        "title": "The sandbox could not be checked",
+        "description": "WSL did not answer as expected. The technical details show what it reported."
+      },
+      "ready": {
+        "title": "The sandbox is ready",
+        "description": "It matches this version of Flock."
+      }
+    },
+    "actions": {
+      "installWsl": "Install WSL",
+      "setUp": "Set up sandbox",
+      "repair": "Repair sandbox"
+    },
+    "actionHelp": {
+      "installWsl": "Windows asks for administrator permission and shows the installation in its own window. A restart may follow.",
+      "setUp": "Downloads Ubuntu, the pinned tools and the test browser (a few gigabytes) and can take 15–40 minutes.",
+      "repair": "Updates only what differs. It may download tools again and take several minutes."
+    },
+    "steps": {
+      "checking": "Checking the sandbox…",
+      "installingWsl": "Installing WSL…",
+      "creatingDistribution": "Installing Ubuntu…",
+      "restoringDistribution": "Registering the kept sandbox again…",
+      "provisioning": "Installing the sandbox runtime, tools and test browser…",
+      "updatingHelpers": "Updating the sandbox helpers…",
+      "verifyingBrowser": "Checking the test browser…",
+      "checkingPolicy": "Running the offline sandbox check…"
+    }
+  },
   "runs": {
     "title": "Runs and history",
     "description": "Every frozen plan with its progress. Open a run to pause, resume or cancel it.",

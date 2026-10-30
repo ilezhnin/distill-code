@@ -71,19 +71,49 @@ still finishing retain their execution clock when another test needs attention.
 
 All benchmark candidates, model inventory probes, judges, repository checks,
 JavaScript checks and browser rendering require the dedicated WSL distribution.
-Ordinary chats keep their existing provider runtime. With WSL
-available and no benchmark sessions running, provision the helpers from the same
-checkout as the application, then verify them:
+Ordinary chats keep their existing provider runtime.
+
+The installed app sets this sandbox up itself; it needs neither a source
+checkout nor a host Node installation. **Settings > Benchmarks > Benchmark
+sandbox** says what stands between the computer and a sandbox the running
+build accepts, and so does a run dialog whose readiness check fails, with a
+button that opens the same setup. The app checks, in order:
+
+| What it finds | What happens |
+| --- | --- |
+| WSL, or its Virtual Machine Platform, is not installed | **Install WSL** runs `wsl --install --no-distribution` after Windows asks for administrator permission |
+| Windows restarts to finish enabling WSL | The operator restarts Windows and checks again |
+| Virtualization is off in the firmware | The operator turns on Intel VT-x or AMD-V in the UEFI or BIOS settings |
+| No `distill-bench` distribution | **Set up sandbox** installs Ubuntu 24.04 under `benchmarks/sandbox` in the Flock folder, or registers the disk a removed registration left there again |
+| The sandbox differs from the build's pins | **Repair sandbox** updates the helpers without downloads when only they differ, and provisions in full otherwise |
+| The test browser has no readiness receipt | Setup issues it from a real sandboxed launch, as `benchmark-browser-ready.mjs` does |
+| Less than 30 GiB free on the sandbox's drive, or no free memory | The operator frees space or waits, then checks again |
+
+Setup observes the sandbox again after each step and takes the next one,
+until the sandbox is ready or only the operator can act. A step that did not
+help gives way to a heavier one, and none runs twice without progress. When
+started from a run dialog, setup also renews that provider's offline policy
+check (below). Setup never removes a distribution or its data: provisioning
+again keeps the sandbox's sign-ins. Provisioning restarts that distribution
+only; other WSL distributions keep running. Schedule it before measurement,
+not during a run.
+
+Provisioning installs the runtime the build pins, whatever Ubuntu has
+published since: [`runtime-sources.json`](../src-tauri/resources/benchmark-sandbox/runtime-sources.json)
+names the exact Node.js and git builds whose executables
+[`runtime-pins.json`](../src-tauri/resources/benchmark-sandbox/runtime-pins.json)
+pins, from their publishers' permanent URLs, and provisioning checks each
+download's SHA-256 before installing it. The provider tool versions come from
+the same file and `acp-tools.lock.json`. Change a pin and its source together.
+
+From a checkout, the development scripts do the same and verify it further:
 
 ```powershell
 node scripts/benchmark-sandbox.mjs
 node scripts/benchmark-browser-ready.mjs
 node scripts/benchmark-sandbox.mjs status
 node scripts/benchmark-sandbox.mjs selftest
-```
-
-Provisioning installs dependencies and restarts that distribution. Schedule it
-before measurement, not during a run. Claude, Codex, Grok and Z.ai accounts
+``` Claude, Codex, Grok and Z.ai accounts
 sign in once, in Flock (Settings > AI providers; Grok through its own CLI
 sign-in): every sandbox session of theirs runs on a lease of that sign-in (see
 below), so there is nothing to sign in inside the sandbox, and the Z.ai key
@@ -127,7 +157,8 @@ the selected tests and run settings. It needs neither a source checkout nor a
 host Node installation. Existing attempts and results stay intact; the operator
 starts or continues the run separately. A failed check leaves dispatch blocked
 and can be retried in the same dialog. This renews policy verification, not
-missing sandbox tools or helpers, which still require provisioning above.
+missing sandbox tools or helpers: when the sandbox itself differs, the dialog
+offers **Repair sandbox** (above), which renews this check as its last step.
 
 These explicit policy controls use synthetic credentials and local
 loopback endpoints. They produce protected receipts bound to the Linux tools,

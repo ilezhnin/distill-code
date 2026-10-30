@@ -540,6 +540,50 @@ pub async fn benchmark_renew_policy_check(provider_id: String) -> Result<()> {
             BenchmarkError::new(code, error)
         })
 }
+fn sandbox_location(app: &AppHandle) -> Result<std::path::PathBuf> {
+    Ok(crate::services::flock_root::app_root(app)
+        .map_err(|error| BenchmarkError::new("storage_unavailable", error))?
+        .join("benchmarks")
+        .join("sandbox"))
+}
+
+/// What stands between this computer and a benchmark sandbox this build
+/// accepts, and what the app can do about it.
+#[tauri::command]
+pub async fn benchmark_sandbox_setup_status(
+    app: AppHandle,
+) -> Result<crate::services::benchmark_sandbox_setup::SetupState> {
+    let location = sandbox_location(&app)?;
+    Ok(crate::services::benchmark_sandbox_setup::status(&location).await)
+}
+
+/// Installs WSL, or sets the sandbox up and repairs it, as the operator
+/// asked; `provider_id` also renews that provider's offline policy check.
+#[tauri::command]
+pub async fn benchmark_sandbox_setup_run(
+    app: AppHandle,
+    action: crate::services::benchmark_sandbox_setup::Action,
+    provider_id: Option<String>,
+) -> Result<crate::services::benchmark_sandbox_setup::SetupState> {
+    let provider = provider_id
+        .map(|id| {
+            NativeProvider::for_harness(&id)
+                .ok_or_else(|| BenchmarkError::new("validation", "Unknown benchmark provider"))
+        })
+        .transpose()?;
+    let location = sandbox_location(&app)?;
+    crate::services::benchmark_sandbox_setup::run(app, location, action, provider)
+        .await
+        .map_err(|error| {
+            if let Some(message) = error.strip_prefix("cancelled: ") {
+                BenchmarkError::new("cancelled", message)
+            } else if error.contains("resource_busy:") {
+                BenchmarkError::new("resource_busy", error)
+            } else {
+                BenchmarkError::new("infrastructure_failure", error)
+            }
+        })
+}
 #[tauri::command]
 pub async fn benchmark_get_inventory(
     app: AppHandle,

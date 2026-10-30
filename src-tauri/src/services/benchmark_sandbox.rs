@@ -22,7 +22,7 @@ macro_rules! resources {
     )).as_slice() )),*] };
 }
 
-const FILES: &[(&str, &[u8])] = resources![
+pub(crate) const FILES: &[(&str, &[u8])] = resources![
     "bench-artifact",
     "bench-auth",
     "bench-browser",
@@ -920,6 +920,21 @@ fn host_headroom() -> io::Result<HostHeadroom> {
             .saturating_mul(performance.page_size) as u64,
         sandbox_volume_free: available,
     })
+}
+
+/// Where Windows keeps the registered benchmark distribution, or why there
+/// is none to use.
+pub(crate) fn registered_path() -> io::Result<String> {
+    #[cfg(windows)]
+    {
+        registered_sandbox_path()
+    }
+    #[cfg(not(windows))]
+    {
+        Err(io::Error::other(
+            "capability_missing: the benchmark WSL distribution requires Windows",
+        ))
+    }
 }
 
 #[cfg(windows)]
@@ -1910,6 +1925,14 @@ async fn observe_status() -> io::Result<Status> {
     // the first status read means the first admission after an app start
     // already carries the host's load.
     let _ = host_cpu_permille();
+    let status = parse_status(&status_report().await?)?;
+    report_conflicts(&status);
+    Ok(status)
+}
+
+/// What `bench-status` prints, unparsed: setup compares it with this build's
+/// pins to choose a repair. Readiness reads it through [`ready`].
+pub(crate) async fn status_report() -> io::Result<String> {
     let out = invoke(
         "/usr/local/sbin/bench-status",
         &[],
@@ -1922,9 +1945,79 @@ async fn observe_status() -> io::Result<Status> {
     if out.truncated {
         return Err(io::Error::other("Sandbox status exceeded its limit"));
     }
-    let status = parse_status(&String::from_utf8_lossy(&out.stdout))?;
-    report_conflicts(&status);
-    Ok(status)
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// How a sandbox report differs from what this build pins.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Drift {
+    /// Every pinned line is present.
+    Current,
+    /// Only what the network-free helper update installs differs: helpers,
+    /// the admission policy they enforce, or the network they set up.
+    Helpers(Vec<String>),
+    /// The runtime itself differs (Node, git, a provider tool or the boot
+    /// configuration): only full provisioning installs it.
+    Runtime(Vec<String>),
+}
+
+fn valid_heavy_cap(cap: &str) -> bool {
+    cap == "off" || cap.parse::<u8>().is_ok_and(|cap| (1..=8).contains(&cap))
+}
+
+/// The pinned lines `text` lacks, named by their key (never a digest), and
+/// which repair installs them.
+pub(crate) fn drift(text: &str) -> Drift {
+    let lines: std::collections::BTreeSet<String> = text
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    let mut helpers = Vec::new();
+    let mut runtime = Vec::new();
+    let caps = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("budget heavy-cap "))
+        .collect::<Vec<_>>();
+    if !matches!(caps.as_slice(), [cap] if valid_heavy_cap(cap)) {
+        helpers.push("budget heavy-cap".to_owned());
+    }
+    for line in FIXED_BUDGET {
+        if !lines.contains(line) {
+            helpers.push(line.to_owned());
+        }
+    }
+    for (name, bytes) in FILES {
+        if !lines.contains(&format!("file {name} {}", resource_hash(bytes))) {
+            // The boot configuration applies only after the distribution
+            // restarts, which full provisioning does.
+            let missing = format!("file {name}");
+            if *name == "wsl.conf" {
+                runtime.push(missing);
+            } else {
+                helpers.push(missing);
+            }
+        }
+    }
+    let pins: BTreeMap<String, String> = serde_json::from_str(include_str!(
+        "../../resources/benchmark-sandbox/runtime-pins.json"
+    ))
+    .expect("bundled runtime pins");
+    for (key, expected) in pins {
+        if !lines.contains(&format!("{key} {expected}")) {
+            runtime.push(key);
+        }
+    }
+    if !lines.contains("netns up") {
+        helpers.push("netns up".to_owned());
+    }
+    if !runtime.is_empty() {
+        runtime.extend(helpers);
+        Drift::Runtime(runtime)
+    } else if !helpers.is_empty() {
+        Drift::Helpers(helpers)
+    } else {
+        Drift::Current
+    }
 }
 
 fn parse_status(text: &str) -> io::Result<Status> {
@@ -1940,9 +2033,7 @@ fn parse_status(text: &str) -> io::Result<Status> {
         .lines()
         .filter_map(|line| line.strip_prefix("budget heavy-cap "))
         .collect();
-    let valid_cap =
-        |cap: &str| cap == "off" || cap.parse::<u8>().is_ok_and(|cap| (1..=8).contains(&cap));
-    if !matches!(caps.as_slice(), [cap] if valid_cap(cap)) {
+    if !matches!(caps.as_slice(), [cap] if valid_heavy_cap(cap)) {
         return Err(io::Error::other(
             "capability_missing: the sandbox reports no valid heavy-job cap",
         ));
@@ -2866,6 +2957,94 @@ mod tests {
         lines.push("netns up".into());
         lines.extend(budget("off"));
         lines.join("\n")
+    }
+
+    fn without(text: &str, prefix: &str) -> String {
+        text.lines()
+            .filter(|line| !line.starts_with(prefix))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_current_sandbox_has_no_drift_and_parses() {
+        let text = status();
+        assert_eq!(drift(&text), Drift::Current);
+        assert!(parse_status(&text).is_ok());
+    }
+
+    #[test]
+    fn changed_helpers_need_only_the_network_free_update() {
+        let (_, run) = FILES.iter().find(|(name, _)| *name == "bench-run").unwrap();
+        let text = status().replace(
+            &format!("file bench-run {}", resource_hash(run)),
+            "file bench-run 00",
+        );
+        assert_eq!(drift(&text), Drift::Helpers(vec!["file bench-run".into()]));
+        let down = status().replace("netns up", "netns down");
+        assert_eq!(drift(&down), Drift::Helpers(vec!["netns up".into()]));
+        let uncapped = without(&status(), "budget heavy-cap");
+        assert_eq!(
+            drift(&uncapped),
+            Drift::Helpers(vec!["budget heavy-cap".into()])
+        );
+    }
+
+    #[test]
+    fn a_changed_runtime_or_boot_configuration_needs_provisioning() {
+        let Drift::Runtime(missing) = drift(&without(&status(), "binary /usr/bin/git")) else {
+            panic!("git is part of the runtime");
+        };
+        assert_eq!(missing, ["binary /usr/bin/git"]);
+        let Drift::Runtime(missing) = drift(&without(&status(), "file wsl.conf")) else {
+            panic!("the boot configuration applies only after a restart");
+        };
+        assert_eq!(missing, ["file wsl.conf"]);
+        // A runtime change lists what the helpers lack as well, never digests.
+        let Drift::Runtime(missing) = drift(&without(&without(&status(), "node "), "netns")) else {
+            panic!("node is part of the runtime");
+        };
+        assert_eq!(missing, ["node", "netns up"]);
+        let Drift::Runtime(missing) = drift("") else {
+            panic!("an empty report is an unprovisioned sandbox");
+        };
+        let digest = |word: &str| word.len() == 64 && word.bytes().all(|b| b.is_ascii_hexdigit());
+        assert!(missing.len() > FILES.len());
+        assert!(missing.iter().all(|key| !key.split(' ').any(digest)));
+    }
+
+    #[test]
+    fn the_pinned_runtime_names_the_builds_provisioning_installs() {
+        let pins: BTreeMap<String, String> = serde_json::from_str(include_str!(
+            "../../resources/benchmark-sandbox/runtime-pins.json"
+        ))
+        .unwrap();
+        let sources: serde_json::Value = serde_json::from_str(include_str!(
+            "../../resources/benchmark-sandbox/runtime-sources.json"
+        ))
+        .unwrap();
+        assert_eq!(sources["node"]["version"], pins["node"].as_str());
+        assert!(sources["node"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/node-{}-linux-x64.tar.xz", pins["node"])));
+        // Ubuntu's version names the upstream release `git --version` prints.
+        let git = sources["git"]["version"].as_str().unwrap();
+        assert!(git.starts_with(&format!("1:{}-", pins["git"])));
+        for package in sources["git"]["packages"].as_array().unwrap() {
+            let url = package["url"].as_str().unwrap();
+            assert!(url.starts_with("https://"));
+            assert!(url.contains(&git[2..]), "{url} is the pinned build");
+            let sum = package["sha256"].as_str().unwrap();
+            assert!(sum.len() == 64 && sum.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+        let tools = sources["tools"].as_object().unwrap();
+        for (id, spec) in tools {
+            let version = pins
+                .get(&format!("tool {id} version"))
+                .unwrap_or_else(|| panic!("tool {id} is pinned"));
+            assert_eq!(spec.as_str(), Some(version.as_str()));
+        }
     }
 
     #[test]
