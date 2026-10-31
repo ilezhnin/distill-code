@@ -35,6 +35,7 @@ import {
 import { ToolChainCards, type ToolChainItem } from "./ToolChainCards";
 import { ClickableImage } from "./ClickableImage";
 import { CompactionNotice } from "./CompactionNotice";
+import { SystemNoticeLine } from "./SystemNoticeLine";
 import { MarkdownImage } from "./MarkdownImage";
 import { resolveImageContentSrc } from "./resolveImageContentSrc";
 import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
@@ -55,7 +56,6 @@ import type {
   SystemNotificationContent,
 } from "@/shared/types/messages";
 import { getTextContent } from "@/shared/types/messages";
-import { Button } from "@/shared/ui/button";
 import { LinkifiedText } from "@/shared/ui/LinkifiedText";
 import { MessageBubbleActions } from "./MessageBubbleActions";
 import { MessageMetadataChip } from "./MessageMetadataChip";
@@ -705,39 +705,25 @@ function renderContentBlock(
             compaction={sn.compaction}
           />
         );
-      const isError = sn.notificationType === "error";
-      const isWarning = sn.notificationType === "warning";
-      const isCompaction = sn.notificationType === "compaction";
       const notificationAction = resolveNotificationAction(sn.action, options);
+      if (sn.notificationType === "compaction") {
+        return (
+          <div
+            key={`notification-${index}`}
+            className="inline-flex items-center justify-center gap-2 rounded-md border border-success/30 bg-success/10 p-2 text-xs font-medium text-success"
+          >
+            <Check className="size-3.5 shrink-0" />
+            <span>{sn.text}</span>
+          </div>
+        );
+      }
       return (
-        <div
+        <SystemNoticeLine
           key={`notification-${index}`}
-          className={cn(
-            "rounded-md border p-2 text-xs",
-            isError
-              ? "border-destructive/30 bg-destructive/10 text-destructive"
-              : isWarning
-                ? "border-warning/40 bg-warning/10 text-warning"
-                : isCompaction
-                  ? "inline-flex items-center justify-center gap-2 border-success/30 bg-success/10 font-medium text-success"
-                  : "border-border bg-accent text-muted-foreground",
-          )}
-        >
-          {isCompaction ? <Check className="size-3.5 shrink-0" /> : null}
-          <span>{sn.text}</span>
-          {notificationAction ? (
-            <div className="mt-2">
-              <Button
-                type="button"
-                variant="alert"
-                size="xs"
-                onClick={notificationAction.onClick}
-              >
-                {notificationAction.label}
-              </Button>
-            </div>
-          ) : null}
-        </div>
+          kind={sn.notificationType}
+          text={sn.text}
+          action={notificationAction}
+        />
       );
     }
     default:
@@ -895,8 +881,8 @@ export const MessageBubble = memo(function MessageBubble({
     : textContent;
   if (role === "system") {
     return (
-      <div className="flex justify-center px-4 py-2" {...rowRootAttributes}>
-        <div className="w-full max-w-md text-center text-xs text-muted-foreground">
+      <div className="flex py-1" {...rowRootAttributes}>
+        <div className="w-full min-w-0 space-y-1 text-xs text-muted-foreground">
           {content.map((c, i) =>
             renderContentBlock(c, i, {
               defaultImageAlt: t("message.defaultImageAlt"),

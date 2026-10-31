@@ -1,11 +1,4 @@
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   IconBulb,
@@ -32,6 +25,7 @@ import {
 import { ArtifactChips } from "./ArtifactChips";
 import { HarnessBrigadeRow } from "./HarnessBrigadeRow";
 import { cn } from "@/shared/lib/cn";
+import { DisclosureLine } from "@/shared/ui/ai-elements/disclosure-line";
 import {
   MessageAction,
   MessageResponse,
@@ -421,51 +415,6 @@ function StepActions({
         </MessageAction>
       ) : null}
     </div>
-  );
-}
-
-/**
- * A disclosure line in the work rail: a one-line label that opens onto the
- * detail under it. Shared by thoughts and explorations, so both read and
- * behave like the tool rows beside them.
- */
-function DisclosureLine({
-  label,
-  open,
-  onOpenChange,
-  children,
-}: {
-  label: ReactNode;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  children: ReactNode;
-}) {
-  return (
-    <Collapsible open={open} onOpenChange={onOpenChange}>
-      <CollapsibleTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          flush
-          size="sm"
-          className="flex h-auto w-full min-w-0 justify-start px-0 py-0 text-left"
-          rightIcon={
-            <IconChevronRight
-              aria-hidden
-              className={cn(
-                "size-3.5 shrink-0 transition-transform",
-                open && "rotate-90",
-              )}
-            />
-          }
-        >
-          <span className="min-w-0 truncate text-sm font-normal">{label}</span>
-        </Button>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-        {children}
-      </CollapsibleContent>
-    </Collapsible>
   );
 }
 
