@@ -836,7 +836,12 @@ the hour before the restart goes on at its level, in the same slow start, and
 so does one idle for up to six hours whose stable level was last set by a clean
 round, not by a refusal or slowdown (a gap's drain and deploy change nothing on
 the provider's side); one idle for longer, or over the hour right after a
-refusal or slowdown, resumes at half its stable level, in slow start again. The
+refusal or slowdown, resumes at half its stable level, in slow start again, but
+never below the four turns an account with no history starts at: its evidence
+has lapsed, and lapsed evidence knows no less than none. Such a resume keeps the
+stable level it found, being neither a clean round nor a refusal, so idle
+restarts never halve it twice (10-31: Z.ai's account went from seven to three
+to one over idle restarts and flew its tests one at a time). The
 file keeps when the provider last pushed back. A file written before activity
 was kept dates the stable level instead, and one written before push-backs were
 kept loses its model ceilings on restart, since slowdowns set some then. While the app
