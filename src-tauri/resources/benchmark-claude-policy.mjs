@@ -8,11 +8,11 @@ import { pathToFileURL } from "node:url";
 const expected = new Map([
   [
     "acp-agent.js",
-    "a17444ae89c5dd8f6cccaf278107438100521cf5cb367fb8991e48ce0f46bbf1",
+    "aa41834c24f2c09a39af0b10731cc10fb882968f75a12c3735e50a9d080b20c4",
   ],
   [
     "session-titles.js",
-    "a78f6ed7e85193fbb0ebc97b37c0adde70d1000eac94e70e310e75dd580e079a",
+    "11894b60a0d2b6b1e3a6c0bc8e651b752a8039295a7c9cf120c9e592d4d25dc0",
   ],
 ]);
 const directory = dirname(process.argv[1]);

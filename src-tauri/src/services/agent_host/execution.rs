@@ -373,7 +373,7 @@ impl NativeProvider {
                 "request":request,
                 "nativePolicy":native_text_meta(&request.model_id),
                 "processPolicy":"clear-environment-no-distill-shims-v1",
-                "bridgeVersion":"0.81.0", "sdkVersion":"0.3.280"
+                "bridgeVersion":"0.99.1", "sdkVersion":"0.3.312"
             }),
             Some(policy) => self.configured_hash_input(policy, request),
         };
@@ -728,7 +728,7 @@ mod tests {
                 "request":request,
                 "nativePolicy":meta,
                 "processPolicy":"clear-environment-no-distill-shims-v1",
-                "bridgeVersion":"0.81.0", "sdkVersion":"0.3.280"
+                "bridgeVersion":"0.99.1", "sdkVersion":"0.3.312"
             }))
             .unwrap(),
         );

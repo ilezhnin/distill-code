@@ -297,7 +297,7 @@ pub const MANAGED_TOOLS: &[ManagedTool] = &[
         id: "claude-acp",
         binary: "claude-agent-acp",
         package: "@agentclientprotocol/claude-agent-acp",
-        version: "0.81.0",
+        version: "0.99.1",
     },
     ManagedTool {
         id: "codex-acp",

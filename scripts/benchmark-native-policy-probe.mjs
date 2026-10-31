@@ -22,7 +22,7 @@ assert(installed, "Pass the installed claude-agent-acp package directory");
 const packageInfo = JSON.parse(
   await readFile(join(installed, "package.json"), "utf8"),
 );
-assert.equal(packageInfo.version, "0.81.0");
+assert.equal(packageInfo.version, "0.99.1");
 const titleControlOnly = process.argv.includes("--title-control-only");
 const root = await mkdtemp(join(tmpdir(), "distill-policy-"));
 const workspace = join(root, "workspace");
