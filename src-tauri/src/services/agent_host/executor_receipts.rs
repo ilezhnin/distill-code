@@ -133,6 +133,51 @@ pub struct ExecutorAttempt {
     pub attempt_index: i64,
 }
 
+/// Why dispatch evidence was not read or written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum EvidenceError {
+    /// SQLite could not serve the request (busy, locked, closed, I/O). The
+    /// same request may succeed later.
+    Storage(String),
+    /// The evidence, or the request against it, rules the write out.
+    /// Repeating the request cannot change that.
+    Refused(String),
+}
+
+impl EvidenceError {
+    fn storage(error: sqlx::Error) -> Self {
+        Self::Storage(error.to_string())
+    }
+}
+
+impl From<String> for EvidenceError {
+    fn from(error: String) -> Self {
+        Self::Refused(error)
+    }
+}
+
+impl From<&str> for EvidenceError {
+    fn from(error: &str) -> Self {
+        Self::Refused(error.into())
+    }
+}
+
+impl From<EvidenceError> for String {
+    fn from(error: EvidenceError) -> Self {
+        match error {
+            EvidenceError::Storage(error) | EvidenceError::Refused(error) => error,
+        }
+    }
+}
+
+impl std::fmt::Display for EvidenceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Storage(error) | Self::Refused(error) => f.write_str(error),
+        }
+    }
+}
+
 fn hash<T: Serialize>(value: &T) -> Result<String, String> {
     Ok(format!(
         "{:x}",
@@ -205,15 +250,17 @@ impl SessionStore {
         Ok(true)
     }
 
+    /// Only an [`EvidenceError::Storage`] failure is worth repeating; a refused
+    /// proof leaves the decision claimed for good.
     pub(super) async fn mark_executor_prompt_unaccepted(
         &self,
         link: &ExecutorLink,
         session_id: &str,
         host_run_id: &str,
         rejection: &ReceiptRejection,
-    ) -> Result<(), String> {
+    ) -> Result<(), EvidenceError> {
         let receipt = self
-            .executor_receipt(&link.decision_key)
+            .receipt_evidence(&link.decision_key)
             .await?
             .ok_or("Executor dispatch was not recorded")?;
         if receipt.start.link != *link
@@ -232,9 +279,9 @@ impl SessionStore {
             .bind(serde_json::to_string(rejection).map_err(|e| e.to_string())?)
             .bind(rejection_hash(&receipt.start, receipt.attempt_index, finish, rejection)?)
             .bind(&link.decision_key).bind(hash(&receipt.start)?).bind(hash(&(&link.decision_key, finish))?)
-            .execute(&self.pool).await.map_err(|e| e.to_string())?;
+            .execute(&self.pool).await.map_err(EvidenceError::storage)?;
         let saved = self
-            .executor_receipt(&link.decision_key)
+            .receipt_evidence(&link.decision_key)
             .await?
             .ok_or("Executor dispatch disappeared")?;
         if saved.start != receipt.start || saved.rejection.as_ref() != Some(rejection) {
@@ -278,13 +325,17 @@ impl SessionStore {
     }
 
     pub async fn executor_receipt(&self, key: &str) -> Result<Option<ExecutorReceipt>, String> {
+        Ok(self.receipt_evidence(key).await?)
+    }
+
+    async fn receipt_evidence(&self, key: &str) -> Result<Option<ExecutorReceipt>, EvidenceError> {
         // A single read transaction joins one consistent attempt history.
-        let mut transaction = self.pool.begin().await.map_err(|e| e.to_string())?;
+        let mut transaction = self.pool.begin().await.map_err(EvidenceError::storage)?;
         let row = sqlx::query("SELECT * FROM executor_receipts WHERE decision_key=?")
             .bind(key)
             .fetch_optional(&mut *transaction)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(EvidenceError::storage)?;
         let Some(row) = row else { return Ok(None) };
         let current = decode_attempt(&row, key)?;
         let archived = sqlx::query(
@@ -293,7 +344,7 @@ impl SessionStore {
         .bind(key)
         .fetch_all(&mut *transaction)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(EvidenceError::storage)?;
         let previous_attempts = archived
             .iter()
             .map(|row| decode_attempt(row, key))
@@ -312,7 +363,7 @@ impl SessionStore {
         {
             return Err("Executor attempt history integrity check failed".into());
         }
-        transaction.commit().await.map_err(|e| e.to_string())?;
+        transaction.commit().await.map_err(EvidenceError::storage)?;
         Ok(Some(ExecutorReceipt {
             start: current.start,
             finish: current.finish,

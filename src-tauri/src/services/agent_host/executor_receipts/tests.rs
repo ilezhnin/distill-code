@@ -179,6 +179,10 @@ async fn reject(store: &SessionStore, start: &ReceiptStart, automatic: bool) -> 
     proof
 }
 
+fn refused(error: EvidenceError) -> bool {
+    matches!(error, EvidenceError::Refused(_))
+}
+
 #[test]
 fn retry_proof_requires_the_exact_quota_and_withdrawal_gate() {
     assert!(ReceiptRejection::quota_not_accepted(&quota_error(), true).is_some());
@@ -216,7 +220,7 @@ async fn failed_or_unknown_receipts_do_not_authorize_retry_or_unrelated_withdraw
     assert!(store
         .mark_executor_prompt_unaccepted(&start.link, &start.session_id, &start.host_run_id, &proof)
         .await
-        .is_err());
+        .is_err_and(refused));
     let mut failed = finish();
     failed.status = "failed".into();
     store
@@ -231,7 +235,7 @@ async fn failed_or_unknown_receipts_do_not_authorize_retry_or_unrelated_withdraw
         assert!(store
             .mark_executor_prompt_unaccepted(&start.link, session_id, run_id, &proof)
             .await
-            .is_err());
+            .is_err_and(refused));
     }
     let mut wrong_account = proof.clone();
     wrong_account.account_id = "other-account".into();
@@ -243,13 +247,13 @@ async fn failed_or_unknown_receipts_do_not_authorize_retry_or_unrelated_withdraw
             &wrong_account
         )
         .await
-        .is_err());
+        .is_err_and(refused));
     let mut wrong_link = start.link.clone();
     wrong_link.logical_run_id = "other-task".into();
     assert!(store
         .mark_executor_prompt_unaccepted(&wrong_link, &start.session_id, &start.host_run_id, &proof)
         .await
-        .is_err());
+        .is_err_and(refused));
     dir.close().await;
 }
 
@@ -418,5 +422,137 @@ async fn immediate_account_fallback_keeps_logical_turn_and_rechecks_native_routi
         .claim_executor_receipt_with_routing(&switched, true)
         .await
         .unwrap());
+    dir.close().await;
+}
+
+/// What the router reports when a chat on a CLI sign-in is refused: the chat
+/// names no account, so its receipt holds none, while the refusal names the
+/// sign-in whose allowance it checked.
+fn cli_sign_in_refusal() -> Value {
+    json!({"code":-32603,
+    "message":"Internal error: Insufficient balance or no resource package. Please recharge.",
+    "data":{
+        "accountId":crate::services::provider_accounts::cli_login_account_id("grok-acp"),
+        "dispatchStarted":false, "promptNotAccepted":true,
+    }})
+}
+
+#[tokio::test]
+async fn a_cli_sign_in_refusal_is_refused_for_good_and_keeps_the_decision_claimed() {
+    let dir = crate::test_support::TempRoot::new();
+    let store = SessionStore::open(&dir.path().join("host.sqlite"))
+        .await
+        .unwrap();
+    dir.register(&store.pool);
+    let mut start = start();
+    start.provider_id = "grok-acp".into();
+    assert!(store.claim_executor_receipt(&start).await.unwrap());
+    let mut failed = finish();
+    failed.status = "failed".into();
+    store
+        .finish_executor_receipt(&start, &failed)
+        .await
+        .unwrap();
+    let proof = ReceiptRejection::quota_not_accepted(&cli_sign_in_refusal(), false).unwrap();
+    assert_eq!(proof.account_id, "cli-login-grok-acp");
+    // Asking again never helps: the receipt still names no account.
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .mark_executor_prompt_unaccepted(
+                    &start.link,
+                    &start.session_id,
+                    &start.host_run_id,
+                    &proof
+                )
+                .await,
+            Err(EvidenceError::Refused(
+                "Unaccepted prompt proof does not match the failed host attempt".into()
+            ))
+        );
+    }
+    // The account is all it misses: an attempt that recorded the sign-in
+    // takes the same proof.
+    let mut named = start.clone();
+    named.link.decision_key = "named-decision".into();
+    named.host_run_id = "named-run".into();
+    named.account_id = Some(proof.account_id.clone());
+    assert!(store.claim_executor_receipt(&named).await.unwrap());
+    store
+        .finish_executor_receipt(&named, &failed)
+        .await
+        .unwrap();
+    store
+        .mark_executor_prompt_unaccepted(&named.link, &named.session_id, &named.host_run_id, &proof)
+        .await
+        .unwrap();
+    // Without its proof the refused decision is never dispatched again.
+    let mut next = start.clone();
+    next.host_run_id = "retry-run".into();
+    assert!(!store.claim_executor_receipt(&next).await.unwrap());
+    let receipt = store
+        .executor_receipt(&start.link.decision_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.start, start);
+    assert!(receipt.rejection.is_none());
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn a_proof_the_store_could_not_take_is_kept_for_a_repeat() {
+    let dir = crate::test_support::TempRoot::new();
+    let path = dir.path().join("host.sqlite");
+    let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
+    let mut start = start();
+    start.account_id = Some("account-a".into());
+    store.claim_executor_receipt(&start).await.unwrap();
+    let mut failed = finish();
+    failed.status = "failed".into();
+    store
+        .finish_executor_receipt(&start, &failed)
+        .await
+        .unwrap();
+    let proof = ReceiptRejection::quota_not_accepted(&quota_error(), false).unwrap();
+    store.pool.close().await;
+    assert!(matches!(
+        store
+            .mark_executor_prompt_unaccepted(
+                &start.link,
+                &start.session_id,
+                &start.host_run_id,
+                &proof
+            )
+            .await,
+        Err(EvidenceError::Storage(_))
+    ));
+    let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
+    // The repeat lands, and repeating a write that landed changes nothing.
+    for _ in 0..2 {
+        store
+            .mark_executor_prompt_unaccepted(
+                &start.link,
+                &start.session_id,
+                &start.host_run_id,
+                &proof,
+            )
+            .await
+            .unwrap();
+    }
+    let mut next = start.clone();
+    next.host_run_id = "retry-after-reset".into();
+    assert!(store.claim_executor_receipt(&next).await.unwrap());
+    // Evidence that fails its integrity check is no store hiccup either.
+    sqlx::query("UPDATE executor_rejected_attempts SET rejection_hash='tampered'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert!(store
+        .mark_executor_prompt_unaccepted(&start.link, &start.session_id, &start.host_run_id, &proof)
+        .await
+        .is_err_and(refused));
     dir.close().await;
 }

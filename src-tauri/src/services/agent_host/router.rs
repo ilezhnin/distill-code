@@ -25,7 +25,8 @@ use super::execution::{
     OwnedEventPage, OwnedSession, OwnedSessionRequest, OwnedTurnImage, OwnedTurnRequest,
 };
 use super::executor_receipts::{
-    ExecutorLink, ReceiptFinish, ReceiptRejection, ReceiptStart, ReportedSelection, REPORTED_KEY,
+    EvidenceError, ExecutorLink, ReceiptFinish, ReceiptRejection, ReceiptStart, ReportedSelection,
+    REPORTED_KEY,
 };
 use super::ext;
 use super::harness::{self, HarnessSpec};
@@ -6233,11 +6234,20 @@ impl Inner {
                 ) {
                     // Keep the claim until the host's withdrawal proof is durable.
                     // Neither a renderer error flag nor a failed receipt permits retry.
+                    // A refused proof never becomes durable: the decision stays
+                    // claimed, and the prompt settles with its error instead
+                    // of holding the session forever.
                     while let Err(error) = self
                         .store
                         .mark_executor_prompt_unaccepted(link, &session_id, &ids.run_id, &rejection)
                         .await
                     {
+                        if let EvidenceError::Refused(error) = error {
+                            log::error!(
+                                "[agent-host] unaccepted executor proof refused, decision stays claimed: {error}"
+                            );
+                            break;
+                        }
                         log::error!(
                             "[agent-host] unaccepted executor proof not committed: {error}"
                         );
