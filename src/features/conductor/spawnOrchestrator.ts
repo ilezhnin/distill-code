@@ -22,6 +22,7 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { personaAgentRefs } from "@/shared/lib/agentSpawns";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
+import { childSessionLink } from "./childSessionLink";
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { pickUniqueDisplayName } from "./pickUniqueDisplayName";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
@@ -226,20 +227,14 @@ export async function spawnConductorChildSession(args: {
         fast: args.ownedTask.session.observed.fastMode ?? undefined,
       }
     : runSettings;
-  const conductor =
-    useConductorGraphStore.getState().getNode(args.parentSessionId) ??
-    (parent.clientSessionId
-      ? useConductorGraphStore.getState().getNode(parent.clientSessionId)
-      : undefined);
-  const rootConductorId =
-    conductor?.rootConductorId ?? conductor?.sessionId ?? args.parentSessionId;
+  const link = childSessionLink(args.parentSessionId, [parent.clientSessionId]);
   useConductorGraphStore.getState().registerNode({
     sessionId: child.id,
-    projectId: parent.projectId ?? conductor?.projectId ?? "",
+    projectId: parent.projectId ?? link.parentNode?.projectId ?? "",
     role: args.role,
     managedBy: args.managedBy ?? "ui",
-    parentSessionId: args.parentSessionId,
-    rootConductorId,
+    parentSessionId: link.parentSessionId,
+    rootConductorId: link.rootConductorId,
     runId,
     harnessId:
       args.ownedTask?.session.observed.providerId ?? executionTarget.harnessId,

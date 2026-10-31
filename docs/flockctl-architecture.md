@@ -112,18 +112,19 @@ Required command properties:
 - one-way verbs are limited to visible product actions the caller explicitly
   asked for, such as creating a session or sending a prompt
 - broker protects app availability with in-flight caps and timeouts
-- session-creating verbs are **not** ACL-enforced in practice. The gate in
-  `runtime/spawnGate.ts` checks the envelope's optional `actor` (the calling
-  session's `AGENT_SESSION_ID`) and treats anonymous calls as the operator,
-  but the built-in agent host never exports that variable: it runs one bridge
-  process per harness serving every session of that harness, so a
-  process-level env var cannot carry a per-session id. Every production call
-  is therefore anonymous, allowed, and logged to `flock.log`. The spawn rule
-  reaches agents through the prompt insert
-  (`src/features/conductor/spawnAcl.ts`), which states plainly that flockctl's
-  spawn commands are not checked in code. Making the identity real needs a
-  per-session token minted by the host and delivered to the session's shell
-  per session, which v1 does not have
+- session-creating verbs are ACL-enforced only for a caller that names
+  itself. The gate in `runtime/spawnGate.ts` checks the envelope's optional
+  `actor` (the calling session's `AGENT_SESSION_ID`) or the session a
+  `session create` call names with `--parent-session-id`, and treats a call
+  that names neither as the operator. The built-in agent host never exports
+  that variable: it runs one bridge process per harness serving every session
+  of that harness, so a process-level env var cannot carry a per-session id.
+  A call without `--parent-session-id` is therefore anonymous, allowed, and
+  logged to `flock.log`. The spawn rule reaches agents through the prompt
+  insert (`src/features/conductor/spawnAcl.ts`), which states plainly that
+  flockctl's spawn commands are not checked in code. Making the identity real
+  needs a per-session token minted by the host and delivered to the session's
+  shell per session, which v1 does not have
 
 Delete, bulk, silent, invisible, or destructive verbs require reopening the
 auth/confirmation design before implementation: until the broker can
@@ -142,6 +143,31 @@ and `stop` above all — require it as an explicit `--session-id`, and the
 bundled `flock-monitor` skill tells the agent to take it from that preamble
 line. Do not add a "current session" default anywhere: the broker cannot tell
 which session called it, so any such default would deliver into the wrong chat.
+
+## Sessions started by a session
+
+A session one chat starts to take on part of its work is that chat's child,
+by the same rule whichever path started it: the conductor's own spawns and
+wave steps (`spawnConductorChildSession`), and `flockctl session create
+--parent-session-id <own id>` from any chat, conductor or ordinary. Both
+record the link through `childSessionLink`
+(`src/features/conductor/childSessionLink.ts`) as a node in the conductor
+graph whose `parentSessionId` is the starting chat; an ordinary chat has no
+node of its own and is its own root. From that one record:
+
+- the sidebar draws the child under the chat that started it and keeps it out
+  of the top-level list (`indexAgentChildren`, `SessionListCapability`);
+- the starting chat shows the child on the message that started it, with a
+  way into its chat (`footerAgentNodes`, `brigadeAnchors.ts`);
+- when the child's run ends, its result is delivered back to the starting
+  chat as one digest message (`publishGroups.ts`, `digestPublisher.ts`).
+
+The id comes from the preamble line above, which also tells the agent to pass
+it when it delegates. Without it the app cannot tell who started the session,
+and the new session is an independent chat. Claude Code and Codex make the
+same link from the calling session itself, because their spawn is a tool of
+that session; here the CLI runs in a shell the host cannot attribute, so the
+caller states it.
 
 ## Names and compatibility
 

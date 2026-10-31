@@ -29,12 +29,21 @@
  * to the shell per session (P42's documented residue). Even then, the
  * identity is not secret: an agent that exports another session's id can
  * impersonate it.
+ *
+ * `session create` also lets the caller name itself: `--parent-session-id`
+ * carries the id the app preamble gives every session, so a chat that starts
+ * sessions to do part of its work gets them as its children — the same link
+ * the conductor's own spawns record. A named parent is the actor for this
+ * gate too: a call that names its session is checked like one that carried
+ * AGENT_SESSION_ID, and one that names none is still the operator.
  */
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { personaAgentRefs } from "@/shared/lib/agentSpawns";
 import type { Persona } from "@/shared/types/agents";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { childSessionLink } from "@/features/conductor/childSessionLink";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { checkSpawnAllowed } from "@/features/conductor/spawnAcl";
 import type { RoleLayer } from "@/features/conductor/roleCatalog";
@@ -173,35 +182,97 @@ export function enforceFlockctlSpawnAcl(args: {
 }
 
 /**
- * Registers a flockctl-created session under its actor in the conductor
- * graph, so the next hop's actor lookup finds it and the chain of agents
- * stays visible. Sessions created anonymously stay unregistered — they are
- * the operator's own chats, exactly as before.
+ * The session a flockctl spawn hangs under: the parent the caller named
+ * (`--parent-session-id`, the caller's own id from the app preamble), else the
+ * actor the harness exported. Both are claims about the same thing — which
+ * session is asking — so a call that carries two different ones is refused
+ * rather than resolved in favour of either.
+ */
+export function resolveFlockctlSpawnParent(args: {
+  actor: string | null | undefined;
+  parentSessionId: string | null | undefined;
+}): string | undefined {
+  const actor = args.actor?.trim() || undefined;
+  const parent = args.parentSessionId?.trim() || undefined;
+  if (actor && parent && actor !== parent) {
+    throw new CommandError(
+      "invalid_args",
+      `--parent-session-id "${parent}" is not the calling session "${actor}"; a session can only start sessions under itself.`,
+    );
+  }
+  return parent ?? actor;
+}
+
+/**
+ * The parent's message the new session was started from: its latest assistant
+ * reply, which is the turn running the command. The parent's chat shows the
+ * child on that message, and a child with no anchor falls back to the
+ * latest one (`brigadeAnchors.ts`).
+ */
+function spawningMessageId(parentSessionId: string): string | undefined {
+  const messages =
+    useChatStore.getState().messagesBySession[parentSessionId] ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") return undefined;
+    if (message?.role === "assistant") return message.id;
+  }
+  return undefined;
+}
+
+/**
+ * Registers a flockctl-created session under the session that started it, by
+ * the same rule every in-app spawn follows (`childSessionLink`): it is drawn
+ * under that chat in the sidebar instead of as a chat of its own, the chat
+ * shows it on the message that started it, and its result is delivered back
+ * to the chat when its turn ends (`publishGroups.ts`). The parent may be an
+ * ordinary chat with no node of its own. Sessions created with no parent stay
+ * unregistered — they are the operator's own chats.
  */
 export function registerFlockctlChildNode(args: {
-  actor: string | null | undefined;
+  parentSessionId: string | null | undefined;
   sessionId: string;
   role: RoleLayer;
   harnessId: string;
   displayName: string;
+  /** The child's own project, when it has one; the parent's otherwise. */
+  projectId?: string;
+  modelId?: string;
+  effort?: string;
+  fast?: boolean;
   personaId?: string;
   task?: string;
 }): void {
-  const parent = actorNode(args.actor);
-  if (!parent) return;
+  const parentSessionId = args.parentSessionId?.trim();
+  if (!parentSessionId || parentSessionId === args.sessionId) return;
+  const parentSession = useChatSessionStore
+    .getState()
+    .getSession(parentSessionId);
+  const link = childSessionLink(parentSessionId, [
+    parentSession?.clientSessionId,
+  ]);
+  const anchorMessageId = spawningMessageId(parentSessionId);
   useConductorGraphStore.getState().registerNode({
     sessionId: args.sessionId,
-    projectId: parent.projectId,
+    projectId:
+      args.projectId ??
+      parentSession?.projectId ??
+      link.parentNode?.projectId ??
+      "",
     role: args.role,
     managedBy: "agent-cli",
-    parentSessionId: parent.sessionId,
-    rootConductorId: parent.rootConductorId ?? parent.sessionId,
+    parentSessionId: link.parentSessionId,
+    rootConductorId: link.rootConductorId,
     runId: crypto.randomUUID(),
     harnessId: args.harnessId,
+    ...(args.modelId ? { modelId: args.modelId } : {}),
+    ...(args.effort ? { effort: args.effort } : {}),
+    ...(args.fast !== undefined ? { fast: args.fast } : {}),
     displayName: args.displayName,
     personaId: args.personaId,
     status: "starting",
     task: args.task,
     createdAt: Date.now(),
+    ...(anchorMessageId ? { anchorMessageId } : {}),
   });
 }

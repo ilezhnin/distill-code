@@ -70,6 +70,19 @@ const createSessionSchema = z
       .describe(
         "Branch/worktree name when the project's startup mode is branch or worktree; required for those modes.",
       ),
+    parent_session_id: z
+      .string()
+      .trim()
+      .min(1)
+      .max(FLOCKCTL_BOUNDS.id)
+      .optional()
+      .describe(
+        "Your own session id (the Flock preamble states it) when the new " +
+          "session takes on part of your work. It is shown under your chat " +
+          "instead of as a chat of its own, and its result is delivered back " +
+          "to your chat when its turn ends. Omit it only for an independent " +
+          "chat the user asked for.",
+      ),
     from: z
       .string()
       .trim()
@@ -90,9 +103,10 @@ const CREATE_DEADLINE_MARGIN_MS = 3_000;
 // Spawn ACL (P42): the wire carries an optional `actor` — the calling
 // session's AGENT_SESSION_ID, read from the shell env when the harness sets
 // it — and this command enforces the same ACL as the in-app chokepoint
-// against it (runtime/spawnGate.ts). Anonymous calls are the operator and
-// stay allowed; with the built-in host every call is anonymous, so the ACL
-// reaches agents through the prompt insert only (spawnGate.ts explains).
+// against it (runtime/spawnGate.ts). The built-in host exports no actor, so
+// a session names itself with `--parent-session-id` instead; that parent is
+// checked as the actor and the new session is registered as its child.
+// Calls that name no session are the operator and stay allowed.
 
 interface CreateSessionResult {
   session_id: string;
@@ -101,6 +115,7 @@ interface CreateSessionResult {
   model_id: string | null;
   effort: string | null;
   fast_mode: boolean | null;
+  parent_session_id: string | null;
   send_status: "dispatched";
   deprecated?: string;
 }
@@ -119,10 +134,15 @@ export const createSessionCommand = defineCommand({
     "what `flockctl info models` reports for the chosen model. " +
     "Use --from to give the delegating session or tool a concise visible label on " +
     "the initial message. " +
+    "When the new session takes on part of your own work, pass your session id " +
+    "as --parent-session-id: it is shown under your chat rather than as a chat of " +
+    "its own, your chat shows it working, and its result is delivered back to " +
+    "your chat when its turn ends, so do not ask it to report back itself. " +
     'Only check on it later (action "get") if the user asks.',
   helpFooter: `Examples:
   flockctl session create --prompt "Triage the failing nightly build" \\
-    --harness-id claude-acp --from "the release orchestrator" --json
+    --harness-id claude-acp --parent-session-id <your-session-id> \\
+    --from "the release orchestrator" --json
   flockctl session create --prompt "Plan the migration" \\
     --harness-id codex-acp --model-id gpt-5.6-sol --effort xhigh --fast-mode
   flockctl session create --prompt "Implement the fix" \\
@@ -131,10 +151,12 @@ export const createSessionCommand = defineCommand({
 Result:
   {"session_id": "...", "title": "...", "harness_id": "...",
    "model_id": "..."|null, "effort": "..."|null,
-   "fast_mode": true|false|null, "send_status": "dispatched",
-   "deprecated": "..."?}
+   "fast_mode": true|false|null, "parent_session_id": "..."|null,
+   "send_status": "dispatched", "deprecated": "..."?}
   "model_id", "effort" and "fast_mode" echo the choices the session was
   created with; null leaves that choice to the harness or model default.
+  "parent_session_id" names the chat the session was started under; null
+  means it is an independent chat.
   "deprecated" appears when --model-id folded an effort in and says what to
   pass instead. The session runs in the background; the user's view does not
   change. Check progress later with
@@ -157,7 +179,12 @@ Result:
       );
     }
     const [
-      { enforceFlockctlSpawnAcl, registerFlockctlChildNode },
+      {
+        enforceFlockctlSpawnAcl,
+        registerFlockctlChildNode,
+        resolveFlockctlSpawnParent,
+      },
+      { loadSessionForFlockctl },
       { acceptFirstSend },
       { useChatSessionStore },
       { resolveSessionCwd },
@@ -179,6 +206,7 @@ Result:
       },
     ] = await Promise.all([
       import("../runtime/spawnGate"),
+      import("../runtime/sessions"),
       import("@/features/chat/lib/firstWorkspaceSend"),
       import("@/features/chat/stores/chatSessionStore"),
       import("@/features/projects/lib/sessionCwdSelection"),
@@ -191,6 +219,23 @@ Result:
       import("../runtime/providers"),
     ]);
     const harnessId = args.harness_id ?? DEFAULT_HARNESS_ID;
+    const parentSessionId = resolveFlockctlSpawnParent({
+      actor: ctx.actor,
+      parentSessionId: args.parent_session_id,
+    });
+    // A child hangs under its parent's row, so a parent that is gone or put
+    // away would make it invisible: both are refused before anything exists.
+    const parentPromise = parentSessionId
+      ? loadSessionForFlockctl(parentSessionId).then((parent) => {
+          if (parent.archivedAt != null) {
+            throw new CommandError(
+              "invalid_args",
+              `Parent session "${parent.sessionId}" is archived; a session started under it would not be visible.`,
+            );
+          }
+          return parent;
+        })
+      : null;
     // The validation legs are independent I/O; overlap them. Readiness is
     // checked for the resolved harness, default included: creating on a
     // harness that is not installed or not signed in would either run a
@@ -199,9 +244,10 @@ Result:
     const projectPromise = args.project_id
       ? findProjectOrThrow(args.project_id)
       : Promise.resolve(null);
-    const [project, , models, persona] = await Promise.all([
+    const [project, , , models, persona] = await Promise.all([
       projectPromise,
       findReadyHarnessOrThrow(harnessId),
+      parentPromise,
       args.model_id ? harnessModelOptions(harnessId).catch(() => []) : null,
       args.agent_id
         ? projectPromise.then((project) =>
@@ -216,7 +262,7 @@ Result:
     // allowlist needs to know WHO is being started) and before anything is
     // created, so a refusal still costs nothing to roll back.
     enforceFlockctlSpawnAcl({
-      actor: ctx.actor,
+      actor: parentSessionId,
       verb: "create",
       targetLayer: "worker",
       targetPersona: persona,
@@ -302,11 +348,15 @@ Result:
       throw error;
     }
     registerFlockctlChildNode({
-      actor: ctx.actor,
+      parentSessionId,
       sessionId: session.id,
       role: "worker",
       harnessId,
       displayName: session.title,
+      projectId: args.project_id,
+      modelId: selection.modelId,
+      effort: selection.effort,
+      fast: selection.fastMode,
       personaId: persona?.id,
       task: args.prompt.slice(0, 200),
     });
@@ -336,6 +386,7 @@ Result:
       model_id: selection.modelId ?? null,
       effort: selection.effort ?? null,
       fast_mode: selection.fastMode ?? null,
+      parent_session_id: parentSessionId ?? null,
       send_status: "dispatched" as const,
       ...(selection.deprecated ? { deprecated: selection.deprecated } : {}),
     };

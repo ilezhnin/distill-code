@@ -100,7 +100,7 @@ Result:
     const harnessId =
       chatSession.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID;
     registerFlockctlChildNode({
-      actor: ctx.actor,
+      parentSessionId: ctx.actor,
       sessionId: forked.sessionId,
       role: targetLayer,
       harnessId,

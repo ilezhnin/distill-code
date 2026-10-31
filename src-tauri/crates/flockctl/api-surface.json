@@ -6,7 +6,7 @@
       "description": "Manage the user's chat sessions: create (fire-and-forget, on any installed agent harness), send, open, list, get, rename, move, clear project, fork, archive.",
       "actions": {
         "create": {
-          "description": "Create a new chat session on any installed agent harness and send the prompt in it. Fire-and-forget: returns the session id immediately and the session runs in the background without changing what the user sees; the user can open it themselves. Model, reasoning effort and fast mode are separate choices, each checked against what `flockctl info models` reports for the chosen model. Use --from to give the delegating session or tool a concise visible label on the initial message. Only check on it later (action \"get\") if the user asks.",
+          "description": "Create a new chat session on any installed agent harness and send the prompt in it. Fire-and-forget: returns the session id immediately and the session runs in the background without changing what the user sees; the user can open it themselves. Model, reasoning effort and fast mode are separate choices, each checked against what `flockctl info models` reports for the chosen model. Use --from to give the delegating session or tool a concise visible label on the initial message. When the new session takes on part of your own work, pass your session id as --parent-session-id: it is shown under your chat rather than as a chat of its own, your chat shows it working, and its result is delivered back to your chat when its turn ends, so do not ask it to report back itself. Only check on it later (action \"get\") if the user asks.",
           "fields": [
             {
               "name": "prompt",
@@ -67,6 +67,14 @@
               "max": 200
             },
             {
+              "name": "parent_session_id",
+              "required": false,
+              "kind": "string",
+              "description": "Your own session id (the Flock preamble states it) when the new session takes on part of your work. It is shown under your chat instead of as a chat of its own, and its result is delivered back to your chat when its turn ends. Omit it only for an independent chat the user asked for.",
+              "min": 1,
+              "max": 200
+            },
+            {
               "name": "from",
               "required": false,
               "kind": "string",
@@ -117,6 +125,12 @@
               },
               "startup_name": {
                 "description": "Branch/worktree name when the project's startup mode is branch or worktree; required for those modes.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "parent_session_id": {
+                "description": "Your own session id (the Flock preamble states it) when the new session takes on part of your work. It is shown under your chat instead of as a chat of its own, and its result is delivered back to your chat when its turn ends. Omit it only for an independent chat the user asked for.",
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200

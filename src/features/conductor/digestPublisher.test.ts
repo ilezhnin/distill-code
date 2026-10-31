@@ -89,6 +89,36 @@ describe("publishTerminalGroupDigests", () => {
     ).toBe(true);
   });
 
+  it("delivers a flockctl child's result to the ordinary chat that started it", async () => {
+    // The chat has no node of its own; its child names it as parent and root.
+    const graph = useConductorGraphStore.getState();
+    graph.registerNode(
+      node({
+        sessionId: "brigade-1",
+        role: "worker",
+        managedBy: "agent-cli",
+        parentSessionId: "plain-chat",
+        rootConductorId: "plain-chat",
+        status: "running",
+      }),
+    );
+    graph.attachReport(report("run-brigade-1", "Release notes drafted"));
+
+    publishTerminalGroupDigests(workersFor);
+    await Promise.resolve();
+    expect(deliverEnvelope).not.toHaveBeenCalled();
+
+    graph.patchNode("brigade-1", { status: "completed" });
+    publishTerminalGroupDigests(workersFor);
+    publishTerminalGroupDigests(workersFor);
+    await Promise.resolve();
+
+    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+    const [parentSessionId, text] = deliverEnvelope.mock.calls[0] ?? [];
+    expect(parentSessionId).toBe("plain-chat");
+    expect(text).toContain("Release notes drafted");
+  });
+
   it("waits for every leaf of the turn to finish", async () => {
     const graph = useConductorGraphStore.getState();
     graph.registerNode(node({ sessionId: "orch-1", anchorMessageId: "msg-1" }));

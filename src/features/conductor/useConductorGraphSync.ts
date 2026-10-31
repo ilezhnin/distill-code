@@ -445,7 +445,7 @@ function syncConductorTitlesFromSessions(): void {
   const graph = useConductorGraphStore.getState();
   const sessions = useChatSessionStore.getState();
   for (const node of Object.values(graph.nodesById)) {
-    if (node.role !== "conductor") {
+    if (node.role !== "conductor" && node.managedBy !== "agent-cli") {
       continue;
     }
     const session = sessions.getSession(node.sessionId);

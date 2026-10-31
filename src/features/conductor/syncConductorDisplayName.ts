@@ -10,6 +10,10 @@ import { pickUniqueDisplayName } from "./pickUniqueDisplayName";
  * The agents tree still reads `displayName`, so once a real title exists
  * (prompt placeholder, harness summary, or operator rename) the node follows
  * it. Role placeholders ("Producer", "Producer 2") stay until then.
+ *
+ * A session another chat started through flockctl follows its title too: it
+ * is registered before it has one, and its parent shows it by this label.
+ * Wave and in-app children keep the names they were given on purpose.
  */
 export function syncConductorDisplayNameFromTitle(
   sessionId: string,
@@ -22,7 +26,7 @@ export function syncConductorDisplayNameFromTitle(
 
   const graph = useConductorGraphStore.getState();
   const node = graph.getNode(sessionId);
-  if (node?.role !== "conductor") {
+  if (node?.role !== "conductor" && node?.managedBy !== "agent-cli") {
     return;
   }
   if (node.displayName === nextTitle) {

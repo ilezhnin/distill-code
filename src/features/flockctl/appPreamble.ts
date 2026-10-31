@@ -39,13 +39,18 @@ Run \`flockctl <noun> <verb> --help\` for arguments. When asked to switch or mov
  * chat the user is looking at, which need not be the caller's. flock-monitor
  * and any cross-session flockctl verb therefore need the id passed
  * explicitly, and this line is where the agent learns it.
+ *
+ * The same id is what makes a session this one starts its child: without
+ * `--parent-session-id` the app cannot tell who started it, and the helper
+ * lands in the sidebar as an unrelated chat whose result nobody delivers.
  */
 export function formatFlockctlPreamble(sessionId: string): string {
   const id = sessionId.trim();
   if (!id) return FLOCKCTL_PREAMBLE;
   return `${FLOCKCTL_PREAMBLE}
 
-Your own session id is ${id}. Pass it explicitly as \`--session-id ${id}\` whenever a flockctl or flock-monitor command needs your session; there is no environment variable for it, \`flockctl info context\` reports the chat the user is viewing (not necessarily this one), and the working directory never identifies a session.`;
+Your own session id is ${id}. Pass it explicitly as \`--session-id ${id}\` whenever a flockctl or flock-monitor command needs your session; there is no environment variable for it, \`flockctl info context\` reports the chat the user is viewing (not necessarily this one), and the working directory never identifies a session.
+When you start a session to take on part of your work, pass \`--parent-session-id ${id}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit it only for an independent chat the user asked for.`;
 }
 
 /** Set once an invoke rejection shows the plugin is not in this build or

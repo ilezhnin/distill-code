@@ -556,7 +556,11 @@ the background without changing what the user sees; the user can open it
 themselves. Model, reasoning effort and fast mode are separate choices, each
 checked against what `flockctl info models` reports for the chosen model. Use
 --from to give the delegating session or tool a concise visible label on the
-initial message. Only check on it later (action "get") if the user asks.
+initial message. When the new session takes on part of your own work, pass your
+session id as --parent-session-id: it is shown under your chat rather than as a
+chat of its own, your chat shows it working, and its result is delivered back to
+your chat when its turn ends, so do not ask it to report back itself. Only check
+on it later (action "get") if the user asks.
 
 Usage: flockctl session create [OPTIONS] --prompt <PROMPT>
 
@@ -594,6 +598,13 @@ Options:
           Branch/worktree name when the project's startup mode is branch or
           worktree; required for those modes.
 
+      --parent-session-id <PARENT_SESSION_ID>
+          Your own session id (the Flock preamble states it) when the new
+          session takes on part of your work. It is shown under your chat
+          instead of as a chat of its own, and its result is delivered back to
+          your chat when its turn ends. Omit it only for an independent chat the
+          user asked for.
+
       --from <FROM>
           Optional visible sender label for the initial message (1-120 chars).
 
@@ -610,7 +621,8 @@ Options:
 
 Examples:
   flockctl session create --prompt "Triage the failing nightly build" \
-    --harness-id claude-acp --from "the release orchestrator" --json
+    --harness-id claude-acp --parent-session-id <your-session-id> \
+    --from "the release orchestrator" --json
   flockctl session create --prompt "Plan the migration" \
     --harness-id codex-acp --model-id gpt-5.6-sol --effort xhigh --fast-mode
   flockctl session create --prompt "Implement the fix" \
@@ -619,10 +631,12 @@ Examples:
 Result:
   {"session_id": "...", "title": "...", "harness_id": "...",
    "model_id": "..."|null, "effort": "..."|null,
-   "fast_mode": true|false|null, "send_status": "dispatched",
-   "deprecated": "..."?}
+   "fast_mode": true|false|null, "parent_session_id": "..."|null,
+   "send_status": "dispatched", "deprecated": "..."?}
   "model_id", "effort" and "fast_mode" echo the choices the session was
   created with; null leaves that choice to the harness or model default.
+  "parent_session_id" names the chat the session was started under; null
+  means it is an independent chat.
   "deprecated" appears when --model-id folded an effort in and says what to
   pass instead. The session runs in the background; the user's view does not
   change. Check progress later with

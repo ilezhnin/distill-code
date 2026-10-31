@@ -24,6 +24,16 @@ organized as `flockctl <noun> <verb>` (for example `flockctl session list`,
 - `distillctl` is an alias of `flockctl`, kept so older skills and transcripts
   keep working; use `flockctl` in anything new.
 
+## Sessions you start for your own work
+
+A session you start to take on part of your task belongs under your chat.
+Pass your own session id, which the Flock preamble states, as
+`flockctl session create --parent-session-id <your id>`. The new session is
+then shown under your chat in the sidebar instead of as a chat of its own,
+your chat shows it working, and its result is delivered back to your chat
+when its turn ends, so it does not need to be told to report back. Leave the
+flag out only when the user asks for an independent chat.
+
 ## Model, effort and speed are separate choices
 
 A model id names a model and nothing else. Reasoning effort and fast mode

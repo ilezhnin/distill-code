@@ -11,10 +11,13 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import type { SessionNode } from "@/features/conductor/types";
 import type { Persona } from "@/shared/types/agents";
 
+import { createUserMessage } from "@/shared/types/messages";
+
 import { CommandError } from "../../commands/types";
 import {
   enforceFlockctlSpawnAcl,
   registerFlockctlChildNode,
+  resolveFlockctlSpawnParent,
 } from "../../commands/runtime/spawnGate";
 
 const ACTOR_ID = "20260830_7";
@@ -171,12 +174,94 @@ describe("enforceFlockctlSpawnAcl", () => {
   });
 });
 
+describe("resolveFlockctlSpawnParent", () => {
+  it("takes the named parent, else the actor, and refuses two different callers", () => {
+    expect(
+      resolveFlockctlSpawnParent({ actor: undefined, parentSessionId: "p" }),
+    ).toBe("p");
+    expect(
+      resolveFlockctlSpawnParent({ actor: "a", parentSessionId: undefined }),
+    ).toBe("a");
+    expect(
+      resolveFlockctlSpawnParent({ actor: "a", parentSessionId: "a" }),
+    ).toBe("a");
+    expect(
+      resolveFlockctlSpawnParent({ actor: null, parentSessionId: "  " }),
+    ).toBeUndefined();
+    expect(() =>
+      resolveFlockctlSpawnParent({ actor: "a", parentSessionId: "b" }),
+    ).toThrow(CommandError);
+  });
+});
+
 describe("registerFlockctlChildNode", () => {
+  it("hangs a child of an ordinary chat under that chat, anchored on its running reply", () => {
+    // The chat that started brigades has no node of its own; before, its
+    // helpers were left unregistered and showed up as unrelated chats.
+    useChatStore.setState({
+      messagesBySession: {
+        "plain-chat": [
+          createUserMessage("split the work"),
+          {
+            id: "reply-1",
+            role: "assistant",
+            created: 1,
+            content: [{ type: "text", text: "Starting." }],
+          },
+        ],
+      },
+    });
+
+    registerFlockctlChildNode({
+      parentSessionId: "plain-chat",
+      sessionId: "brigade-1",
+      role: "worker",
+      harnessId: "claude-acp",
+      displayName: "Notes writer",
+      projectId: "project-7",
+      modelId: "model-1",
+      effort: "max",
+      task: "Draft the release notes",
+    });
+
+    expect(
+      useConductorGraphStore.getState().getNode("brigade-1"),
+    ).toMatchObject({
+      managedBy: "agent-cli",
+      role: "worker",
+      parentSessionId: "plain-chat",
+      rootConductorId: "plain-chat",
+      projectId: "project-7",
+      modelId: "model-1",
+      effort: "max",
+      anchorMessageId: "reply-1",
+      status: "starting",
+    });
+  });
+
+  it("leaves the anchor to the latest reply when the parent has not answered yet", () => {
+    useChatStore.setState({
+      messagesBySession: { "plain-chat": [createUserMessage("go")] },
+    });
+
+    registerFlockctlChildNode({
+      parentSessionId: "plain-chat",
+      sessionId: "brigade-2",
+      role: "worker",
+      harnessId: "claude-acp",
+      displayName: "Changelog checker",
+    });
+
+    expect(
+      useConductorGraphStore.getState().getNode("brigade-2")?.anchorMessageId,
+    ).toBeUndefined();
+  });
+
   it("registers the child under its actor as agent-cli, and not for anonymous calls", () => {
     useConductorGraphStore.getState().registerNode(node({ role: "conductor" }));
 
     registerFlockctlChildNode({
-      actor: ACTOR_ID,
+      parentSessionId: ACTOR_ID,
       sessionId: "child-1",
       role: "worker",
       harnessId: "claude-acp",
@@ -190,7 +275,7 @@ describe("registerFlockctlChildNode", () => {
     expect(child?.role).toBe("worker");
 
     registerFlockctlChildNode({
-      actor: undefined,
+      parentSessionId: undefined,
       sessionId: "child-2",
       role: "worker",
       harnessId: "goose",

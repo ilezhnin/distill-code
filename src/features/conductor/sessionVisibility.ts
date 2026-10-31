@@ -86,14 +86,27 @@ export function isAgentChildOfRoot(
   return Boolean(node.parentSessionId && rootIds.has(node.parentSessionId));
 }
 
+/**
+ * The agents a chat shows it started. `root` is the chat's own node; an
+ * ordinary chat has none, and the agents it started still name it as their
+ * parent by one of its ids (`aliases`), so it shows them by the plain-chat
+ * rule — direct children only, like any other non-conductor root.
+ */
 export function footerAgentNodes(
   nodesById: Record<string, SessionNode>,
   root: SessionNode | undefined,
   aliases: Array<string | null | undefined> = [],
 ): SessionNode[] {
-  if (!root) return [];
-  const rootIds = rootSessionIdSet(root, aliases);
+  const rootIds = root
+    ? rootSessionIdSet(root, aliases)
+    : new Set(
+        aliases.filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        ),
+      );
+  if (rootIds.size === 0) return [];
+  const rootRole = root?.role ?? "plain-chat";
   return Object.values(nodesById).filter((node) =>
-    isAgentChildOfRoot(node, root.role, rootIds),
+    isAgentChildOfRoot(node, rootRole, rootIds),
   );
 }

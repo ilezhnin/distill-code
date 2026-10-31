@@ -26,6 +26,7 @@ import {
 } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { ModelOption } from "@/features/chat/types";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { DEFAULT_PROJECT_COLOR } from "@/features/projects/lib/projectDefaults";
 import { DEFAULT_PROJECT_ICON } from "@/features/projects/lib/projectIcons";
@@ -677,8 +678,13 @@ describe("sessions.create", () => {
       model_id: "model-9",
       effort: null,
       fast_mode: null,
+      parent_session_id: null,
       send_status: "dispatched",
     });
+    // No parent named: an independent chat, not anyone's child.
+    expect(
+      useConductorGraphStore.getState().getNode("session-new"),
+    ).toBeUndefined();
 
     const queued =
       useChatStore.getState().queuedMessageBySession["session-new"];
@@ -902,6 +908,133 @@ describe("sessions.create", () => {
       "workspace_name_required",
     );
     expect(mocks.planProjectChatWorkspaces).not.toHaveBeenCalled();
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("registers a session started with --parent-session-id under that ordinary chat", async () => {
+    // An ordinary chat has no graph node of its own; its helper must still
+    // hang under it rather than land in the sidebar as a chat of its own.
+    seedSessions(makeSession({ id: "parent-chat", projectId: "project-9" }));
+    mocks.acpGetSessionInfo.mockResolvedValue(
+      makeAcpSession({ sessionId: "parent-chat", projectId: "project-9" }),
+    );
+    useChatStore.setState({
+      messagesBySession: {
+        "parent-chat": [
+          createUserMessage("split the work into brigades"),
+          {
+            id: "parent-reply",
+            role: "assistant",
+            created: 1,
+            content: [{ type: "text", text: "Starting the brigades." }],
+          },
+        ],
+      },
+    });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+
+    const result = await dispatchCommand(
+      "sessions",
+      {
+        action: "create",
+        prompt: "Draft the release notes",
+        parent_session_id: "parent-chat",
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      session_id: "session-new",
+      parent_session_id: "parent-chat",
+    });
+    expect(
+      useConductorGraphStore.getState().getNode("session-new"),
+    ).toMatchObject({
+      managedBy: "agent-cli",
+      role: "worker",
+      parentSessionId: "parent-chat",
+      rootConductorId: "parent-chat",
+      projectId: "project-9",
+      anchorMessageId: "parent-reply",
+      status: "starting",
+      task: "Draft the release notes",
+    });
+  });
+
+  it("refuses a parent that does not exist before creating anything", async () => {
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        { action: "create", prompt: "hi", parent_session_id: "missing" },
+        ctx,
+      ),
+      "session_not_found",
+    );
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses an archived parent, under which the child would be invisible", async () => {
+    mocks.acpGetSessionInfo.mockResolvedValue(
+      makeAcpSession({
+        sessionId: "parent-chat",
+        archivedAt: "2026-04-02T00:00:00.000Z",
+      }),
+    );
+
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        { action: "create", prompt: "hi", parent_session_id: "parent-chat" },
+        ctx,
+      ),
+      "invalid_args",
+    );
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("checks a named parent against the spawn ACL like an actor", async () => {
+    mocks.acpGetSessionInfo.mockResolvedValue(
+      makeAcpSession({ sessionId: "wave-worker" }),
+    );
+    useConductorGraphStore.setState({
+      nodesById: {
+        "wave-worker": {
+          sessionId: "wave-worker",
+          projectId: "project",
+          role: "worker",
+          managedBy: "wave",
+          parentSessionId: "conductor-1",
+          rootConductorId: "conductor-1",
+          runId: "run-1",
+          harnessId: "claude-acp",
+          displayName: "Scout",
+          status: "running",
+        },
+      },
+      reportsByRunId: {},
+    });
+
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        { action: "create", prompt: "hi", parent_session_id: "wave-worker" },
+        ctx,
+      ),
+      "spawn_not_allowed",
+    );
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses a named parent that is not the calling session", async () => {
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        { action: "create", prompt: "hi", parent_session_id: "someone-else" },
+        { actor: "caller" },
+      ),
+      "invalid_args",
+    );
+    expect(mocks.acpGetSessionInfo).not.toHaveBeenCalled();
     expect(mocks.acpCreateSession).not.toHaveBeenCalled();
   });
 
