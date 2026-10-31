@@ -18,6 +18,7 @@
 
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
 import { benchmarkErrorMessage } from "@/features/benchmarks/api/benchmarks";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { ownedTaskExecution } from "@/features/benchmarks/lib/ownedTaskExecution";
 import { sameSessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import { sameSessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
@@ -809,7 +810,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
                 .catch((failure: unknown) => {
                   appendConductorNotice(
                     wave.conductorSessionId,
-                    `Native task cleanup is unresolved: ${failure instanceof Error ? failure.message : String(failure)}`,
+                    `Native task cleanup is unresolved: ${formatAcpErrorMessage(failure)}`,
                     false,
                   );
                 });
@@ -1082,14 +1083,14 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
             .catch((failure: unknown) => {
               appendConductorNotice(
                 wave.conductorSessionId,
-                `Native task cleanup is unresolved: ${failure instanceof Error ? failure.message : String(failure)}`,
+                `Native task cleanup is unresolved: ${formatAcpErrorMessage(failure)}`,
                 false,
               );
             });
         await closeUnstartedWaveExecutor(
           preparedKey,
           "failed",
-          error instanceof Error ? error.message : String(error),
+          formatAcpErrorMessage(error),
         ).catch(() => {
           // The original failure is still surfaced below. No retry dispatch.
         });
@@ -1105,11 +1106,11 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           state,
           withWaveStepPhase(current, request.stepIndex, {
             phase: "failed",
-            // The notice below is transient; the step keeps the reason.
-            failureReason: (error instanceof Error
-              ? error.message
-              : String(error)
-            ).slice(0, 2000),
+            // The notice below is transient; the step keeps the reason. The
+            // host refuses with `{code, message}` objects, not `Error`s: read
+            // through the shared formatter, or the reason reads
+            // "[object Object]" in the digest.
+            failureReason: formatAcpErrorMessage(error).slice(0, 2000),
           }),
         );
       });
@@ -1119,10 +1120,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       if (!(error instanceof SpawnAclDeniedError)) {
         appendConductorNotice(
           wave.conductorSessionId,
-          waveSpawnFailureText(
-            request.stepIndex,
-            error instanceof Error ? error.message : String(error),
-          ),
+          waveSpawnFailureText(request.stepIndex, formatAcpErrorMessage(error)),
           false,
         );
       }

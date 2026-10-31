@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { acpGetSessionInfo } from "@/shared/api/acp";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { mergeAcpSessionInfo } from "@/features/chat/lib/acpSessionMapping";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -317,7 +318,7 @@ function syncOwnedWaveChild(node: SessionNode): void {
         .getState()
         .setError(
           node.sessionId,
-          `Native wave result is unresolved: ${error instanceof Error ? error.message : String(error)}`,
+          `Native wave result is unresolved: ${formatAcpErrorMessage(error)}`,
         );
     })
     .finally(() => ownedSyncInFlight.delete(key));

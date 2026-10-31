@@ -35,6 +35,7 @@ import {
   type AdmittedQueuedMessagePayload,
 } from "@/features/chat/lib/admittedSend";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { isQueuedSessionReady } from "@/features/chat/lib/queuedMessageReadiness";
 import {
   SessionDispatchContentionError,
@@ -87,10 +88,7 @@ export function classifyDigestDispatchError(
   if (error instanceof PreCommitSendRejectedError) {
     return { status: "queued" };
   }
-  return {
-    status: "failed",
-    detail: error instanceof Error ? error.message : String(error),
-  };
+  return { status: "failed", detail: formatAcpErrorMessage(error) };
 }
 
 function digestQueuePayload(text: string): AdmittedQueuedMessagePayload {
