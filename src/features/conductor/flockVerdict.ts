@@ -93,7 +93,10 @@ export interface VerdictInvalid {
 export interface VerdictParsed {
   kind: "verdict";
   verdict: Verdict;
-  /** The message with the verdict (and revision wave) fences removed. */
+  /**
+   * The message with the verdict fence removed. A revision wave stays: it is
+   * the plan the transcript draws as its steps.
+   */
   prose: string;
 }
 
@@ -230,7 +233,10 @@ export function parseFlockVerdict(messageText: string): FlockVerdictParse {
   return {
     kind: "verdict",
     verdict: withNote({ outcome: "revise", steps: wave.steps }, note),
-    prose: proseWithoutWave(scan.prose, wave),
+    // The revision wave stays in the prose: it is the plan the operator
+    // reads as its steps (`ui/WavePlanRecord.tsx`), exactly like a plan the
+    // conductor wrote on its own, and only the verdict was machine-facing.
+    prose: scan.prose,
   };
 }
 
@@ -251,10 +257,4 @@ function parseBareWaveAsRevision(
     verdict: { outcome: "revise", steps: wave.steps },
     prose: wave.prose || messageText.trim(),
   };
-}
-
-function proseWithoutWave(prose: string, wave: FlockWaveParse): string {
-  if (wave.kind !== "plan") return prose;
-  const stripped = parseFlockWave(prose);
-  return stripped.kind === "plan" ? stripped.prose : prose;
 }

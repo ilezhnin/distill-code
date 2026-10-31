@@ -52,7 +52,9 @@ describe("parseFlockVerdict — revise", () => {
     expect(parsed.verdict.steps).toEqual([
       { role: "qa", subtask: "Re-run the failing suite", access: "all" },
     ]);
-    expect(parsed.prose).toBe("");
+    // Only the verdict is machine-facing: the revision wave stays, for the
+    // transcript to draw as the plan's steps.
+    expect(parsed.prose).toBe(REVISION_WAVE);
   });
 
   it("rejects a revise verdict with no wave to run", () => {
