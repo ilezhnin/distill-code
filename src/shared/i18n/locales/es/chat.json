@@ -408,7 +408,10 @@
     "voiceSpeechSpokenLabel": "Hablado",
     "voiceSpeechInterruptedLabel": "Interrumpido",
     "voiceSpeechNotSpokenLabel": "No hablado",
-    "voiceSpeechFailedLabel": "Fallido"
+    "voiceSpeechFailedLabel": "Fallido",
+    "monitorLabel": "Novedad de una tarea en segundo plano",
+    "steerUnconfirmedLabel": "Entrega sin confirmar. Compruébalo antes de reenviar.",
+    "steerFailedLabel": "No se pudo entregar al agente en ejecución."
   },
   "persona": {
     "chooseAssistant": "Elegir asistente",
