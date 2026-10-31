@@ -533,6 +533,8 @@
     "campaign": "Workflow comparison",
     "campaignCreated": "Created {{date}}",
     "campaignProgress": "{{settled}} / {{total}} workflows settled",
+    "policyCheckMissing": "Not resumed: the sandbox check must be renewed for this version of Flock. Open the run, press Resume, then Update sandbox check.",
+    "actionRefused": "The run refused this action. Open the run for the reason.",
     "step": "Step {{number}}",
     "elapsed": "Elapsed {{elapsed}}",
     "checking": "Checking activity…",

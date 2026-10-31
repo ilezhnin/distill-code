@@ -31,7 +31,10 @@ const api = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => ({})),
 }));
 
-vi.mock("../api/benchmarks", () => ({ benchmarkApi: api }));
+vi.mock("../api/benchmarks", () => ({
+  benchmarkApi: api,
+  benchmarkErrorMessage: String,
+}));
 
 function Providers({ children }: { children: ReactNode }) {
   return (
@@ -402,4 +405,43 @@ it("pauses, resumes and cancels a run from its row without opening it", async ()
     fireEvent.click(cancel);
   });
   expect(api.cancelRun).toHaveBeenCalledExactlyOnceWith(runSummary.id);
+});
+
+it("says why a resume from the row was refused instead of showing a second Cancel", async () => {
+  api.resumeRun.mockRejectedValueOnce(
+    "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe",
+  );
+  render(
+    <BenchmarkActivity
+      runs={[{ ...runSummary, state: "paused" }]}
+      onOpenRun={vi.fn()}
+    />,
+  );
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  });
+  expect(
+    screen.getByText(
+      /Not resumed: the sandbox check must be renewed for this version of Flock/,
+    ),
+  ).toBeInTheDocument();
+  // The refused control keeps its name; only one control cancels the run.
+  expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Cancel run" })).toHaveLength(1);
+});
+
+it("names any other refusal generically and keeps its reason in reach", async () => {
+  api.resumeRun.mockRejectedValueOnce("resource_busy: invented refusal");
+  render(
+    <BenchmarkActivity
+      runs={[{ ...runSummary, state: "paused" }]}
+      onOpenRun={vi.fn()}
+    />,
+  );
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  });
+  expect(
+    screen.getByText("The run refused this action. Open the run for the reason."),
+  ).toHaveAttribute("title", "resource_busy: invented refusal");
 });

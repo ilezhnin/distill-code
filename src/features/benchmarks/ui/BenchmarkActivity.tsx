@@ -8,7 +8,7 @@ import { Button, type ButtonFeedbackState } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import { Spinner } from "@/shared/ui/spinner";
-import { benchmarkApi } from "../api/benchmarks";
+import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import {
   benchmarkKeys,
   modelNameKey,
@@ -63,11 +63,13 @@ export function BenchmarkActivity({
   const { formatDate } = useLocaleFormatting();
   const names = useModelNames();
   const client = useQueryClient();
-  // The run being steered from its row and how its control is doing; the
-  // control shows the failure itself, since the row has no line for one.
+  // The run being steered from its row and how its control is doing. A
+  // refusal marks the control as a warning, never as a second Cancel, and the
+  // row says why under the run.
   const [steering, setSteering] = useState<{
     runId: string;
     state: ButtonFeedbackState;
+    refusal?: string;
   } | null>(null);
   const steer = async (
     runId: string,
@@ -78,8 +80,12 @@ export function BenchmarkActivity({
       await act(runId);
       setSteering(null);
       void client.invalidateQueries({ queryKey: benchmarkKeys });
-    } catch {
-      setSteering({ runId, state: "error" });
+    } catch (failure) {
+      setSteering({
+        runId,
+        state: "error",
+        refusal: benchmarkErrorMessage(failure),
+      });
     }
   };
   const feedbackFor = (runId: string): ButtonFeedbackState =>
@@ -255,6 +261,22 @@ export function BenchmarkActivity({
                     {attentionLabel(t, run)}
                   </span>
                 ) : null}
+                {steering?.runId === run.id && steering.refusal ? (
+                  <span
+                    className="flex items-start gap-2 text-xs text-destructive"
+                    title={steering.refusal}
+                  >
+                    <AlertTriangle
+                      aria-hidden="true"
+                      className="size-3.5 shrink-0"
+                    />
+                    {t(
+                      steering.refusal.includes("Linux text policy proof")
+                        ? "activity.policyCheckMissing"
+                        : "activity.actionRefused",
+                    )}
+                  </span>
+                ) : null}
                 {run.workflowActivity?.length ? (
                   <BenchmarkWorkflowActivity run={run} compact />
                 ) : null}
@@ -272,7 +294,7 @@ export function BenchmarkActivity({
                     tooltip={t("actions.resume")}
                     feedbackState={feedback}
                     loadingVisual="spinner"
-                    errorLabel={<X aria-hidden="true" />}
+                    errorLabel={<AlertTriangle aria-hidden="true" />}
                     onClick={() => void steer(run.id, benchmarkApi.resumeRun)}
                   >
                     <Play aria-hidden="true" />
@@ -288,7 +310,7 @@ export function BenchmarkActivity({
                     disabled={run.state !== "running"}
                     feedbackState={feedback}
                     loadingVisual="spinner"
-                    errorLabel={<X aria-hidden="true" />}
+                    errorLabel={<AlertTriangle aria-hidden="true" />}
                     onClick={() => void steer(run.id, benchmarkApi.pauseRun)}
                   >
                     <Pause aria-hidden="true" />

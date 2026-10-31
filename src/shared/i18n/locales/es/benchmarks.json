@@ -533,6 +533,8 @@
     "campaign": "Comparación de flujos",
     "campaignCreated": "Creada el {{date}}",
     "campaignProgress": "{{settled}} / {{total}} flujos terminados",
+    "policyCheckMissing": "No se reanudó: hay que renovar la comprobación del entorno aislado para esta versión de Flock. Abre la ejecución, pulsa Reanudar y después Actualizar comprobación.",
+    "actionRefused": "La ejecución rechazó esta acción. Abre la ejecución para ver el motivo.",
     "step": "Paso {{number}}",
     "elapsed": "Tiempo transcurrido {{elapsed}}",
     "checking": "Comprobando actividad…",
