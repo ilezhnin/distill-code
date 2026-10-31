@@ -586,6 +586,17 @@ impl SessionRuntime {
         self.steer_queue.clear();
         dropped
     }
+
+    /// Stop means stop: the messages steered into the turn being cancelled
+    /// are not started as turns of their own once it returns, and a reply the
+    /// agent continued on its own ends here. Reports the steers dropped and
+    /// whether that background reply was the chat's only run: no prompt of the
+    /// renderer settles such a reply, so the host has to say it is over.
+    fn stop(&mut self) -> (usize, bool) {
+        let ended_background = self.run.is_none() && self.background.active_run_id().is_some();
+        self.background.cancel();
+        (self.drop_queued_steers(), ended_background)
+    }
 }
 
 /// The attached chats' runtimes by host session id, with the reverse index
@@ -1298,19 +1309,16 @@ impl Inner {
         }
         if method == "session/cancel" {
             if let Some(session_id) = protocol::session_id(&params) {
-                // Stop means stop: the messages steered into the turn being
-                // cancelled are not started as turns of their own once it
-                // returns.
-                let dropped = self
+                let (dropped, ended_background) = self
                     .sessions
                     .lock()
                     .await
                     .get_mut(&session_id)
-                    .map(|runtime| {
-                        runtime.background.cancel();
-                        runtime.drop_queued_steers()
-                    })
-                    .unwrap_or(0);
+                    .map(SessionRuntime::stop)
+                    .unwrap_or((0, false));
+                if ended_background {
+                    self.notify_frontend("session/update", Self::run_settled_update(&session_id));
+                }
                 if dropped > 0 {
                     log::info!(
                         "[agent-host] session {session_id} cancelled: dropped {dropped} queued steer(s)"
@@ -11912,6 +11920,27 @@ mod tests {
         assert!(meta
             .as_object()
             .is_some_and(|meta| meta.get("activeRunId").is_some_and(Value::is_null)));
+    }
+
+    #[test]
+    fn stopping_a_background_reply_ends_the_run_the_chat_waits_on() {
+        let mut live = runtime("claude-acp", "a", 1);
+        live.background.allow("user-message");
+        let mut wake_up = json!({"update":{"sessionUpdate":"tool_call","toolCallId":"date"}});
+        assert!(live.background.stamp_continuation(&mut wake_up, "now"));
+        assert_eq!(live.stop(), (0, true));
+        assert!(live.background.active_run_id().is_none());
+        assert!(!live.background.stamp_continuation(
+            &mut json!({"update":{"sessionUpdate":"agent_message_chunk"}}),
+            "later"
+        ));
+
+        // A prompt the renderer sent settles through its own answer instead.
+        live.background.allow("next-message");
+        live.run = Some(RunState::start(&ids()));
+        assert_eq!(live.stop(), (0, false));
+        live.run = None;
+        assert_eq!(live.stop(), (0, false));
     }
 
     #[test]

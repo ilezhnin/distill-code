@@ -130,19 +130,15 @@ impl BackgroundActivity {
         if self.continuation.is_none() && kind == "usage_update" {
             return false;
         }
+        // Every model cycle ends in one result, which the bridge reports as the
+        // only `usage_update` carrying the cycle's `cost` (and its
+        // `_claude/origin` when the CLI names one). Any result ends the reply:
+        // a scheduled wake-up (CronCreate) names no origin at all, and waiting
+        // for an autonomous origin kept that reply open for good, refusing
+        // every prompt and steer of the chat behind it.
         let finished = kind == "usage_update"
-            && params["update"]["_meta"]["_claude/origin"]["kind"]
-                .as_str()
-                .is_some_and(|origin| {
-                    matches!(
-                        origin,
-                        "task-notification"
-                            | "peer"
-                            | "coordinator"
-                            | "observer"
-                            | "observer-activity"
-                    )
-                });
+            && (params["update"].get("cost").is_some()
+                || params["update"]["_meta"].get("_claude/origin").is_some());
         let (run, reply) = self.continuation.get_or_insert_with(|| {
             (
                 uuid::Uuid::new_v4().to_string(),
@@ -200,6 +196,36 @@ mod tests {
         assert!(activity.active_run_id().is_none());
         activity.cancel();
         assert!(!activity.stamp_continuation(&mut chunk(), "cancelled"));
+    }
+
+    #[test]
+    fn scheduled_wake_up_without_an_origin_ends_on_its_result() {
+        let mut activity = BackgroundActivity::default();
+        activity.allow("user-message");
+        let chunk = || json!({"update":{"sessionUpdate":"tool_call","toolCallId":"date"}});
+        let mut first = chunk();
+        assert!(activity.stamp_continuation(&mut first, "01:26"));
+        let mut heartbeat =
+            json!({"update":{"sessionUpdate":"usage_update","used":627066,"size":1000000}});
+        activity.stamp_continuation(&mut heartbeat, "01:26");
+        assert_eq!(
+            heartbeat["update"]["_meta"]["distill"]["autonomousFinished"],
+            false
+        );
+        let mut result = json!({"update":{"sessionUpdate":"usage_update","used":628309,"size":1000000,"cost":{"amount":50.4,"currency":"USD"}}});
+        assert!(activity.stamp_continuation(&mut result, "01:26"));
+        assert_eq!(
+            result["update"]["_meta"]["distill"]["autonomousFinished"],
+            true
+        );
+        assert!(activity.active_run_id().is_none());
+        assert!(!activity.is_busy());
+        let mut next_wake_up = chunk();
+        assert!(activity.stamp_continuation(&mut next_wake_up, "01:56"));
+        assert_ne!(
+            next_wake_up["update"]["_meta"]["distill"]["runId"],
+            first["update"]["_meta"]["distill"]["runId"]
+        );
     }
 
     #[test]
