@@ -387,16 +387,35 @@ function locationsFromUpdate(
 
 type ToolCallUpdatePatch = Pick<
   Partial<ToolRequestContent>,
-  "toolKind" | "locations"
+  "toolKind" | "locations" | "arguments"
 >;
+
+/**
+ * The tool input an update carries, when it carries one.
+ *
+ * A bridge may open a call before it knows the input and send the input in a
+ * later `tool_call_update`: claude-agent-acp opens every Bash call as
+ * "Terminal" with an empty `rawInput`, and the command and its one-line
+ * description arrive with the next update. An empty record says nothing and
+ * never replaces what is already known.
+ */
+function argumentsFromUpdate(
+  update: SessionUpdate,
+): Record<string, unknown> | undefined {
+  const record: Record<string, unknown> = update;
+  const input = rawInputToArguments(record.rawInput);
+  return Object.keys(input).length > 0 ? input : undefined;
+}
 
 function toolCallUpdatePatch(update: SessionUpdate): ToolCallUpdatePatch {
   const toolKind = toolKindFromUpdate(update);
   const locations = locationsFromUpdate(update);
+  const toolArguments = argumentsFromUpdate(update);
 
   return {
     ...(toolKind ? { toolKind } : {}),
     ...(locations ? { locations } : {}),
+    ...(toolArguments ? { arguments: toolArguments } : {}),
   };
 }
 
@@ -422,7 +441,8 @@ function toolCallUpdatePatchFor(
     existing?.toolKind !== undefined &&
     existing.toolKind !== "other";
   if (!keepsSpecificKind) return patch;
-  return patch.locations ? { locations: patch.locations } : {};
+  const { toolKind: _vaguerKind, ...rest } = patch;
+  return rest;
 }
 
 const autonomousOwners = new Map<string, { runId: string; owner: symbol }>();
@@ -1162,8 +1182,10 @@ async function handleLive(
         // (identity patched in by a later update); resolve the subagent
         // label now that we know what the tool is.
         const storedArguments = identity.toolName
-          ? (findLiveToolRequest(sessionId, messageId, update.toolCallId)
-              ?.arguments ?? {})
+          ? (patch.arguments ??
+            findLiveToolRequest(sessionId, messageId, update.toolCallId)
+              ?.arguments ??
+            {})
           : {};
         const lateSubagentContext = identity.toolName
           ? (getSubagentToolCallContext(identity.toolName, storedArguments) ??
