@@ -15,6 +15,7 @@ use tauri::Manager;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::app_sign_in;
@@ -91,6 +92,17 @@ fn quota_identity(
         .then(|| provider_accounts::cli_login_account_id(harness))
         .flatten()
         .map(|id| (id, true)))
+}
+
+/// The renderer's socket takes a message of any size. A prompt carries its
+/// images inline, and how much a prompt may carry is the provider's call, not
+/// this transport's: tungstenite's default 16 MiB frame limit closed the
+/// socket, and every open chat with it, on a prompt the provider would have
+/// taken. Frames are only read after the handshake checked the host's token.
+fn frontend_socket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(None)
+        .max_frame_size(None)
 }
 
 /// The prompt of an owned turn: the task text first, behind a fixed marker, so
@@ -1135,7 +1147,7 @@ impl Inner {
             tokio::spawn(async move {
                 let ws = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    tokio_tungstenite::accept_hdr_async(
+                    tokio_tungstenite::accept_hdr_async_with_config(
                         stream,
                         move |request: &Request, response: Response| {
                             let query = request.uri().query().unwrap_or("");
@@ -1152,6 +1164,7 @@ impl Inner {
                                 Err(rejection)
                             }
                         },
+                        Some(frontend_socket_config()),
                     ),
                 )
                 .await;
@@ -8864,6 +8877,36 @@ impl app_sign_in::RenewalIo for AppRenewal<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prompt with a handful of screenshots is one text frame well past
+    /// tungstenite's default 16 MiB limit; the renderer's socket must deliver
+    /// it instead of closing.
+    #[tokio::test]
+    async fn the_renderer_socket_delivers_a_frame_past_the_default_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket =
+                tokio_tungstenite::accept_async_with_config(stream, Some(frontend_socket_config()))
+                    .await
+                    .unwrap();
+            match socket.next().await {
+                Some(Ok(WsMessage::Text(text))) => text.len(),
+                other => panic!("the frame did not arrive: {other:?}"),
+            }
+        });
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (mut renderer, _) = tokio_tungstenite::client_async(format!("ws://{address}/"), stream)
+            .await
+            .unwrap();
+        let prompt = "x".repeat(20 * 1024 * 1024);
+        renderer
+            .send(WsMessage::Text(prompt.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(host.await.unwrap(), prompt.len());
+    }
 
     #[test]
     fn inventory_keeps_only_the_trusted_pre_spawn_refusal_retryable() {

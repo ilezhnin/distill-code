@@ -44,7 +44,6 @@ import {
   type PersonaIntent,
 } from "../lib/admittedSend";
 import { getImageFilesFromClipboardItems } from "../lib/clipboardAttachments";
-import { rejectsOversizedComposerPayload } from "../lib/submitComposerMessage";
 import type { ChatInputProps, ChatSendOptions, ChatSkillDraft } from "../types";
 import {
   getStreamingShortcutAction,
@@ -875,14 +874,6 @@ export function ChatInput({
     const submittedAttachments = scopedControls.attachments
       ? attachmentsRef.current
       : [];
-
-    // Steering stays fire-and-forget (the draft clears immediately, without
-    // waiting for acknowledgement), so the payload budget must be checked
-    // synchronously before anything is cleared: a rejected oversized draft
-    // survives for the user to fix (BOT-1463).
-    if (rejectsOversizedComposerPayload(submittedAttachments)) {
-      return;
-    }
 
     const restoredSendOptions =
       restoredQueuedSendOptions && submittedSkills.length === 0

@@ -37,12 +37,6 @@ import {
   isPromptWithdrawnError,
 } from "@/shared/api/acpErrors";
 import {
-  formatAttachmentsTooLargeMessage,
-  MAX_PROMPT_ATTACHMENT_BYTES,
-  promptAttachmentBytes,
-  PromptPayloadTooLargeError,
-} from "@/features/chat/lib/attachmentPayloadBudget";
-import {
   claimSessionPrompt,
   getSessionPromptOwner,
   ownsSessionPrompt,
@@ -251,18 +245,6 @@ export async function dispatchPrompt(
     userMessageMetadata,
   } = opts;
   const images = buildAcpImages(attachments);
-
-  // Reject oversized attachment payloads before committing anything: an
-  // overflowing ACP WebSocket message silently kills the shared connection
-  // and every open chat with it (BOT-1463). Failing here keeps the draft in
-  // the composer so the user can remove attachments and retry.
-  const attachmentBytes = promptAttachmentBytes(attachments);
-  if (attachmentBytes > MAX_PROMPT_ATTACHMENT_BYTES) {
-    const errorMessage = formatAttachmentsTooLargeMessage(attachmentBytes);
-    useChatStore.getState().setError(sessionId, errorMessage);
-    const tooLarge = new PromptPayloadTooLargeError(errorMessage);
-    throw tooLarge;
-  }
 
   const promptOwner = claimSessionPrompt(sessionId);
   const isCurrent = () => ownsSessionPrompt(sessionId, promptOwner);

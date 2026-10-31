@@ -6,7 +6,6 @@ import { ChatInput } from "./chatInputTestUtils";
 import type { Persona } from "@/shared/types/agents";
 import type { ChatInputComposerActions } from "../../types";
 import { STREAMING_SHORTCUT_MODE_STORAGE_KEY } from "../../lib/streamingShortcutPreference";
-import { MAX_PROMPT_ATTACHMENT_BYTES } from "../../lib/attachmentPayloadBudget";
 
 // Deterministic shortcut modifiers across dev machines and CI: "mod"
 // combos (e.g. chat.sendNow's Mod+Enter) resolve to Meta.
@@ -483,43 +482,33 @@ describe("ChatInput", () => {
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
-  it("keeps an oversized steer draft in the composer instead of steering", async () => {
-    // Discriminating test for the synchronous budget guard in
-    // handleSteerCurrentMessage: steering is fire-and-forget (the draft
-    // clears before acknowledgement), so without the guard an oversized
-    // draft would be discarded even though nothing was sent (BOT-1463).
+  it("steers a draft with large images instead of capping them below the provider", async () => {
     const onSteerMessage = vi.fn();
-    const onDraftAttachmentsChange = vi.fn();
     const user = userEvent.setup();
     localStorage.setItem(STREAMING_SHORTCUT_MODE_STORAGE_KEY, "enter-steers");
+    const screenshot = {
+      id: "image-1",
+      kind: "image" as const,
+      name: "screenshot.png",
+      mimeType: "image/png",
+      base64: "x".repeat(40 * 1024 * 1024),
+      previewUrl: "blob:screenshot",
+    };
     render(
       <ChatInput
         onSend={vi.fn()}
         onSteerMessage={onSteerMessage}
         canSteerMessage
         isStreaming
-        initialAttachments={[
-          {
-            id: "image-1",
-            kind: "image",
-            name: "huge.jpeg",
-            mimeType: "image/jpeg",
-            base64: "x".repeat(MAX_PROMPT_ATTACHMENT_BYTES + 1),
-            previewUrl: "blob:huge",
-          },
-        ]}
-        onDraftAttachmentsChange={onDraftAttachmentsChange}
+        initialAttachments={[screenshot]}
       />,
     );
 
-    const input = screen.getByRole("textbox");
-    await user.type(input, "look at this");
+    await user.type(screen.getByRole("textbox"), "look at this");
     await user.keyboard("{Enter}");
 
-    // Nothing steers and nothing clears: the draft survives for the user
-    // to remove attachments and retry.
-    expect(onSteerMessage).not.toHaveBeenCalled();
-    expect(input).toHaveValue("look at this");
-    expect(onDraftAttachmentsChange).not.toHaveBeenCalledWith([]);
+    expect(onSteerMessage).toHaveBeenCalledWith("look at this", undefined, [
+      screenshot,
+    ]);
   });
 });

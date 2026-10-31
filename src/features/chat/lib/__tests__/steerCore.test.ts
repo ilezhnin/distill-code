@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatStore } from "../../stores/chatStore";
-import { MAX_PROMPT_ATTACHMENT_BYTES } from "../attachmentPayloadBudget";
 
 const mockAcpSteerMessage = vi.fn();
 
@@ -17,18 +16,7 @@ vi.mock("@/shared/i18n", () => ({
 
 import { steerPromptInSession } from "../steerCore";
 
-function oversizedImageDraft() {
-  return {
-    id: "image-1",
-    kind: "image" as const,
-    name: "huge.jpeg",
-    mimeType: "image/jpeg",
-    base64: "x".repeat(MAX_PROMPT_ATTACHMENT_BYTES + 1),
-    previewUrl: "blob:huge",
-  };
-}
-
-describe("steerPromptInSession payload budget", () => {
+describe("steerPromptInSession attachment size", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useChatStore.setState({
@@ -39,28 +27,32 @@ describe("steerPromptInSession payload budget", () => {
     });
   });
 
-  it("rejects an over-budget steer before committing anything", async () => {
-    // Discriminating test for the steer-side budget guard: non-composer
-    // callers (flockctl, queued steers) reach steerPromptInSession directly,
-    // where an oversized ACP message would silently kill the shared
-    // WebSocket and every open chat with it (BOT-1463). Pre-guard code
-    // commits the user message and calls acpSteerMessage; guarded code
-    // must do neither.
+  it("steers images of any size: how much a prompt carries is the provider's call", async () => {
+    mockAcpSteerMessage.mockResolvedValue({
+      runId: "active",
+      messageId: "native",
+      delivery: "steer",
+    });
+    const base64 = "x".repeat(40 * 1024 * 1024);
+
     const accepted = await steerPromptInSession("session-1", "look at this", [
-      oversizedImageDraft(),
+      {
+        id: "image-1",
+        kind: "image",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        base64,
+        previewUrl: "blob:screenshot",
+      },
     ]);
 
-    expect(accepted).toBe(false);
-    expect(mockAcpSteerMessage).not.toHaveBeenCalled();
-
-    // The failure is visible, not silent: a system error notification is
-    // the only message added — no user message lands in the transcript.
-    const messages = useChatStore.getState().messagesBySession["session-1"];
-    expect(messages).toHaveLength(1);
-    expect(messages[0].role).not.toBe("user");
-    expect(messages[0].content[0]).toMatchObject({
-      text: expect.stringContaining("errors.attachmentsTooLarge"),
-    });
+    expect(accepted).toBe(true);
+    expect(mockAcpSteerMessage).toHaveBeenCalledWith(
+      "session-1",
+      null,
+      "look at this",
+      expect.objectContaining({ images: [[base64, "image/png"]] }),
+    );
   });
 });
 

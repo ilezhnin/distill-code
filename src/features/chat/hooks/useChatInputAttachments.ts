@@ -174,9 +174,8 @@ export function useChatInputAttachments(
             try {
               const image = await readImageAttachment(attachmentPath.path);
               // Picker and drag-drop images go through the same normalize
-              // pipeline as pasted images: full-size photos are downscaled
-              // (a handful of raw phone JPEGs overflows the ACP transport,
-              // BOT-1463) and non-whitelisted formats (HEIC/TIFF/...) are
+              // pipeline as pasted images: images over the dimension cap are
+              // downscaled and non-whitelisted formats (HEIC/TIFF/...) are
               // re-encoded to types the providers accept.
               const normalized = await normalizeImageBase64(
                 image.base64,
