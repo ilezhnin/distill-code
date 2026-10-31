@@ -19,10 +19,12 @@
 //
 // Claude, Codex, Grok and Z.ai sign in once, in Distill: every session gets a
 // lease of that sign-in (`bench-auth stage`), and nothing signs in here.
-// Kimi alone keeps its own sandbox sign-in, made by hand once per account:
+// Kimi alone keeps its own sandbox sign-in, made once per account. The
+// installed app offers it in a Kimi run dialog whose readiness lacks it; from
+// a checkout:
 //   node scripts/benchmark-sandbox.mjs login kimi <account-id>
-// It samples the Windows headroom the sandbox admits work against
-// (DISTILL_BENCH_HOST_GATE) and runs bench-login in a terminal with it; a
+// Both sample the Windows headroom the sandbox admits work against
+// (DISTILL_BENCH_HOST_GATE) and run bench-login in a terminal with it; a
 // bare `wsl ... bench-login` carries no gate and is refused.
 //
 // The provider tools are the versions Distill runs on Windows: the managed

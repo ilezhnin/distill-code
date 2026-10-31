@@ -49,6 +49,8 @@ import type {
   SandboxSetupAction,
   SandboxSetupProgress,
   SandboxSetupState,
+  SandboxSignInClosed,
+  SandboxSignInState,
   WorkflowPolicyRunRequest,
   WorkflowTrace,
   RunSummary,
@@ -370,6 +372,23 @@ export const benchmarkApi = {
       running: SandboxSetupProgress | null;
       state: SandboxSetupState | null;
     }>("benchmark-sandbox-setup", (event) => callback(event.payload)),
+  /** Whether the account must sign in inside the sandbox, and whether it has. */
+  sandboxSignInStatus: (providerId: string, accountId: string) =>
+    invoke<SandboxSignInState>("benchmark_sandbox_sign_in_status", {
+      providerId,
+      accountId,
+    }),
+  /** Opens the window in which the operator signs the account in inside the sandbox. */
+  openSandboxSignIn: (providerId: string, accountId: string) =>
+    invoke<SandboxSignInState>("benchmark_sandbox_sign_in", {
+      providerId,
+      accountId,
+    }),
+  /** A sign-in window closed, with the account's state after it. */
+  listenSandboxSignIn: (callback: (event: SandboxSignInClosed) => void) =>
+    listen<SandboxSignInClosed>("benchmark-sandbox-sign-in", (event) =>
+      callback(event.payload),
+    ),
   listen: (callback: (change: BenchmarkChange) => void) =>
     listen<BenchmarkChange>("benchmark-changed", (event) =>
       callback(event.payload),

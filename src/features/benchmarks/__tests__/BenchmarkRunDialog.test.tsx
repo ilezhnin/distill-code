@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -10,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
 import { benchmarkApi } from "../api/benchmarks";
-import type { Capability, InventoryModel } from "../types";
+import type { Capability, InventoryModel, SandboxSignInClosed } from "../types";
 import { BenchmarkRunDialog } from "../ui/BenchmarkRunDialog";
 import { configuration, definition, run } from "./fixtures";
 
@@ -41,6 +42,9 @@ vi.mock("../api/benchmarks", () => ({
     sandboxSetupStatus: vi.fn(),
     runSandboxSetup: vi.fn(),
     listenSandboxSetup: vi.fn(),
+    sandboxSignInStatus: vi.fn(),
+    openSandboxSignIn: vi.fn(),
+    listenSandboxSignIn: vi.fn(),
   },
 }));
 
@@ -54,6 +58,12 @@ beforeEach(() => {
     running: null,
   });
   vi.mocked(benchmarkApi.listenSandboxSetup).mockResolvedValue(() => {});
+  vi.mocked(benchmarkApi.sandboxSignInStatus).mockResolvedValue({
+    required: false,
+    signedIn: null,
+    open: false,
+  });
+  vi.mocked(benchmarkApi.listenSandboxSignIn).mockResolvedValue(() => {});
   Element.prototype.scrollIntoView = vi.fn();
   Element.prototype.hasPointerCapture = vi.fn(() => false);
   vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([
@@ -208,6 +218,91 @@ it.each([
       { providerId: "kimi-acp", accountId: "cli-login-kimi-acp" },
     ],
   });
+});
+
+it("signs the selected Kimi account in inside the sandbox from the batch dialog", async () => {
+  const user = userEvent.setup();
+  let closed: ((event: SandboxSignInClosed) => void) | undefined;
+  vi.mocked(benchmarkApi.listenSandboxSignIn).mockImplementation(
+    async (callback) => {
+      closed = callback;
+      return () => {};
+    },
+  );
+  const kimi: InventoryModel = {
+    configuration: {
+      ...configuration,
+      providerId: "kimi-acp",
+      accountId: "cli-login-kimi-acp",
+    },
+    name: "Kimi test model",
+    efforts: [],
+    supportsFastMode: false,
+    available: true,
+    reason: null,
+  };
+  vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([
+    {
+      providerId: "kimi-acp",
+      executionProfile: "native_text",
+      supported: true,
+      reason: "Verified",
+      cliAccountId: "cli-login-kimi-acp",
+    },
+  ]);
+  vi.mocked(benchmarkApi.getInventory)
+    .mockRejectedValueOnce(
+      "capability_missing: The kimi account cli-login-kimi-acp is not signed in inside distill-bench; sign it in from its benchmark run dialog",
+    )
+    .mockResolvedValue([kimi]);
+  vi.mocked(benchmarkApi.sandboxSignInStatus).mockResolvedValue({
+    required: true,
+    signedIn: false,
+    open: false,
+  });
+  vi.mocked(benchmarkApi.openSandboxSignIn).mockResolvedValue({
+    required: true,
+    signedIn: null,
+    open: true,
+  });
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(await screen.findByRole("option", { name: "Kimi Code" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Sign in to Kimi Code" }),
+  );
+  expect(benchmarkApi.openSandboxSignIn).toHaveBeenCalledWith(
+    "kimi-acp",
+    "cli-login-kimi-acp",
+  );
+  expect(
+    await screen.findByRole("button", { name: "Sign-in window open" }),
+  ).toBeDisabled();
+  act(() =>
+    closed?.({
+      providerId: "kimi-acp",
+      accountId: "cli-login-kimi-acp",
+      state: { required: true, signedIn: true, open: false },
+    }),
+  );
+  await user.click(await screen.findByRole("combobox", { name: "Model" }));
+  expect(
+    await screen.findByRole("option", { name: "Kimi test model" }),
+  ).toBeVisible();
+  expect(benchmarkApi.startRun).not.toHaveBeenCalled();
 });
 
 it("keeps a failed sandbox renewal blocked and allows a retry", async () => {

@@ -118,14 +118,26 @@ sign in once, in Flock (Settings > AI providers; Grok through its own CLI
 sign-in): every sandbox session of theirs runs on a lease of that sign-in (see
 below), so there is nothing to sign in inside the sandbox, and the Z.ai key
 reaches it the same way (see [Z.ai Coding Plan](zai.md#benchmarks)). Z.ai
-sessions reach only the Z.ai API. Kimi alone keeps its own sandbox sign-in:
-`node scripts/benchmark-sandbox.mjs login kimi ACCOUNT-ID` (see the top of
-[the provisioning script](../scripts/benchmark-sandbox.mjs)). It samples the
-Windows headroom the sandbox admits work against and runs `bench-login` in your
-terminal with it; a bare `wsl ... bench-login` carries no headroom sample and is
-refused. Use the account ID from the application and Kimi's normal login flow.
-Never put credentials in a task, command transcript intended for publication,
-or source file.
+sessions reach only the Z.ai API. Kimi alone keeps its own sandbox sign-in,
+made once per account. When a Kimi run dialog's readiness check fails because
+the sandbox lacks that account's sign-in, the dialog says so and offers
+**Sign in to Kimi Code** (the provider's name as Flock shows it). The app
+samples the Windows headroom the sandbox admits work against and opens a
+console window of its own running `bench-login kimi ACCOUNT-ID` with that
+sample; a bare `wsl ... bench-login` carries none and is refused. Sign in
+there with Kimi's normal flow: it prints a link or code to open in a browser
+on Windows. The app never reads, writes or keeps what that window shows. When
+the sign-in fails, the window stays open on the reason until a key is pressed.
+Once the window closes, the app observes the sandbox again and, when the
+account is signed in, checks availability again. One window per account is
+open at a time, and the sandbox setup waits until none is, as provisioning
+restarts the sandbox under a sign-in.
+
+From a checkout, `node scripts/benchmark-sandbox.mjs login kimi ACCOUNT-ID`
+does the same in your terminal (see the top of
+[the provisioning script](../scripts/benchmark-sandbox.mjs)). Never put
+credentials in a task, command transcript intended for publication, or source
+file.
 
 For an existing distribution, update helpers without downloading dependencies
 or restarting other WSL distributions:
@@ -541,8 +553,9 @@ on an 8 h grant) is refused when it is created; a forced renewal never runs
 for a test it could not admit.
 
 
-Kimi keeps its own sandbox-only sign-in (`node scripts/benchmark-sandbox.mjs
-login kimi ACCOUNT-ID`), never a copy of the user's Kimi home. A Kimi session
+Kimi keeps its own sandbox-only sign-in (**Sign in to Kimi Code** in its run
+dialog, or `node scripts/benchmark-sandbox.mjs login kimi ACCOUNT-ID` from a
+checkout), never a copy of the user's Kimi home. A Kimi session
 gets a private copy of it, and when the attempt ends bench-auth saves a
 refreshed credential file back only when it can order it against the stored
 grant. What it cannot settle (two refreshes it cannot order, an unreadable,

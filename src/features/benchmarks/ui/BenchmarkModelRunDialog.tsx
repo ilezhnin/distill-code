@@ -72,6 +72,7 @@ import type {
 } from "../types";
 import { BenchmarkAlert, Metric, StateBadge } from "./BenchmarkPrimitives";
 import { SandboxSetupPrompt } from "./BenchmarkSandboxSetup";
+import { SandboxSignInPrompt } from "./BenchmarkSandboxSignIn";
 import {
   ACTIVE_RUN,
   FINISHED_RUN,
@@ -885,6 +886,16 @@ export function BenchmarkModelRunDialog({
                   <SandboxSetupPrompt
                     providerId={configuration.providerId}
                     onReady={() => void inventory.refetch()}
+                  />
+                )}
+                {/* Or a ready sandbox lacks the account's own sign-in. */}
+                {policyCheckMissing ||
+                isRefusal(inventory.error) ||
+                !configuration.accountId ? null : (
+                  <SandboxSignInPrompt
+                    providerId={configuration.providerId}
+                    accountId={configuration.accountId}
+                    onSignedIn={() => void inventory.refetch()}
                   />
                 )}
                 <Button

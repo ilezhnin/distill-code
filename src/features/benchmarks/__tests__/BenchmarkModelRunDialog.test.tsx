@@ -17,6 +17,7 @@ import type {
   BenchmarkDefinition,
   BenchmarkRun,
   Configuration,
+  SandboxSignInClosed,
 } from "../types";
 import { BenchmarkModelRunDialog } from "../ui/BenchmarkModelRunDialog";
 import { runWindowCloses } from "../lib/benchmarkPlan";
@@ -51,6 +52,9 @@ vi.mock("../api/benchmarks", async () => ({
     sandboxSetupStatus: vi.fn(),
     runSandboxSetup: vi.fn(),
     listenSandboxSetup: vi.fn(),
+    sandboxSignInStatus: vi.fn(),
+    openSandboxSignIn: vi.fn(),
+    listenSandboxSignIn: vi.fn(),
     previewRun: vi.fn(),
     startRun: vi.fn(),
     getRun: vi.fn(),
@@ -404,6 +408,156 @@ it("leaves a refused inventory to the queue without a sandbox prompt", async () 
   show();
   await screen.findByText("Cannot start or continue");
   expect(benchmarkApi.sandboxSetupStatus).not.toHaveBeenCalled();
+  expect(benchmarkApi.sandboxSignInStatus).not.toHaveBeenCalled();
+});
+
+const kimi: Configuration = {
+  ...configuration,
+  providerId: "kimi-acp",
+  accountId: "kimi-account",
+};
+const notSignedIn =
+  "capability_missing: The kimi account kimi-account is not signed in inside distill-bench; sign it in from its benchmark run dialog";
+
+it("signs a Kimi account in inside the sandbox and checks availability again", async () => {
+  const user = userEvent.setup();
+  let closed: ((event: SandboxSignInClosed) => void) | undefined;
+  vi.mocked(benchmarkApi.listenSandboxSignIn).mockImplementation(
+    async (callback) => {
+      closed = callback;
+      return () => {};
+    },
+  );
+  vi.mocked(benchmarkApi.getInventory)
+    .mockRejectedValueOnce(notSignedIn)
+    .mockResolvedValue([
+      {
+        configuration: { ...kimi, inventoryRevision: "runtime-now" },
+        name: "Test model",
+        efforts: ["high"],
+        supportsFastMode: true,
+        available: true,
+        reason: null,
+      },
+    ]);
+  vi.mocked(benchmarkApi.sandboxSignInStatus).mockResolvedValue({
+    required: true,
+    signedIn: false,
+    open: false,
+  });
+  vi.mocked(benchmarkApi.openSandboxSignIn).mockResolvedValue({
+    required: true,
+    signedIn: null,
+    open: true,
+  });
+  show({ configuration: kimi });
+  expect(
+    await screen.findByText(/account is not signed in inside the sandbox/),
+  ).toBeInTheDocument();
+  expect(benchmarkApi.sandboxSignInStatus).toHaveBeenCalledWith(
+    "kimi-acp",
+    "kimi-account",
+  );
+  await user.click(screen.getByRole("button", { name: /^Sign in to / }));
+  expect(benchmarkApi.openSandboxSignIn).toHaveBeenCalledWith(
+    "kimi-acp",
+    "kimi-account",
+  );
+  // While its window is open the dialog waits for it instead.
+  expect(
+    await screen.findByRole("button", { name: "Sign-in window open" }),
+  ).toBeDisabled();
+  expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
+  act(() =>
+    closed?.({
+      providerId: "kimi-acp",
+      accountId: "kimi-account",
+      state: { required: true, signedIn: true, open: false },
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText("Cannot start or continue")).toBeNull(),
+  );
+  expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(2);
+});
+
+it("offers the sign-in again when its window closed without one", async () => {
+  const user = userEvent.setup();
+  let closed: ((event: SandboxSignInClosed) => void) | undefined;
+  vi.mocked(benchmarkApi.listenSandboxSignIn).mockImplementation(
+    async (callback) => {
+      closed = callback;
+      return () => {};
+    },
+  );
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(notSignedIn);
+  vi.mocked(benchmarkApi.sandboxSignInStatus).mockResolvedValue({
+    required: true,
+    signedIn: false,
+    open: false,
+  });
+  vi.mocked(benchmarkApi.openSandboxSignIn).mockResolvedValue({
+    required: true,
+    signedIn: null,
+    open: true,
+  });
+  show({ configuration: kimi });
+  await user.click(await screen.findByRole("button", { name: /^Sign in to / }));
+  await screen.findByRole("button", { name: "Sign-in window open" });
+  // Another account's window closing changes nothing here.
+  act(() =>
+    closed?.({
+      providerId: "kimi-acp",
+      accountId: "other-account",
+      state: { required: true, signedIn: true, open: false },
+    }),
+  );
+  expect(
+    screen.getByRole("button", { name: "Sign-in window open" }),
+  ).toBeDisabled();
+  act(() =>
+    closed?.({
+      providerId: "kimi-acp",
+      accountId: "kimi-account",
+      state: { required: true, signedIn: false, open: false },
+    }),
+  );
+  expect(
+    await screen.findByText(/closed before .* was signed in/),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Sign in to / })).toBeEnabled();
+  expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
+});
+
+it("offers no sandbox sign-in to a provider that signs in in Flock or an unchecked sandbox", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(
+    "Inventory check failed",
+  );
+  show();
+  await screen.findByText("Cannot start or continue");
+  await waitFor(() =>
+    expect(benchmarkApi.sandboxSignInStatus).toHaveBeenCalledWith(
+      configuration.providerId,
+      configuration.accountId,
+    ),
+  );
+  expect(screen.queryByRole("button", { name: /^Sign in to / })).toBeNull();
+  cleanup();
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(notSignedIn);
+  vi.mocked(benchmarkApi.sandboxSignInStatus).mockResolvedValue({
+    required: true,
+    signedIn: null,
+    open: false,
+  });
+  show({ configuration: kimi });
+  await screen.findByText("Cannot start or continue");
+  await waitFor(() =>
+    expect(benchmarkApi.sandboxSignInStatus).toHaveBeenCalledWith(
+      "kimi-acp",
+      "kimi-account",
+    ),
+  );
+  expect(screen.queryByRole("button", { name: /^Sign in to / })).toBeNull();
 });
 
 it("blocks new starts and resumes when the current inventory check failed", async () => {
@@ -589,6 +743,12 @@ beforeEach(() => {
     running: null,
   });
   vi.mocked(benchmarkApi.listenSandboxSetup).mockResolvedValue(() => {});
+  vi.mocked(benchmarkApi.sandboxSignInStatus).mockResolvedValue({
+    required: false,
+    signedIn: null,
+    open: false,
+  });
+  vi.mocked(benchmarkApi.listenSandboxSignIn).mockResolvedValue(() => {});
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
     {
       configuration: { ...configuration, inventoryRevision: "runtime-now" },

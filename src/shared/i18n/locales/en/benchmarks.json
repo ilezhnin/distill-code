@@ -484,6 +484,14 @@
       "updatingHelpers": "Updating the sandbox helpers…",
       "verifyingBrowser": "Checking the test browser…",
       "checkingPolicy": "Running the offline sandbox check…"
+    },
+    "signIn": {
+      "title": "This {{provider}} account is not signed in inside the sandbox",
+      "help": "{{provider}} keeps its own sign-in in the benchmark sandbox. Sign in once in the window that opens, with {{provider}}'s usual sign-in; Flock checks availability again when the window closes.",
+      "waiting": "Finish signing in in the {{provider}} sign-in window. Flock checks availability again when it closes.",
+      "unfinished": "The sign-in window closed before {{provider}} was signed in. Sign in again to retry; when the sign-in fails, its window stays open and shows why.",
+      "action": "Sign in to {{provider}}",
+      "windowOpen": "Sign-in window open"
     }
   },
   "runs": {

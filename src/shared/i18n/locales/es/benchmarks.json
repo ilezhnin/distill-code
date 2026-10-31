@@ -484,6 +484,14 @@
       "updatingHelpers": "Actualizando los auxiliares del entorno…",
       "verifyingBrowser": "Comprobando el navegador de pruebas…",
       "checkingPolicy": "Ejecutando la comprobación sin conexión del entorno…"
+    },
+    "signIn": {
+      "title": "Esta cuenta de {{provider}} no ha iniciado sesión en el entorno aislado",
+      "help": "{{provider}} guarda su propio inicio de sesión en el entorno aislado de benchmarks. Inicia sesión una vez en la ventana que se abre, con el inicio de sesión habitual de {{provider}}; Flock vuelve a comprobar la disponibilidad cuando se cierra la ventana.",
+      "waiting": "Termina de iniciar sesión en la ventana de {{provider}}. Flock vuelve a comprobar la disponibilidad cuando se cierre.",
+      "unfinished": "La ventana se cerró antes de que {{provider}} iniciara sesión. Vuelve a iniciar sesión para intentarlo de nuevo; si el inicio de sesión falla, su ventana permanece abierta y muestra el motivo.",
+      "action": "Iniciar sesión en {{provider}}",
+      "windowOpen": "Ventana de inicio de sesión abierta"
     }
   },
   "runs": {

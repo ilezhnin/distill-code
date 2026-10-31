@@ -49,6 +49,7 @@ import {
   SelectField,
 } from "./BenchmarkPrimitives";
 import { SandboxSetupPrompt } from "./BenchmarkSandboxSetup";
+import { SandboxSignInPrompt } from "./BenchmarkSandboxSignIn";
 import { BenchmarkTestPicker } from "./BenchmarkTestPicker";
 
 /** The effort field's one value for a model without an effort control. */
@@ -511,10 +512,20 @@ export function BenchmarkRunDialog({
                 {policyCheckMissing ? (
                   <p>{t("modelRun.policyCheckHelp")}</p>
                 ) : isRefusal(inventory.error) ? null : (
-                  <SandboxSetupPrompt
-                    providerId={providerId || null}
-                    onReady={() => void inventory.refetch()}
-                  />
+                  <>
+                    <SandboxSetupPrompt
+                      providerId={providerId || null}
+                      onReady={() => void inventory.refetch()}
+                    />
+                    {/* Or a ready sandbox lacks the account's own sign-in. */}
+                    {providerId && selectedAccount !== "none" ? (
+                      <SandboxSignInPrompt
+                        providerId={providerId}
+                        accountId={selectedAccount}
+                        onSignedIn={() => void inventory.refetch()}
+                      />
+                    ) : null}
+                  </>
                 )}
                 <Button
                   type="button"

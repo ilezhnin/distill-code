@@ -23,6 +23,95 @@ pub(crate) fn apply_no_window_async(command: &mut tokio::process::Command) {
     apply_no_window(command.as_std_mut());
 }
 
+/// `name` in the Windows system folder, so neither the working folder nor
+/// PATH picks the program; the bare name when that folder lacks it.
+#[cfg(windows)]
+pub(crate) fn system_program(name: &str) -> std::path::PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| std::path::PathBuf::from(root).join("System32").join(name))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| name.into())
+}
+
+/// A program Windows started the way a person starting it would, in a
+/// window of its own (`ShellExecuteExW`): a console program gets a new
+/// console the operator reads and types in, which this process never sees,
+/// and the `runas` verb asks for administrator permission first.
+#[cfg(windows)]
+pub(crate) struct ShellProcess(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: a process handle is a kernel object handle, usable from any thread.
+#[cfg(windows)]
+unsafe impl Send for ShellProcess {}
+
+#[cfg(windows)]
+impl ShellProcess {
+    /// Starts `program` with `parameters` exactly as given. `Ok(None)` when
+    /// Windows started it without a process to follow; the error carries
+    /// the Windows error code (`ERROR_CANCELLED` when the operator declined
+    /// the permission `runas` asked for).
+    pub(crate) fn start(
+        verb: &str,
+        program: &std::path::Path,
+        parameters: &str,
+        directory: Option<&std::path::Path>,
+    ) -> std::io::Result<Option<Self>> {
+        use windows_sys::Win32::{
+            Foundation::GetLastError,
+            UI::{
+                Shell::{
+                    ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+                },
+                WindowsAndMessaging::SW_SHOWNORMAL,
+            },
+        };
+        let wide = |text: &std::ffi::OsStr| {
+            use std::os::windows::ffi::OsStrExt;
+            text.encode_wide().chain(Some(0)).collect::<Vec<u16>>()
+        };
+        let verb = wide(verb.as_ref());
+        let file = wide(program.as_os_str());
+        let parameters = wide(parameters.as_ref());
+        let directory = directory.map(|directory| wide(directory.as_os_str()));
+        let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpParameters = parameters.as_ptr();
+        if let Some(directory) = &directory {
+            info.lpDirectory = directory.as_ptr();
+        }
+        info.nShow = SW_SHOWNORMAL;
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            return Err(std::io::Error::from_raw_os_error(
+                unsafe { GetLastError() } as i32
+            ));
+        }
+        Ok((!info.hProcess.is_null()).then_some(Self(info.hProcess)))
+    }
+
+    /// Waits until it ends, then its exit code, when Windows reports one.
+    pub(crate) fn wait(self) -> Option<u32> {
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, WaitForSingleObject, INFINITE,
+        };
+        let mut code = 0_u32;
+        let read = unsafe {
+            WaitForSingleObject(self.0, INFINITE);
+            GetExitCodeProcess(self.0, &mut code)
+        };
+        (read != 0).then_some(code)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ShellProcess {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
 /// A child process together with everything it goes on to start, so the whole
 /// tree can be ended at once — and is, by the OS, if this process dies first.
 ///

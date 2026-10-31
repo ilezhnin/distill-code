@@ -1086,7 +1086,7 @@ impl Status {
             .any(|(p, a)| p == provider && a == account)
         {
             return Err(io::Error::other(format!(
-                "The {provider} account {account} is not signed in inside {DISTRIBUTION}; run bench-login in the sandbox"
+                "The {provider} account {account} is not signed in inside {DISTRIBUTION}; sign it in from its benchmark run dialog"
             )));
         }
         Ok(())

@@ -593,6 +593,53 @@ pub async fn benchmark_sandbox_setup_run(
             }
         })
 }
+/// The provider for `id`, when it keeps a benchmark runtime.
+fn native_provider(id: &str) -> Result<NativeProvider> {
+    NativeProvider::for_harness(id)
+        .ok_or_else(|| BenchmarkError::new("validation", "Unknown benchmark provider"))
+}
+
+/// A sandbox sign-in failure with the code its prefix names.
+fn sign_in_error(error: String) -> BenchmarkError {
+    if let Some(message) = error.strip_prefix("validation: ") {
+        BenchmarkError::new("validation", message)
+    } else if error.contains("resource_busy:") {
+        BenchmarkError::new("resource_busy", error)
+    } else {
+        BenchmarkError::new("infrastructure_failure", error)
+    }
+}
+
+/// Whether `account_id` of `provider_id` must sign in inside the benchmark
+/// sandbox (Kimi keeps its sign-in there), whether it has, and whether its
+/// sign-in window is open.
+#[tauri::command]
+pub async fn benchmark_sandbox_sign_in_status(
+    provider_id: String,
+    account_id: String,
+) -> Result<crate::services::benchmark_sandbox_sign_in::SignInState> {
+    crate::services::benchmark_sandbox_sign_in::status(native_provider(&provider_id)?, &account_id)
+        .await
+        .map_err(sign_in_error)
+}
+
+/// Opens the window in which the operator signs `account_id` in inside the
+/// sandbox with the provider's own flow; `benchmark-sandbox-sign-in` says
+/// when it closed.
+#[tauri::command]
+pub async fn benchmark_sandbox_sign_in(
+    app: AppHandle,
+    provider_id: String,
+    account_id: String,
+) -> Result<crate::services::benchmark_sandbox_sign_in::SignInState> {
+    crate::services::benchmark_sandbox_sign_in::open(
+        app,
+        native_provider(&provider_id)?,
+        account_id,
+    )
+    .await
+    .map_err(sign_in_error)
+}
 #[tauri::command]
 pub async fn benchmark_get_inventory(
     app: AppHandle,

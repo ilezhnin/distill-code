@@ -557,6 +557,21 @@ export interface SandboxSetupState {
   detail: string | null;
   running: SandboxSetupProgress | null;
 }
+/** What an account needs from the sandbox's own sign-in (Kimi keeps one there). */
+export interface SandboxSignInState {
+  /** The provider's sandbox sessions sign in with a grant the sandbox keeps. */
+  required: boolean;
+  /** Whether the sandbox holds the account's sign-in; null when unknown. */
+  signedIn: boolean | null;
+  /** A sign-in window for the account is open now. */
+  open: boolean;
+}
+/** A sign-in window closed: the account's state after it. */
+export interface SandboxSignInClosed {
+  providerId: string;
+  accountId: string;
+  state: SandboxSignInState;
+}
 export interface Capability {
   providerId: string;
   executionProfile: string;

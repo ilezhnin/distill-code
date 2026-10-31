@@ -13,6 +13,7 @@ use super::{
     agent_host::{execution::NativeProvider, text_execution},
     benchmark_policy_check,
     benchmark_sandbox::{self as sandbox, Drift, DISTRIBUTION},
+    benchmark_sandbox_sign_in as sign_in,
     benchmarks::worker,
 };
 use serde::{Deserialize, Serialize};
@@ -215,6 +216,20 @@ fn remember(state: SetupState) -> SetupState {
     state
 }
 
+/// Whether a setup is running now.
+pub(crate) fn running() -> bool {
+    lock(&PROGRESS).0.is_some()
+}
+
+/// Keeps a setup from starting while the guard lives, so what setup must
+/// wait for (a sign-in window) is claimed in one step with this check; or
+/// refuses while a setup runs.
+pub(crate) fn hold() -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+    RUN.try_lock().map_err(|_| {
+        "resource_busy: the sandbox is being set up; sign in once setup is done".to_owned()
+    })
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProgressEvent {
@@ -336,6 +351,10 @@ pub(crate) async fn run(
     let _run = RUN
         .try_lock()
         .map_err(|_| "resource_busy: the sandbox is already being set up".to_owned())?;
+    // Provisioning restarts the sandbox, and so ends a sign-in under way.
+    if sign_in::any_open() {
+        return Err("resource_busy: a sign-in window for the sandbox is open; finish or close it, then set the sandbox up".into());
+    }
     let reporter = Reporter { app: Some(app) };
     let mut finish = Finish {
         reporter: &reporter,
@@ -729,54 +748,29 @@ async fn install_wsl() -> Result<(), String> {
 /// the operator for that permission; its console shows the installation.
 #[cfg(windows)]
 fn install_wsl_elevated() -> Result<(), String> {
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED},
-        System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE},
-        UI::{
-            Shell::{
-                ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-            },
-            WindowsAndMessaging::SW_SHOWNORMAL,
-        },
-    };
-    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let program = std::env::var_os("SystemRoot")
-        .map(|root| PathBuf::from(root).join("System32").join("wsl.exe"))
-        .filter(|path| path.is_file())
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "wsl.exe".into());
-    let (verb, file, parameters) = (
-        wide("runas"),
-        wide(&program),
-        wide("--install --no-distribution"),
-    );
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-    info.lpVerb = verb.as_ptr();
-    info.lpFile = file.as_ptr();
-    info.lpParameters = parameters.as_ptr();
-    info.nShow = SW_SHOWNORMAL;
-    if unsafe { ShellExecuteExW(&mut info) } == 0 {
-        let error = unsafe { GetLastError() };
-        return Err(if error == ERROR_CANCELLED {
+    use super::process::{system_program, ShellProcess};
+    use windows_sys::Win32::Foundation::ERROR_CANCELLED;
+    let started = ShellProcess::start(
+        "runas",
+        &system_program("wsl.exe"),
+        "--install --no-distribution",
+        None,
+    )
+    .map_err(|error| {
+        if error.raw_os_error() == Some(ERROR_CANCELLED as i32) {
             "cancelled: Windows did not get administrator permission, so WSL was not installed"
-                .into()
+                .to_owned()
         } else {
-            format!("WSL installation could not start (Windows error {error})")
-        });
-    }
-    if info.hProcess.is_null() {
+            format!(
+                "WSL installation could not start (Windows error {})",
+                error.raw_os_error().unwrap_or_default()
+            )
+        }
+    })?;
+    let Some(process) = started else {
         return Ok(());
-    }
-    let code = unsafe {
-        WaitForSingleObject(info.hProcess, INFINITE);
-        let mut code = 0_u32;
-        let read = GetExitCodeProcess(info.hProcess, &mut code);
-        CloseHandle(info.hProcess);
-        (read != 0).then_some(code)
     };
-    match code {
+    match process.wait() {
         // 3010 and 1641: installed, and Windows restarts to finish.
         None | Some(0) | Some(3010) | Some(1641) => Ok(()),
         Some(code) => Err(format!("WSL installation exited with code {code}")),

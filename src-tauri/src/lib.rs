@@ -426,6 +426,8 @@ pub fn run() {
             commands::benchmarks::benchmark_renew_policy_check,
             commands::benchmarks::benchmark_sandbox_setup_status,
             commands::benchmarks::benchmark_sandbox_setup_run,
+            commands::benchmarks::benchmark_sandbox_sign_in_status,
+            commands::benchmarks::benchmark_sandbox_sign_in,
             commands::benchmarks::benchmark_get_capabilities,
             commands::benchmarks::benchmark_get_leaderboard,
             commands::benchmarks::benchmark_get_history,
