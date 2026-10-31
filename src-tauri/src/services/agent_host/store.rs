@@ -424,6 +424,46 @@ const HISTORY_COMPACTION_VERSION: u64 = 1;
 /// cheap to keep as it is.
 const VACUUM_WORTH_BYTES: usize = 256 * 1024 * 1024;
 const VACUUM_SHARE_FLOOR_BYTES: usize = 64 * 1024 * 1024;
+/// History deleted since the last VACUUM (finished benchmark sessions), as
+/// `{"bytes": n}`: once it reaches [`VACUUM_WORTH_BYTES`] the next start
+/// gives the space back the way a compaction pass does.
+const FREED_HISTORY_KEY: &str = "freed_history";
+
+/// A session owner row that belongs to a benchmark and that the host has no
+/// further use for: no turn of it is reserved, running or of unknown outcome,
+/// and no task output or executor receipt reads it. `o` is the owner row.
+const SETTLED_BENCHMARK_OWNER: &str = "o.owner_purpose = 'benchmark' \
+    AND NOT EXISTS (SELECT 1 FROM execution_dispatches d WHERE d.session_id = o.session_id AND d.phase <> 'terminal') \
+    AND NOT EXISTS (SELECT 1 FROM task_terminal_outputs t WHERE t.session_id = o.session_id) \
+    AND NOT EXISTS (SELECT 1 FROM executor_receipts r WHERE r.session_id = o.session_id)";
+
+/// A settled benchmark session (see
+/// [`SessionStore::settled_benchmark_sessions`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkSessionEntry {
+    pub session_id: String,
+    pub owner_id: String,
+    /// When it last changed: its last turn record, else its last message,
+    /// else its own last update (RFC 3339).
+    pub last_activity: String,
+}
+
+/// What a purge of benchmark sessions removed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeStats {
+    pub sessions: usize,
+    pub events: usize,
+    pub bytes: usize,
+}
+
+impl PurgeStats {
+    pub fn add(&mut self, other: &Self) {
+        self.sessions += other.sessions;
+        self.events += other.events;
+        self.bytes += other.bytes;
+    }
+}
 
 /// What a history compaction read and what it left.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1472,6 +1512,106 @@ impl SessionStore {
         Ok(())
     }
 
+    /// The benchmark sessions the host no longer needs for its own work: owned
+    /// by a benchmark, with no turn reserved, running or of unknown outcome,
+    /// and no task output or executor receipt that reads them. Whether their
+    /// attempt is done is the benchmark service's to decide
+    /// (`benchmarks::session_retention`).
+    pub async fn settled_benchmark_sessions(&self) -> Result<Vec<BenchmarkSessionEntry>, String> {
+        let rows = sqlx::query(&format!(
+            "SELECT o.session_id, o.owner_id, \
+                    COALESCE((SELECT MAX(d.updated_at) FROM execution_dispatches d WHERE d.session_id = o.session_id), s.last_message_at, s.updated_at) AS last_activity \
+             FROM session_execution_owners o JOIN sessions s ON s.id = o.session_id \
+             WHERE {SETTLED_BENCHMARK_OWNER}"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to list benchmark sessions", error))?;
+        Ok(rows
+            .iter()
+            .map(|row| BenchmarkSessionEntry {
+                session_id: row.get("session_id"),
+                owner_id: row.get("owner_id"),
+                last_activity: row.get("last_activity"),
+            })
+            .collect())
+    }
+
+    /// Delete benchmark sessions with everything the host keeps for them:
+    /// their turn records, owner, events and the session itself, in the
+    /// order the foreign keys allow, in one transaction. Each one is checked
+    /// again inside it, so a session that is no longer settled, or that is not
+    /// a benchmark's, is left as it is: an ordinary chat never matches.
+    pub async fn delete_benchmark_sessions(&self, ids: &[String]) -> Result<PurgeStats, String> {
+        let mut stats = PurgeStats::default();
+        if ids.is_empty() {
+            return Ok(stats);
+        }
+        // Immediate: the checks read and the deletes write in one snapshot.
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|error| db_error("failed to start benchmark session purge", error))?;
+        let check = format!(
+            "SELECT EXISTS(SELECT 1 FROM session_execution_owners o WHERE o.session_id = ? AND {SETTLED_BENCHMARK_OWNER})"
+        );
+        for id in ids {
+            let settled: bool = sqlx::query_scalar(&check)
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|error| db_error("failed to check a benchmark session", error))?;
+            if !settled {
+                continue;
+            }
+            let (events, bytes): (i64, i64) = sqlx::query_as(
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(payload_json)), 0) FROM session_events WHERE session_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to measure a benchmark session", error))?;
+            let snapshot: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(LENGTH(snapshot_json), 0) FROM sessions WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to measure a benchmark session", error))?;
+            for (statement, what) in [
+                (
+                    "DELETE FROM execution_dispatches WHERE session_id = ?",
+                    "turn records",
+                ),
+                (
+                    "DELETE FROM session_execution_owners WHERE session_id = ?",
+                    "owner",
+                ),
+                ("DELETE FROM session_events WHERE session_id = ?", "events"),
+                ("DELETE FROM sessions WHERE id = ?", "session"),
+            ] {
+                sqlx::query(statement)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| {
+                        db_error(
+                            &format!("failed to delete a benchmark session's {what}"),
+                            error,
+                        )
+                    })?;
+            }
+            stats.sessions += 1;
+            stats.events += events as usize;
+            stats.bytes += (bytes + snapshot) as usize;
+        }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit the benchmark session purge", error))?;
+        Ok(stats)
+    }
+
     /// Append several events of one session in one transaction, in the order
     /// given, and return the row ids they were stored under. One commit for a
     /// whole prompt instead of one per content block, and the ids are what
@@ -1746,12 +1886,40 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Whether a completed compaction pass left a VACUUM pending.
+    /// Whether a completed compaction pass left a VACUUM pending, or deleted
+    /// history (see [`Self::record_freed_history`]) has grown worth one.
     pub async fn vacuum_pending(&self) -> Result<bool, String> {
         Ok(self
             .kv_get(KV_HOST, HISTORY_COMPACTION_KEY)
             .await?
-            .is_some_and(|state| state["vacuumPending"] == true))
+            .is_some_and(|state| state["vacuumPending"] == true)
+            || self.freed_history_bytes().await? >= VACUUM_WORTH_BYTES as u64)
+    }
+
+    async fn freed_history_bytes(&self) -> Result<u64, String> {
+        Ok(self
+            .kv_get(KV_HOST, FREED_HISTORY_KEY)
+            .await?
+            .and_then(|state| state["bytes"].as_u64())
+            .unwrap_or(0))
+    }
+
+    /// Count `bytes` of deleted history toward the next VACUUM: SQLite reuses
+    /// the freed pages, and only a VACUUM gives them back to the file system.
+    pub async fn record_freed_history(&self, bytes: usize) -> Result<(), String> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let freed = self
+            .freed_history_bytes()
+            .await?
+            .saturating_add(bytes as u64);
+        self.kv_set(
+            KV_HOST,
+            FREED_HISTORY_KEY,
+            &serde_json::json!({ "bytes": freed }),
+        )
+        .await
     }
 
     /// Fold the write-ahead log into the file and truncate it: after a
@@ -1769,18 +1937,28 @@ impl SessionStore {
     /// as the copy takes, so the host runs it in the background once the
     /// window is up, never on the start path. Says whether it ran.
     pub async fn vacuum_if_pending(&self) -> Result<bool, String> {
-        let Some(mut state) = self.kv_get(KV_HOST, HISTORY_COMPACTION_KEY).await? else {
-            return Ok(false);
-        };
-        if state["vacuumPending"] != true {
+        let compaction = self
+            .kv_get(KV_HOST, HISTORY_COMPACTION_KEY)
+            .await?
+            .filter(|state| state["vacuumPending"] == true);
+        let freed = self.freed_history_bytes().await? >= VACUUM_WORTH_BYTES as u64;
+        if compaction.is_none() && !freed {
             return Ok(false);
         }
         sqlx::query("VACUUM")
             .execute(&self.pool)
             .await
             .map_err(|error| db_error("failed to vacuum the history database", error))?;
-        state["vacuumPending"] = Value::Bool(false);
-        self.kv_set(KV_HOST, HISTORY_COMPACTION_KEY, &state).await?;
+        if let Some(mut state) = compaction {
+            state["vacuumPending"] = Value::Bool(false);
+            self.kv_set(KV_HOST, HISTORY_COMPACTION_KEY, &state).await?;
+        }
+        sqlx::query("DELETE FROM kv WHERE scope = ? AND key = ?")
+            .bind(KV_HOST)
+            .bind(FREED_HISTORY_KEY)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to reset the freed history count", error))?;
         Ok(true)
     }
 
@@ -2479,6 +2657,152 @@ mod tests {
             .await
             .unwrap();
         assert!(seen.is_empty());
+        dir.close().await;
+    }
+
+    fn invented_owner(owner_id: &str) -> OwnedSessionRequest {
+        OwnedSessionRequest {
+            owner_id: owner_id.into(),
+            provider_id: "claude-acp".into(),
+            account_id: "invented-account".into(),
+            model_id: "invented-model".into(),
+            reasoning_effort: None,
+            fast_mode: None,
+            cwd: "/workspace".into(),
+            title: "Invented owned session".into(),
+            profile: super::super::execution::ExecutionProfile::NativeTextV1,
+        }
+    }
+
+    #[tokio::test]
+    async fn finished_benchmark_sessions_go_with_their_records_and_nothing_else_does() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("purge.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        for (id, purpose) in [
+            ("finished", "benchmark"),
+            ("running", "benchmark"),
+            ("unsent", "benchmark"),
+            ("task", "task"),
+        ] {
+            store
+                .insert_owned_session_for_purpose(
+                    &record(id),
+                    &invented_owner(&format!("{id}:1")),
+                    "policy",
+                    purpose,
+                )
+                .await
+                .unwrap();
+        }
+        store.insert_session(&record("ordinary")).await.unwrap();
+        for id in ["finished", "running", "unsent", "task", "ordinary"] {
+            store
+                .append_events(id, &[streamed(id, "m", "hello", "t1")])
+                .await
+                .unwrap();
+        }
+        for id in ["finished", "running", "task"] {
+            store
+                .reserve_dispatch(
+                    &ExecutionDispatch {
+                        request_key: format!("key-{id}"),
+                        session_id: id.into(),
+                        run_id: format!("run-{id}"),
+                        user_message_id: format!("user-{id}"),
+                        phase: "reserved".into(),
+                        event_cursor: 0,
+                        result: None,
+                        error: None,
+                    },
+                    "prompt",
+                )
+                .await
+                .unwrap();
+        }
+        for id in ["finished", "task"] {
+            store
+                .settle_dispatch(&format!("key-{id}"), "terminal", Some(&json!({})), None)
+                .await
+                .unwrap();
+        }
+
+        let mut settled = store.settled_benchmark_sessions().await.unwrap();
+        settled.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        assert_eq!(
+            settled
+                .iter()
+                .map(|entry| (entry.session_id.as_str(), entry.owner_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("finished", "finished:1"), ("unsent", "unsent:1")]
+        );
+        assert!(settled.iter().all(|entry| !entry.last_activity.is_empty()));
+
+        // Asked for every session, the store removes only the settled
+        // benchmark ones: a running turn, a task and a chat stay whole.
+        let asked: Vec<String> = ["finished", "running", "unsent", "task", "ordinary"]
+            .map(String::from)
+            .to_vec();
+        let purged = store.delete_benchmark_sessions(&asked).await.unwrap();
+        assert_eq!((purged.sessions, purged.events), (2, 2));
+        assert!(purged.bytes > 0);
+        for id in ["finished", "unsent"] {
+            assert!(store.get_session(id).await.unwrap().is_none(), "{id}");
+            assert!(store.list_events(id).await.unwrap().is_empty(), "{id}");
+            assert!(store
+                .owned_session_id(&format!("{id}:1"))
+                .await
+                .unwrap()
+                .is_none());
+        }
+        assert!(store
+            .execution_dispatch("key-finished")
+            .await
+            .unwrap()
+            .is_none());
+        for id in ["running", "task", "ordinary"] {
+            assert!(store.get_session(id).await.unwrap().is_some(), "{id}");
+            assert_eq!(store.list_events(id).await.unwrap().len(), 1, "{id}");
+        }
+        assert!(store
+            .execution_dispatch("key-running")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .execution_dispatch("key-task")
+            .await
+            .unwrap()
+            .is_some());
+        // Nothing left to remove the second time.
+        assert_eq!(
+            store.delete_benchmark_sessions(&asked).await.unwrap(),
+            PurgeStats::default()
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn deleted_history_asks_for_a_vacuum_once_it_is_worth_one() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("freed.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        store
+            .record_freed_history(VACUUM_WORTH_BYTES - 1)
+            .await
+            .unwrap();
+        assert!(!store.vacuum_pending().await.unwrap());
+        assert!(!store.vacuum_if_pending().await.unwrap());
+        store.record_freed_history(1).await.unwrap();
+        assert!(store.vacuum_pending().await.unwrap());
+        assert!(store.vacuum_if_pending().await.unwrap());
+        // The count starts again after the VACUUM.
+        assert!(!store.vacuum_pending().await.unwrap());
+        assert!(!store.vacuum_if_pending().await.unwrap());
         dir.close().await;
     }
 

@@ -501,6 +501,15 @@ pub async fn benchmark_get_evidence(app: AppHandle, id: String) -> Result<Attemp
     );
     Ok(attempt)
 }
+/// An attempt's turn from its sealed evidence: a finished attempt keeps no
+/// chat, so the evidence view replays this instead.
+#[tauri::command]
+pub async fn benchmark_get_transcript(
+    app: AppHandle,
+    id: String,
+) -> Result<Vec<serde_json::Value>> {
+    service(&app).await?.attempt_transcript(&id).await
+}
 #[tauri::command]
 pub async fn benchmark_list_diagnostics(
     app: AppHandle,

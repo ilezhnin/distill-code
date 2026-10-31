@@ -419,6 +419,7 @@ pub fn run() {
             commands::benchmarks::benchmark_set_run_parallelism,
             commands::benchmarks::benchmark_cancel_run,
             commands::benchmarks::benchmark_get_evidence,
+            commands::benchmarks::benchmark_get_transcript,
             commands::benchmarks::benchmark_list_diagnostics,
             commands::benchmarks::benchmark_events_since,
             commands::benchmarks::benchmark_get_inventory,

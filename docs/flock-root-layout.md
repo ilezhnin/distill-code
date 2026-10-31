@@ -35,7 +35,7 @@ of skills, agents, chats, projects or memory.
 | Path under the root | Purpose |
 | --- | --- |
 | `settings.json` | Global application preferences |
-| `sessions/agent-host.db` | Session records and chat history. A turn is stored in the form its replay reads once it ends: the streamed pieces of one message as one event, a running tool call without the output its final update repeats. A database written before that is compacted once in the background after start, a chat at a time, and the next start vacuums it; `flock-history compact <path to agent-host.db>` (a binary of the app crate) does the same to a closed database at once |
+| `sessions/agent-host.db` | Session records and chat history. A turn is stored in the form its replay reads once it ends: the streamed pieces of one message as one event, a running tool call without the output its final update repeats. A database written before that is compacted once in the background after start, a chat at a time, and the next start vacuums it; `flock-history compact <path to agent-host.db>` (a binary of the app crate) does the same to a closed database at once. A benchmark turn is a hidden chat kept only while its attempt may still need it (see [benchmark operations](benchmark-operations.md#4-freeze-and-run-the-measurement-matrix)); the space a removed one frees returns to the disk at the next start once it reaches 256 MB |
 | `projects/` | Registered project records |
 | `agents/` | Agent definitions: the user's own agents, one Markdown file each |
 | `skills/` | Skills: the built-in skills Flock installs and the user's own |
@@ -121,8 +121,9 @@ Changing the folder in Settings takes effect after restart and does not move
 existing data. Copy an existing root while Flock is stopped.
 
 Benchmark storage uses its own SQLite WAL database. Back it up while stopped or
-through a consistent SQLite snapshot. The host database retains the corresponding
-benchmark owner and idempotent dispatch records. Keep both databases and the
+through a consistent SQLite snapshot. The host database keeps a benchmark turn's
+session, owner and idempotent dispatch records until its attempt is final; they
+are then removed, and the sealed evidence is the turn's record. Keep both databases and the
 benchmark version/evidence directories together when restoring. Archiving a test
 preserves published versions and results. Interrupted dispatches are reconciled
 against host records and are never automatically resent when acceptance is unknown.

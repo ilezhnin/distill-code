@@ -14,6 +14,7 @@ import type {
   SelectorPredictionRequest,
   SelectorPrediction,
 } from "../lib/benchmarkLearning";
+import type { SessionNotification } from "@agentclientprotocol/sdk";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { REQUIRED_REPETITIONS } from "../lib/benchmarkPlan";
@@ -252,6 +253,9 @@ export const benchmarkApi = {
     }),
   getEvidence: (id: string) =>
     invoke<Attempt>("benchmark_get_evidence", { id }),
+  /** The attempt's turn from its sealed evidence, as chat history replays it. */
+  getTranscript: (id: string) =>
+    invoke<SessionNotification[]>("benchmark_get_transcript", { id }),
   listDiagnostics: (id: string, before: number | null = null, limit = 50) =>
     invoke<BenchmarkDiagnosticPage>("benchmark_list_diagnostics", {
       id,

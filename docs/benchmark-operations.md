@@ -933,6 +933,21 @@ Report successful, unsuccessful, infrastructure-error, cancelled and unmeasured
 attempts separately. Preserve unknown usage and cost as unknown; subscription
 access does not turn unreported cost into a measured zero.
 
+Benchmark chats live only while their attempt may still need them. Each turn,
+candidate or judge, runs as a hidden chat. Once its attempt is final (terminal,
+with an outcome a restart does not recover, no judge vote in flight and no
+evaluation running), its chats are removed with their host records as its
+worker ends. Chats that settle elsewhere go on start and every half hour:
+qualification and calibration judges, model inventory probes, and the chats
+earlier builds kept. A chat no stored attempt names stays for an hour after its
+last turn. A measurement keeps the attempt in the benchmark store and its
+sealed evidence: the answer, the turn's events, usage and the native receipt.
+Scoring, judging, certification, promotion and exports read only those. Open
+transcript replays a finished attempt's turn from the sealed record, read-only;
+a running attempt opens its live chat. A judge's full reply is kept only when
+it gave no valid score sheet; a valid vote keeps its scores, reasons and
+critical checks. Application task chats are not benchmark chats and stay.
+
 A model's leaderboard warning concerns its unmeasured cells in the current
 rating pool, including terminal answers awaiting judges. A stopped run whose
 remaining cases have since been measured or retired stays in run history,
@@ -968,7 +983,9 @@ including its other accounts. The service selects a fresh panel from the
 currently eligible, calibrated pool and records the rejected evaluations and
 the replacement panel's own protocol hash. During run recovery it reuses the
 sealed artifact and references completed votes without reducing the panel size.
-Older generic errors are recognized only from their matching terminal host dispatch.
+Older generic errors are recognized only from their matching terminal host dispatch,
+which is gone once the attempt's chats are removed; such an error then counts
+as an ordinary judge failure, and Evaluate again does not exclude that model.
 Preregistered workflow panels and calibration controls never substitute a judge.
 A missing replacement is reported explicitly; no paid retry loop is started.
 
