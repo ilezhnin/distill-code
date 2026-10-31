@@ -282,7 +282,6 @@ export function SidebarFlatChatsSection({
                     selectionEnabled={selectionEnabled}
                     selectionActionsDisabled={selectionActionsDisabled}
                     selectedSessionIds={selectedSessionIds}
-                    density="dense"
                     flatProjectName={session.projectName ?? t("flat.noProject")}
                     flatProjectIcon={session.projectIcon}
                     flatProjectColor={session.projectColor}

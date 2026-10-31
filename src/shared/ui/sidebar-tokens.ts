@@ -87,67 +87,41 @@ export const SIDEBAR_SECTION_HEADER_PADDING_CLASS =
 /** Projects / Chats subheading row spacing. */
 export const SIDEBAR_SECTION_HEADER_ROW_CLASS = `${SIDEBAR_SECTION_HEADER_PADDING_CLASS} pt-3.5 pb-0`;
 
-/** Standalone chat row left padding; aligns with section divider inset. */
-export const SIDEBAR_CHAT_ROW_PADDING_CLASS = "pl-3";
+/**
+ * The sidebar's rows sit on one grid. A row one level in starts where its
+ * parent's name starts, so one step is a leading icon (16px) plus its gap to
+ * the name (8px): with icons, a child's icon stands under its parent's name;
+ * without, a child's name starts one step in from its parent's. A project's
+ * chats are one level in from the project, the chats an agent started one
+ * level in from it, and a row's kind never moves it off its level.
+ */
+export const SIDEBAR_TREE_STEP_PX = 24;
+
+/** Where a top-level row starts: the rows' shared `px-3`. */
+export const SIDEBAR_ROW_INSET_PX = 12;
+
+/** Levels past this share the deepest inset; the tree itself goes deeper. */
+export const SIDEBAR_TREE_MAX_LEVEL = 4;
+
+/** Where a row at `level` starts: its icon, or its name when it has none. */
+export function sidebarTreeInsetPx(level: number): number {
+  return (
+    SIDEBAR_ROW_INSET_PX +
+    Math.min(level, SIDEBAR_TREE_MAX_LEVEL) * SIDEBAR_TREE_STEP_PX
+  );
+}
+
+/** Where the name of a row at `level` starts. */
+export function sidebarTreeNameInsetPx(level: number, hasIcon: boolean) {
+  return sidebarTreeInsetPx(level) + (hasIcon ? SIDEBAR_TREE_STEP_PX : 0);
+}
 
 /**
- * Left padding of a row nested under a parent row (a project's chats, the
- * sections under a main nav item): clears the 16px leading slot so nested
- * labels share one column.
+ * Left padding of a row one level in that has no icon, such as the sections
+ * under a main nav item: `sidebarTreeInsetPx(1)`, where its parent's name
+ * starts.
  */
-export const SIDEBAR_NESTED_ROW_PADDING_CLASS = "pl-[38px]";
-
-/**
- * Width of one column of a chat tree: the leading slot's 16px, so a parent's
- * icon and the guide line its children hang from share one column and the
- * titles of a parent and its children start on one line.
- */
-export const SIDEBAR_CHAT_TREE_INDENT_PX = 16;
-
-/** Columns past this share the deepest inset; the tree itself goes deeper. */
-export const SIDEBAR_CHAT_TREE_MAX_INDENT_DEPTH = 4;
-
-/** Density variants for chat rows. Default preserves grouped sidebar rhythm. */
-export type SidebarChatRowDensity = "default" | "dense";
-
-export const SIDEBAR_CHAT_ROW_DENSITY_CLASSES = {
-  default: {
-    contentPadding: SIDEBAR_CHAT_ROW_PADDING_CLASS,
-    menuReserve: "pr-8",
-    statusReserve: "pr-12",
-    menuInset: "right-3",
-    flatProjectGap: "gap-1",
-    flatProjectIconInset: "ml-3",
-    flatProjectIconColumn: "size-5",
-    flatProjectIconColumnPx: 20,
-  },
-  dense: {
-    contentPadding: "pl-1",
-    // Dense only tightens the left side; the right edge keeps the same
-    // inset as default so flat and grouped views align at the panel edge.
-    menuReserve: "pr-8",
-    statusReserve: "pr-12",
-    menuInset: "right-3",
-    flatProjectGap: SIDEBAR_ROW_ICON_TEXT_GAP_CLASS,
-    // Align the flat project icon with main-nav icons (px-3 row inset).
-    flatProjectIconInset: "ml-3",
-    flatProjectIconColumn: "size-5",
-    flatProjectIconColumnPx: 20,
-  },
-} satisfies Record<
-  SidebarChatRowDensity,
-  {
-    contentPadding: string;
-    menuReserve: string;
-    statusReserve: string;
-    menuInset: string;
-    flatProjectGap: string;
-    flatProjectIconInset: string;
-    flatProjectIconColumn: string;
-    /** `flatProjectIconColumn` in px: the tree indent unit of a flat row. */
-    flatProjectIconColumnPx: number;
-  }
->;
+export const SIDEBAR_NESTED_ROW_PADDING_CLASS = "pl-9";
 
 /** Bare unread dot; the parent owns positioning (e.g. a row's icon slot). */
 export const SIDEBAR_UNREAD_DOT_CLASS =

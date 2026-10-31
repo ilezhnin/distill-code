@@ -2,6 +2,8 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import type { SessionNode } from "@/features/conductor/types";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import {
@@ -88,6 +90,22 @@ function leadingIconOf(id: string): Element | null {
   return rowOf(id).querySelector("[data-testid=sidebar-chat-menu-icon]");
 }
 
+/** Where a row's name starts: the inset its button carries. */
+function nameInsetOf(id: string): string {
+  const button = rowOf(id).querySelector("[data-sidebar-chat-row-button]");
+  if (!(button instanceof HTMLElement)) throw new Error(`no button ${id}`);
+  return button.style.paddingLeft;
+}
+
+/** Where a row's icon starts, or null when the row shows none. */
+function iconInsetOf(id: string): string | null {
+  const icon = rowOf(id).querySelector(
+    "[data-testid=sidebar-chat-menu-icon], [data-testid=sidebar-conductor-icon]",
+  );
+  const slot = icon?.closest("span[style]");
+  return slot instanceof HTMLElement ? slot.style.left : null;
+}
+
 function guideShapes(row: HTMLElement): string[] {
   return Array.from(row.querySelectorAll("[data-slot=tree-guide]")).map(
     (guide) =>
@@ -95,17 +113,40 @@ function guideShapes(row: HTMLElement): string[] {
   );
 }
 
-function renderProject(onSelectSession?: (sessionId: string) => void) {
+function renderProject(
+  onSelectSession?: (sessionId: string) => void,
+  showChatIcons = false,
+  projectChats = [conductor, plain],
+) {
   render(
     <SidebarProjectSection
       project={project}
-      projectChats={[conductor, plain]}
+      projectChats={projectChats}
       isExpanded
       toggleProject={vi.fn()}
-      showChatIcons={false}
+      showChatIcons={showChatIcons}
       onSelectSession={onSelectSession}
     />,
   );
+}
+
+function markConductor(sessionId: string) {
+  useConductorGraphStore.setState({
+    nodesById: {
+      [sessionId]: {
+        sessionId,
+        projectId: project.id,
+        role: "conductor",
+        managedBy: "ui",
+        parentSessionId: null,
+        rootConductorId: null,
+        runId: null,
+        harnessId: "claude",
+        displayName: "Conductor",
+        status: "waiting",
+      } satisfies SessionNode,
+    },
+  });
 }
 
 beforeEach(() => {
@@ -117,6 +158,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   useProjectStore.setState({ projects: [] });
+  useConductorGraphStore.setState({ nodesById: {} });
   window.localStorage.removeItem(SIDEBAR_COLLAPSED_CHAT_TREES_STORAGE_KEY);
   resetCollapsedChatTreesForTests();
 });
@@ -142,36 +184,66 @@ describe("chats nested under the chat that started them", () => {
     ).toBeInTheDocument();
   });
 
-  it("indents a parent to its children's column and draws one line down to the last child", () => {
+  it("puts a project's chats one level in and each chat's agents one level below it", () => {
     renderProject();
-    // A chat with children moves one column right, so its icon heads the
-    // line and its title lines up with its children's titles.
-    expect(rowOf("conductor").style.paddingLeft).toBe("16px");
-    expect(rowOf("orchestrator").style.paddingLeft).toBe("32px");
-    expect(rowOf("worker").style.paddingLeft).toBe("32px");
-    expect(rowOf("reviewer").style.paddingLeft).toBe("16px");
-    expect(rowOf("plain").style.paddingLeft).toBe("");
-    // The line starts under the parent's icon, passes the children that
-    // have siblings after them, and closes with an elbow on the last one —
+    // One step per level: the project's chats start where the project's
+    // name does (12 + 24), their agents one step further in. A chat with
+    // agents stays on its siblings' level.
+    expect(nameInsetOf("conductor")).toBe("36px");
+    expect(nameInsetOf("orchestrator")).toBe("60px");
+    expect(nameInsetOf("worker")).toBe("84px");
+    expect(nameInsetOf("reviewer")).toBe("60px");
+    expect(nameInsetOf("plain")).toBe("36px");
+    // The line starts under the parent, passes the children that have
+    // siblings after them, and closes with an elbow on the last one —
     // through a grandchild's row too, so it never breaks.
-    expect(guideShapes(rowOf("conductor"))).toEqual(["stub@28px"]);
+    expect(guideShapes(rowOf("conductor"))).toEqual(["stub@36px"]);
     expect(guideShapes(rowOf("orchestrator"))).toEqual([
-      "pass@28px",
-      "stub@44px",
+      "pass@36px",
+      "stub@60px",
     ]);
-    expect(guideShapes(rowOf("worker"))).toEqual(["pass@28px", "last@44px"]);
-    expect(guideShapes(rowOf("reviewer"))).toEqual(["last@28px"]);
+    expect(guideShapes(rowOf("worker"))).toEqual(["pass@36px", "last@60px"]);
+    expect(guideShapes(rowOf("reviewer"))).toEqual(["last@36px"]);
     expect(guideShapes(rowOf("plain"))).toEqual([]);
   });
 
-  it("keeps a parent's icon in its slot and puts the fold chevron after its name", async () => {
+  it("lines a conductor and a chat with agents up with the plain chats beside them", () => {
+    markConductor("lead");
+    const lead = chat("lead", "Migration plan");
+    renderProject(undefined, false, [lead, conductor, plain]);
+    // Without chat icons no row has one, a conductor's or a parent's
+    // included, so every name in the project starts on one line.
+    expect(iconInsetOf("lead")).toBeNull();
+    expect(iconInsetOf("conductor")).toBeNull();
+    expect(nameInsetOf("lead")).toBe("36px");
+    expect(nameInsetOf("conductor")).toBe("36px");
+    expect(nameInsetOf("plain")).toBe("36px");
+    cleanup();
+
+    renderProject(undefined, true, [lead, conductor, plain]);
+    // With them every row has one, one level in from the project's icon:
+    // under the project's name, never beside the project's own icon.
+    expect(
+      rowOf("lead").querySelector("[data-testid=sidebar-conductor-icon]"),
+    ).not.toBeNull();
+    for (const id of ["lead", "conductor", "plain"]) {
+      expect(iconInsetOf(id)).toBe("36px");
+      expect(nameInsetOf(id)).toBe("60px");
+    }
+    expect(iconInsetOf("orchestrator")).toBe("60px");
+    expect(nameInsetOf("orchestrator")).toBe("84px");
+    expect(iconInsetOf("reviewer")).toBe("60px");
+    expect(nameInsetOf("reviewer")).toBe("84px");
+  });
+
+  it("puts the fold chevron after a parent's name and keeps its icon put", async () => {
     const user = userEvent.setup();
-    renderProject();
+    renderProject(undefined, true);
     // The icon is the row's identity and stays put, hover or not; the
     // chevron sits inside the row button after the title, and a leaf chat
-    // has neither.
+    // has none.
     expect(leadingIconOf("conductor")).not.toBeNull();
-    expect(leadingIconOf("plain")).toBeNull();
+    expect(leadingIconOf("plain")).not.toBeNull();
     const button = rowButtonOf("conductor", "Upstream review");
     expect(button).toHaveAttribute("aria-expanded", "true");
     const toggle = toggleOf("conductor");
@@ -206,7 +278,7 @@ describe("chats nested under the chat that started them", () => {
       "title",
       "Show the chats Upstream review started",
     );
-    // A folded parent keeps its column but draws no line below its icon.
+    // A folded parent keeps its place but draws no line below it.
     expect(guideShapes(rowOf("conductor"))).toEqual([]);
     expect(
       JSON.parse(
@@ -240,7 +312,7 @@ describe("chats nested under the chat that started them", () => {
     expect(rowIds()).toHaveLength(5);
   });
 
-  it("opens an agent's chat from its row without touching the fold, and shifts nothing in Recents", async () => {
+  it("opens an agent's chat from its row without touching the fold, and starts Recents at the panel's inset", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     render(
@@ -264,18 +336,18 @@ describe("chats nested under the chat that started them", () => {
       "worker",
       "reviewer",
     ]);
-    // Recents reserves no leading slot, so the parent stays where its
-    // neighbours are: its icon takes the slot and the line hangs from it.
-    expect(rowOf("conductor").style.paddingLeft).toBe("");
-    expect(rowOf("orchestrator").style.paddingLeft).toBe("16px");
-    expect(rowOf("worker").style.paddingLeft).toBe("16px");
-    expect(rowOf("reviewer").style.paddingLeft).toBe("");
+    // Recents is the top level: its chats start at the panel's inset and
+    // the same grid takes their agents one step in per level.
+    expect(nameInsetOf("conductor")).toBe("12px");
+    expect(nameInsetOf("orchestrator")).toBe("36px");
+    expect(nameInsetOf("worker")).toBe("60px");
+    expect(nameInsetOf("reviewer")).toBe("36px");
     expect(guideShapes(rowOf("conductor"))).toEqual(["stub@12px"]);
     expect(guideShapes(rowOf("orchestrator"))).toEqual([
       "pass@12px",
-      "stub@28px",
+      "stub@36px",
     ]);
-    expect(guideShapes(rowOf("worker"))).toEqual(["pass@12px", "last@28px"]);
+    expect(guideShapes(rowOf("worker"))).toEqual(["pass@12px", "last@36px"]);
     expect(guideShapes(rowOf("reviewer"))).toEqual(["last@12px"]);
     await user.click(
       screen.getByRole("button", { name: "Researcher · berd since fork" }),

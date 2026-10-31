@@ -3258,7 +3258,7 @@ export const designSystemComponentManifest = [
     name: "Tree Guide",
     source: "src/shared/ui/tree-guide.tsx",
     description:
-      "One column of a tree's guide line, drawn the full height of its row so the\nline reads as continuous from one row to the next:\n\n- `pass`: the line runs straight through — an ancestor's line beside a\n  row, or a child that is not its parent's last;\n- `last`: the line ends here in an elbow — the parent's last child;\n- `stub`: the line starts under a parent's icon and runs to the row's\n  bottom edge, so the children's line hangs from the icon.\n\nAbsolutely positioned inside a `relative` row; the caller sets `left`.",
+      "One column of a tree's guide line, drawn the full height of its row so the\nline reads as continuous from one row to the next:\n\n- `pass`: the line runs straight through — an ancestor's line beside a\n  row, or a child that is not its parent's last;\n- `last`: the line ends here in an elbow — the parent's last child;\n- `stub`: the line starts under a parent's start and runs to the row's\n  bottom edge, so the children's line hangs from the parent.\n\nA column is one tree step wide. The caller sets `left` to where the\ncolumn's parent row starts; the line runs 8px in, under the middle of\nthat row's icon or the first letters of its name, and the elbow stops\njust short of the child one step in.\n\nAbsolutely positioned inside a `relative` row.",
     exports: ["TreeGuide", "TreeGuideShape"],
     slots: ["tree-guide"],
     cva: [],
