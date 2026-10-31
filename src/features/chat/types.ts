@@ -108,6 +108,12 @@ export interface ChatSendOptions {
   onUserMessageCommitted?: () => void;
   /** The host proved that this prompt was not accepted. */
   onPromptNotAccepted?: () => void;
+  /**
+   * Internal: the host withdrew this committed prompt from its session's
+   * history (whatever refused it, not only an account quota wait) and the
+   * caller puts it back first in its queue. Runs before the session is idle.
+   */
+  onPromptWithdrawn?: (error: unknown) => void;
   /** Fully composed execution prompt captured for a queued send. */
   executionSystemPrompt?: string;
   /** Persona-only prompt captured while workspace context is still loading. */

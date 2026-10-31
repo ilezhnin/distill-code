@@ -254,6 +254,68 @@ describe("useBackgroundQueuedMessageDrain", () => {
     view.unmount();
   });
 
+  it("parks a prompt the host withdrew first in its queue with the refusal and sends nothing after it", async () => {
+    const first = releasedRecord();
+    const next = ordinaryRecord();
+    useChatStore.setState({
+      queuedMessageBySession: { "session-1": [first, next] },
+    });
+    const refusal = {
+      message: "Internal error",
+      data: {
+        message: "The provider refuses requests.",
+        promptNotAccepted: true,
+      },
+    };
+    mocks.sendQueuedPromptToExistingSessionInBackground.mockImplementationOnce(
+      (
+        sessionId: string,
+        _record: QueuedMessageRecord,
+        beforeCommit: () => void,
+        dispatched: () => void,
+        withdrawn: (error: unknown) => void,
+      ) => {
+        beforeCommit();
+        useChatStore.getState().setChatState(sessionId, "streaming");
+        dispatched();
+        // sendCore hands the prompt back before the session returns to idle.
+        withdrawn(refusal);
+        useChatStore.getState().setChatState(sessionId, "idle");
+        return Promise.reject(refusal);
+      },
+    );
+    const view = render(<DrainHarness />);
+    await waitFor(() =>
+      expect(
+        useChatStore.getState().queuedMessageBySession["session-1"]?.[0]?.kind,
+      ).toBe("deferred"),
+    );
+    const queue = useChatStore.getState().queuedMessageBySession["session-1"];
+    expect(queue.map((record) => record.recordId)).toEqual([
+      first.recordId,
+      next.recordId,
+    ]);
+    // Same message, sent again as a new task: the refused one stays recorded.
+    expect(queue[0].payload).toEqual({
+      ...first.payload,
+      executorRequestKey: expect.stringMatching(/^chat:[0-9a-f-]{36}$/),
+    });
+    expect(queue[0].kind === "deferred" && queue[0].state).toMatchObject({
+      type: "workspace-first-send",
+      status: "failed",
+      error: "The provider refuses requests.",
+    });
+    await act(async () => Promise.resolve());
+    expect(
+      mocks.sendQueuedPromptToExistingSessionInBackground,
+    ).toHaveBeenCalledTimes(1);
+    expect(mocks.toastError).toHaveBeenCalledTimes(1);
+    expect(mocks.toastError.mock.calls[0][1]).toEqual({
+      description: "The provider refuses requests.",
+    });
+    view.unmount();
+  });
+
   it("waits for session hydration before draining a persisted released head", async () => {
     const released = releasedRecord();
     useChatStore.setState({
@@ -297,6 +359,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
       released,
       expect.any(Function),
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -334,6 +397,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
       ).toHaveBeenCalledWith(
         "session-1",
         released,
+        expect.any(Function),
         expect.any(Function),
         expect.any(Function),
       );
@@ -459,6 +523,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
       ).toHaveBeenCalledWith(
         "session-1",
         released,
+        expect.any(Function),
         expect.any(Function),
         expect.any(Function),
       );
@@ -624,6 +689,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
       builder,
       expect.any(Function),
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -659,6 +725,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
       ).toHaveBeenCalledWith(
         BACKEND_SESSION_ID,
         ordinary,
+        expect.any(Function),
         expect.any(Function),
         expect.any(Function),
       ),

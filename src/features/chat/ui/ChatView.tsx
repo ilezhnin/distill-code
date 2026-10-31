@@ -1121,6 +1121,11 @@ export function ChatView({
                 onSubmitName={controller.submitDeferredWorkspaceName}
                 onSkip={controller.skipDeferredWorkspace}
               />
+            ) : controller.deferredWorkspaceRecord?.state.status === "failed" &&
+              controller.deferredWorkspaceError ? (
+              <p className="px-5 py-2 text-xs text-destructive" role="alert">
+                {controller.deferredWorkspaceError}
+              </p>
             ) : null
           }
           controls={chatInputControls}

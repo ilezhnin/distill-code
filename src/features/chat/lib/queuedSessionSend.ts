@@ -325,6 +325,7 @@ export async function sendQueuedPromptToExistingSessionInBackground(
   queuedMessage: QueuedMessageRecord & { kind: "transport-ready" },
   beforeUserMessageCommitted?: () => void,
   onPromptDispatched?: () => void,
+  onPromptWithdrawn?: (error: unknown) => void,
 ): Promise<void> {
   let preparedBuilderTargetPath: string | undefined;
   const assertAgentBuilderPreparationReady = () => {
@@ -497,6 +498,7 @@ export async function sendQueuedPromptToExistingSessionInBackground(
         executorRequestKey:
           payload.executorRequestKey ??
           `chat:${sessionId}:queue:${queuedMessage.recordId}`,
+        onPromptWithdrawn,
       },
       payload.attachments,
       () => {

@@ -217,6 +217,12 @@ export function useChat(
           providerId,
           systemPrompt,
           beforeUserMessageCommitted: sendOptions?.beforeUserMessageCommitted,
+          onPromptWithdrawn: sendOptions?.onPromptWithdrawn
+            ? (error) => {
+                userMessageCommitted = false;
+                sendOptions.onPromptWithdrawn?.(error);
+              }
+            : undefined,
           signal: abort.signal,
           prepare: () =>
             ensurePreparedForPrompt(

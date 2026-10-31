@@ -32,7 +32,10 @@ import {
 import { syncConductorDisplayNameFromTitle } from "@/features/conductor/syncConductorDisplayName";
 import { composeConductorSystemPrompt } from "@/features/conductor/wavePrompts";
 import { acpSendMessage } from "@/shared/api/acp";
-import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+import {
+  formatAcpErrorMessage,
+  isPromptWithdrawnError,
+} from "@/shared/api/acpErrors";
 import {
   formatAttachmentsTooLargeMessage,
   MAX_PROMPT_ATTACHMENT_BYTES,
@@ -114,6 +117,13 @@ export interface SendCoreOptions {
   onUserMessageCommitted?: () => void;
   /** Fires once preparation succeeds and the ACP prompt invocation starts. */
   onPromptDispatched?: () => void;
+  /**
+   * The host withdrew the committed prompt from its session's history; the
+   * caller puts it back first in its queue, so the transcript gives the
+   * message up instead of showing it twice. Runs before the session returns
+   * to idle, so no queue sends the next message ahead of it.
+   */
+  onPromptWithdrawn?: (error: unknown) => void;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -258,6 +268,7 @@ export async function dispatchPrompt(
   const isCurrent = () => ownsSessionPrompt(sessionId, promptOwner);
   let userMessageCommitted = false;
   let preCommitRejected = false;
+  let messageCountBeforePrompt: number | undefined;
   const userMessageId = crypto.randomUUID();
   let preparedExecutor:
     | Awaited<ReturnType<typeof prepareChatExecutorDispatch>>
@@ -336,6 +347,7 @@ export async function dispatchPrompt(
 
       const sessionStore = useChatSessionStore.getState();
       const session = sessionStore.getSession(sessionId);
+      messageCountBeforePrompt = session?.messageCount;
       if (session && isDefaultChatTitle(session.title)) {
         const title = getSessionTitleFromDraft(text, attachments);
         sessionStore.patchSession(sessionId, {
@@ -471,6 +483,11 @@ export async function dispatchPrompt(
     const quotaDeferred =
       quotaWait !== null &&
       (!userMessageCommitted || quotaWait.promptNotAccepted === true);
+    const promptRequeued =
+      !quotaDeferred &&
+      userMessageCommitted &&
+      opts.onPromptWithdrawn !== undefined &&
+      isPromptWithdrawnError(err);
     if (!preCommitRejected && !quotaDeferred) {
       const cancellationRace = assistantCancellationRaces.get(promptOwner);
       if (cancellationRace) {
@@ -502,6 +519,39 @@ export async function dispatchPrompt(
         if (isCurrent()) {
           setChatState(sessionId, "idle");
         }
+      }
+    } else if (promptRequeued) {
+      // The host withdrew the prompt from the session's history and the
+      // caller puts it back first in its queue, where the error is shown with
+      // it. Undo what the commit did to this window the way the host undid its
+      // own record: a load that replays the history replays it without the
+      // message, and must not read that as a conversation gone missing.
+      const liveStore = useChatStore.getState();
+      liveStore.removeMessage(sessionId, userMessageId);
+      if (messageCountBeforePrompt !== undefined) {
+        useChatSessionStore
+          .getState()
+          .patchSession(sessionId, { messageCount: messageCountBeforePrompt });
+      }
+      opts.onPromptWithdrawn?.(err);
+      if (isCurrent()) {
+        clearBufferedStreamingUpdatesForSession(sessionId, {
+          owner: promptOwner,
+        });
+        if (isHarnessRejectedModelError(err)) {
+          const recovery = recoverSessionFromRejectedModel(sessionId);
+          if (recovery) {
+            liveStore.addMessage(
+              sessionId,
+              createSystemNotificationMessage(
+                harnessRejectedModelNotice(recovery),
+                "warning",
+              ),
+            );
+          }
+        }
+        setError(sessionId, formatAcpErrorMessage(err));
+        setChatState(sessionId, "idle");
       }
     } else if (isCurrent()) {
       flushBufferedStreamingUpdatesForSession(sessionId, {

@@ -150,6 +150,7 @@ export async function sendPromptInBackground(
     beforeUserMessageCommitted,
     onUserMessageCommitted,
     onPromptDispatched,
+    onPromptWithdrawn: sendOptions.onPromptWithdrawn,
     prepare: validateExecutionTarget,
     background: true,
   }).catch((error) => {

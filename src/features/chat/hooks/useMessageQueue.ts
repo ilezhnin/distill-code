@@ -2,6 +2,7 @@ import { useEffect, useCallback, useMemo, useRef } from "react";
 import type { ChatState } from "@/shared/types/chat";
 import { isPromiseLike } from "@/shared/lib/isPromiseLike";
 import { isAccountQuotaWaiting } from "../lib/accountQuotaWait";
+import { parkWithdrawnQueuedMessage } from "../lib/queuedMessageFailure";
 import {
   needsInitialChatExecutor,
   prepareQueuedInitialChatExecutor,
@@ -318,6 +319,11 @@ export function useMessageQueue(
             .getState()
             .restoreUnacceptedQueuedMessage(sessionId, queuedMsg);
           sendOptions?.onPromptNotAccepted?.();
+        },
+        onPromptWithdrawn: (error: unknown) => {
+          promptNotAccepted = true;
+          userMessageCommitted = false;
+          parkWithdrawnQueuedMessage(sessionId, queuedMsg, error);
         },
         sessionSelection: targetLease.target,
         sessionSelectionToken: targetLease.token,

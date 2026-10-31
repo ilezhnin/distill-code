@@ -24,8 +24,12 @@ import {
 } from "@/features/chat/stores/chatStore";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import { sendQueuedPromptToExistingSessionInBackground } from "@/features/chat/lib/queuedSessionSend";
-import { parkFailedQueuedMessage } from "@/features/chat/lib/queuedMessageFailure";
+import {
+  parkFailedQueuedMessage,
+  parkWithdrawnQueuedMessage,
+} from "@/features/chat/lib/queuedMessageFailure";
 import { accountQuotaWaitData } from "@/features/chat/lib/accountQuotaWait";
+import { isPromptWithdrawnError } from "@/shared/api/acpErrors";
 
 const drainingSessionIds = new Set<string>();
 const activeOwners = new Set<string>();
@@ -237,6 +241,14 @@ function drainQueuedMessage(sessionId: string, ownerId: string): void {
 
   drainingSessionIds.add(sessionId);
   let waitingForContention = false;
+  let withdrawnPromptParked = false;
+  const parkWithdrawnPrompt = (error: unknown) => {
+    if (withdrawnPromptParked) return;
+    withdrawnPromptParked = true;
+    parkWithdrawnQueuedMessage(sessionId, queuedMessage, error, {
+      notify: !hasForegroundQueueOwnerAcrossPromotion(sessionId),
+    });
+  };
   void sendQueuedPromptToExistingSessionInBackground(
     sessionId,
     queuedMessage,
@@ -261,6 +273,7 @@ function drainQueuedMessage(sessionId: string, ownerId: string): void {
         .getState()
         .dismissQueuedMessage(sessionId, queuedMessage.recordId);
     },
+    parkWithdrawnPrompt,
   )
     .then(() => {
       if (
@@ -280,6 +293,12 @@ function drainQueuedMessage(sessionId: string, ownerId: string): void {
         useChatStore
           .getState()
           .restoreUnacceptedQueuedMessage(sessionId, queuedMessage);
+        return;
+      }
+      if (isPromptWithdrawnError(error)) {
+        // Normally parked before the session went idle; the record keeps the
+        // prompt the transcript gave up.
+        parkWithdrawnPrompt(error);
         return;
       }
       if (error instanceof SessionDispatchContentionError) {

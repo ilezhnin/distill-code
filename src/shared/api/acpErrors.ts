@@ -73,3 +73,20 @@ const PROVIDER_NOT_SET_PATTERN = /provider not set\b(?!\s+up\b)/i;
 export function isProviderNotSetError(error: unknown): boolean {
   return PROVIDER_NOT_SET_PATTERN.test(formatAcpErrorMessage(error, ""));
 }
+
+/**
+ * True when the host withdrew the failed prompt from its session's history
+ * (`data.promptNotAccepted`): the turn failed before the agent produced
+ * anything, so the session holds no trace of the prompt and a reload replays
+ * the conversation without it.
+ */
+export function isPromptWithdrawnError(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("data" in error)) return false;
+  const data = error.data;
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "promptNotAccepted" in data &&
+    data.promptNotAccepted === true
+  );
+}

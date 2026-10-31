@@ -152,6 +152,94 @@ describe("dispatchPrompt account quota deferral", () => {
   });
 });
 
+describe("dispatchPrompt withdrawn prompt", () => {
+  const refusal = {
+    message: "Internal error",
+    data: {
+      message: "The provider refuses requests.",
+      dispatchStarted: false,
+      promptNotAccepted: true,
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "withdrawn-session",
+          title: "Chat",
+          createdAt: "now",
+          updatedAt: "now",
+          messageCount: 2,
+        },
+      ],
+    });
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      queuedMessageBySession: {},
+    });
+    mocks.acpSendMessage.mockImplementation(
+      (
+        _id: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        // A session-list refresh during the turn counts the prompt.
+        useChatSessionStore
+          .getState()
+          .patchSession("withdrawn-session", { messageCount: 3 });
+        return Promise.reject(refusal);
+      },
+    );
+  });
+
+  it("hands the prompt back before the session is idle and undoes the count", async () => {
+    const seen: string[] = [];
+    const onPromptWithdrawn = vi.fn(() => {
+      seen.push(
+        useChatStore.getState().getSessionRuntime("withdrawn-session")
+          .chatState,
+      );
+    });
+    await expect(
+      dispatchPrompt("withdrawn-session", "hello", { onPromptWithdrawn }),
+    ).rejects.toBe(refusal);
+    expect(onPromptWithdrawn).toHaveBeenCalledWith(refusal);
+    expect(seen).toEqual(["streaming"]);
+    expect(
+      useChatStore.getState().messagesBySession["withdrawn-session"] ?? [],
+    ).toEqual([]);
+    expect(
+      useChatSessionStore.getState().getSession("withdrawn-session")
+        ?.messageCount,
+    ).toBe(2);
+    const runtime = useChatStore
+      .getState()
+      .getSessionRuntime("withdrawn-session");
+    expect(runtime.chatState).toBe("idle");
+    expect(runtime.error).toBe("The provider refuses requests.");
+  });
+
+  it("keeps the message and its error in the transcript when no caller requeues it", async () => {
+    await expect(dispatchPrompt("withdrawn-session", "hello", {})).rejects.toBe(
+      refusal,
+    );
+    const messages =
+      useChatStore.getState().messagesBySession["withdrawn-session"] ?? [];
+    expect(messages.map((message) => message.role)).toEqual(["user", "system"]);
+    expect(messages[1].content).toEqual([
+      {
+        type: "systemNotification",
+        notificationType: "error",
+        text: "The provider refuses requests.",
+      },
+    ]);
+  });
+});
+
 vi.mock("@/shared/api/acp", () => ({
   acpSendMessage: (...args: unknown[]) => mocks.acpSendMessage(...args),
   acpSteerMessage: (...args: unknown[]) => mocks.acpSteerMessage(...args),
