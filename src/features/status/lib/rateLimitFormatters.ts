@@ -44,7 +44,16 @@ export function usageRetrySeconds(
 
 export function getProviderUsageStatusKind(
   provider: ProviderRateLimits,
-): "ok" | "refresh-failed" | "sign-in" | "limited" | "fetching" | "paused" {
+):
+  | "ok"
+  | "refresh-failed"
+  | "sign-in"
+  | "limited"
+  | "refused"
+  | "fetching"
+  | "paused" {
+  // Usage windows can show room while the provider refuses every request.
+  if (provider.refused) return "refused";
   if (provider.accountLimited) return "limited";
   if (provider.status === "idle" || provider.status === "fetching") {
     return "fetching";

@@ -2444,33 +2444,18 @@ fn stopped_for_quota(error: &Value, capture: &TurnCapture, repository: bool) -> 
         && (repository || !capture.answer_capped)
 }
 
-/// The quota kinds of an account that no usage reset brings back: billing,
-/// an account on hold, no credit left.
-const LASTING_QUOTA_KINDS: [&str; 3] = ["billing_error", "account_on_hold", "insufficient_quota"];
-
-/// Whether a quota error names a limit no reset lifts (see
-/// [`LASTING_QUOTA_KINDS`]), in a typed field or the provider's message.
+/// Whether a quota error names a limit no reset lifts: billing, an account
+/// on hold, no credit, balance or plan package left.
 fn lasting_quota(error: &Value) -> bool {
-    let typed = [
-        "/data/errorKind",
-        "/errorKind",
-        "/data/codexErrorInfo",
-        "/codexErrorInfo",
-        "/data/code",
-        "/error/code",
-        "/code",
-    ];
-    let said = ["/message", "/data/message"];
-    typed
-        .iter()
-        .filter_map(|path| error.pointer(path).and_then(Value::as_str))
-        .map(str::to_ascii_lowercase)
-        .any(|kind| LASTING_QUOTA_KINDS.contains(&kind.as_str()))
-        || said
-            .iter()
-            .filter_map(|path| error.pointer(path).and_then(Value::as_str))
-            .map(str::to_ascii_lowercase)
-            .any(|text| LASTING_QUOTA_KINDS.iter().any(|kind| text.contains(kind)))
+    crate::services::provider_account_status::is_lasting_quota_error(error)
+}
+
+/// [`lasting_quota`] of a refusal as a run keeps it: the host's error as
+/// JSON, or the provider's words.
+fn refused_for_good(error: &str) -> bool {
+    lasting_quota(
+        &serde_json::from_str::<Value>(error).unwrap_or_else(|_| json!({ "message": error })),
+    )
 }
 
 /// The longest a run waits on one provider's usage limit. A 5-hour window
@@ -2589,6 +2574,9 @@ static QUOTA_SINCE: std::sync::LazyLock<
 /// provider's own words follow it.
 const QUOTA_STOPPED: &str =
     "A test did not finish: the usage limit ran out and does not reset in time for the run to wait";
+/// Why a run stopped on a provider that refuses the account for a reason no
+/// reset lifts ([`lasting_quota`]); the provider's own words follow it.
+const QUOTA_REFUSED: &str = "A test did not finish: the provider refuses every request on this account, and no usage reset lifts that. Renew the plan or add balance with the provider, then resume";
 
 /// What a run does once its provider refused a turn for quota.
 #[derive(Debug, PartialEq)]
@@ -2602,8 +2590,16 @@ enum QuotaPlan {
 /// Waits for a reset the run can reach: one the host names within
 /// [`QUOTA_WAIT_LIMIT_MS`], or, with no time named, a retry every
 /// [`QUOTA_RETRY_MS`] while the refusals last no longer than that. A weekly or
-/// longer window, a reset further off, or refusals past the limit stop it.
+/// longer window, a reset further off, refusals past the limit, or a limit
+/// no reset lifts ([`lasting_quota`]) stop it.
 fn quota_plan(run_id: &str, scope: &str, error: &str, at: i64) -> QuotaPlan {
+    if refused_for_good(error) {
+        QUOTA_SINCE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(run_id.to_owned(), scope.to_owned()));
+        return QuotaPlan::Stop;
+    }
     let parsed = serde_json::from_str::<Value>(error).ok();
     let next_reset = parsed
         .as_ref()
@@ -2693,13 +2689,14 @@ fn exhaust_judge_on_quota(
 ) -> bool {
     let refused = judge_quota_stop(error);
     if refused {
-        exhaust(
-            run_id,
-            account,
+        let until = if lasting_quota(error) {
+            now() + QUOTA_WAIT_LIMIT_MS
+        } else {
             quota_reset(&error.to_string())
                 .or(known_reset)
-                .unwrap_or(now() + QUOTA_RETRY_MS),
-        );
+                .unwrap_or(now() + QUOTA_RETRY_MS)
+        };
+        exhaust(run_id, account, until);
     }
     refused
 }
@@ -9814,11 +9811,14 @@ impl BenchmarkService {
                 };
                 if retry_allowed && waits_for_quota {
                     if let Some(account) = a.configuration.account_id.as_deref() {
-                        exhaust(
-                            &run.id,
-                            account,
-                            quota_reset(&quota_message).unwrap_or(now() + QUOTA_RETRY_MS),
-                        );
+                        // A refusal no reset lifts holds the account for as
+                        // long as the run would ever wait.
+                        let until = if refused_for_good(&quota_message) {
+                            now() + QUOTA_WAIT_LIMIT_MS
+                        } else {
+                            quota_reset(&quota_message).unwrap_or(now() + QUOTA_RETRY_MS)
+                        };
+                        exhaust(&run.id, account, until);
                     }
                     if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
                         let reason = format!("{MOVED_ACCOUNT}. {}", error.message);
@@ -9857,7 +9857,12 @@ impl BenchmarkService {
                         )
                     });
                     let reason = if plan == Some(QuotaPlan::Stop) {
-                        format!("{QUOTA_STOPPED}. {}", error.message)
+                        let stopped = if refused_for_good(&error.message) {
+                            QUOTA_REFUSED
+                        } else {
+                            QUOTA_STOPPED
+                        };
+                        format!("{stopped}. {}", error.message)
                     } else {
                         error.message.clone()
                     };
@@ -14882,7 +14887,7 @@ mod tests {
         let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
         assert!(!stopped_for_quota(&refused, &capture, false));
         // A limit no reset lifts settles as it ended instead of waiting.
-        for kind in LASTING_QUOTA_KINDS {
+        for kind in crate::services::provider_account_status::LASTING_QUOTA_KINDS {
             let lasting = json!({"data":{"errorKind":kind,"dispatchStarted":true},
                 "message":"invented provider words"});
             assert!(!stopped_for_quota(&lasting, &capture, false), "{kind}");
@@ -16228,6 +16233,23 @@ mod tests {
             quota_plan("run-zai", "zai-acp", &zai.to_string(), at),
             QuotaPlan::Stop
         );
+        // A lapsed Coding Plan is refused before any answer, and no reset
+        // lifts it: the run stops at once instead of retrying for hours.
+        let lapsed = json!({"code":-32603,"data":{"errorName":"APIError",
+            "dispatchStarted":true,"promptNotAccepted":false},
+            "message":"Internal error: Insufficient balance or no resource package. Please recharge."});
+        assert!(refused_for_quota(&lapsed, "", &TokenUsage::default()));
+        assert!(!stopped_for_quota(&lapsed, &capture, true));
+        assert!(refused_for_good(&lapsed.to_string()));
+        assert!(refused_for_good(
+            "Insufficient balance or no resource package"
+        ));
+        assert!(!refused_for_good(five_hour));
+        assert_eq!(
+            quota_plan("run-lapsed", "zai-acp", &lapsed.to_string(), at),
+            QuotaPlan::Stop
+        );
+        assert!(!quota_waiting("run-lapsed", "zai-acp"));
     }
     #[test]
     fn typed_terminal_outcomes_and_public_fixtures_are_preserved() {

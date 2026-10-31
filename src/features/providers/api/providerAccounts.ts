@@ -100,6 +100,11 @@ export interface ProviderAccountStatus {
   stale: boolean;
   error: string | null;
   usageRetryAt?: number | null;
+  /**
+   * The provider refuses this account's requests for a reason no usage reset
+   * lifts, in its own words; usage windows may still show room.
+   */
+  refused?: string | null;
 }
 
 export interface ProviderAccountStatuses {

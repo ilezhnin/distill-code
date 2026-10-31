@@ -5745,6 +5745,18 @@ impl Inner {
                 }
                 return result;
             }
+            // No reset lifts a lasting refusal: the prompt goes again only
+            // to another account, never back to the one that refused it.
+            if crate::services::provider_account_status::is_lasting_quota_error(error) {
+                if self
+                    .route_account_for_dispatch(&record, ids.allow_credits)
+                    .await
+                    .is_err()
+                    || self.session_record(&session_id).await?.account_id == record.account_id
+                {
+                    return result;
+                }
+            }
         }
     }
 
@@ -5766,7 +5778,25 @@ impl Inner {
         )
     }
 
+    /// A refusal no usage reset lifts says so in the operator's words
+    /// (`data.message`, which the chat shows), and keeps the provider's own
+    /// as `data.refused`.
+    fn explain_refusal(error: &mut Value) {
+        if !crate::services::provider_account_status::is_lasting_quota_error(error)
+            || !error["data"].is_object()
+            || error["data"]["refused"].is_string()
+        {
+            return;
+        }
+        let words = crate::services::provider_account_status::refusal_words(error);
+        error["data"]["message"] = json!(crate::services::provider_account_status::refusal_notice(
+            &words
+        ));
+        error["data"]["refused"] = json!(words);
+    }
+
     fn rejected_quota_wait(error: &Value, selected_wait: Option<Value>) -> Option<Value> {
+        // No reset lifts a lasting refusal: the message is not parked for one.
         if error
             .pointer("/data/dispatchStarted")
             .and_then(Value::as_bool)
@@ -5776,6 +5806,7 @@ impl Inner {
                 .and_then(Value::as_bool)
                 != Some(true)
             || !crate::services::provider_account_status::is_quota_error(error)
+            || crate::services::provider_account_status::is_lasting_quota_error(error)
         {
             return None;
         }
@@ -6154,6 +6185,21 @@ impl Inner {
                     &self.app, account_id, error,
                 )
                 .await;
+            }
+            Self::explain_refusal(error);
+        }
+        // A served turn ends a refusal the account's status still shows.
+        if result
+            .as_ref()
+            .is_ok_and(|result| result["stopReason"] != "cancelled")
+        {
+            if let Some((account_id, _)) =
+                quota_identity(&record.harness, record.account_id.as_deref())
+                    .ok()
+                    .flatten()
+            {
+                crate::services::provider_account_status::record_served(&self.app, &account_id)
+                    .await;
             }
         }
         match &mut result {
@@ -9952,6 +9998,42 @@ mod tests {
         partial = rejected;
         partial["data"]["errorKind"] = json!("rate_limit");
         assert!(Inner::rejected_quota_wait(&partial, None).is_none());
+    }
+
+    #[test]
+    fn a_lasting_refusal_says_why_and_is_never_parked_for_a_reset() {
+        // Z.ai's refusal of a lapsed Coding Plan, as OpenCode reports it.
+        let mut refused = json!({"code":-32603,"data":{
+            "service":"session", "errorName":"APIError", "accountId":"saved-account",
+            "dispatchStarted":false, "promptNotAccepted":true,
+        },"message":"Internal error: Insufficient balance or no resource package. Please recharge."});
+        Inner::explain_refusal(&mut refused);
+        assert_eq!(
+            refused["data"]["refused"],
+            "Insufficient balance or no resource package. Please recharge."
+        );
+        let notice = refused["data"]["message"].as_str().unwrap();
+        assert!(notice.contains("refuses every request on this account"));
+        assert!(notice.contains("Insufficient balance or no resource package"));
+        // The bridge's own words stay where they were, and a second pass
+        // keeps the notice from wrapping itself.
+        assert_eq!(
+            refused["message"],
+            "Internal error: Insufficient balance or no resource package. Please recharge."
+        );
+        let once = refused.clone();
+        Inner::explain_refusal(&mut refused);
+        assert_eq!(refused, once);
+        assert!(crate::services::provider_account_status::is_quota_error(
+            &refused
+        ));
+        assert!(Inner::rejected_quota_wait(&refused, None).is_none());
+        // A limit that resets is left as the provider said it.
+        let mut weekly = json!({"code":-32603,"data":{"dispatchStarted":true},
+            "message":"Internal error: Weekly/Monthly Limit Exhausted."});
+        let before = weekly.clone();
+        Inner::explain_refusal(&mut weekly);
+        assert_eq!(weekly, before);
     }
 
     #[test]

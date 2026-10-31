@@ -345,6 +345,8 @@ function attentionCause(
     return t("attention.restarted");
   if (/benchmark credits/i.test(attention.reason))
     return t("attention.credits");
+  const refused = providerRefusal(attention.reason);
+  if (refused !== null) return t("attention.refused", { reason: refused });
   if (attention.outcome == null && attention.reason.startsWith("{")) {
     try {
       const error = JSON.parse(attention.reason);
@@ -380,6 +382,32 @@ function attentionCause(
   return t("attention.failed", { reason: attentionReason(t, attention) });
 }
 
+/**
+ * The provider's own words when it refuses the account for good (no balance
+ * or plan package left, billing, an account on hold), else null. The run
+ * keeps the host's error as JSON after its own sentence.
+ */
+function providerRefusal(reason: string): string | null {
+  if (
+    !/insufficient balance|no resource package|insufficient_quota|billing_error|account_on_hold/i.test(
+      reason,
+    )
+  )
+    return null;
+  const start = reason.indexOf("{");
+  let said: unknown = null;
+  if (start >= 0) {
+    try {
+      const error = JSON.parse(reason.slice(start));
+      said = error?.data?.refused ?? error?.message;
+    } catch {
+      // Words outside a host error stay as they are.
+    }
+  }
+  const words = typeof said === "string" ? said : reason.slice(0, 300);
+  return words.replace(/^Internal error:\s*/i, "").trim();
+}
+
 /** Name known provider errors without exposing bridge payloads or account IDs. */
 function attentionReason(
   t: Translate,
@@ -387,6 +415,8 @@ function attentionReason(
 ): string {
   if (attention.outcome === "pending_review")
     return judgingFailureLabel(t, attention.reason);
+  const refused = providerRefusal(attention.reason);
+  if (refused !== null) return refused;
   const reason = attention.reason.trim();
   const structured = reason.startsWith("{");
   let message = structured ? "" : reason;

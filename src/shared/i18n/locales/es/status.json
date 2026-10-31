@@ -13,7 +13,8 @@
     "configureUsage": "Configurar el seguimiento de uso",
     "hide": "Ocultar de la barra de estado",
     "agentLimits": "Límites de uso del agente",
-    "paused": "En pausa"
+    "paused": "En pausa",
+    "refused": "Rechaza solicitudes"
   },
   "roster": {
     "title": "Uso",
@@ -33,6 +34,7 @@
     "signInToSee": "Inicia sesión para ver el uso",
     "checking": "Comprobando conexión…",
     "limitsUnavailable": "Conectado. Los límites de uso no están disponibles.",
+    "refusedTitle": "El proveedor rechaza todas las solicitudes de esta cuenta",
     "signInExpired": "Inicio de sesión caducado",
     "resetsNow": "Se restablece ahora",
     "resetsIn": "Se restablece en {{duration}}",

@@ -169,8 +169,53 @@ describe("attentionLabel", () => {
       "attention.continuing": `continuing: ${options?.reason}`,
       "attention.unknown": "unknown",
       "attention.rateLimited": "provider request rate limit",
+      "attention.refused": `refused: ${options?.reason}`,
       "states.infrastructure_failure": "Infrastructure failure",
     })[key] ?? key) as Parameters<typeof attentionLabel>[0];
+
+  it("names a provider that refuses the account for good in its own words", () => {
+    // Z.ai's refusal of a lapsed Coding Plan, as the host reports it.
+    const host = JSON.stringify({
+      code: -32603,
+      data: { errorName: "APIError", dispatchStarted: true },
+      message:
+        "Internal error: Insufficient balance or no resource package. Please recharge.",
+    });
+    const words =
+      "Insufficient balance or no resource package. Please recharge.";
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: null,
+          reason: `A test did not finish: the provider refuses every request on this account, and no usage reset lifts that. Renew the plan or add balance with the provider, then resume. ${host}`,
+        },
+      }),
+    ).toBe(`refused: ${words}`);
+    // An attempt settled before the refusal was recognized reads the same.
+    expect(
+      attentionLabel(t, {
+        attention: { outcome: "infrastructure_failure", reason: host },
+      }),
+    ).toBe(`refused: ${words}`);
+    expect(
+      attentionLabel(t, {
+        state: "running",
+        attention: { outcome: "infrastructure_failure", reason: host },
+      }),
+    ).toBe(`continuing: ${words}`);
+    // The host's own copy of the words wins over its notice.
+    expect(
+      attentionLabel(t, {
+        attention: {
+          outcome: null,
+          reason: JSON.stringify({
+            message: "Internal error: Insufficient balance.",
+            data: { refused: "Insufficient balance.", message: "notice" },
+          }),
+        },
+      }),
+    ).toBe("refused: Insufficient balance.");
+  });
 
   it("names the cause and the one action that helps", () => {
     expect(

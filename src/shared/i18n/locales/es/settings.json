@@ -603,6 +603,7 @@
     "stale": "Desactualizado",
     "onCredits": "Usando créditos",
     "usagePaused": "Actualizaciones de uso en pausa",
+    "refused": "Rechaza solicitudes",
     "usageRetryIn": "El proveedor ha pausado las consultas de uso. Reintento en {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Esperando la próxima actualización de uso.",
     "limitsUnknown": "Límites de uso no disponibles",

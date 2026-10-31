@@ -234,7 +234,7 @@ export function platformLimitState(
 ): PlatformLimitState {
   const entry = providers.find((provider) => provider.provider === platform);
   if (!entry) return "clear";
-  if (entry.accountLimited) return "at-limit";
+  if (entry.accountLimited || entry.refused) return "at-limit";
   const nearLimit = options.nearLimitPercent ?? NEAR_LIMIT_PERCENT;
   const applicable = getUsageSections(entry).filter(
     (section) =>

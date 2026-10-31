@@ -76,6 +76,22 @@ export function ProviderSegment({
             ? t("bar.unavailable")
             : "";
 
+  // Windows with room would read as healthy while every request is refused.
+  if (statusKind === "refused") {
+    return (
+      <span
+        title={provider.error ?? provider.refused ?? undefined}
+        className="inline-flex items-center gap-1.5 text-destructive"
+      >
+        {icon}
+        <AlertTriangle className="size-2.5" />
+        {!compact ? (
+          <span className="text-[11px] font-medium">{t("bar.refused")}</span>
+        ) : null}
+      </span>
+    );
+  }
+
   if (
     provider.status === "idle" ||
     (provider.status === "fetching" && !tightest)

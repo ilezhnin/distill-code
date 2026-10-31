@@ -152,6 +152,47 @@ impl AccountStatusCache {
         slot.observations.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// The provider refused a request of `account` for a reason no usage
+    /// reset lifts (see [`is_lasting_quota_error`]), saying `words`.
+    async fn record_refused(&self, account: &ProviderAccount, words: String) {
+        let slot = self.refresh_slot(&account.id).await;
+        let mut cache = self.cache.lock().await;
+        let status = cache.entry(account.id.clone()).or_insert_with(|| {
+            ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms())
+        });
+        refuse(status, words);
+        status.last_attempt_at = now_ms();
+        status.last_updated_at = now_ms();
+        slot.observations.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A turn on `account_id` was served: whatever refused it before no
+    /// longer does. The next reader takes a new sample.
+    async fn record_served(&self, account_id: &str) -> bool {
+        let slot = self.refresh_slot(account_id).await;
+        let mut cache = self.cache.lock().await;
+        let Some(status) = cache
+            .get_mut(account_id)
+            .filter(|status| status.refused.is_some())
+        else {
+            return false;
+        };
+        status.refused = None;
+        status.error = None;
+        status.state = if status
+            .limits
+            .iter()
+            .any(|limit| limit.used_percent.is_some_and(|used| used >= 100.0))
+        {
+            AccountState::Limited
+        } else {
+            AccountState::Ready
+        };
+        status.last_attempt_at = 0;
+        slot.observations.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
     /// A telemetry cooldown must not conceal expired or removed authorization.
     async fn release_cooldown_for_expired_authorization(&self, account_id: &str, expired: bool) {
         if !expired {
@@ -490,7 +531,41 @@ async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSn
 
 /// A telemetry error is not evidence that an exhausted account refilled.
 /// Preserve its last known values while exposing the failed attempt separately.
+/// Marks `status` refused by its provider, saying `words` (see
+/// [`ProviderAccountStatus::refused`]). Nothing is waited for: no reset lifts
+/// it, so the account is no longer shown or chosen as one with room.
+fn refuse(status: &mut ProviderAccountStatus, words: String) {
+    status.state = AccountState::Error;
+    status.on_credits = false;
+    status.error = Some(refusal_notice(&words));
+    status.refused = Some(words);
+}
+
 fn merge_refresh(
+    old: Option<&ProviderAccountStatus>,
+    status: ProviderAccountStatus,
+) -> ProviderAccountStatus {
+    let Some((old, words)) = old.and_then(|old| Some((old, old.refused.clone()?))) else {
+        return merge_read(old, status);
+    };
+    // A sign-in that ended outranks the refusal of the requests it made.
+    if matches!(
+        status.state,
+        AccountState::NeedsAuth | AccountState::Disabled
+    ) {
+        return status;
+    }
+    // A usage read does not show what the provider does with a request:
+    // Z.ai reports a plan with its allowance untouched while it refuses
+    // every one. Keep what the read says, and the refusal.
+    let mut earlier = old.clone();
+    earlier.refused = None;
+    let mut status = merge_read(Some(&earlier), status);
+    refuse(&mut status, words);
+    status
+}
+
+fn merge_read(
     old: Option<&ProviderAccountStatus>,
     mut status: ProviderAccountStatus,
 ) -> ProviderAccountStatus {
@@ -871,6 +946,10 @@ fn choose(
             AccountState::NeedsAuth | AccountState::Disabled
         )
     });
+    // A refused account gives way to any spare, but no reset ends a refusal:
+    // with nothing else to wait for, the turn goes to it and the provider
+    // says again why it refuses.
+    let current_refused = current_status.is_some_and(|status| status.refused.is_some());
     let ready = |account_id: &str, on_credits: bool| {
         Ok((
             AccountSelection::Ready {
@@ -879,7 +958,7 @@ fn choose(
             on_credits,
         ))
     };
-    if !current_auth_missing && !current_blocked(false) {
+    if !current_auth_missing && !current_refused && !current_blocked(false) {
         return ready(current_id, false);
     }
     let same_billing = |account: &ProviderAccount| {
@@ -911,7 +990,7 @@ fn choose(
         return ready(account_id, false);
     }
     if credits {
-        if !current_auth_missing && !current_blocked(true) {
+        if !current_auth_missing && !current_refused && !current_blocked(true) {
             return ready(current_id, true);
         }
         if let Some(account_id) = spare(true) {
@@ -943,6 +1022,9 @@ fn choose(
             },
             false,
         ));
+    }
+    if current_refused && !current_auth_missing {
+        return ready(current_id, false);
     }
     Err("No authenticated account is available for this provider".into())
 }
@@ -1040,8 +1122,78 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
             "weekly/monthly limit exhausted",
         ]
         .iter()
+        .chain(&LASTING_QUOTA_WORDS)
         .any(|needle| text.contains(needle))
     })
+}
+
+/// The quota kinds of an account that no usage reset brings back: billing,
+/// an account on hold, no credit left.
+pub(crate) const LASTING_QUOTA_KINDS: [&str; 3] =
+    ["billing_error", "account_on_hold", "insufficient_quota"];
+
+/// How a provider says an account has nothing left to spend, where it names
+/// no kind: Z.ai's "Insufficient balance or no resource package. Please
+/// recharge." (its code 1113) for a key whose Coding Plan has lapsed.
+const LASTING_QUOTA_WORDS: [&str; 2] = ["insufficient balance", "no resource package"];
+
+/// Whether a quota error names a limit no reset lifts (see
+/// [`LASTING_QUOTA_KINDS`] and [`LASTING_QUOTA_WORDS`]), in a typed field or
+/// the provider's message.
+pub(crate) fn is_lasting_quota_error(error: &Value) -> bool {
+    let typed = [
+        "/data/errorKind",
+        "/errorKind",
+        "/data/codexErrorInfo",
+        "/codexErrorInfo",
+        "/data/code",
+        "/error/code",
+        "/code",
+    ];
+    let said = ["/message", "/data/message"];
+    typed
+        .iter()
+        .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .any(|kind| LASTING_QUOTA_KINDS.contains(&kind.as_str()))
+        || said
+            .iter()
+            .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+            .map(str::to_ascii_lowercase)
+            .any(|text| {
+                LASTING_QUOTA_KINDS
+                    .iter()
+                    .chain(&LASTING_QUOTA_WORDS)
+                    .any(|kind| text.contains(kind))
+            })
+}
+
+/// The provider's own sentence in a refusal, without the bridge's
+/// "Internal error:" wrapper; never more than a few hundred characters. The
+/// host keeps it as `data.refused` once it has put its notice in
+/// `data.message`.
+pub(crate) fn refusal_words(error: &Value) -> String {
+    let said = ["/data/refused", "/data/message", "/message"]
+        .iter()
+        .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|text| !text.is_empty())
+        .unwrap_or("The provider refused the request");
+    let said = said
+        .strip_prefix("Internal error:")
+        .map(str::trim_start)
+        .unwrap_or(said);
+    said.chars().take(300).collect()
+}
+
+/// What the operator reads about an account its provider refuses (see
+/// [`ProviderAccountStatus::refused`]).
+pub(crate) fn refusal_notice(words: &str) -> String {
+    format!(
+        "The provider refuses every request on this account: \u{201c}{words}\u{201d} \
+         Waiting for a usage reset will not help: renew the plan or add balance \
+         with the provider, then try again."
+    )
 }
 
 /// Renews the app's own grant of `account` on Windows (see the agent host's
@@ -1075,9 +1227,27 @@ pub(crate) async fn record_quota_error(app: &AppHandle, account_id: &str, error:
         return false;
     };
     let state = app.state::<ProviderAccountStatusState>();
-    state.native.record_limited(&account).await;
+    if is_lasting_quota_error(error) {
+        state
+            .native
+            .record_refused(&account, refusal_words(error))
+            .await;
+    } else {
+        state.native.record_limited(&account).await;
+    }
     let _ = emit_cached_snapshot(app).await;
     true
+}
+
+/// A turn on `account_id` was served: a refusal recorded for the account
+/// (see [`ProviderAccountStatus::refused`]) is over.
+pub(crate) async fn record_served(app: &AppHandle, account_id: &str) {
+    let Some(state) = app.try_state::<ProviderAccountStatusState>() else {
+        return;
+    };
+    if state.native.record_served(account_id).await {
+        let _ = emit_cached_snapshot(app).await;
+    }
 }
 
 pub async fn consume_reset(

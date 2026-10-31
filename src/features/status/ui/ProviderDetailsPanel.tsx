@@ -80,6 +80,17 @@ export function ProviderDetailsPanel({
         </div>
       ) : null}
 
+      {statusKind === "refused" ? (
+        <div className="space-y-0.5" role="status">
+          <div className="text-[11px] font-medium text-destructive">
+            {t("roster.refusedTitle")}
+          </div>
+          <div className="break-words text-muted-foreground">
+            {provider.error ?? provider.refused}
+          </div>
+        </div>
+      ) : null}
+
       {statusKind === "refresh-failed" && sections.length === 0 ? (
         <div className="space-y-0.5">
           <div className="text-[11px] font-medium text-foreground/85">
@@ -107,7 +118,10 @@ export function ProviderDetailsPanel({
 
       {pause && sections.length > 0 ? pause : null}
 
-      {!pause && provider.error && sections.length > 0 ? (
+      {!pause &&
+      statusKind !== "refused" &&
+      provider.error &&
+      sections.length > 0 ? (
         <div className="space-y-0.5">
           <div className="text-[11px] font-medium text-foreground/85">
             {t("roster.refreshFailedCached")}

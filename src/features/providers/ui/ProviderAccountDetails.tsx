@@ -98,9 +98,11 @@ export function ProviderUsageDetails({
                 : "secondary"
             }
           >
-            {usagePaused && state === "error"
-              ? t("accounts.usagePaused")
-              : t(`accounts.states.${state}`)}
+            {usage.refused
+              ? t("accounts.refused")
+              : usagePaused && state === "error"
+                ? t("accounts.usagePaused")
+                : t(`accounts.states.${state}`)}
           </Badge>
         ) : null}
         <span className="text-muted-foreground">

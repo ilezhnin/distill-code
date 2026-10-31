@@ -8,6 +8,7 @@ import { useProviderCatalogStore } from "@/features/providers/stores/providerCat
 import { useAgentSetupStore } from "@/features/providers/stores/agentSetupStore";
 import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
 import { useProviderRateLimitsStore } from "../stores/providerRateLimitsStore";
+import { ProviderSegment } from "./ProviderSegment";
 import { StatusBar } from "./StatusBar";
 
 const readiness = vi.hoisted(() => new Map<string, AgentProviderReadiness>());
@@ -73,6 +74,37 @@ it("opens provider settings from the empty bar without starting any setup", asyn
   expect(
     screen.queryByRole("button", { name: /connect all/i }),
   ).not.toBeInTheDocument();
+});
+
+it("shows a refused account as refused, not by its untouched usage windows", () => {
+  // Z.ai reports its plan untouched while it refuses every request.
+  const notice =
+    "The provider refuses every request on this account: “Insufficient balance or no resource package. Please recharge.”";
+  render(
+    <ProviderSegment
+      provider={{
+        provider: "zai-acp",
+        accountId: "invented-account",
+        refused:
+          "Insufficient balance or no resource package. Please recharge.",
+        error: notice,
+        session: {
+          usedPercent: 0,
+          windowMinutes: 300,
+          resetsAt: null,
+          resetDescription: null,
+        },
+        weekly: null,
+        planType: "GLM Coding Plan Lite",
+        updatedAt: 1,
+        status: "error",
+        configured: true,
+      }}
+    />,
+  );
+  expect(screen.getByText("Refuses requests")).toBeInTheDocument();
+  expect(screen.getByTitle(notice)).toBeInTheDocument();
+  expect(screen.queryByText(/0%/)).not.toBeInTheDocument();
 });
 
 it("keeps refresh for existing providers without offering bulk setup", async () => {

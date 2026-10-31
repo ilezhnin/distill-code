@@ -102,7 +102,11 @@ function UsageRow({
             </span>
           ) : null}
         </span>
-        {sections.length === 0 ? (
+        {statusKind === "refused" ? (
+          <span className="ml-auto shrink-0 text-[11px] font-medium text-destructive">
+            {t("bar.refused")}
+          </span>
+        ) : sections.length === 0 ? (
           <>
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">
               {statusKind === "paused"

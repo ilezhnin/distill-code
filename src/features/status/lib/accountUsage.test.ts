@@ -152,6 +152,28 @@ describe("account usage projection", () => {
     expect(platformLimitState([usage], "claude-acp")).not.toBe("at-limit");
   });
 
+  it("shows a refused account as refused although its windows have room", () => {
+    // Z.ai's usage read reports the plan untouched while it refuses requests.
+    const [usage] = project({
+      state: "error",
+      error: "The provider refuses every request on this account.",
+      refused: "Insufficient balance or no resource package. Please recharge.",
+    });
+    expect(usage.refused).toBe(
+      "Insufficient balance or no resource package. Please recharge.",
+    );
+    expect(usage.session?.usedPercent).toBe(10);
+    expect(getProviderUsageStatusKind(usage)).toBe("refused");
+    expect(platformLimitState([usage], "claude-acp")).toBe("at-limit");
+    // A signed-out account shows the sign-in, not the old refusal.
+    const [signedOut] = project({
+      state: "needs_auth",
+      refused: "Insufficient balance",
+    });
+    expect(signedOut.refused).toBeNull();
+    expect(getProviderUsageStatusKind(signedOut)).toBe("sign-in");
+  });
+
   it("retains a separate spending block with no known duration", () => {
     const [usage] = project({ state: "limited", limits: [] });
     expect(getProviderUsageStatusKind(usage)).toBe("limited");

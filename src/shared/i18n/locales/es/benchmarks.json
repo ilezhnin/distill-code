@@ -514,6 +514,7 @@
     "failed": "Una prueba se detuvo por un error: {{reason}}. Reanuda para intentarla de nuevo, o cancela.",
     "continuing": "La ejecución continúa con las demás pruebas. Un intento requiere atención: {{reason}}",
     "rateLimited": "Se alcanzó el límite de frecuencia de solicitudes del proveedor",
+    "refused": "El proveedor rechaza todas las solicitudes de esta cuenta: «{{reason}}» Ningún restablecimiento de uso lo resuelve. Renueva el plan o añade saldo con el proveedor y luego reanuda, o cancela.",
     "unknown": "Una prueba no terminó. Reanuda para intentarla de nuevo, o cancela.",
     "window": "Termínala antes de {{until}}; después la ejecución queda registrada tal como está."
   },

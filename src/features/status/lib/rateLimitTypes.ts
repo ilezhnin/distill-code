@@ -37,6 +37,8 @@ export interface ProviderRateLimits {
   provider: AgentPlatformId;
   accountId?: string;
   accountLimited?: boolean;
+  /** The provider refuses the account's requests, in its own words. */
+  refused?: string | null;
   /** Plan usage is spent and the account runs on its credits. */
   onCredits?: boolean;
   usageRetryAt?: number | null;

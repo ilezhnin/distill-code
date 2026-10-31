@@ -438,6 +438,160 @@ fn zai_exhausted_subscription_window_is_quota_not_a_temporary_rate_limit() {
     })));
 }
 
+/// Z.ai's refusal of a key whose Coding Plan lapsed, as OpenCode's ACP agent
+/// reports it (the provider's HTTP 429 body is code 1113).
+fn zai_refusal() -> Value {
+    json!({"code":-32603,"data":{
+        "service":"session","errorName":"APIError","dispatchStarted":true,"promptNotAccepted":false
+    },"message":"Internal error: Insufficient balance or no resource package. Please recharge."})
+}
+
+#[test]
+fn zai_insufficient_balance_is_a_quota_refusal_no_reset_lifts() {
+    let error = zai_refusal();
+    assert!(is_quota_error(&error));
+    assert!(is_lasting_quota_error(&error));
+    assert_eq!(
+        refusal_words(&error),
+        "Insufficient balance or no resource package. Please recharge."
+    );
+    assert!(is_lasting_quota_error(
+        &json!({"data":{"errorKind":"billing_error"}})
+    ));
+    assert!(is_lasting_quota_error(
+        &json!({"message":"no resource package"})
+    ));
+    // A spent window that resets is quota, but not a lasting one.
+    let weekly = json!({"message":"Internal error: Weekly/Monthly Limit Exhausted. Your limit will reset at 2030-01-02 12:00:00"});
+    assert!(is_quota_error(&weekly));
+    assert!(!is_lasting_quota_error(&weekly));
+    // A typed non-quota kind still wins over the words.
+    let mut typed = error.clone();
+    typed["data"]["errorKind"] = json!("rate_limit");
+    assert!(!is_quota_error(&typed));
+    // The host's notice keeps the provider's words apart.
+    let mut explained = error;
+    explained["data"]["message"] = json!(refusal_notice("Insufficient balance."));
+    explained["data"]["refused"] = json!("Insufficient balance.");
+    assert_eq!(refusal_words(&explained), "Insufficient balance.");
+}
+
+fn zai_ready(id: &str) -> ProviderAccountStatus {
+    let mut ready = fresh_status(id);
+    ready.provider_id = "zai-acp".into();
+    ready.subscription = Some("GLM Coding Plan Lite".into());
+    ready.limits[0].used_percent = Some(0.0);
+    ready
+}
+
+#[tokio::test]
+async fn a_refusal_outlasts_usage_reads_that_show_room_until_a_turn_is_served() {
+    let state = AccountStatusCache::default();
+    let mut target = account("zai");
+    target.provider_id = "zai-acp".into();
+    target.auth_method = AuthMethod::ApiKey;
+    state
+        .refresh(&target, false, async { zai_ready("zai") })
+        .await;
+    state
+        .record_refused(&target, refusal_words(&zai_refusal()))
+        .await;
+    // Z.ai's usage read still reports the plan with its allowance untouched.
+    state.invalidate(&target.id).await;
+    let read = state
+        .refresh(&target, true, async { zai_ready("zai") })
+        .await;
+    assert_eq!(read.state, AccountState::Error);
+    assert_eq!(
+        read.refused.as_deref(),
+        Some("Insufficient balance or no resource package. Please recharge.")
+    );
+    assert!(read.error.as_deref().is_some_and(
+        |error| error.contains("Insufficient balance") && error.contains("renew the plan")
+    ));
+    assert_eq!(read.subscription.as_deref(), Some("GLM Coding Plan Lite"));
+    assert_eq!(read.limits[0].used_percent, Some(0.0));
+    // A failed read keeps it too, with the last windows.
+    let mut failed = ProviderAccountStatus::empty("zai", "zai-acp", now_ms());
+    failed.state = AccountState::Error;
+    failed.error = Some("Z.ai could not return usage".into());
+    let merged = merge_refresh(Some(&read), failed);
+    assert!(merged.refused.is_some());
+    assert_eq!(merged.limits, read.limits);
+    // A sign-in that ended outranks it.
+    let mut signed_out = ProviderAccountStatus::empty("zai", "zai-acp", now_ms());
+    signed_out.state = AccountState::NeedsAuth;
+    assert!(merge_refresh(Some(&read), signed_out).refused.is_none());
+    // A served turn ends it.
+    assert!(state.record_served(&target.id).await);
+    assert!(!state.record_served(&target.id).await);
+    let served = state.cache.lock().await.get("zai").cloned().unwrap();
+    assert_eq!(served.state, AccountState::Ready);
+    assert!(served.refused.is_none() && served.error.is_none());
+    assert_eq!(served.last_attempt_at, 0);
+}
+
+#[test]
+fn a_refused_account_gives_way_to_a_spare_and_is_never_waited_for() {
+    let mut current = account("current");
+    current.provider_id = "zai-acp".into();
+    current.auth_method = AuthMethod::ApiKey;
+    let mut spare = current.clone();
+    spare.id = "spare".into();
+    let mut refused = zai_ready("current");
+    refuse(&mut refused, "Insufficient balance".into());
+    let ready = zai_ready("spare");
+    let now = now_ms();
+    assert_eq!(
+        choose_account(
+            &[current.clone(), spare.clone()],
+            &[refused.clone(), ready],
+            "current",
+            true,
+            None,
+            now
+        )
+        .unwrap(),
+        AccountSelection::Ready {
+            account_id: "spare".into()
+        }
+    );
+    // A refused spare is no spare.
+    let mut refused_spare = zai_ready("spare");
+    refuse(&mut refused_spare, "Insufficient balance".into());
+    for (auto_switch, statuses) in [
+        (false, vec![refused.clone()]),
+        (true, vec![refused.clone(), refused_spare]),
+    ] {
+        assert_eq!(
+            choose_account(
+                &[current.clone(), spare.clone()],
+                &statuses,
+                "current",
+                auto_switch,
+                None,
+                now
+            )
+            .unwrap(),
+            AccountSelection::Ready {
+                account_id: "current".into()
+            }
+        );
+    }
+    // A spare that waits for a reset is still worth waiting for.
+    let spent = {
+        let mut spent = zai_ready("spare");
+        spent.state = AccountState::Limited;
+        spent.limits[0].used_percent = Some(100.0);
+        spent
+    };
+    assert!(matches!(
+        choose_account(&[current, spare], &[refused, spent], "current", true, None, now)
+            .unwrap(),
+        AccountSelection::Wait { ref account_id, .. } if account_id == "spare"
+    ));
+}
+
 #[test]
 fn exhausted_usage_balance_is_quota_but_payment_status_alone_is_not() {
     let mut error = json!({"code":-32603,"message":"Internal error","data":{
