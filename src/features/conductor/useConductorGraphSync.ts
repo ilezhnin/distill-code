@@ -16,6 +16,7 @@ import { parseStructuredReport } from "./orchestratorReport";
 import { reconcileStaleGraphStatuses } from "./reconcileStaleGraphStatuses";
 import {
   lastCompletedAssistantSummary,
+  lastFailureReason,
   reportStatusFromRun,
 } from "./runStatus";
 import type { Message } from "@/shared/types/messages";
@@ -381,7 +382,7 @@ function runSyncPass(): void {
     const fallback =
       summary ??
       (reportStatus === "failed"
-        ? runtime?.error || "The agent failed."
+        ? runtime?.error || lastFailureReason(messages) || "The agent failed."
         : reportStatus === "cancelled"
           ? "The agent was cancelled."
           : "The agent finished.");

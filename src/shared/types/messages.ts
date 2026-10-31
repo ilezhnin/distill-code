@@ -297,6 +297,13 @@ export interface MessageMetadata {
   targetPersonaId?: string;
   targetPersonaName?: string;
   completionStatus?: MessageCompletionStatus;
+  /**
+   * Why a reply with `completionStatus: "error"` stops where it does, in the
+   * host's words: the bridge died under it, the provider refused mid-turn.
+   * Comes from the transcript (the host records it with the turn's end), so
+   * a reload shows it again.
+   */
+  failureReason?: string;
 }
 
 export interface Message {

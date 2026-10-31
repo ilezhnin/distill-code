@@ -717,8 +717,8 @@ mod tests {
     fn claude_sessions_open_without_claude_codes_own_memory() {
         let claude = harness(CLAUDE_HARNESS).unwrap();
         let model_meta = session_model_meta(claude, "claude-opus-4-7").unwrap();
-        let merged = merge_session_meta(session_base_meta(CLAUDE_HARNESS), Some(&model_meta))
-            .unwrap();
+        let merged =
+            merge_session_meta(session_base_meta(CLAUDE_HARNESS), Some(&model_meta)).unwrap();
         let options = &merged["claudeCode"]["options"];
         assert_eq!(options["settings"]["autoMemoryEnabled"], false);
         assert_eq!(options["model"], "claude-opus-4-7");

@@ -5988,6 +5988,21 @@ impl Inner {
         })
     }
 
+    /// The transcript's own record that a turn failed after it produced
+    /// something: the reply above it is what the agent managed, and `reason`
+    /// is why it stops there. Persisted like any other update, so a reload
+    /// replays it (`acpSessionInfoUpdate.ts` marks the reply and shows the
+    /// reason) instead of leaving a reply that just trails off.
+    fn turn_failed_update(session_id: &str, reason: &str) -> Value {
+        json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": { "activeRunId": Value::Null, "turnFailed": { "reason": reason } },
+            }
+        })
+    }
+
     /// Run one user turn and then every message steered into it, in order.
     /// A steered turn (`steer`) that finds another turn already running is
     /// queued behind it instead of failing: the steer was acknowledged with
@@ -6240,6 +6255,27 @@ impl Inner {
             Err(error) => {
                 let withdrawn = self.discard_rejected_prompt(&session_id, recorded).await;
                 error["data"]["promptNotAccepted"] = json!(withdrawn);
+                if !withdrawn {
+                    // The turn did something before it failed, so its reply
+                    // stays in the transcript — and so must the reason it
+                    // stops where it does. The renderer that sent the prompt
+                    // hears the error once in the reply; a renderer that
+                    // reloads later, or opens this chat from a conductor's
+                    // digest, reads it from here.
+                    let reason = error["message"]
+                        .as_str()
+                        .filter(|message| !message.trim().is_empty())
+                        .unwrap_or("The turn failed before the agent finished");
+                    let mut pending = vec![(
+                        session_id.clone(),
+                        Self::turn_failed_update(&session_id, reason),
+                    )];
+                    if let Err(persist_error) = self.flush_pending_events(&mut pending).await {
+                        log::warn!(
+                            "[agent-host] failed to record why the turn of {session_id} failed: {persist_error}"
+                        );
+                    }
+                }
                 if let (Some(link), Some(rejection)) = (
                     executor_link.as_ref(),
                     ReceiptRejection::quota_not_accepted(
@@ -12084,6 +12120,17 @@ mod tests {
         assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
         live.run = Some(RunState::start(&TurnIds::new()));
         assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
+    }
+
+    #[test]
+    fn a_turn_that_failed_after_producing_output_records_the_reason_with_its_end() {
+        let update = Inner::turn_failed_update("s1", "bridge exited");
+        assert_eq!(update["sessionId"], "s1");
+        assert_eq!(update["update"]["sessionUpdate"], "session_info_update");
+        let meta = &update["update"]["_meta"];
+        // Ends the run the way `run_settled_update` does, and says why.
+        assert!(meta["activeRunId"].is_null());
+        assert_eq!(meta["turnFailed"]["reason"], "bridge exited");
     }
 
     #[test]

@@ -169,4 +169,52 @@ describe("ACP session info updates", () => {
       isRunCancellationPending: true,
     });
   });
+
+  it("keeps the host's reason for a turn that failed after it started, on the reply it cut short", async () => {
+    const id = "turn-failed-session";
+    useChatSessionStore.getState().addSession({
+      id,
+      title: "Fictional worker",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      messageCount: 2,
+      userSetName: true,
+    });
+    const store = useChatStore.getState();
+    store.addMessage(id, {
+      id: "cut-reply",
+      role: "assistant",
+      created: 1,
+      content: [{ type: "text", text: "Reading the fixture…" }],
+      metadata: { completionStatus: "inProgress" },
+    });
+    store.setStreamingMessageId(id, "cut-reply");
+    store.setChatState(id, "streaming");
+    store.setActiveRunId(id, "run-1");
+    await handleSessionNotification({
+      sessionId: id,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          activeRunId: null,
+          turnFailed: {
+            reason: "The agent's bridge exited before this turn finished",
+          },
+        },
+      },
+    } as never);
+    // The reply is marked where it stops, with the reason kept on it for the
+    // bubble to show — after a reload as much as live — and the chat parks in
+    // error the way a live failure parks it, so a conductor reads the reason
+    // off the runtime instead of a bare "the agent failed".
+    expect(useChatStore.getState().messagesBySession[id][0].metadata).toEqual({
+      completionStatus: "error",
+      failureReason: "The agent's bridge exited before this turn finished",
+    });
+    expect(useChatStore.getState().getSessionRuntime(id)).toMatchObject({
+      chatState: "error",
+      error: "The agent's bridge exited before this turn finished",
+      activeRunId: null,
+    });
+  });
 });

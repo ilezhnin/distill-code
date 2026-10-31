@@ -28,6 +28,13 @@ type SessionInfoUpdate = SessionUpdate & {
   _meta?: unknown;
 };
 
+/** The reason of a `turnFailed` record, or null when the meta carries none. */
+function failedTurnReason(value: unknown): string | null {
+  if (!isRecord(value) || typeof value.reason !== "string") return null;
+  const reason = value.reason.trim();
+  return reason || null;
+}
+
 export function handleSessionInfoUpdate(
   sessionId: string,
   update: SessionUpdate,
@@ -53,6 +60,27 @@ export function handleSessionInfoUpdate(
         metadata: { ...message.metadata, completionStatus: "error" },
       }));
     store.setChatState(sessionId, "idle");
+  }
+  const turnFailure = failedTurnReason(meta.turnFailed);
+  if (turnFailure && !ownedTask) {
+    // The host's record that the turn failed after it produced something
+    // (`turn_failed_update`). Live, the prompt's own reply says the same to
+    // the sender; on a replay this is the only word of it, so the reply is
+    // marked here, with the reason the bubble shows under it, and the chat
+    // parks in error the way the live failure parks it.
+    flushBufferedStreamingUpdatesForSession(sessionId, { flushSubtitle: true });
+    const store = useChatStore.getState();
+    const messageId = store.getSessionRuntime(sessionId).streamingMessageId;
+    if (messageId)
+      store.updateMessage(sessionId, messageId, (message) => ({
+        ...message,
+        metadata: {
+          ...message.metadata,
+          completionStatus: "error",
+          failureReason: turnFailure,
+        },
+      }));
+    store.setError(sessionId, turnFailure);
   }
   if ("activeRunId" in meta) {
     const activeRunId =

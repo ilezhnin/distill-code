@@ -16,6 +16,27 @@ export function lastCompletedAssistantSummary(
   return null;
 }
 
+/**
+ * Why the agent's last reply failed, in the host's words, or null.
+ *
+ * The runtime holds the same reason while the renderer that saw the failure
+ * is alive; after a reload only the reply carries it (`failureReason`, which
+ * the host records with the turn's end). A conductor's digest reads it from
+ * here so a worker the bridge died under is reported as that, not as "the
+ * agent failed".
+ */
+export function lastFailureReason(
+  messages: readonly Message[] | undefined,
+): string | null {
+  if (!messages?.length) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    return message.metadata?.failureReason?.trim() || null;
+  }
+  return null;
+}
+
 export function reportStatusFromRun(
   status: RunStatus,
 ): StructuredReport["status"] | null {

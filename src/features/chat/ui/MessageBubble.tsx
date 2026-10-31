@@ -1318,6 +1318,16 @@ export const MessageBubble = memo(function MessageBubble({
           ) : null}
         </div>
 
+        {/* A reply that failed after it started says why it stops where it
+            does — the host's reason, kept with the transcript. */}
+        {!isUser && canHostMessageActions && message.metadata?.failureReason ? (
+          <div className="pt-1" data-role="turn-failure">
+            <SystemNoticeLine
+              kind="error"
+              text={message.metadata.failureReason}
+            />
+          </div>
+        ) : null}
         {/* Below the actions/timestamp row: the chip row is a normal-flow
             sibling after the reserved action space, so nothing overlaps it. */}
         {showConductorFooter ? (

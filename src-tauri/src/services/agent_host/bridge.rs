@@ -339,7 +339,11 @@ fn fail_pending_on_exit(pending: &Pending, alive: &AtomicBool) {
     alive.store(false, Ordering::SeqCst);
     if let Ok(mut pending) = guard {
         for (_, request) in pending.drain() {
-            let _ = request.reply.send(Err(protocol::internal("bridge exited")));
+            // Read by the operator too: a turn this cuts short keeps this text
+            // as the reason it stops where it does.
+            let _ = request.reply.send(Err(protocol::internal(
+                "The agent's bridge exited before this turn finished",
+            )));
         }
     }
 }

@@ -553,7 +553,18 @@ export async function dispatchPrompt(
         }));
       }
 
-      if (userMessageCommitted) {
+      // A reply that had started carries its own failure line: the host
+      // records the reason with the turn's end (`turnFailed`), and the bubble
+      // shows it under the reply, live and after a reload alike. A second
+      // notice here would say the same thing twice.
+      const replyCarriesReason =
+        streamingMessageId !== null &&
+        Boolean(
+          liveStore.messagesBySession[sessionId]?.find(
+            (message) => message.id === streamingMessageId,
+          )?.metadata?.failureReason,
+        );
+      if (userMessageCommitted && !replyCarriesReason) {
         liveStore.addMessage(
           sessionId,
           createSystemNotificationMessage(errorMessage, "error"),
