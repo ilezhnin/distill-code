@@ -14,7 +14,7 @@
     "hide": "Hide from status bar",
     "agentLimits": "Agent usage limits",
     "paused": "Paused",
-    "refused": "Refuses requests"
+    "refused": "Requests refused"
   },
   "roster": {
     "title": "Usage",
@@ -34,7 +34,7 @@
     "signInToSee": "Sign in to see usage",
     "checking": "Checking connection…",
     "limitsUnavailable": "Connected. Usage limits are unavailable.",
-    "refusedTitle": "The provider refuses every request on this account",
+    "refusedTitle": "The provider refused this account's request",
     "signInExpired": "Sign-in expired",
     "resetsNow": "Resets now",
     "resetsIn": "Resets in {{duration}}",

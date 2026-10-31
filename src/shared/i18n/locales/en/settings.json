@@ -603,7 +603,7 @@
     "stale": "Out of date",
     "onCredits": "Running on credits",
     "usagePaused": "Usage updates paused",
-    "refused": "Refuses requests",
+    "refused": "Requests refused",
     "usageRetryIn": "The provider paused usage requests. Retry in {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Waiting for the next usage update.",
     "limitsUnknown": "Usage limits not reported",
@@ -667,8 +667,8 @@
     "apiBillingHint": "API usage is billed separately. Automatic switching stays within the same provider and billing type.",
     "connect": {
       "zai-acp": {
-        "description": "Connect your GLM Coding Plan with a key from the Z.ai API console. Signing in to chat.z.ai alone does not connect a Coding Plan.",
-        "keyHint": "Uses your GLM Coding Plan subscription endpoint. No automatic fallback to pay-as-you-go API billing. Your key is encrypted on this device."
+        "description": "Connect Z.ai with a key from its API Keys page. Signing in to chat.z.ai alone does not connect an account.",
+        "keyHint": "Z.ai bills by the key: a key from the Personal Coding Plan tab spends your GLM Coding Plan, a key from the Standard tab spends your pay-as-you-go balance. Your key is encrypted on this device."
       }
     },
     "saving": "Saving…",

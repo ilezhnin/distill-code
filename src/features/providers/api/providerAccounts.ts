@@ -101,8 +101,9 @@ export interface ProviderAccountStatus {
   error: string | null;
   usageRetryAt?: number | null;
   /**
-   * The provider refuses this account's requests for a reason no usage reset
-   * lifts, in its own words; usage windows may still show room.
+   * The provider refused this account's request for a reason no usage reset
+   * lifts (a balance, plan or key matter), in its own words; usage windows
+   * may still show room. Cleared once a turn on the account is served.
    */
   refused?: string | null;
 }

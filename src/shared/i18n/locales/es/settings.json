@@ -603,7 +603,7 @@
     "stale": "Desactualizado",
     "onCredits": "Usando créditos",
     "usagePaused": "Actualizaciones de uso en pausa",
-    "refused": "Rechaza solicitudes",
+    "refused": "Solicitudes rechazadas",
     "usageRetryIn": "El proveedor ha pausado las consultas de uso. Reintento en {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Esperando la próxima actualización de uso.",
     "limitsUnknown": "Límites de uso no disponibles",
@@ -667,8 +667,8 @@
     "apiBillingHint": "El uso de API se factura por separado. El cambio automático se limita al mismo proveedor y tipo de facturación.",
     "connect": {
       "zai-acp": {
-        "description": "Conecta GLM Coding Plan con una clave de la consola API de Z.ai. Iniciar sesión en chat.z.ai no conecta un Coding Plan.",
-        "keyHint": "Usa el endpoint de tu suscripción GLM Coding Plan, sin cambiar automáticamente a la API de pago por uso. La clave se cifra en este dispositivo."
+        "description": "Conecta Z.ai con una clave de su página API Keys. Iniciar sesión en chat.z.ai no conecta una cuenta.",
+        "keyHint": "Z.ai cobra según la clave: una clave de la pestaña Personal Coding Plan gasta tu GLM Coding Plan; una de la pestaña Standard, tu saldo de pago por uso. La clave se cifra en este dispositivo."
       }
     },
     "saving": "Guardando…",

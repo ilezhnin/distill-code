@@ -153,10 +153,10 @@ describe("account usage projection", () => {
   });
 
   it("shows a refused account as refused although its windows have room", () => {
-    // Z.ai's usage read reports the plan untouched while it refuses requests.
+    // Z.ai's usage read reports the plan untouched while it refuses the key.
     const [usage] = project({
       state: "error",
-      error: "The provider refuses every request on this account.",
+      error: "Z.ai refused this account's request.",
       refused: "Insufficient balance or no resource package. Please recharge.",
     });
     expect(usage.refused).toBe(

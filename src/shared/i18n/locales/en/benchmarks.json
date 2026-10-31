@@ -514,7 +514,8 @@
     "failed": "A test stopped on an error: {{reason}}. Resume to try it again, or cancel.",
     "continuing": "The run continues with other tests. An attempt needs attention: {{reason}}",
     "rateLimited": "The provider's request rate limit was reached",
-    "refused": "The provider refuses every request on this account: “{{reason}}” No usage reset lifts this. Renew the plan or add balance with the provider, then resume, or cancel.",
+    "refused": "The provider refused this account's request: “{{reason}}” A usage reset will not change that. Once the account's balance, plan or key is in order with the provider, resume, or cancel.",
+    "refusedNotice": "{{notice}} Then resume, or cancel.",
     "unknown": "A test did not finish. Resume to try it again, or cancel.",
     "window": "Finish before {{until}}; after that the run is recorded as it stands."
   },

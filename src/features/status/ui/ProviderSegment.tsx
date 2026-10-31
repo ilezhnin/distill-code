@@ -76,7 +76,7 @@ export function ProviderSegment({
             ? t("bar.unavailable")
             : "";
 
-  // Windows with room would read as healthy while every request is refused.
+  // Windows with room would read as healthy while requests are refused.
   if (statusKind === "refused") {
     return (
       <span

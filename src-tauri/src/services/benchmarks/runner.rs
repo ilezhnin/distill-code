@@ -2576,7 +2576,7 @@ const QUOTA_STOPPED: &str =
     "A test did not finish: the usage limit ran out and does not reset in time for the run to wait";
 /// Why a run stopped on a provider that refuses the account for a reason no
 /// reset lifts ([`lasting_quota`]); the provider's own words follow it.
-const QUOTA_REFUSED: &str = "A test did not finish: the provider refuses every request on this account, and no usage reset lifts that. Renew the plan or add balance with the provider, then resume";
+const QUOTA_REFUSED: &str = "A test did not finish: the provider refused this account's request, and a usage reset will not change that. Once the account's balance, plan or key is in order with the provider, resume";
 
 /// What a run does once its provider refused a turn for quota.
 #[derive(Debug, PartialEq)]
@@ -16233,8 +16233,10 @@ mod tests {
             quota_plan("run-zai", "zai-acp", &zai.to_string(), at),
             QuotaPlan::Stop
         );
-        // A lapsed Coding Plan is refused before any answer, and no reset
-        // lifts it: the run stops at once instead of retrying for hours.
+        // A key with nothing to spend (a Standard key on an empty balance,
+        // or a Coding Plan key without a plan) is refused before any answer,
+        // and no usage reset lifts it: the run stops at once for the
+        // operator instead of retrying for hours.
         let lapsed = json!({"code":-32603,"data":{"errorName":"APIError",
             "dispatchStarted":true,"promptNotAccepted":false},
             "message":"Internal error: Insufficient balance or no resource package. Please recharge."});

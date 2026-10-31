@@ -537,7 +537,7 @@ async fn emit_cached_snapshot(app: &AppHandle) -> Result<ProviderAccountStatusSn
 fn refuse(status: &mut ProviderAccountStatus, words: String) {
     status.state = AccountState::Error;
     status.on_credits = false;
-    status.error = Some(refusal_notice(&words));
+    status.error = Some(refusal_notice(&status.provider_id, &words));
     status.refused = Some(words);
 }
 
@@ -556,8 +556,8 @@ fn merge_refresh(
         return status;
     }
     // A usage read does not show what the provider does with a request:
-    // Z.ai reports a plan with its allowance untouched while it refuses
-    // every one. Keep what the read says, and the refusal.
+    // Z.ai reports the account's plan untouched while it refuses a key with
+    // no balance to spend. Keep what the read says, and the refusal.
     let mut earlier = old.clone();
     earlier.refused = None;
     let mut status = merge_read(Some(&earlier), status);
@@ -1128,13 +1128,16 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
 }
 
 /// The quota kinds of an account that no usage reset brings back: billing,
-/// an account on hold, no credit left.
+/// an account on hold, no credit left. A change with the provider (a top-up,
+/// a plan) does, so they are never waited out, only reported.
 pub(crate) const LASTING_QUOTA_KINDS: [&str; 3] =
     ["billing_error", "account_on_hold", "insufficient_quota"];
 
-/// How a provider says an account has nothing left to spend, where it names
-/// no kind: Z.ai's "Insufficient balance or no resource package. Please
-/// recharge." (its code 1113) for a key whose Coding Plan has lapsed.
+/// How a provider says a key has nothing to spend, where it names no kind:
+/// Z.ai's "Insufficient balance or no resource package. Please recharge."
+/// (its code 1113). Z.ai bills by the key: a Standard key spends the
+/// account's pay-as-you-go balance on every endpoint, a Coding Plan key the
+/// plan. Either can be the user's intent, so Flock reports it as said.
 const LASTING_QUOTA_WORDS: [&str; 2] = ["insufficient balance", "no resource package"];
 
 /// Whether a quota error names a limit no reset lifts (see
@@ -1186,13 +1189,26 @@ pub(crate) fn refusal_words(error: &Value) -> String {
     said.chars().take(300).collect()
 }
 
-/// What the operator reads about an account its provider refuses (see
-/// [`ProviderAccountStatus::refused`]).
-pub(crate) fn refusal_notice(words: &str) -> String {
+/// What the operator reads about an account of `provider_id` its provider
+/// refused (see [`ProviderAccountStatus::refused`]): the provider's words,
+/// and what can change the answer, without guessing which the user meant.
+pub(crate) fn refusal_notice(provider_id: &str, words: &str) -> String {
+    if provider_id == "zai-acp" {
+        // Z.ai bills by the key, not the endpoint: a Standard key spends the
+        // pay-as-you-go balance, a Coding Plan key the plan. Its usage read
+        // reports the account's plan whichever key asks.
+        return format!(
+            "Z.ai refused this account's request: \u{201c}{words}\u{201d} A usage reset \
+             will not change that. Z.ai bills by the key: a Standard API key spends the \
+             account's pay-as-you-go balance, a Personal Coding Plan key spends the GLM \
+             Coding Plan. Top up the balance or use a Coding Plan key, whichever you \
+             intend, then send again."
+        );
+    }
     format!(
-        "The provider refuses every request on this account: \u{201c}{words}\u{201d} \
-         Waiting for a usage reset will not help: renew the plan or add balance \
-         with the provider, then try again."
+        "The provider refused this account's request: \u{201c}{words}\u{201d} A usage \
+         reset will not change that. Once the account's balance, plan or key is in \
+         order with the provider, send again."
     )
 }
 

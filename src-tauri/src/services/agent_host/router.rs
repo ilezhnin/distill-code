@@ -5778,10 +5778,10 @@ impl Inner {
         )
     }
 
-    /// A refusal no usage reset lifts says so in the operator's words
-    /// (`data.message`, which the chat shows), and keeps the provider's own
-    /// as `data.refused`.
-    fn explain_refusal(error: &mut Value) {
+    /// A refusal no usage reset lifts says so in the operator's words for
+    /// `harness` (`data.message`, which the chat shows), and keeps the
+    /// provider's own as `data.refused`.
+    fn explain_refusal(error: &mut Value, harness: &str) {
         if !crate::services::provider_account_status::is_lasting_quota_error(error)
             || !error["data"].is_object()
             || error["data"]["refused"].is_string()
@@ -5790,7 +5790,7 @@ impl Inner {
         }
         let words = crate::services::provider_account_status::refusal_words(error);
         error["data"]["message"] = json!(crate::services::provider_account_status::refusal_notice(
-            &words
+            harness, &words
         ));
         error["data"]["refused"] = json!(words);
     }
@@ -6186,7 +6186,7 @@ impl Inner {
                 )
                 .await;
             }
-            Self::explain_refusal(error);
+            Self::explain_refusal(error, &record.harness);
         }
         // A served turn ends a refusal the account's status still shows.
         if result
@@ -10002,19 +10002,31 @@ mod tests {
 
     #[test]
     fn a_lasting_refusal_says_why_and_is_never_parked_for_a_reset() {
-        // Z.ai's refusal of a lapsed Coding Plan, as OpenCode reports it.
+        // Z.ai's refusal of a key with nothing to spend (a Standard key on an
+        // empty balance, or a Coding Plan key without a plan), as OpenCode
+        // reports it.
         let mut refused = json!({"code":-32603,"data":{
             "service":"session", "errorName":"APIError", "accountId":"saved-account",
             "dispatchStarted":false, "promptNotAccepted":true,
         },"message":"Internal error: Insufficient balance or no resource package. Please recharge."});
-        Inner::explain_refusal(&mut refused);
+        let mut elsewhere = refused.clone();
+        Inner::explain_refusal(&mut refused, "zai-acp");
         assert_eq!(
             refused["data"]["refused"],
             "Insufficient balance or no resource package. Please recharge."
         );
         let notice = refused["data"]["message"].as_str().unwrap();
-        assert!(notice.contains("refuses every request on this account"));
+        assert!(notice.starts_with("Z.ai refused this account's request"));
         assert!(notice.contains("Insufficient balance or no resource package"));
+        // Both ways out, without assuming which API the key is meant for.
+        assert!(notice.contains("Top up the balance or use a Coding Plan key"));
+        assert!(!notice.contains("wrong"));
+        // Another provider names what can change the answer.
+        Inner::explain_refusal(&mut elsewhere, "invented-acp");
+        assert!(elsewhere["data"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("balance, plan or key is in order"));
         // The bridge's own words stay where they were, and a second pass
         // keeps the notice from wrapping itself.
         assert_eq!(
@@ -10022,7 +10034,7 @@ mod tests {
             "Internal error: Insufficient balance or no resource package. Please recharge."
         );
         let once = refused.clone();
-        Inner::explain_refusal(&mut refused);
+        Inner::explain_refusal(&mut refused, "zai-acp");
         assert_eq!(refused, once);
         assert!(crate::services::provider_account_status::is_quota_error(
             &refused
@@ -10032,7 +10044,7 @@ mod tests {
         let mut weekly = json!({"code":-32603,"data":{"dispatchStarted":true},
             "message":"Internal error: Weekly/Monthly Limit Exhausted."});
         let before = weekly.clone();
-        Inner::explain_refusal(&mut weekly);
+        Inner::explain_refusal(&mut weekly, "zai-acp");
         assert_eq!(weekly, before);
     }
 

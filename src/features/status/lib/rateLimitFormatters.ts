@@ -52,7 +52,7 @@ export function getProviderUsageStatusKind(
   | "refused"
   | "fetching"
   | "paused" {
-  // Usage windows can show room while the provider refuses every request.
+  // Usage windows can show room while the provider refuses the account.
   if (provider.refused) return "refused";
   if (provider.accountLimited) return "limited";
   if (provider.status === "idle" || provider.status === "fetching") {

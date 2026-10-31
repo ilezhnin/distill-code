@@ -88,11 +88,12 @@ pub struct ProviderAccountStatus {
     /// Usage endpoint cooldown, independent of the account's message allowance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_retry_at: Option<i64>,
-    /// The provider refuses this account's requests for a reason no usage
-    /// reset lifts (no balance or plan package left, billing, an account on
-    /// hold), in its own words. A usage read can still report a plan with
-    /// room (Z.ai's does), so this stands until a turn on the account is
-    /// served or its sign-in changes.
+    /// The provider refused this account's request for a reason no usage
+    /// reset lifts (no balance or plan for the key to spend, billing, an
+    /// account on hold), in its own words. A usage read can still report a
+    /// plan with room (Z.ai's does, whichever key asks), so this stands until
+    /// a turn on the account is served (after a top-up, say) or its key or
+    /// sign-in changes. Turns are never held back for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
 }

@@ -291,9 +291,11 @@ describe("account surfaces", () => {
       within(group).getByRole("button", { name: /add account/i }),
     );
     const dialog = screen.getByRole("dialog");
+    // Z.ai bills by the key; the dialog says how each kind is billed
+    // without assuming which one the user means.
     expect(
       within(dialog).getByText(
-        /Uses your GLM Coding Plan subscription endpoint/,
+        /Z\.ai bills by the key: a key from the Personal Coding Plan tab spends your GLM Coding Plan, a key from the Standard tab spends your pay-as-you-go balance/,
       ),
     ).toBeInTheDocument();
     expect(

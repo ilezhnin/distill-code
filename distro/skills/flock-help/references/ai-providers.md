@@ -2,12 +2,17 @@
 
 ## Z.ai Coding Plan
 
-In Settings > Providers, install Z.ai Coding Plan, add an account, and enter a
-key from `https://z.ai/manage-apikey/apikey-list`. This requires an active GLM
-Coding Plan; signing in to chat.z.ai alone is not enough. Flock runs OpenCode
-over ACP with the subscription endpoint and loads its GLM model list. It does
-not fall back to the separately billed general API. Keys are encrypted locally,
-accounts have separate storage, and quota limits remain unknown when unavailable.
+In Settings > AI providers, install Z.ai Coding Plan, add an account, and enter
+a key from `https://z.ai/manage-apikey/apikey-list`; signing in to chat.z.ai
+alone is not enough. Z.ai bills by the key: a key from the Personal Coding Plan
+tab spends your GLM Coding Plan, a key from the Standard tab spends your
+pay-as-you-go balance. When the key has nothing to spend, Z.ai answers
+"Insufficient balance or no resource package" (code 1113) and Flock marks the
+account "Requests refused" with those words; top up the balance or use a Coding
+Plan key, whichever you intend, and send again. Flock runs OpenCode over ACP
+with the Coding Plan endpoint and loads its GLM model list. Keys are encrypted
+locally, accounts have separate storage, and quota limits remain unknown when
+unavailable.
 
 ## Kimi Code
 

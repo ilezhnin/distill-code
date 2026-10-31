@@ -438,7 +438,8 @@ fn zai_exhausted_subscription_window_is_quota_not_a_temporary_rate_limit() {
     })));
 }
 
-/// Z.ai's refusal of a key whose Coding Plan lapsed, as OpenCode's ACP agent
+/// Z.ai's refusal of a key with nothing to spend (a Standard key on an empty
+/// balance, or a Coding Plan key without a plan), as OpenCode's ACP agent
 /// reports it (the provider's HTTP 429 body is code 1113).
 fn zai_refusal() -> Value {
     json!({"code":-32603,"data":{
@@ -471,7 +472,7 @@ fn zai_insufficient_balance_is_a_quota_refusal_no_reset_lifts() {
     assert!(!is_quota_error(&typed));
     // The host's notice keeps the provider's words apart.
     let mut explained = error;
-    explained["data"]["message"] = json!(refusal_notice("Insufficient balance."));
+    explained["data"]["message"] = json!(refusal_notice("zai-acp", "Insufficient balance."));
     explained["data"]["refused"] = json!("Insufficient balance.");
     assert_eq!(refusal_words(&explained), "Insufficient balance.");
 }
@@ -506,9 +507,11 @@ async fn a_refusal_outlasts_usage_reads_that_show_room_until_a_turn_is_served() 
         read.refused.as_deref(),
         Some("Insufficient balance or no resource package. Please recharge.")
     );
-    assert!(read.error.as_deref().is_some_and(
-        |error| error.contains("Insufficient balance") && error.contains("renew the plan")
-    ));
+    assert!(read
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("Insufficient balance")
+            && error.contains("Top up the balance or use a Coding Plan key")));
     assert_eq!(read.subscription.as_deref(), Some("GLM Coding Plan Lite"));
     assert_eq!(read.limits[0].used_percent, Some(0.0));
     // A failed read keeps it too, with the last windows.

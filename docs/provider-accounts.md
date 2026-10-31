@@ -12,7 +12,7 @@ screens:
 | Provider | Connection | Accounts | Usage reported | Sign out |
 | --- | --- | --- | --- | --- |
 | Claude Code, Codex | browser sign-in of the CLI, or an API key | any number, stored by Flock | yes | yes |
-| Z.ai | an API key (the Coding Plan key) | any number, stored by Flock | yes | yes |
+| Z.ai | an API key (Coding Plan or Standard) | any number, stored by Flock | yes | yes |
 | Grok, Kimi Code | the CLI's own sign-in | one, named by Flock | yes | yes |
 | Copilot, Amp | the CLI's own sign-in | one, named by Flock | not reported | no sign-out flow |
 
@@ -107,6 +107,25 @@ original provider value remains unchanged.
 Balances share one contract: label, remaining amount, optional total, currency,
 expiry, and an explicit unlimited flag. Currency amounts use major units and
 locale-aware currency precision; nonmonetary credits display as rounded counts.
+Z.ai bills by the key, not the endpoint: since 16 October 2026 a key from
+the Personal Coding Plan tab of its API Keys page spends the GLM Coding
+Plan, and a key from the Standard tab spends the account's pay-as-you-go
+balance. Flock cannot tell which the user means to use. A Standard key with
+an empty balance gets code 1113, "Insufficient balance or no resource
+package", while the quota endpoint still reports the account's plan with its
+allowance untouched. The key dialog says how each kind is billed.
+
+A provider that refuses an account's request for a reason no usage reset
+lifts (that 1113, a billing error, an account on hold, no credit left) marks
+the account "Requests refused" in the status bar, the usage menu and the
+account card, with the provider's words and what can change them. The mark
+outlasts usage reads that show room, and ends when a turn on the account is
+served (after a top-up, say) or its key or sign-in changes; it is kept in
+memory, so a restart clears it until the next refused request. Turns are
+never held back for it: such an account gives way to a spare one, and is not
+waited for. A chat says why the request was refused, and a benchmark run
+stops at the first such refusal with that reason.
+
 Claude usage includes credit grants and purchased usage balances when reported.
 Kimi's local API supplies the profile's plan name and account identity, plus its
 extra-usage wallet. Optional profile failure does not discard valid Kimi quotas.

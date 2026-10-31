@@ -77,9 +77,9 @@ it("opens provider settings from the empty bar without starting any setup", asyn
 });
 
 it("shows a refused account as refused, not by its untouched usage windows", () => {
-  // Z.ai reports its plan untouched while it refuses every request.
+  // Z.ai reports its plan untouched while it refuses a key with no balance.
   const notice =
-    "The provider refuses every request on this account: “Insufficient balance or no resource package. Please recharge.”";
+    "Z.ai refused this account's request: “Insufficient balance or no resource package. Please recharge.”";
   render(
     <ProviderSegment
       provider={{
@@ -102,7 +102,7 @@ it("shows a refused account as refused, not by its untouched usage windows", () 
       }}
     />,
   );
-  expect(screen.getByText("Refuses requests")).toBeInTheDocument();
+  expect(screen.getByText("Requests refused")).toBeInTheDocument();
   expect(screen.getByTitle(notice)).toBeInTheDocument();
   expect(screen.queryByText(/0%/)).not.toBeInTheDocument();
 });

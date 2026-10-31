@@ -170,11 +170,13 @@ describe("attentionLabel", () => {
       "attention.unknown": "unknown",
       "attention.rateLimited": "provider request rate limit",
       "attention.refused": `refused: ${options?.reason}`,
+      "attention.refusedNotice": `notice: ${(options as { notice?: string })?.notice}`,
       "states.infrastructure_failure": "Infrastructure failure",
     })[key] ?? key) as Parameters<typeof attentionLabel>[0];
 
-  it("names a provider that refuses the account for good in its own words", () => {
-    // Z.ai's refusal of a lapsed Coding Plan, as the host reports it.
+  it("names a refusal no usage reset lifts in the provider's own words", () => {
+    // Z.ai's refusal of a key with nothing to spend, as an older host
+    // reported it.
     const host = JSON.stringify({
       code: -32603,
       data: { errorName: "APIError", dispatchStarted: true },
@@ -187,7 +189,7 @@ describe("attentionLabel", () => {
       attentionLabel(t, {
         attention: {
           outcome: null,
-          reason: `A test did not finish: the provider refuses every request on this account, and no usage reset lifts that. Renew the plan or add balance with the provider, then resume. ${host}`,
+          reason: `A test did not finish: the provider refused this account's request, and a usage reset will not change that. Once the account's balance, plan or key is in order with the provider, resume. ${host}`,
         },
       }),
     ).toBe(`refused: ${words}`);
@@ -203,14 +205,36 @@ describe("attentionLabel", () => {
         attention: { outcome: "infrastructure_failure", reason: host },
       }),
     ).toBe(`continuing: ${words}`);
-    // The host's own copy of the words wins over its notice.
+    // The host's notice says what can change the answer.
+    const explained = JSON.stringify({
+      message: "Internal error: Insufficient balance.",
+      data: {
+        refused: "Insufficient balance.",
+        message:
+          "Z.ai refused this account's request: top up or use a plan key.",
+      },
+    });
+    expect(
+      attentionLabel(t, { attention: { outcome: null, reason: explained } }),
+    ).toBe(
+      "notice: Z.ai refused this account's request: top up or use a plan key.",
+    );
+    expect(
+      attentionLabel(t, {
+        state: "running",
+        attention: { outcome: "infrastructure_failure", reason: explained },
+      }),
+    ).toBe(
+      "continuing: Z.ai refused this account's request: top up or use a plan key.",
+    );
+    // Without the host's own copy of the words, its message is not a notice.
     expect(
       attentionLabel(t, {
         attention: {
           outcome: null,
           reason: JSON.stringify({
             message: "Internal error: Insufficient balance.",
-            data: { refused: "Insufficient balance.", message: "notice" },
+            data: { message: "Insufficient balance." },
           }),
         },
       }),
