@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { isReadOnlyShellCommand } from "./shellCommandReading";
+import {
+  isReadOnlyShellCommand,
+  isWritingShellCommand,
+} from "./shellCommandReading";
 
 /**
  * The badge exists to hold the operator's trust: a write that reads as a
@@ -60,5 +63,41 @@ describe("isReadOnlyShellCommand", () => {
     '(tasklist 2>/dev/null | grep -i "Unity.exe" || echo "none")',
   ])("reads %j as a lookup", (command) => {
     expect(isReadOnlyShellCommand(command)).toBe(true);
+  });
+});
+
+/**
+ * The conductor's badge fires on evidence of a change, so a write must show
+ * up here and an investigative script must not.
+ */
+describe("isWritingShellCommand", () => {
+  it.each([
+    "echo hi > out.txt",
+    "cd x && echo a >> log.md",
+    "rm -rf build",
+    "mkdir -p out && cp a b",
+    "sed -i s/a/b/ f",
+    "git commit -m x",
+    "git -C repo push",
+    "npm install",
+    "find . -name '*.tmp' -delete",
+    "ls | xargs rm",
+    'echo "$(touch y)"',
+    "Set-Content -Path a.txt -Value x",
+    "Get-ChildItem | Remove-Item",
+    "cat <<EOF > notes.md\nrm is only text here\nEOF",
+  ])("sees a write in %j", (command) => {
+    expect(isWritingShellCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "python -I -c \"import json; print(json.load(open('m.json'))['k'])\"",
+    "python .tools/ucmd.py status 30 2>&1 | head -3",
+    "node scripts/check.mjs",
+    'Get-CimInstance Win32_Process | Select-Object @{n="MB";e={[int]($_.WorkingSetSize/1MB)}}',
+    "ls 2>/dev/null; git status; git log -5",
+    "cat <<EOF\nrm -rf / is only text here\nEOF",
+  ])("sees no write in %j", (command) => {
+    expect(isWritingShellCommand(command)).toBe(false);
   });
 });

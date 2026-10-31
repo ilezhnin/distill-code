@@ -1,39 +1,36 @@
 /**
- * "The conductor is doing the work itself" — the Q6 badge.
+ * "The conductor changed something itself" — the Q6 badge.
  *
  * The conductor is prompt-only: `CONDUCTOR_PROTOCOL_PROMPT` tells it to plan or
  * to answer and never to execute. It is nonetheless an ordinary session with an
  * ordinary toolset, so the instruction can leak; the operator decision (Q6) was
- * to make a leak *visible* rather than to enforce it at the harness, and to
- * revisit only if it turns out to happen for real.
+ * to make a leak *visible* rather than to enforce it at the harness.
  *
- * It happened for real — in the other direction. Live waves showed the badge
- * crying wolf: a conductor that greps a file to answer a question, or reads a
- * report before planning, is doing exactly what the protocol wants, and a
- * warning on every such turn teaches the operator to ignore the warning. So
- * the badge is tiered by the ACP tool kind: reading is quiet, *changing
- * something* is the leak. A tool whose kind is unknown counts as changing
- * something, because a warning that fires needlessly costs attention while a
- * mutation that passes silently costs trust in the whole surface.
+ * Every step a conductor takes is on screen, named for a person, so the badge
+ * is not what makes its work visible. It is the one warning that the work
+ * changed something, and it is only worth reading if it is right. It used to
+ * fire on anything it could not prove was a lookup: an investigative turn of
+ * `python -c` checks, PowerShell pipelines and project status scripts was
+ * badged turn after turn, and a warning on every turn is a warning nobody
+ * reads. So it fires on evidence of a change instead:
  *
- * The tiering by kind was half the fix. ACP's `execute` means "running commands
- * or code" — `git log`, `cat` and `rg` carry the same kind as `rm`, and on a
- * harness whose only way to look at a repository is a shell the badge went back
- * to firing on every investigative turn. So an `execute` call is read a second
- * time, by its command: a command this module can parse and finds to be
- * read-only stays quiet (`shared/lib/shellCommandReading.ts`), and everything
- * else — unparseable, unknown, or genuinely writing — keeps the badge. The asymmetry is deliberate. Missing a
- * read costs a needless warning; missing a write costs the trust the badge
- * exists to hold, so the parser bails towards "mutating" at every ambiguity.
+ * - a tool whose kind is a change — `edit`, `delete`, `move` (Claude Code's
+ *   Edit and Write arrive as `edit`);
+ * - a shell command that visibly writes — a redirect into a file, `rm`, `mv`,
+ *   `sed -i`, `git commit`, `npm install`, `Set-Content`, and the rest of
+ *   `isWritingShellCommand` (`shared/lib/shellCommandReading.ts`).
+ *
+ * A script that may or may not write is shown as the step it is, without the
+ * badge — the same way the open harnesses show a command they ran.
  *
  * Visible still means cheap and read-only: a predicate over the content of one
- * turn. No store, no bookkeeping, nothing persisted — a mutating tool call in a
- * conductor's assistant message *is* the leak, and the badge is derived from it
- * wherever that message is rendered.
+ * turn. No store, no bookkeeping, nothing persisted — a changing tool call in
+ * a conductor's assistant message *is* the leak, and the badge is derived from
+ * it wherever that message is rendered.
  */
 
 import {
-  isReadOnlyShellCommand,
+  isWritingShellCommand,
   toolCallCommandText,
 } from "@/shared/lib/shellCommandReading";
 import type {
@@ -42,74 +39,38 @@ import type {
   ToolRequestContent,
 } from "@/shared/types/messages";
 
-/**
- * Tool kinds that only look at the world.
- *
- * `read`, `search` and `fetch` are self-evident; `think` runs no tool at all;
- * `switch_mode` reconfigures the session rather than touching the workspace.
- * Everything else — `edit`, `delete`, `move`, `execute`, `other` — either
- * changes state or (`execute`, `other`) can, and gets the badge.
- *
- * `list` is not an ACP kind at all, which is why the set is typed over
- * strings: the grok bridge reports its `list_dir` tool as `"kind":"list"`, the
- * cast in the notification handler lets any string through, and a directory
- * listing branded as a mutation is the cry-wolf badge back under another name.
- * The same bridge then says `other` on every `tool_call_update`; the handler
- * refuses that downgrade (`toolCallUpdatePatchFor`), which is what keeps
- * `list` in the stored block for this predicate to read.
- */
-const READ_ONLY_TOOL_KINDS: ReadonlySet<string> = new Set<ToolKind | "list">([
-  "read",
-  "search",
-  "think",
-  "fetch",
-  "switch_mode",
-  "list",
+/** Tool kinds that are a change by definition. */
+const CHANGING_TOOL_KINDS: ReadonlySet<ToolKind> = new Set<ToolKind>([
+  "edit",
+  "delete",
+  "move",
 ]);
 
 /**
- * True when this tool kind can change state.
- *
- * `undefined` is mutating on purpose: a harness that reports no kind gives us
- * nothing to be lenient on, and the pre-tiering behaviour — badge every tool
- * call — is the right fallback there.
- *
- * This is the kind tier alone. `execute` is mutating here and is given its
- * second reading by {@link isMutatingToolCall}, which is what callers with a
- * whole tool call in hand should use.
+ * True when this tool call visibly changes something: its kind is a change,
+ * or it is a shell command that writes.
  */
-export function isMutatingToolKind(kind: ToolKind | undefined): boolean {
-  return kind === undefined || !READ_ONLY_TOOL_KINDS.has(kind);
+export function isChangingToolCall(block: ToolRequestContent): boolean {
+  if (block.toolKind && CHANGING_TOOL_KINDS.has(block.toolKind)) return true;
+  if (block.toolKind !== "execute") return false;
+  const command = toolCallCommandText(block.arguments);
+  return command !== null && isWritingShellCommand(command);
 }
 
 /**
- * True when this tool call can change state.
- *
- * The kind decides, except for `execute`, where the command decides — that is
- * the kind a shell arrives under whether it is reading or writing.
- */
-export function isMutatingToolCall(block: ToolRequestContent): boolean {
-  if (block.toolKind === "execute") {
-    const command = toolCallCommandText(block.arguments);
-    return command === null || !isReadOnlyShellCommand(command);
-  }
-  return isMutatingToolKind(block.toolKind);
-}
-
-/**
- * True when this assistant turn ran a tool that can change state.
+ * True when this assistant turn ran a tool that changed something.
  *
  * The caller supplies the "is this a conductor" half. Legacy orchestrator
  * shells share that flag in the transcript context but can never match here:
  * they are short-circuited in `sendCore` and never reach a model at all, so
  * they have no tool calls to find.
  */
-export function turnHasMutatingToolCall(
+export function turnHasChangingToolCall(
   content: readonly MessageContent[] | undefined,
 ): boolean {
   return Boolean(
     content?.some(
-      (block) => block.type === "toolRequest" && isMutatingToolCall(block),
+      (block) => block.type === "toolRequest" && isChangingToolCall(block),
     ),
   );
 }

@@ -762,9 +762,7 @@ function segmentLookupKind(words: readonly string[]): ShellLookupKind | null {
   if (!head) return null;
   const name = commandName(head);
   if (name === "git") {
-    const subcommand = words
-      .slice(words.indexOf(head) + 1)
-      .find((word) => !word.startsWith("-"));
+    const subcommand = gitSubcommand(words.slice(words.indexOf(head) + 1));
     if (subcommand === "grep") return "search";
     if (subcommand === "ls-files" || subcommand === "ls-tree") return "list";
     return "read";
@@ -791,4 +789,331 @@ export function shellLookupKind(command: string): ShellLookupKind | null {
     if (kind) return kind;
   }
   return "read";
+}
+
+/**
+ * Commands that change the workspace by what they are. Each one writes,
+ * moves or deletes files whatever its arguments (PowerShell's verbs and
+ * aliases included, matched lowercased).
+ */
+const WRITING_COMMANDS: ReadonlySet<string> = new Set([
+  "rm",
+  "rmdir",
+  "mv",
+  "cp",
+  "mkdir",
+  "touch",
+  "tee",
+  "ln",
+  "chmod",
+  "chown",
+  "truncate",
+  "dd",
+  "patch",
+  "set-content",
+  "add-content",
+  "out-file",
+  "remove-item",
+  "move-item",
+  "copy-item",
+  "new-item",
+  "rename-item",
+  "set-item",
+  "clear-content",
+  "export-csv",
+  "ri",
+  "del",
+  "erase",
+  "rd",
+  "md",
+  "ni",
+  "mi",
+  "cpi",
+  "copy",
+  "move",
+  "ren",
+  "sc",
+  "ac",
+]);
+
+/** `git` subcommands that change the repository or the working tree. */
+const WRITING_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "add",
+  "commit",
+  "push",
+  "pull",
+  "merge",
+  "rebase",
+  "reset",
+  "checkout",
+  "switch",
+  "restore",
+  "rm",
+  "mv",
+  "stash",
+  "apply",
+  "am",
+  "cherry-pick",
+  "revert",
+  "clean",
+  "tag",
+  "init",
+  "clone",
+]);
+
+/** Package managers, and the subcommands of theirs that change a project. */
+const WRITING_PACKAGE_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+  npm: new Set(["install", "i", "ci", "add", "remove", "uninstall", "update"]),
+  pnpm: new Set(["install", "i", "add", "remove", "rm", "update", "up"]),
+  yarn: new Set(["install", "add", "remove", "upgrade"]),
+  bun: new Set(["install", "i", "add", "remove", "update"]),
+  pip: new Set(["install", "uninstall"]),
+  pip3: new Set(["install", "uninstall"]),
+  cargo: new Set(["add", "remove", "install"]),
+};
+
+/** Flags with which a searcher runs a command on, or deletes, each hit. */
+const SEARCH_WRITE_FLAGS: ReadonlySet<string> = new Set([
+  "-delete",
+  "-exec",
+  "-execdir",
+  "-x",
+  "-X",
+  "--exec",
+]);
+
+/** True when one segment, by its command, writes something. */
+function isWritingSegment(words: readonly string[]): boolean {
+  let start = 0;
+  while (start < words.length) {
+    const word = words[start] ?? "";
+    if (!SHELL_KEYWORDS.has(word) && !ASSIGNMENT_WORD.test(word)) break;
+    start += 1;
+  }
+  const head = words[start];
+  if (!head) return false;
+  const name = commandName(head);
+  const args = words.slice(start + 1);
+  const firstArgument = args.find((arg) => !arg.startsWith("-"))?.toLowerCase();
+  if (WRITING_COMMANDS.has(name)) return true;
+  if (name === "sed" || name === "perl") {
+    return args.some((arg) => arg.startsWith("-i") || arg === "--in-place");
+  }
+  if (name === "find" || name === "fd") {
+    return args.some((arg) => SEARCH_WRITE_FLAGS.has(arg));
+  }
+  if (name === "xargs") {
+    const commandAt = args.findIndex((arg) => !arg.startsWith("-"));
+    return commandAt >= 0 && isWritingSegment(args.slice(commandAt));
+  }
+  if (name === "git") {
+    const subcommand = gitSubcommand(args);
+    return subcommand !== undefined && WRITING_GIT_SUBCOMMANDS.has(subcommand);
+  }
+  const packageVerbs = WRITING_PACKAGE_SUBCOMMANDS[name];
+  return (
+    packageVerbs !== undefined &&
+    firstArgument !== undefined &&
+    packageVerbs.has(firstArgument)
+  );
+}
+
+/** The subcommand of a `git` call, past options and the values they take. */
+function gitSubcommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (GIT_OPTIONS_WITH_VALUE.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (!arg.startsWith("-")) return arg.toLowerCase();
+  }
+  return undefined;
+}
+
+/** The delimiter of a here-document operator at `at`, and its length. */
+function hereDocumentOperator(
+  command: string,
+  at: number,
+): { delimiter: string; length: number } | null {
+  const match = /^<<-?\s*["']?([\w.-]+)["']?/.exec(command.slice(at));
+  return match?.[1] ? { delimiter: match[1], length: match[0].length } : null;
+}
+
+/** Where a here-document body that starts after `lineEnd` ends. */
+function hereDocumentEnd(
+  command: string,
+  lineEnd: number,
+  delimiter: string,
+): number {
+  let cursor = lineEnd + 1;
+  while (cursor < command.length) {
+    const next = command.indexOf("\n", cursor);
+    const line = command.slice(cursor, next < 0 ? command.length : next);
+    if (line.trim() === delimiter) return next < 0 ? command.length : next;
+    if (next < 0) break;
+    cursor = next + 1;
+  }
+  return command.length;
+}
+
+/**
+ * The command's segments read leniently, for evidence rather than proof:
+ * nothing makes it give up, nested commands are read as segments of their
+ * own, a here-document's body is skipped as data, and a redirect into a file
+ * is recorded as it goes.
+ */
+function looseShellReading(command: string): {
+  segments: string[][];
+  writesFile: boolean;
+} {
+  const segments: string[][] = [];
+  let writesFile = false;
+  let words: string[] = [];
+  let word = "";
+  let quote: '"' | "'" | null = null;
+  let dropNextWord = false;
+  /** Delimiters of here-documents whose bodies start at the next newline. */
+  let hereDocuments: string[] = [];
+
+  const endWord = (): void => {
+    if (word && !dropNextWord) words.push(word);
+    if (word) dropNextWord = false;
+    word = "";
+  };
+  const endSegment = (): void => {
+    endWord();
+    dropNextWord = false;
+    if (words.length) segments.push(words);
+    words = [];
+  };
+  const readNested = (text: string): void => {
+    const inner = looseShellReading(text);
+    segments.push(...inner.segments);
+    if (inner.writesFile) writesFile = true;
+  };
+  const substitution = (open: number, close: number): number => {
+    if (close < 0) return command.length;
+    readNested(command.slice(open + 1, close));
+    word += SUBSTITUTION_PLACEHOLDER;
+    return close;
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === undefined) continue;
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      else word += char;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = null;
+      else if (char === "\\") index += 1;
+      else if (char === "`") {
+        index = substitution(index, closingBacktickIndex(command, index));
+      } else if (char === "$" && command[index + 1] === "(") {
+        index = substitution(index + 1, closingParenIndex(command, index + 1));
+      } else word += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === ">" || (char === "&" && command[index + 1] === ">")) {
+      if (/^\d+$/.test(word)) word = "";
+      else endWord();
+      const redirect = readRedirect(command, index);
+      if (!redirect.discards) writesFile = true;
+      index = redirect.end;
+      continue;
+    }
+    if (char === "<" && command[index + 1] === "<") {
+      // The rest of the operator's line is still the command; the body that
+      // follows that line is data, skipped when the line ends.
+      endWord();
+      const operator = hereDocumentOperator(command, index);
+      if (!operator) {
+        index = command.length;
+        continue;
+      }
+      hereDocuments.push(operator.delimiter);
+      index += operator.length - 1;
+      continue;
+    }
+    if (char === "\n" && hereDocuments.length > 0) {
+      endSegment();
+      for (const delimiter of hereDocuments) {
+        index = hereDocumentEnd(command, index, delimiter);
+      }
+      hereDocuments = [];
+      continue;
+    }
+    if (char === "<") {
+      if (command[index + 1] === "(") {
+        index = substitution(index + 1, closingParenIndex(command, index + 1));
+        continue;
+      }
+      if (/^\d+$/.test(word)) word = "";
+      else endWord();
+      if (command[index + 1] === "&") index += 1;
+      dropNextWord = true;
+      continue;
+    }
+    if (char === "`") {
+      index = substitution(index, closingBacktickIndex(command, index));
+      continue;
+    }
+    if (char === "$" && command[index + 1] === "(") {
+      index = substitution(index + 1, closingParenIndex(command, index + 1));
+      continue;
+    }
+    if (char === "(" && !word) {
+      const close = closingParenIndex(command, index);
+      endSegment();
+      if (close < 0) continue;
+      readNested(command.slice(index + 1, close));
+      index = close;
+      continue;
+    }
+    if (
+      char === "(" ||
+      char === ")" ||
+      char === ";" ||
+      char === "|" ||
+      char === "&" ||
+      char === "\n"
+    ) {
+      endSegment();
+      continue;
+    }
+    if (char === " " || char === "\t" || char === "\r") {
+      endWord();
+      continue;
+    }
+    word += char;
+  }
+  endSegment();
+  return { segments, writesFile };
+}
+
+/**
+ * True when the command visibly changes something: it redirects output into
+ * a file, or runs a command that writes, moves or deletes by what it is
+ * (`rm`, `mv`, `sed -i`, `git commit`, `npm install`, `Set-Content`, …).
+ *
+ * The other half of {@link isReadOnlyShellCommand}, and deliberately not its
+ * negation. A script (`python -c "…"`, `node x.js`) is neither provably a
+ * lookup nor visibly a write: it is shown as the step it is, and only
+ * evidence of a change is called a change.
+ */
+export function isWritingShellCommand(command: string): boolean {
+  if (!command.trim()) return false;
+  const { segments, writesFile } = looseShellReading(command);
+  return writesFile || segments.some(isWritingSegment);
 }

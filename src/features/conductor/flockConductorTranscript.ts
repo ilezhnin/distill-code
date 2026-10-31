@@ -1,7 +1,7 @@
 import { i18n } from "@/shared/i18n";
 import type { Message, MessageContent } from "@/shared/types/messages";
 
-import { turnHasMutatingToolCall } from "./conductorSelfExecution";
+import { turnHasChangingToolCall } from "./conductorSelfExecution";
 import { VERDICT_FENCE_TAG, parseFlockVerdict } from "./flockVerdict";
 import { WAVE_FENCE_TAG, parseFlockWave, type WaveStep } from "./flockWave";
 import { roleDisplayName } from "./roleLayers";
@@ -148,7 +148,7 @@ function analyzeTurn(message: Message): ConductorTurnAnalysis {
     planBlockIndex,
     planSteps,
     planProse,
-    hasMutatingToolCall: turnHasMutatingToolCall(message.content),
+    hasMutatingToolCall: turnHasChangingToolCall(message.content),
   };
   analysisCache.set(message, analysis);
   return analysis;
