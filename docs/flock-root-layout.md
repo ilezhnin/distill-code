@@ -118,7 +118,12 @@ prompts are preserved.
 `FLOCK_ROOT` (or `DISTILL_ROOT`) and the E2E profile skip adoption from the
 real user's AppData.
 Changing the folder in Settings takes effect after restart and does not move
-existing data. Copy an existing root while Flock is stopped.
+existing data. Copy an existing root while Flock is stopped. A copy works on
+another machine or Windows account too: records that name a file inside the
+folder by the absolute path it had then (a benchmark case's repository
+snapshot, an evaluation's screenshot) find the same file in the copy by its
+path within the folder, and the app still checks the file against the
+record's commit or hash before using it.
 
 Benchmark storage uses its own SQLite WAL database. Back it up while stopped or
 through a consistent SQLite snapshot. The host database keeps a benchmark turn's

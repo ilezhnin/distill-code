@@ -3358,7 +3358,9 @@ fn seat_samples(
 
 async fn saved_rendering(open: &OpenBatch, textual: bool, max_text_bytes: u64) -> Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
-    let mut file = tokio::fs::File::open(&open.rendering).await?;
+    // Recorded by absolute path; the hash below proves a relocated copy.
+    let path = crate::services::flock_root::relocated(std::path::Path::new(&open.rendering));
+    let mut file = tokio::fs::File::open(&path).await?;
     let metadata = file.metadata().await?;
     let cap = if textual {
         max_text_bytes

@@ -453,7 +453,25 @@ pub async fn benchmark_list_designs(
     app: AppHandle,
     query: ResultQuery,
 ) -> Result<Vec<DesignEntry>> {
-    service(&app).await?.store.list_designs(&query).await
+    let mut entries = service(&app).await?.store.list_designs(&query).await?;
+    for entry in &mut entries {
+        let points = entry.points.iter_mut().map(|point| &mut point.rendering);
+        for path in std::iter::once(&mut entry.rendering)
+            .chain(points)
+            .flatten()
+        {
+            relocate_file(path);
+        }
+    }
+    Ok(entries)
+}
+
+/// A stored image, named by the absolute path it had when recorded, where it
+/// is now: one in a Flock folder copied from another machine or account
+/// still shows.
+fn relocate_file(path: &mut String) {
+    let now = crate::services::flock_root::relocated(std::path::Path::new(path));
+    *path = now.to_string_lossy().into_owned();
 }
 #[tauri::command]
 pub async fn benchmark_get_run(app: AppHandle, id: String) -> Result<BenchmarkRun> {
@@ -499,6 +517,13 @@ pub async fn benchmark_get_evidence(app: AppHandle, id: String) -> Result<Attemp
         &attempt.usage,
         attempt.finished_at.or(attempt.started_at),
     );
+    for artifact in attempt
+        .evaluations
+        .iter_mut()
+        .flat_map(|evaluation| &mut evaluation.artifacts)
+    {
+        relocate_file(&mut artifact.path);
+    }
     Ok(attempt)
 }
 /// An attempt's turn from its sealed evidence: a finished attempt keeps no

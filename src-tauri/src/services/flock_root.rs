@@ -107,6 +107,57 @@ pub fn resolve_root(env_value: Option<&str>, os_config_dir: &Path, home_dir: &Pa
     default
 }
 
+/// The root this process resolved at startup, for the records that name a
+/// file inside it by an absolute path.
+static CURRENT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Registers the root this process resolved; the first registration wins.
+pub fn register_current(root: &Path) {
+    let _ = CURRENT.set(root.to_path_buf());
+}
+
+/// [`relocate`] against the root this process resolved, or `recorded`
+/// unchanged before one is registered.
+pub fn relocated(recorded: &Path) -> PathBuf {
+    match CURRENT.get() {
+        Some(root) => relocate(recorded, root),
+        None => recorded.to_path_buf(),
+    }
+}
+
+/// Where `recorded`, an absolute path some record kept inside an earlier
+/// location of the Flock folder, is now.
+///
+/// The folder can be copied to another machine or Windows account and work
+/// there (the point of this module), but a record may name a file in it by
+/// the absolute path it had then, in a home that no longer exists. A path
+/// that still exists is kept. Otherwise its longest tail of two or more
+/// components that exists under `root` names the same file in the copy:
+/// `C:\Users\old\.distill\benchmark-tasks\snapshots.git` becomes
+/// `<root>\benchmark-tasks\snapshots.git`. Without such a tail the recorded
+/// path comes back unchanged, and opening it reports what is missing. A
+/// caller that reads content back checks it against the record's own hash.
+pub fn relocate(recorded: &Path, root: &Path) -> PathBuf {
+    if !recorded.is_absolute() || recorded.exists() {
+        return recorded.to_path_buf();
+    }
+    let parts: Vec<&std::ffi::OsStr> = recorded
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect();
+    (0..parts.len().saturating_sub(1))
+        .map(|start| {
+            parts[start..]
+                .iter()
+                .fold(root.to_path_buf(), |path, part| path.join(part))
+        })
+        .find(|candidate| candidate.exists())
+        .unwrap_or_else(|| recorded.to_path_buf())
+}
+
 /// Records a new root for the next start. Does not move existing data.
 ///
 /// Deliberately not applied to the running process: half the app pointing at
@@ -251,6 +302,47 @@ pub fn reject_document_links(root: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_recorded_in_a_copied_folder_resolves_in_the_copy() {
+        let machine = tempfile::tempdir().unwrap();
+        let old = machine.path().join("Users/old/.distill");
+        let root = machine.path().join("Users/new/.flock");
+        let store = root.join("benchmark-tasks/snapshots.git");
+        fs::create_dir_all(&store).unwrap();
+        let preview = root.join("benchmarks/evaluations/e1/preview.png");
+        fs::create_dir_all(preview.parent().unwrap()).unwrap();
+        fs::write(&preview, b"png").unwrap();
+        assert_eq!(
+            relocate(&old.join("benchmark-tasks/snapshots.git"), &root),
+            store
+        );
+        assert_eq!(
+            relocate(&old.join("benchmarks/evaluations/e1/preview.png"), &root),
+            preview
+        );
+    }
+
+    #[test]
+    fn an_existing_or_unknown_path_is_kept_as_recorded() {
+        let machine = tempfile::tempdir().unwrap();
+        let root = machine.path().join("flock");
+        let elsewhere = machine.path().join("checkouts/task/repo");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::create_dir_all(root.join("checkouts/task/repo")).unwrap();
+        // A path that still exists is never redirected into the root.
+        assert_eq!(relocate(&elsewhere, &root), elsewhere);
+        let gone = machine.path().join("old/benchmark-tasks/missing.git");
+        assert_eq!(relocate(&gone, &root), gone);
+        // A lone file name is no evidence of the same file.
+        fs::write(root.join("snapshots.git"), b"").unwrap();
+        let lone = machine.path().join("old/snapshots.git");
+        assert_eq!(relocate(&lone, &root), lone);
+        assert_eq!(
+            relocate(Path::new("relative/path"), &root),
+            Path::new("relative/path")
+        );
+    }
 
     #[cfg(windows)]
     #[test]

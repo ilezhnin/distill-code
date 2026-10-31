@@ -499,15 +499,23 @@ pub const EVALUATOR: &str = "repository";
 pub const NO_ANSWER: &str = "no_answer";
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 
+/// The case's snapshot, where it is now. A published version keeps the
+/// absolute path its repository had when it was authored; after the Flock
+/// folder was copied to another machine or account, the same repository is
+/// found in the copy. Its commit and tree are verified before any use, so a
+/// relocated store can only serve the exact published tree.
 pub fn snapshot(manifest: &BenchmarkDraft) -> Result<Snapshot> {
-    serde_json::from_value(manifest.environment["repository"].clone()).map_err(|error| {
-        BenchmarkError::new(
-            "validation",
-            format!(
-                "A repository case needs environment.repository {{path, commit, tree}}: {error}"
-            ),
-        )
-    })
+    let mut snapshot: Snapshot = serde_json::from_value(manifest.environment["repository"].clone())
+        .map_err(|error| {
+            BenchmarkError::new(
+                "validation",
+                format!(
+                    "A repository case needs environment.repository {{path, commit, tree}}: {error}"
+                ),
+            )
+        })?;
+    snapshot.path = crate::services::flock_root::relocated(&snapshot.path);
+    Ok(snapshot)
 }
 
 pub fn hidden_check(evaluator: &Evaluator) -> Result<HiddenCheck> {
@@ -691,6 +699,17 @@ fn git<'a>(
 /// in its own directory, a bare store (the private snapshot store is one)
 /// named with `--git-dir`, as `safe.bareRepository=explicit` requires.
 async fn source_git(snapshot: &Snapshot, args: &[&str]) -> Result<Vec<u8>> {
+    // Windows reports a missing working folder only as "The directory name
+    // is invalid": name the snapshot instead.
+    if !snapshot.path.exists() {
+        return Err(BenchmarkError::new(
+            "storage_unavailable",
+            format!(
+                "This test's repository snapshot is not on this computer: {} (neither there nor in the Flock folder). Copy it into the Flock folder, then resume.",
+                snapshot.path.display()
+            ),
+        ));
+    }
     if snapshot.path.join(".git").exists() {
         return git(&snapshot.path, args, None).await;
     }
@@ -1106,6 +1125,25 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_snapshot_missing_from_this_computer_is_named_not_reported_as_a_bad_directory() {
+        let machine = tempfile::tempdir().unwrap();
+        let gone = machine
+            .path()
+            .join("Users/old/.distill/benchmark-tasks/snapshots.git");
+        let snapshot = Snapshot {
+            path: gone.clone(),
+            commit: "a".repeat(40),
+            tree: "b".repeat(40),
+        };
+        let error = verify(&snapshot).await.unwrap_err();
+        assert_eq!(error.code, "storage_unavailable");
+        assert!(error
+            .message
+            .contains("repository snapshot is not on this computer"));
+        assert!(error.message.contains(&gone.display().to_string()));
+    }
 
     #[tokio::test]
     #[ignore = "requires the reviewed bench-artifact helper in the existing distill-bench WSL distribution"]

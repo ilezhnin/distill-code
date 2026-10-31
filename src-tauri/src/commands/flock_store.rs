@@ -260,6 +260,7 @@ pub fn initialize(app: &tauri::App) -> Result<FlockRootState, String> {
             )
         });
     ensure_root_layout(&root)?;
+    crate::services::flock_root::register_current(&root);
 
     if let Err(error) = record_root(env_value.as_deref(), &os_config_dir, &root) {
         log::warn!("Could not record the Flock root: {error}");
