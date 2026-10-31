@@ -95,7 +95,9 @@ Plan labels use public product names instead of internal provider codes. Codex
 `prolite`, `pro`, and `promax` map to ChatGPT Pro 100, 200, and 500; a reported
 usage plan takes precedence over the cached token's plan. Claude uses the native
 profile's organization type and individual/organization rate-limit tier for the
-same signed-in email, preserving Max (5x) and Max (20x). This profile takes
+same signed-in email: the 20x tier shows as Claude Ultra and the 5x tier as
+Claude Max, the names Anthropic gave those plans in October 2026, although the
+profile still reports both as Max with the old tier codes. This profile takes
 precedence over the credential's subscription type, which can retain the old
 plan after an upgrade. Missing tier metadata falls back to the reported plan
 family without guessing a multiplier. These names are not invoice amounts or

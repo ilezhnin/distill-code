@@ -510,9 +510,10 @@ fn plan_label(identity: &Value, profile: &Value) -> Option<String> {
         .as_str()
         .filter(|value| !value.is_empty())
         .or_else(|| profile["organizationRateLimitTier"].as_str());
+    // Anthropic renamed Max 20x to Ultra and Max 5x to plain Max; the profile
+    // still reports both as claude_max with the old tier codes.
     Some(match (name, tier) {
-        ("Claude Max", Some("default_claude_max_5x")) => "Claude Max (5x)".into(),
-        ("Claude Max", Some("default_claude_max_20x")) => "Claude Max (20x)".into(),
+        ("Claude Max", Some("default_claude_max_20x")) => "Claude Ultra".into(),
         _ => name.into(),
     })
 }
@@ -980,14 +981,14 @@ mod tests {
     #[test]
     fn first_usage_failure_retains_the_native_plan_and_identity() {
         let mut status = super::ProviderAccountStatus::empty("a", "claude-acp", super::now_ms());
-        status.subscription = Some("Claude Max (5x)".into());
+        status.subscription = Some("Claude Ultra".into());
         status.account_label = Some("Current account".into());
         let before = super::now_ms();
         let failed = super::usage_failure(
             status,
             super::claude_resets::RequestError::RateLimited(2067),
         );
-        assert_eq!(failed.subscription.as_deref(), Some("Claude Max (5x)"));
+        assert_eq!(failed.subscription.as_deref(), Some("Claude Ultra"));
         assert_eq!(failed.account_label.as_deref(), Some("Current account"));
         assert_eq!(failed.state, super::AccountState::Error);
         assert!(failed.stale);
@@ -1058,7 +1059,7 @@ mod tests {
         use crate::services::provider_accounts::AuthMethod;
         let mut old = ProviderAccountStatus::empty("a", "claude-acp", 1000);
         old.state = AccountState::Ready;
-        old.subscription = Some("Claude Max (5x)".into());
+        old.subscription = Some("Claude Ultra".into());
         old.limits.push(AccountLimitWindow {
             id: "session:0".into(),
             label: "session".into(),
@@ -1078,7 +1079,7 @@ mod tests {
         assert_eq!(failed.usage_retry_at, None);
         assert_eq!(failed.account_label.as_deref(), Some("a@example.test"));
         let merged = super::super::merge_refresh(Some(&old), failed);
-        assert_eq!(merged.subscription.as_deref(), Some("Claude Max (5x)"));
+        assert_eq!(merged.subscription.as_deref(), Some("Claude Ultra"));
         assert_eq!(merged.limits, old.limits);
         let account = ProviderAccount {
             id: "a".into(),
@@ -1162,7 +1163,7 @@ mod tests {
             Box::pin(async { Ok((json!({"email":"a@example.test"}), Some("2.1.0".into()))) })
         }
         fn plan(&mut self, _: &Value) -> Option<String> {
-            Some("Claude Max (5x)".into())
+            Some("Claude Ultra".into())
         }
         fn signed_in(&mut self) -> BoxFuture<'_, Option<bool>> {
             self.sign_in_checks += 1;
@@ -1203,7 +1204,7 @@ mod tests {
         assert_eq!(io.sent, 0);
         assert_eq!(status.state, AccountState::Error);
         assert!(status.usage_retry_at.is_some());
-        assert_eq!(status.subscription.as_deref(), Some("Claude Max (5x)"));
+        assert_eq!(status.subscription.as_deref(), Some("Claude Ultra"));
         assert!(claude_resets::usage_backoff_remaining(id, now_ms()).is_some_and(|s| s > 2000));
         // Without a pause the same path reads usage once.
         let mut io = ScriptedUsage::new(
@@ -1278,12 +1279,12 @@ mod tests {
     fn usage_without_quota_keeps_the_native_plan_and_identity() {
         for usage in [json!({}), json!({"limits":null})] {
             let mut status = ProviderAccountStatus::empty("a", "claude-acp", 1000);
-            status.subscription = Some("Claude Max (5x)".into());
+            status.subscription = Some("Claude Ultra".into());
             status.account_label = Some("a@example.test".into());
             let failed = usage_status(status, &usage, 1000);
             assert_eq!(failed.state, AccountState::Error);
             assert!(failed.stale);
-            assert_eq!(failed.subscription.as_deref(), Some("Claude Max (5x)"));
+            assert_eq!(failed.subscription.as_deref(), Some("Claude Ultra"));
             assert_eq!(failed.account_label.as_deref(), Some("a@example.test"));
         }
     }
@@ -1291,7 +1292,7 @@ mod tests {
     #[test]
     fn a_malformed_reset_inventory_keeps_valid_quota() {
         let mut status = ProviderAccountStatus::empty("a", "claude-acp", 1000);
-        status.subscription = Some("Claude Max (5x)".into());
+        status.subscription = Some("Claude Ultra".into());
         status.account_label = Some("a@example.test".into());
         let usage = json!({
             "five_hour":{"utilization":20},
@@ -1304,7 +1305,7 @@ mod tests {
         assert_eq!(result.limits.len(), 2);
         assert_eq!(result.reset_tokens, None);
         assert_eq!(result.error, None);
-        assert_eq!(result.subscription.as_deref(), Some("Claude Max (5x)"));
+        assert_eq!(result.subscription.as_deref(), Some("Claude Ultra"));
         assert_eq!(result.account_label.as_deref(), Some("a@example.test"));
     }
 
@@ -1377,8 +1378,8 @@ mod tests {
     fn native_profile_upgrade_overrides_stale_subscription_type() {
         let identity = json!({"email":"a@example.test","subscriptionType":"Claude Pro"});
         for (tier, expected) in [
-            ("default_claude_max_5x", "Claude Max (5x)"),
-            ("default_claude_max_20x", "Claude Max (20x)"),
+            ("default_claude_max_5x", "Claude Max"),
+            ("default_claude_max_20x", "Claude Ultra"),
         ] {
             let profile = json!({"emailAddress":"a@example.test","organizationType":"claude_max","organizationRateLimitTier":tier});
             assert_eq!(plan_label(&identity, &profile).as_deref(), Some(expected));
@@ -1404,14 +1405,14 @@ mod tests {
     #[test]
     fn individual_tier_wins_and_usage_does_not_downgrade_the_plan() {
         let identity = json!({"email":"a@example.test","subscriptionType":"max"});
-        let profile = json!({"emailAddress":"a@example.test","organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_20x","userRateLimitTier":"default_claude_max_5x"});
+        let profile = json!({"emailAddress":"a@example.test","organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_5x","userRateLimitTier":"default_claude_max_20x"});
         let mut status = ProviderAccountStatus::empty("one", "claude-acp", 0);
         status.subscription = plan_label(&identity, &profile);
         map_usage(
             &mut status,
             &json!({"plan_type":"Claude Max","five_hour":{"utilization":20}}),
         );
-        assert_eq!(status.subscription.as_deref(), Some("Claude Max (5x)"));
+        assert_eq!(status.subscription.as_deref(), Some("Claude Ultra"));
     }
 
     #[test]
