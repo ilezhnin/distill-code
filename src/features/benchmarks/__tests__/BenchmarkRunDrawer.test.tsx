@@ -1,4 +1,5 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
@@ -25,6 +26,7 @@ vi.mock("../api/benchmarks", () => ({
     resumeRun: vi.fn(),
     cancelRun: vi.fn(),
     getInventory: vi.fn(),
+    renewPolicyCheck: vi.fn(),
   },
 }));
 
@@ -489,6 +491,41 @@ it("keeps Resume for a paused run on today's runtime", async () => {
   show({ ...run, id: "run-today", state: "paused", attempts: attempts() });
   expect(await screen.findByRole("button", { name: "Resume" })).toBeEnabled();
   expect(screen.queryByText(/made for an older sandbox/)).toBeNull();
+});
+
+it("offers the sandbox check when resume needs it renewed, then lets the run resume", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.resumeRun).mockRejectedValue(
+    "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe",
+  );
+  let finishCheck: (() => void) | undefined;
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finishCheck = resolve;
+      }),
+  );
+  show({ ...run, id: "run-proof", state: "paused", attempts: attempts() });
+  await user.click(await screen.findByRole("button", { name: "Resume" }));
+  expect(
+    await screen.findByText(
+      "The sandbox check must be renewed for this version of Flock.",
+    ),
+  ).toBeInTheDocument();
+  await user.click(
+    screen.getByRole("button", { name: "Update sandbox check" }),
+  );
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledTimes(1);
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledWith(
+    configuration.providerId,
+  );
+  expect(
+    screen.getByRole("button", { name: "Updating sandbox check…" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+  await act(async () => finishCheck?.());
+  expect(screen.queryByText("Cannot start or continue")).toBeNull();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
 });
 
 it("shares one account inventory across profiles while detecting a stale second profile", async () => {

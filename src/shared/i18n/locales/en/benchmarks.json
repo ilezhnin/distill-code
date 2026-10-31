@@ -354,7 +354,8 @@
     "preview": "Development preview. Excluded from the boards and the history chart.",
     "budgetTitle": "Run settings",
     "frozenRuntimeHint": "This research run requires its original execution environment, which is no longer available. Its conditions cannot change on resume.",
-    "outdatedHint": "The sandbox or CLI changed since this run started. Resume checks the same models on the installed version and continues unfinished tests. Saved answers and results are kept."
+    "outdatedHint": "The sandbox or CLI changed since this run started. Resume checks the same models on the installed version and continues unfinished tests. Saved answers and results are kept.",
+    "policyCheckHelp": "Runs a local check without model usage. This may take a few minutes. The run's results are kept; resume it when the check finishes."
   },
   "modelRun": {
     "allTests": "All tests",

@@ -354,7 +354,8 @@
     "preview": "Vista previa de desarrollo. Excluida de los tableros y del gráfico histórico.",
     "budgetTitle": "Ajustes de ejecución",
     "frozenRuntimeHint": "Esta ejecución de investigación requiere su entorno original, que ya no está disponible. Sus condiciones no pueden cambiar al reanudar.",
-    "outdatedHint": "El sandbox o la CLI cambió desde el inicio. Reanudar comprueba los mismos modelos en la versión instalada y continúa las pruebas pendientes. Se conservan las respuestas y los resultados guardados."
+    "outdatedHint": "El sandbox o la CLI cambió desde el inicio. Reanudar comprueba los mismos modelos en la versión instalada y continúa las pruebas pendientes. Se conservan las respuestas y los resultados guardados.",
+    "policyCheckHelp": "Ejecuta una comprobación local sin consumir uso del modelo. Puede tardar unos minutos. Los resultados de la ejecución se conservan; reanúdala cuando termine la comprobación."
   },
   "modelRun": {
     "allTests": "Todas las pruebas",

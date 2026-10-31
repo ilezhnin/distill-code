@@ -7,8 +7,10 @@ import {
 } from "react";
 import type { TaskGridFocusReturn } from "../hooks/useTaskGridWindow";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
+import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import {
@@ -125,6 +127,30 @@ export function BenchmarkRunDrawer({
     }
   };
   const run = query.data;
+  // A resume the sandbox refuses until its policy check is renewed for this
+  // version of Flock: the run offers the same free check as starting one,
+  // for each provider it runs, and keeps its results.
+  const [renewingPolicy, setRenewingPolicy] = useState(false);
+  const policyCheckMissing =
+    error?.includes("Linux text policy proof") ?? false;
+  const renewPolicy = async () => {
+    setBusy(true);
+    setRenewingPolicy(true);
+    try {
+      const providers = new Set(
+        (run?.request.configurations ?? []).map((entry) => entry.providerId),
+      );
+      for (const providerId of providers) {
+        await benchmarkApi.renewPolicyCheck(providerId);
+      }
+      setError(null);
+    } catch (failure) {
+      setError(benchmarkErrorMessage(failure));
+    } finally {
+      setRenewingPolicy(false);
+      setBusy(false);
+    }
+  };
   const terminal = run ? FINISHED_RUN.has(run.state) : false;
   // Explicit resume validates the same selection against today's runtime.
   // Research workflow conditions remain frozen.
@@ -286,7 +312,35 @@ export function BenchmarkRunDrawer({
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
-          {query.error || error ? (
+          {policyCheckMissing ? (
+            <Alert variant="destructive">
+              <TriangleAlert aria-hidden />
+              <AlertTitle>{t("modelRun.readinessBlocked")}</AlertTitle>
+              <AlertDescription>
+                <p>{t("modelRun.policyCheckMissing")}</p>
+                <details className="w-full">
+                  <summary className="cursor-pointer">
+                    {t("detail.technical")}
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap text-xs">{error}</p>
+                </details>
+                <Button
+                  type="button"
+                  variant="alert"
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => void renewPolicy()}
+                >
+                  {t(
+                    renewingPolicy
+                      ? "modelRun.policyCheckRenewing"
+                      : "modelRun.policyCheckRenew",
+                  )}
+                </Button>
+                <p>{t("run.policyCheckHelp")}</p>
+              </AlertDescription>
+            </Alert>
+          ) : query.error || error ? (
             <BenchmarkAlert>
               {error ?? benchmarkErrorMessage(query.error)}
             </BenchmarkAlert>
