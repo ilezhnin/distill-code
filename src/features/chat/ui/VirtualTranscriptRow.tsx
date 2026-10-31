@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type ReactElement,
 } from "react";
+import { wavePlanRenderer } from "@/features/conductor/ui/WavePlanRecord";
 import { memoryFenceRenderer } from "@/features/memory/ui/MemoryFenceRecord";
 import { cn } from "@/shared/lib/cn";
 import type { Message } from "@/shared/types/messages";
@@ -35,8 +36,9 @@ interface VirtualTranscriptRowProps {
   row: TranscriptRowDescriptor;
   message?: Message;
   /**
-   * The chat the row belongs to. With it, protocol fences in the row are drawn
-   * as what they did (a memory request as its outcome) rather than as JSON.
+   * The chat the row belongs to. Protocol fences in the row are drawn as what
+   * they are — a plan as its steps — and, with the chat known, a memory
+   * request as its outcome, rather than as JSON.
    */
   sessionId?: string;
   index: number;
@@ -281,8 +283,8 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
   const codeRenderers = useMemo(
     () =>
       sessionId && sourceMessageId
-        ? [memoryFenceRenderer(sessionId, sourceMessageId)]
-        : null,
+        ? [wavePlanRenderer, memoryFenceRenderer(sessionId, sourceMessageId)]
+        : [wavePlanRenderer],
     [sessionId, sourceMessageId],
   );
   let rowContent: ReactElement;
@@ -442,13 +444,11 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
     );
   }
 
-  if (codeRenderers) {
-    rowContent = (
-      <MessageCodeRenderersProvider value={codeRenderers}>
-        {rowContent}
-      </MessageCodeRenderersProvider>
-    );
-  }
+  rowContent = (
+    <MessageCodeRenderersProvider value={codeRenderers}>
+      {rowContent}
+    </MessageCodeRenderersProvider>
+  );
 
   if (!rowStateProvider) {
     return rowContent;

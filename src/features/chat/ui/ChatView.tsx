@@ -209,7 +209,7 @@ export function ChatView({
   onOpenAgentLibrary,
   onSelectSession,
 }: ChatViewProps) {
-  const { t } = useTranslation(["chat", "common"]);
+  const { t, i18n } = useTranslation(["chat", "common"]);
   // The conversation has room for exactly one side panel. `sidePanelSurface`
   // decides which one owns it; neither store is cleared when the other wins,
   // so closing the last child tab brings the artifact viewer straight back.
@@ -731,14 +731,14 @@ export function ChatView({
   const timelineMessages = useMemo(() => {
     const messages = isPreparingInitialTranscript ? [] : controller.messages;
     return isConductorChat
-      ? flockConductorTranscript(messages, {
-          // Shown in place of the machine-facing plan fence when the conductor
-          // sent nothing but the plan. The message must stay non-empty: it is
-          // the row the wave's brigade chips hang off.
-          wavePlanLabel: t("conductor.wave.planSummary"),
-        })
+      ? flockConductorTranscript(messages, i18n.language)
       : messages;
-  }, [controller.messages, isConductorChat, isPreparingInitialTranscript, t]);
+  }, [
+    controller.messages,
+    i18n.language,
+    isConductorChat,
+    isPreparingInitialTranscript,
+  ]);
   const handleStopChild = useCallback((childSessionId: string) => {
     void stopOrchestratorSession(childSessionId);
   }, []);

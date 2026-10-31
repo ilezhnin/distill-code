@@ -520,9 +520,11 @@
       "pending": "not started"
     },
     "wave": {
-      "planSummary": "Plan for the brigade below.",
       "plan": {
-        "stepLine": "{{index}}. **{{role}}** · {{access}} — {{subtask}}"
+        "title_one": "Plan · {{count}} step",
+        "title_other": "Plan · {{count}} steps",
+        "writing": "Writing the plan…",
+        "unreadable": "Plan could not be read"
       },
       "access": {
         "none": "sees nothing",

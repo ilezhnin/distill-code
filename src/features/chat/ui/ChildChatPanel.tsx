@@ -358,7 +358,7 @@ function ChildChatTranscript({
   hostSessionId: string;
   childSessionId: string;
 }) {
-  const { t } = useTranslation("chat");
+  const { t, i18n } = useTranslation("chat");
   const messages = useChatStore(
     (s) => s.messagesBySession[childSessionId] ?? EMPTY_MESSAGES,
   );
@@ -441,11 +441,9 @@ function ChildChatTranscript({
       grandchildren.length > 0 ||
       childNode?.role === "conductor" ||
       childNode?.role === "orchestrator"
-        ? flockConductorTranscript(messages, {
-            wavePlanLabel: t("conductor.wave.planSummary"),
-          })
+        ? flockConductorTranscript(messages, i18n.language)
         : messages,
-    [childNode?.role, grandchildren.length, messages, t],
+    [childNode?.role, grandchildren.length, i18n.language, messages],
   );
   const conductorTranscriptValue =
     useMemo<ConductorTranscriptContextValue>(() => {
