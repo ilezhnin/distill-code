@@ -480,6 +480,58 @@ describe("waveRunner", () => {
     expect(spawnConductorChildSession).not.toHaveBeenCalled();
   });
 
+  it("resumes a spawn that died between deciding and starting on the decision already recorded", async () => {
+    selectionPlan();
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
+    );
+    const decided = executorSelection.select.mock.results[0]?.value;
+    if (!decided) throw new Error("the first spawn decided nothing");
+    const decision = await decided;
+    const firstSpawn = spawnConductorChildSession.mock.calls[0][0];
+
+    // The renderer went down right after the host recorded the decision and
+    // before the child registered: the step comes back `spawning` with no
+    // node, and the host answers the key with the decision it already holds.
+    const wave = getWaveEngineState().waves[0];
+    setWaveEngineState({
+      ...getWaveEngineState(),
+      waves: [
+        {
+          ...wave,
+          steps: wave.steps.map((step) =>
+            step.stepIndex === 0
+              ? { ...step, phase: "spawning", sessionId: undefined }
+              : step,
+          ),
+        },
+      ],
+    });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    resetWaveRunnerForTests();
+    executorSelection.get.mockResolvedValueOnce({
+      decision,
+      observations: [],
+      hostExecution: null,
+    });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
+    );
+    // Decided once: the host would refuse the key with changed inputs, and the
+    // worker runs on the same model the first attempt chose.
+    expect(executorSelection.select).toHaveBeenCalledTimes(1);
+    expect(spawnConductorChildSession.mock.calls[1][0]).toMatchObject({
+      executorDecisionKey: firstSpawn.executorDecisionKey,
+      executionTarget: firstSpawn.executionTarget,
+    });
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
+    );
+  });
+
   it("refuses a host dispatch even if the renderer lost its started observation", async () => {
     selectionPlan();
     executorSelection.get.mockResolvedValueOnce({

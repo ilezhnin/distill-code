@@ -373,32 +373,45 @@ export async function prepareWaveExecutor(
       "This wave step already has a recorded execution; refusing another dispatch",
     );
   }
-  const decision = await executorSelection.select(
-    {
-      requestKey,
-      surface: "wave",
-      contextId: wave.waveId,
-      task: applicationExecutorTask({
-        prompt,
-        roleId: request.step.role,
-        ...waveExecutorRoleContext(request.step.role, request.step.modelClass),
-        timeoutSeconds:
-          request.step.budget?.minutes !== undefined
-            ? request.step.budget.minutes * 60
-            : undefined,
-      }),
-      targetFamily: wave.rootRequestId,
-      targetGroup: wave.rootRequestId,
-      candidates,
-      priorIds: applicationExecutorPriorIds(candidates, priorIds),
-      hardCandidateId: request.step.model
-        ? (candidates[0]?.configuration.id ?? null)
-        : null,
-      modelId: null,
-      minQuality: 0,
-    },
-    true,
-  );
+  // A decision already on record with nothing dispatched on it is the one
+  // this step runs on. That is a spawn that died between deciding and
+  // starting — the renderer went down mid-spawn and the restarted engine is
+  // resuming the step — and the key is immutable: deciding again would hand
+  // the host the inputs as they are now (the inventory moved while the
+  // bridges came back) for a key it has already answered, and it refuses that
+  // rather than start a worker. The decision is still checked against the
+  // live inventory below, like a fresh one.
+  const decision =
+    existing?.decision ??
+    (await executorSelection.select(
+      {
+        requestKey,
+        surface: "wave",
+        contextId: wave.waveId,
+        task: applicationExecutorTask({
+          prompt,
+          roleId: request.step.role,
+          ...waveExecutorRoleContext(
+            request.step.role,
+            request.step.modelClass,
+          ),
+          timeoutSeconds:
+            request.step.budget?.minutes !== undefined
+              ? request.step.budget.minutes * 60
+              : undefined,
+        }),
+        targetFamily: wave.rootRequestId,
+        targetGroup: wave.rootRequestId,
+        candidates,
+        priorIds: applicationExecutorPriorIds(candidates, priorIds),
+        hardCandidateId: request.step.model
+          ? (candidates[0]?.configuration.id ?? null)
+          : null,
+        modelId: null,
+        minQuality: 0,
+      },
+      true,
+    ));
   const selected = decision.chosen
     ? rows.get(decision.chosen.id)?.option
     : undefined;
