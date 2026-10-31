@@ -24,6 +24,7 @@ import { BackgroundTasksPanel } from "./BackgroundTasksPanel";
 import { OwnedTaskLauncher } from "./OwnedTaskLauncher";
 import { Button } from "@/shared/ui/button";
 import { LoadingFlock } from "./LoadingFlock";
+import { toolCallLabel } from "./ToolCallAdapter";
 import { ChatLoadingSkeleton } from "./ChatLoadingSkeleton";
 import { ConversationEmptyAvatar } from "./ConversationEmptyAvatar";
 import { ArtifactPolicyProvider } from "../hooks/ArtifactPolicyContext";
@@ -95,6 +96,7 @@ import {
   isContextPanelVisible,
 } from "@/features/chat/lib/chatCapabilityVisibility";
 import type { TranscriptSearchBackend } from "@/features/chat/lib/transcriptSearchBackend";
+import { liveActivity } from "@/features/chat/lib/agentWorkActivity";
 import { scheduleAfterNextPaint } from "@/app/lib/scheduleAfterNextPaint";
 import type { GlobalComposerHandoffRect } from "@/shared/ui/GlobalComposerPill";
 import {
@@ -706,14 +708,26 @@ export function ChatView({
       : shouldStageTranscript;
   const showTimelineLoading =
     controller.isLoadingHistory || isPreparingInitialTranscript;
-  // Conductor chats carry their own activity display, so the generic
-  // thinking/responding pill stays off there — but compaction has no other
-  // surface, and a silent multi-second stall reads as a hang, so that state
-  // is always shown.
-  const shouldShowLoadingIndicator =
-    showIndicator &&
-    !showTimelineLoading &&
-    (!isConductorChat || controller.isCompactingContext);
+  // Conductor chats included: the brigade indicator speaks only while the
+  // conductor is idle and its workers are not, so while the conductor itself
+  // thinks, reads or answers this pill is the one thing saying so.
+  const shouldShowLoadingIndicator = showIndicator && !showTimelineLoading;
+  // The line names what the turn is on and counts how long it has run, the
+  // way a terminal harness's status line does, rather than one word for
+  // every state.
+  const streamingMessage = controller.streamingMessageId
+    ? controller.messages.find(
+        (message) => message.id === controller.streamingMessageId,
+      )
+    : undefined;
+  const turnActivity = useMemo(
+    () => liveActivity(streamingMessage?.content),
+    [streamingMessage?.content],
+  );
+  const turnActivityLabel =
+    turnActivity?.kind === "tool"
+      ? toolCallLabel(t, turnActivity.request).text
+      : turnActivity?.headline;
   const timelineMessages = useMemo(() => {
     const messages = isPreparingInitialTranscript ? [] : controller.messages;
     return isConductorChat
@@ -1030,6 +1044,8 @@ export function ChatView({
           <LoadingFlock
             key="loading-indicator"
             chatState={loadingChatState}
+            activity={turnActivityLabel}
+            startedAt={streamingMessage?.created}
             className="mb-0 px-0"
             motionPreset="responding"
           />

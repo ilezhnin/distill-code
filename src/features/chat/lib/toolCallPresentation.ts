@@ -80,6 +80,53 @@ function basenameOf(path: string): string {
 }
 
 /**
+ * The header line of a shell call, or `null` when the call is not one or its
+ * own title already says something better than the command.
+ *
+ * Claude Code's Bash puts the command line itself in the title and the
+ * agent's one-line account of the call — "Read HANDOFF.md" — in its
+ * `description` argument. That account is what a header is for; the command
+ * stays one click away in the card body. A call with no account shows the
+ * command as written (`verbatim`), because a command is code and recasing its
+ * first letter (`cd` → `Cd`) misquotes it.
+ *
+ * `description` is read only beside a command: on other tools the same key
+ * can be an argument's payload (an issue body, a commit message).
+ */
+export function getCommandToolTitle({
+  name,
+  arguments: args,
+}: ToolCallPresentationInput): { text: string; verbatim: boolean } | null {
+  const command = getStringArgument(args, COMMAND_KEYS);
+  if (!command) return null;
+  const description = getStringArgument(args, ["description"]);
+  if (description) return { text: description, verbatim: false };
+  return name.trim() === command ? { text: command, verbatim: true } : null;
+}
+
+/** A title that is itself a search command line (`grep -n "x" src`). */
+const SEARCH_COMMAND_TITLE = /^(?:grep|egrep|rg)s/i;
+
+/**
+ * The pattern and place of a search whose title is a command line, or `null`.
+ *
+ * Claude Code's Grep arrives titled as the grep command it is equivalent to;
+ * a person reads `Search "pattern" in src` faster, and the command stays in
+ * the card body. Only a title that is a search command is replaced: a title
+ * the bridge wrote for people is already the better label.
+ */
+export function getSearchToolTitle({
+  name,
+  arguments: args,
+}: ToolCallPresentationInput): { pattern: string; path?: string } | null {
+  if (!SEARCH_COMMAND_TITLE.test(name.trim())) return null;
+  const pattern = getStringArgument(args, ["pattern", "query"]);
+  if (!pattern) return null;
+  const path = getStringArgument(args, ["path", "glob"]);
+  return path ? { pattern, path } : { pattern };
+}
+
+/**
  * Translate raw tool arguments into a small set of labeled rows for the
  * expanded tool card. Falls back to an empty list when no familiar shape is
  * found, leaving the JSON dump as the canonical representation.

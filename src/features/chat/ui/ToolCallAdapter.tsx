@@ -16,6 +16,8 @@ import {
 } from "@/shared/ui/ai-elements/tool";
 import { toolStatusMap } from "../lib/toolStatusMap";
 import {
+  getCommandToolTitle,
+  getSearchToolTitle,
   getToolInputSummaryRows,
   isHoistableText,
   isStringifiedCopyOfStructured,
@@ -491,6 +493,59 @@ function sentenceCaseToolTitle(
   return acronymTitle.charAt(0).toLocaleUpperCase() + acronymTitle.slice(1);
 }
 
+/**
+ * What a tool call is called where a person reads it: the delegated task for
+ * a subagent, the agent's own account of a shell command, `Search "x" in y`
+ * for a search titled as a command line, otherwise the bridge's title.
+ *
+ * `verbatim` is set when the label is a command shown as written, which the
+ * caller sets as code. Shared by the step card and the live status line, so
+ * the two never name the same step differently.
+ */
+export function toolCallLabel(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  call: {
+    name: string;
+    toolName?: string;
+    arguments: Record<string, unknown>;
+    subagentAgentName?: string;
+    subagentTaskLabel?: string;
+    subagentTaskIsConfigured?: boolean;
+  },
+): { text: string; verbatim: boolean } {
+  const subagentInfo = getSubagentToolCallInfo({
+    toolName: call.toolName,
+    arguments: call.arguments,
+  });
+  if (subagentInfo) {
+    return {
+      text: subagentTitle(
+        t,
+        subagentInfo,
+        call.subagentAgentName,
+        call.subagentTaskLabel,
+        call.subagentTaskIsConfigured,
+      ),
+      verbatim: false,
+    };
+  }
+  const command = getCommandToolTitle(call);
+  if (command) return command;
+  const search = getSearchToolTitle(call);
+  if (search) {
+    return {
+      text: search.path
+        ? t("tools.searchTitleIn", search)
+        : t("tools.searchTitle", search),
+      verbatim: false,
+    };
+  }
+  return {
+    text: sentenceCaseToolTitle(call.name, t("tools.runningCommand")),
+    verbatim: false,
+  };
+}
+
 function splitHeaderTitleByPath(name: string, fileLabel: string) {
   const index = name.toLowerCase().lastIndexOf(fileLabel.toLowerCase());
   if (index === -1) return null;
@@ -556,19 +611,29 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
     status === "in_progress" && elapsed >= 3 ? elapsed : undefined;
 
   const { resolveMarkdownHref, openInApp } = useArtifactActionsContext();
-  const subagentInfo = useMemo(
-    () => getSubagentToolCallInfo({ toolName, arguments: args }),
-    [toolName, args],
-  );
-  const displayName = subagentInfo
-    ? subagentTitle(
-        t,
-        subagentInfo,
+  const label = useMemo(
+    () =>
+      toolCallLabel(t, {
+        name,
+        toolName,
+        arguments: args,
         subagentAgentName,
         subagentTaskLabel,
         subagentTaskIsConfigured,
-      )
-    : sentenceCaseToolTitle(name, t("tools.runningCommand"));
+      }),
+    [
+      t,
+      name,
+      toolName,
+      args,
+      subagentAgentName,
+      subagentTaskLabel,
+      subagentTaskIsConfigured,
+    ],
+  );
+  const displayName = label.text;
+  // A command shown as its own title is code, and reads as code.
+  const displayNameClassName = label.verbatim ? "font-mono" : undefined;
 
   const pathRow = summaryRows.find((row) => row.kind === "path");
   const headerFileLabel = pathRow?.value;
@@ -646,7 +711,7 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
     </>
   ) : liveTail ? (
     <>
-      <span>{displayName}</span>
+      <span className={displayNameClassName}>{displayName}</span>
       <span aria-hidden="true" className="text-muted-foreground">
         {" · "}
       </span>
@@ -656,7 +721,7 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
     </>
   ) : canHoistResultIntoHeader ? (
     <>
-      <span>{displayName}</span>
+      <span className={displayNameClassName}>{displayName}</span>
       <span aria-hidden="true" className="text-muted-foreground">
         {" · "}
       </span>
@@ -665,7 +730,7 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
       </span>
     </>
   ) : (
-    displayName
+    <span className={displayNameClassName}>{displayName}</span>
   );
 
   const showCombinedSurface = summaryRows.length > 0 || hasStructuredArgs;

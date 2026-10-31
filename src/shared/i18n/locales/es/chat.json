@@ -782,6 +782,8 @@
     "result": "Resultado",
     "fileNotFound": "Archivo no encontrado: {{path}}",
     "runningCommand": "Ejecutando comando",
+    "searchTitle": "Buscar \"{{pattern}}\"",
+    "searchTitleIn": "Buscar \"{{pattern}}\" en {{path}}",
     "inputSummary": {
       "command": "Comando",
       "line": "Línea",
@@ -845,6 +847,19 @@
     "removeStepTitle": "¿Eliminar este paso?",
     "removeStepDescription": "El paso se quita de la transcripción guardada del chat. No se puede deshacer.",
     "redactedThinking": "Pensamiento redactado",
+    "thought": {
+      "label": "Pensamiento"
+    },
+    "exploration": {
+      "active": "Explorando",
+      "done": "Explorado",
+      "read_one": "{{count}} archivo leído",
+      "read_other": "{{count}} archivos leídos",
+      "search_one": "{{count}} búsqueda",
+      "search_other": "{{count}} búsquedas",
+      "list_one": "{{count}} carpeta listada",
+      "list_other": "{{count}} carpetas listadas"
+    },
     "summary": {
       "previousSteps_one": "{{count}} paso anterior",
       "previousSteps_other": "{{count}} pasos anteriores",

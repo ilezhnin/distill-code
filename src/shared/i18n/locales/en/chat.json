@@ -785,6 +785,8 @@
     "result": "Result",
     "fileNotFound": "File not found: {{path}}",
     "runningCommand": "Running command",
+    "searchTitle": "Search \"{{pattern}}\"",
+    "searchTitleIn": "Search \"{{pattern}}\" in {{path}}",
     "inputSummary": {
       "command": "Command",
       "line": "Line",
@@ -848,6 +850,19 @@
     "removeStepTitle": "Remove this step?",
     "removeStepDescription": "The step is taken out of the chat's stored transcript. This cannot be undone.",
     "redactedThinking": "Thinking redacted",
+    "thought": {
+      "label": "Thought"
+    },
+    "exploration": {
+      "active": "Exploring",
+      "done": "Explored",
+      "read_one": "{{count}} file read",
+      "read_other": "{{count}} files read",
+      "search_one": "{{count}} search",
+      "search_other": "{{count}} searches",
+      "list_one": "{{count}} folder listed",
+      "list_other": "{{count}} folders listed"
+    },
     "summary": {
       "previousSteps_one": "{{count}} previous step",
       "previousSteps_other": "{{count}} previous steps",

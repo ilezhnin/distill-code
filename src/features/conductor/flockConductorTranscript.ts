@@ -10,25 +10,6 @@ import {
   waveVerdictProseFallback,
 } from "./waveNotices";
 
-const VISIBLE_BLOCK_TYPES = new Set<MessageContent["type"]>([
-  "text",
-  "image",
-  "mcpApp",
-]);
-
-/**
- * Tool blocks are stripped from every conductor turn *except* one that trips
- * the Q6 self-execution badge.
- *
- * The badge tells the operator "the conductor did the work itself"; stripping
- * the tool calls at the same time leaves a warning with nothing behind it. On
- * the turn that leaks, the calls *are* the evidence, so they stay.
- */
-const SELF_EXECUTION_EVIDENCE_TYPES = new Set<MessageContent["type"]>([
-  "toolRequest",
-  "toolResponse",
-]);
-
 /**
  * Last-resort stand-in for a plan message whose prose was empty.
  *
@@ -48,32 +29,6 @@ export interface FlockConductorTranscriptOptions {
    * message is the brigade chips' anchor, so it must survive distillation.
    */
   wavePlanLabel?: string;
-}
-
-function isVisibleConductorBlock(
-  block: MessageContent,
-  keepToolEvidence: boolean,
-): boolean {
-  if (block.type === "systemNotification") {
-    return (
-      block.notificationType === "error" || block.notificationType === "warning"
-    );
-  }
-  if (keepToolEvidence && SELF_EXECUTION_EVIDENCE_TYPES.has(block.type)) {
-    return true;
-  }
-  return VISIBLE_BLOCK_TYPES.has(block.type);
-}
-
-function hasVisibleConductorContent(
-  content: readonly MessageContent[],
-): boolean {
-  return content.some((block) => {
-    if (block.type === "text") {
-      return block.text.trim().length > 0;
-    }
-    return true;
-  });
 }
 
 /**
@@ -102,32 +57,25 @@ function stripVerdictFence(block: MessageContent): MessageContent {
 }
 
 /**
- * The Q6 badge: "the conductor is doing the work itself".
+ * The Q6 badge: "the conductor changed something itself".
  *
  * The conductor is prompt-only — it plans or it answers (D3/Q6) — but it is an
  * ordinary session with an ordinary toolset, so the instruction can leak. The
  * operator decision was to make a leak *visible* rather than to forbid it at
  * the harness, and to revisit only if it happens for real.
  *
- * Tiered by tool kind (`conductorSelfExecution.ts`): read-only exploration is
- * quiet — its tool blocks are stripped like any other technical chatter — and
- * only a turn that ran a state-changing tool is badged. Warning on every
- * grep-to-answer turn had taught the operator to ignore the warning.
- *
- * It has to be minted here rather than in the bubble, because this is the last
- * layer that can see a tool call at all. Derived from the turn's own content,
- * appended to the turn it belongs to; nothing is stored anywhere.
+ * Only a turn that ran a state-changing tool is badged
+ * (`conductorSelfExecution.ts`): reading to answer or to plan is what the
+ * protocol asks for, and a warning on every such turn had taught the operator
+ * to ignore the warning. The tool calls themselves are on screen like any
+ * other turn's, so the badge points at steps the operator can open.
  */
-function selfExecutionBadge(
-  content: readonly MessageContent[],
-): MessageContent | null {
-  return turnHasMutatingToolCall(content)
-    ? {
-        type: "systemNotification",
-        notificationType: "warning",
-        text: conductorSelfExecutionBadgeText(),
-      }
-    : null;
+function selfExecutionBadge(): MessageContent {
+  return {
+    type: "systemNotification",
+    notificationType: "warning",
+    text: conductorSelfExecutionBadgeText(),
+  };
 }
 
 /**
@@ -156,7 +104,7 @@ interface ConductorTurnAnalysis {
 const analysisCache = new WeakMap<Message, ConductorTurnAnalysis>();
 const renderCache = new WeakMap<
   Message,
-  { signature: string; distilled: Message | null }
+  { signature: string; distilled: Message }
 >();
 
 function analyzeTurn(message: Message): ConductorTurnAnalysis {
@@ -207,15 +155,6 @@ function analyzeTurn(message: Message): ConductorTurnAnalysis {
 }
 
 /**
- * The plan, rendered where its fence was, as a compact numbered step list.
- *
- * Failure attribution is the reason this exists: when a wave returns a wrong
- * answer the operator has to be able to tell *which step* to blame, and the
- * chips below carry the same step numbers. Step number, role, access mode and
- * the subtask in the conductor's own words — nothing else, because this is a
- * diagnostic affordance and not a dashboard.
- */
-/**
  * The one access-mode vocabulary, shared by the plan step list and the wave
  * chips: the operator has to be able to match a chip to a line of the plan.
  */
@@ -225,6 +164,15 @@ export function waveStepAccessKey(step: WaveStep): string {
     : "chat:conductor.wave.access.none";
 }
 
+/**
+ * The plan, rendered where its fence was, as a compact numbered step list.
+ *
+ * Failure attribution is the reason this exists: when a wave returns a wrong
+ * answer the operator has to be able to tell *which step* to blame, and the
+ * chips below carry the same step numbers. Step number, role, access mode and
+ * the subtask in the conductor's own words — nothing else, because this is a
+ * diagnostic affordance and not a dashboard.
+ */
 export function renderWavePlanSteps(steps: readonly WaveStep[]): string {
   return steps
     .map((step, index) =>
@@ -247,63 +195,48 @@ function wavePlanBlockText(
 }
 
 /**
- * One turn, distilled — **returning the same object when nothing changed**.
+ * One turn as the operator reads it — **the same object when nothing changed**.
  *
- * Identity is the whole point: the transcript projection caches its per-message
- * items in `WeakMap`s keyed on the `Message` object, so a distiller that clones
- * unconditionally makes every message a cache miss on every streamed token.
- * A clone happens only when a block was filtered out, a fence was rewritten, or
- * the self-execution badge was prepended.
+ * A conductor turn is shown like any other agent turn: its thinking and the
+ * tools it ran collapse into the work panel above the answer, and stay open
+ * and live while it works. What is the conductor's own is the protocol: a plan
+ * fence becomes its numbered step list, a verdict fence becomes its prose, and
+ * a turn that changed something is badged (Q6).
+ *
+ * Identity is the whole point of the caching: the transcript projection keys
+ * its per-message items on the `Message` object, so a distiller that cloned
+ * unconditionally would make every message a cache miss on every streamed
+ * token. A clone happens only when a fence was rewritten or the badge added.
  */
 function flockMessage(
   message: Message,
   wavePlanLabel: string,
   signature: string,
-): Message | null {
+): Message {
   const cached = renderCache.get(message);
   if (cached && cached.signature === signature) return cached.distilled;
 
   const analysis = analyzeTurn(message);
-  const badge = analysis.hasMutatingToolCall
-    ? selfExecutionBadge(message.content)
-    : null;
-  const keepToolEvidence = badge !== null;
-
-  let changed = analysis.blocks !== message.content;
-  const content: MessageContent[] = [];
-  for (let index = 0; index < analysis.blocks.length; index += 1) {
-    const block = analysis.blocks[index];
-    if (block === undefined) continue;
-    if (!isVisibleConductorBlock(block, keepToolEvidence)) {
-      changed = true;
-      continue;
-    }
-    if (index === analysis.planBlockIndex && analysis.planSteps) {
-      content.push({
-        ...(block as Extract<MessageContent, { type: "text" }>),
-        text: wavePlanBlockText(analysis, analysis.planSteps, wavePlanLabel),
-      });
-      changed = true;
-      continue;
-    }
-    content.push(block);
+  let content = analysis.blocks;
+  const planSteps = analysis.planSteps;
+  if (planSteps) {
+    content = content.map((block, index) =>
+      index === analysis.planBlockIndex && block.type === "text"
+        ? {
+            ...block,
+            text: wavePlanBlockText(analysis, planSteps, wavePlanLabel),
+          }
+        : block,
+    );
+  }
+  if (analysis.hasMutatingToolCall) {
+    content = [selfExecutionBadge(), ...content];
   }
 
-  // Fences are rewritten before the emptiness check: a plan-only message is the
-  // wave's `anchorMessageId`, so dropping it would strand the brigade chips
-  // that hang off it.
-  let distilled: Message | null;
-  if (!hasVisibleConductorContent(content) && !badge) {
-    distilled = null;
-  } else if (!badge && !changed) {
-    distilled = message;
-  } else {
-    distilled = {
-      ...message,
-      content: badge ? [badge, ...content] : content,
-    };
-  }
-
+  const distilled =
+    content === message.content
+      ? message
+      : { ...message, content: [...content] };
   renderCache.set(message, { signature, distilled });
   return distilled;
 }
@@ -328,10 +261,6 @@ export function flockConductorTranscript(
       continue;
     }
     const next = flockMessage(message, wavePlanLabel, signature);
-    if (next === null) {
-      changed = true;
-      continue;
-    }
     if (next !== message) changed = true;
     distilled.push(next);
   }
