@@ -36,6 +36,40 @@ const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 const OWNED_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const CHAT_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// The longest message the Claude bridge reads. claude-agent-acp serves ACP
+/// through the TypeScript SDK's `ndJsonStream`, which closes the connection
+/// on a line over its default of 32 MiB (`DEFAULT_MAX_MESSAGE_BYTES`, SDK
+/// 2.x); the bridge then exits, and every session it serves goes with it.
+/// The Codex and Kimi bridges bundle readers without a limit.
+const CLAUDE_BRIDGE_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+
+/// What a request adds to its params on the wire: the JSON-RPC envelope with
+/// its id and method name.
+const ENVELOPE_BYTES: usize = 256;
+
+/// The longest message `spec`'s bridge reads, with the name a refusal calls
+/// it by, where the bridge has such a limit.
+fn message_limit(spec: &HarnessSpec) -> Option<(usize, &'static str)> {
+    (spec.id == "claude-acp").then_some((CLAUDE_BRIDGE_MESSAGE_BYTES, spec.label))
+}
+
+/// The length of `value` written as JSON, counted without building it.
+fn json_len(value: &Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
 const TRANSPORT_UNIT: usize = 1024;
 const OWNED_QUEUE_UNITS: usize = 32 * 1024;
 const OWNED_EVENT_SLOTS: usize = 256;
@@ -371,6 +405,8 @@ pub struct Bridge {
     agent_capabilities: RwLock<Value>,
     zai: Option<Arc<Mutex<super::zai::ConfigAdapter>>>,
     writer: BridgeWriter,
+    /// See [`message_limit`]: a request past it is refused, never written.
+    message_limit: Option<(usize, &'static str)>,
     transport_cancelled: watch::Sender<bool>,
     startup_failure: Arc<Mutex<Option<Value>>>,
     pending: Arc<Pending>,
@@ -1007,6 +1043,7 @@ impl Bridge {
             agent_capabilities: RwLock::new(Value::Null),
             zai,
             writer,
+            message_limit: message_limit(spec),
             transport_cancelled,
             startup_failure,
             pending,
@@ -1299,6 +1336,9 @@ impl Bridge {
                 self.harness
             )));
         }
+        if let Some(refusal) = self.oversized(&params) {
+            return Err(refusal);
+        }
         self.touch();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
@@ -1451,6 +1491,28 @@ impl Bridge {
                 self.kill();
             }
         }
+    }
+
+    /// The refusal of a request this bridge could not read. Writing it would
+    /// close the bridge's connection and end every session on it; refusing
+    /// leaves the prompt unsent, to be sent again with less attached.
+    fn oversized(&self, params: &Value) -> Option<Value> {
+        let (limit, name) = self.message_limit?;
+        let bytes = json_len(params) + ENVELOPE_BYTES;
+        if bytes <= limit {
+            return None;
+        }
+        let megabytes = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+        Some(protocol::error_with_data(
+            -32602,
+            format!(
+                "This message is {:.1} MB, and {name} reads at most {:.0} MB in one message. \
+                 Remove some attachments, or attach their folder so the agent opens the files itself.",
+                megabytes(bytes),
+                megabytes(limit),
+            ),
+            json!({"kind":"message_too_large","messageBytes":bytes,"limitBytes":limit}),
+        ))
     }
 
     fn enqueue(&self, envelope: Value) -> Result<(), &'static str> {
@@ -1788,6 +1850,45 @@ pub(super) mod tests {
         assert!(!bridge.is_alive());
     }
 
+    /// A request past the longest message the bridge reads is refused before
+    /// it is written, and the bridge stays up for the sessions it serves; one
+    /// within the limit is written as before.
+    #[tokio::test]
+    async fn a_message_the_bridge_cannot_read_is_refused_unwritten() {
+        let (mut bridge, mut written) = silent_bridge();
+        bridge.message_limit = Some((64 * 1024, "Test Agent"));
+        let image =
+            |chars: usize| json!({"type":"image","mimeType":"image/png","data":"x".repeat(chars)});
+
+        let error = bridge
+            .request_within(
+                "session/prompt",
+                json!({"sessionId":"s","prompt":[image(70 * 1024)]}),
+                None,
+            )
+            .await
+            .expect_err("an oversized prompt is refused");
+        assert_eq!(error["code"], -32602);
+        assert_eq!(error["data"]["kind"], "message_too_large");
+        assert_eq!(error["data"]["limitBytes"], 64 * 1024);
+        assert!(
+            error_text(&error).contains("Test Agent reads at most"),
+            "{error}"
+        );
+        assert!(written.try_recv().is_err());
+        assert_eq!(pending_count(&bridge), 0);
+        assert!(bridge.is_alive());
+
+        let _ = bridge
+            .request_within(
+                "session/prompt",
+                json!({"sessionId":"s","prompt":[image(60 * 1024)]}),
+                Some(Duration::from_millis(10)),
+            )
+            .await;
+        assert!(written.try_recv().unwrap().contains("session/prompt"));
+    }
+
     /// A bridge with no process behind it: whatever is written to it lands
     /// in the returned receiver, and nothing ever answers.
     pub(crate) fn silent_bridge() -> (Bridge, mpsc::UnboundedReceiver<String>) {
@@ -1799,6 +1900,7 @@ pub(super) mod tests {
             agent_capabilities: RwLock::new(Value::Null),
             zai: None,
             writer: BridgeWriter::Chat(writer),
+            message_limit: None,
             transport_cancelled: watch::channel(false).0,
             startup_failure: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -2204,6 +2306,7 @@ pub(super) mod tests {
             agent_capabilities: RwLock::new(Value::Null),
             zai: None,
             writer: BridgeWriter::Chat(mpsc::unbounded_channel().0),
+            message_limit: None,
             transport_cancelled: watch::channel(false).0,
             startup_failure: Arc::new(Mutex::new(None)),
             pending: Arc::clone(&pending),
