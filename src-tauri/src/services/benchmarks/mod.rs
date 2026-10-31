@@ -19,6 +19,7 @@ mod judge_panel;
 pub mod judge_pool;
 pub mod learned;
 pub mod model_catalog;
+mod owner;
 pub mod promotion;
 pub mod qualification;
 pub mod repository;
@@ -287,18 +288,35 @@ fn randomized_matrix(request: &RunRequest) -> Result<Vec<(String, Configuration,
         .collect())
 }
 
+/// How long a starting process waits for the one it replaces to let the
+/// benchmark folder go (see [`owner`]).
+const OWNER_WAIT_SECONDS: u32 = 30;
+
 #[derive(Default)]
 pub struct BenchmarkState {
     service: OnceCell<Arc<BenchmarkService>>,
+    /// This process's claim on the benchmark folder, held while it lives.
+    owner: OnceLock<std::fs::File>,
 }
 impl BenchmarkState {
     pub async fn start_existing(&self, app: &tauri::AppHandle) -> Result<()> {
         let root = super::flock_root::app_root(app)
             .map_err(|e| BenchmarkError::new("storage_unavailable", e))?;
-        if root.join("benchmarks/benchmarks.db").is_file() {
-            self.get(app).await?;
+        if !root.join("benchmarks/benchmarks.db").is_file() {
+            return Ok(());
         }
-        Ok(())
+        // A restart can start this process while the one it replaces is
+        // still closing.
+        let mut waited = 0;
+        loop {
+            match self.get(app).await {
+                Err(error) if error.message == owner::ELSEWHERE && waited < OWNER_WAIT_SECONDS => {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    waited += 1;
+                }
+                result => return result.map(|_| ()),
+            }
+        }
     }
     pub async fn get(&self, app: &tauri::AppHandle) -> Result<Arc<BenchmarkService>> {
         self.service
@@ -306,6 +324,9 @@ impl BenchmarkState {
                 let root = super::flock_root::app_root(app)
                     .map_err(|e| BenchmarkError::new("storage_unavailable", e))?
                     .join("benchmarks");
+                // Before the store opens: opening migrates it and recovers
+                // the runs of a process that stopped.
+                let owner = owner::claim(&root)?;
                 let store = Store::open(&root).await?;
                 store.recover().await?;
                 let _ = worker::configure(app);
@@ -324,6 +345,7 @@ impl BenchmarkState {
                     app: Some(app.clone()),
                 });
                 service.seed().await?;
+                let _ = self.owner.set(owner);
                 let background = service.clone();
                 tauri::async_runtime::spawn(async move {
                     background.run_loop().await;
