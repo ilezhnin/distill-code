@@ -2,12 +2,15 @@ import {
   memo,
   useCallback,
   useLayoutEffect,
+  useMemo,
   useRef,
   type CSSProperties,
   type ReactElement,
 } from "react";
+import { memoryFenceRenderer } from "@/features/memory/ui/MemoryFenceRecord";
 import { cn } from "@/shared/lib/cn";
 import type { Message } from "@/shared/types/messages";
+import { MessageCodeRenderersProvider } from "@/shared/ui/ai-elements/message";
 import {
   VIRTUAL_ROW_LAYOUT_PENDING_ATTRIBUTE,
   VIRTUAL_ROW_RESERVED_BLOCK_SIZE_ATTRIBUTE,
@@ -31,6 +34,11 @@ const EMPTY_MESSAGE_BUBBLE_CALLBACKS: MessageBubbleCallbacks = {};
 interface VirtualTranscriptRowProps {
   row: TranscriptRowDescriptor;
   message?: Message;
+  /**
+   * The chat the row belongs to. With it, protocol fences in the row are drawn
+   * as what they did (a memory request as its outcome) rather than as JSON.
+   */
+  sessionId?: string;
   index: number;
   previousRowKind?: TranscriptRowDescriptor["kind"];
   dateLabel?: string;
@@ -59,6 +67,7 @@ interface VirtualTranscriptRowProps {
 export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
   row,
   message,
+  sessionId,
   index,
   previousRowKind,
   dateLabel,
@@ -265,6 +274,17 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
     row.rowId,
     virtualItem?.size,
   ]);
+  // The message the row draws, not the row: a projection splits one message
+  // into rows whose ids carry a suffix (`…:answer`), and the memory store
+  // records a fence under the message it came in.
+  const sourceMessageId = row.responseStartMessageId ?? message?.id;
+  const codeRenderers = useMemo(
+    () =>
+      sessionId && sourceMessageId
+        ? [memoryFenceRenderer(sessionId, sourceMessageId)]
+        : null,
+    [sessionId, sourceMessageId],
+  );
   let rowContent: ReactElement;
   if (row.kind === "date-separator") {
     rowContent = (
@@ -422,6 +442,14 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
     );
   }
 
+  if (codeRenderers) {
+    rowContent = (
+      <MessageCodeRenderersProvider value={codeRenderers}>
+        {rowContent}
+      </MessageCodeRenderersProvider>
+    );
+  }
+
   if (!rowStateProvider) {
     return rowContent;
   }
@@ -447,6 +475,7 @@ function areVirtualTranscriptRowPropsEqual(
   return (
     previous.row === next.row &&
     previous.message === next.message &&
+    previous.sessionId === next.sessionId &&
     previous.index === next.index &&
     previous.previousRowKind === next.previousRowKind &&
     previous.dateLabel === next.dateLabel &&

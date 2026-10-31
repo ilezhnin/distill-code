@@ -126,5 +126,58 @@
     },
     "show": "Mostrar el grafo de la wiki",
     "none": "Ningún proyecto tiene todavía un .distill/wiki/."
+  },
+  "fence": {
+    "status": {
+      "writing": "Escribiendo en la memoria…",
+      "pending": "Guardando en la memoria…",
+      "paused": "Aún no guardado: la escritura de memoria está desactivada",
+      "denied": "No guardado: este chat no puede escribir en la memoria",
+      "saved": "Guardado en la memoria",
+      "partial": "Guardado en parte en la memoria",
+      "refused": "No guardado en la memoria",
+      "unreadable": "No se pudo leer la petición de memoria"
+    },
+    "writtenByAgent": "Escrito por el agente. Puedes editarlo o borrarlo en Memoria.",
+    "writingDetail": "El agente todavía está escribiendo esta petición de memoria.",
+    "unreadableDetail": "La petición de memoria del agente no es válida, así que no se guardó nada.",
+    "forgetLine": "Olvidar: {{text}}",
+    "statementMeta": "{{scope}} · {{state}}",
+    "scope": {
+      "project": "Este proyecto",
+      "global": "En todas partes"
+    },
+    "state": {
+      "remember": {
+        "pending": "Guardando",
+        "paused": "Esperando a que se active la escritura de memoria",
+        "kept": "Guardado",
+        "archived": "Guardado; después pasó al archivo",
+        "removed": "Guardado; después se eliminó",
+        "refused": "No guardado",
+        "retired": "Guardado"
+      },
+      "forget": {
+        "pending": "Olvidando",
+        "paused": "Esperando a que se active la escritura de memoria",
+        "kept": "Todavía se recuerda",
+        "archived": "Pasó al archivo",
+        "removed": "Eliminado",
+        "refused": "Todavía se recuerda",
+        "retired": "No está en la memoria"
+      }
+    },
+    "refusal": {
+      "secret": "No guardado: parece un secreto ({{shape}})",
+      "no-project": "No guardado: un recuerdo de proyecto necesita un proyecto y este chat no tiene ninguno",
+      "blank": "No guardado: no quedó nada después de recortarlo"
+    },
+    "denial": {
+      "benchmark": "Las ejecuciones de benchmarks no pueden escribir en tu memoria.",
+      "wave-child": "Un paso de una ola no puede escribir en tu memoria; sus hallazgos van en su informe.",
+      "worker": "Un trabajador no puede escribir en tu memoria; sus hallazgos van en su informe.",
+      "orchestrator-without-grant": "El agente de este orquestador no tiene el permiso de escribir en la memoria."
+    },
+    "open": "Abrir memoria"
   }
 }

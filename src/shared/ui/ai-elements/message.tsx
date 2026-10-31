@@ -96,6 +96,22 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
+/**
+ * Fence renderers a surface supplies to every `MessageResponse` beneath it.
+ *
+ * For fences whose language belongs to a feature rather than to Markdown — a
+ * protocol block an agent writes for the app, shown as what it did instead of
+ * as its JSON. A surface provides them once, around a whole message, so the
+ * answer bubble and the live work panel draw the same block the same way.
+ * Renderers passed to `MessageResponse` directly come first.
+ */
+const MessageCodeRenderersContext = createContext<
+  readonly CustomRenderer[] | null
+>(null);
+
+export const MessageCodeRenderersProvider =
+  MessageCodeRenderersContext.Provider;
+
 export type MermaidDownloadFormat = "svg" | "png" | "mmd";
 
 export function detectStreamdownMermaidDownloadFormat(
@@ -557,6 +573,12 @@ const MessageResponseContent = ({
 }: MessageResponseProps) => {
   const { t } = useTranslation("common");
   const { openExternalUrl, linkSafetyModal } = useLinkSafetyGate();
+  const surfaceRenderers = useContext(MessageCodeRenderersContext);
+  const renderers = useMemo(() => {
+    if (!surfaceRenderers?.length) return codeRenderers;
+    if (!codeRenderers?.length) return [...surfaceRenderers];
+    return [...codeRenderers, ...surfaceRenderers];
+  }, [codeRenderers, surfaceRenderers]);
   const streamdownComponents = useMemo(
     () => buildStreamdownComponents(imageRenderer),
     [imageRenderer],
@@ -622,9 +644,7 @@ const MessageResponseContent = ({
           onAnimationStart={streamdownLayoutPending.onAnimationStart}
           rehypePlugins={flockRehypePlugins}
           plugins={
-            codeRenderers
-              ? { ...streamdownPlugins, renderers: codeRenderers }
-              : streamdownPlugins
+            renderers ? { ...streamdownPlugins, renderers } : streamdownPlugins
           }
           {...props}
         >

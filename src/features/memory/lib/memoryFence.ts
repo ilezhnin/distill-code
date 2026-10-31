@@ -84,6 +84,17 @@ function parseBody(body: string): MemoryFenceRequest | null {
   return { remember, forget };
 }
 
+/**
+ * One `distill-memory` block's body — the JSON between its fences — or `null`
+ * when it asks for nothing readable. Bounded like a whole message.
+ */
+export function parseMemoryFenceBody(body: string): MemoryFenceRequest | null {
+  const parsed = parseBody(body);
+  return parsed
+    ? { ...parsed, remember: parsed.remember.slice(0, MAX_REMEMBER_PER_TURN) }
+    : null;
+}
+
 /** Every `distill-memory` block in one message, merged and bounded. */
 export function parseMemoryFences(text: string): MemoryFenceRequest | null {
   if (!text.includes(MEMORY_FENCE_TAG)) return null;

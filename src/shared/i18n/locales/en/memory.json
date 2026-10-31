@@ -126,5 +126,58 @@
     },
     "show": "Show wiki graph",
     "none": "No project has a .distill/wiki/ yet."
+  },
+  "fence": {
+    "status": {
+      "writing": "Writing to memory…",
+      "pending": "Saving to memory…",
+      "paused": "Not saved yet: memory writing is off",
+      "denied": "Not saved: this chat cannot write to memory",
+      "saved": "Saved to memory",
+      "partial": "Partly saved to memory",
+      "refused": "Not saved to memory",
+      "unreadable": "Memory request could not be read"
+    },
+    "writtenByAgent": "Written by the agent. You can edit or delete it in Memory.",
+    "writingDetail": "The agent is still writing this memory request.",
+    "unreadableDetail": "The agent's memory request is not valid, so nothing was saved.",
+    "forgetLine": "Forget: {{text}}",
+    "statementMeta": "{{scope}} · {{state}}",
+    "scope": {
+      "project": "This project",
+      "global": "Everywhere"
+    },
+    "state": {
+      "remember": {
+        "pending": "Saving",
+        "paused": "Waiting until memory writing is switched on",
+        "kept": "Saved",
+        "archived": "Saved, since moved to the archive",
+        "removed": "Saved, since removed",
+        "refused": "Not saved",
+        "retired": "Saved"
+      },
+      "forget": {
+        "pending": "Forgetting",
+        "paused": "Waiting until memory writing is switched on",
+        "kept": "Still remembered",
+        "archived": "Moved to the archive",
+        "removed": "Removed",
+        "refused": "Still remembered",
+        "retired": "Not in memory"
+      }
+    },
+    "refusal": {
+      "secret": "Not saved: it looks like a secret ({{shape}})",
+      "no-project": "Not saved: a project memory needs a project, and this chat has none",
+      "blank": "Not saved: nothing was left once it was trimmed"
+    },
+    "denial": {
+      "benchmark": "Benchmark runs cannot write to your memory.",
+      "wave-child": "A wave step cannot write to your memory; its findings belong in its report.",
+      "worker": "A worker cannot write to your memory; its findings belong in its report.",
+      "orchestrator-without-grant": "This orchestrator's agent does not have the memory-write permission."
+    },
+    "open": "Open memory"
   }
 }

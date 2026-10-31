@@ -3720,6 +3720,7 @@ function VirtualMessageTimelineSession({
         formatDate,
       })}
       message={row.messageId ? stableMessageByRowId.get(row.rowId) : undefined}
+      sessionId={sessionId}
       isStreaming={
         streamingMessageId != null &&
         (row.responseStartMessageId ?? row.messageId) === streamingMessageId
@@ -3765,6 +3766,7 @@ function VirtualMessageTimelineSession({
         formatDate,
       })}
       message={row.messageId ? stableMessageByRowId.get(row.rowId) : undefined}
+      sessionId={sessionId}
       isStreaming={false}
       rowStateProvider={
         virtualTimeline.rowStateProvider
