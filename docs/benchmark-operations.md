@@ -795,7 +795,24 @@ after five minutes; after three such tries the run waits for the operator, and
 a runtime the host would not start waits for the operator at once. The cell is
 never settled by such a refusal. An answer the provider's CLI cut off at its own
 output-token maximum is the model's own: it settles as a budget failure scored
-zero. Use at least
+zero.
+
+A turn that breaks its test's policy settles by whose doing the breach was.
+The model's own work against the rules (a tool, a plan, background work or
+another agent where the test allows none) fails the test, scored zero, with
+the rule it broke as the reason. A repository test's granted tools, its plan
+and the background work those tools start (a shell command that runs long) break
+nothing. A change the provider's runtime makes while the turn runs is not the
+model's answer and is not counted: a model, effort or fast mode it changed
+settles as a changed selection, a hook it ran or a mode it changed as an
+infrastructure failure. A model refusal (Claude's safeguards stopping the
+answer) is the model's answer, the provider's explanation as its text, and is
+graded like any other. No other model answers for it: every owned Claude session runs with
+`CLAUDE_CODE_NO_MODEL_FALLBACK=1`, which keeps Claude Code from retrying a
+refused turn on another model and moving the session there (10-31: Sonnet 5.5
+declined a cyber-flagged task and Claude Code went on with claude-sonnet-5). If a
+runtime still swaps the model after a refusal, the refusal fails the test and
+the other model's answer is never counted. Use at least
 three repetitions for a complete leaderboard measurement. Set an explicit
 `maxExecutions` and a realistic `timeoutSeconds`; if applicable, also set
 `executionLimits.dispatchNotAfterMs`. Review a valid preview and resource budget

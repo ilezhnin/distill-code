@@ -612,6 +612,49 @@ pub(super) fn native_text_meta(model: &str) -> Value {
     })
 }
 
+/// What the host tags an update of an owned session with when it breaks the
+/// session's policy (`_meta.executionViolation`), and whose doing each is.
+pub mod violation {
+    pub const TOOL: &str = "native tool activity in no-tool profile";
+    pub const PLAN: &str = "native plan activity in no-tool profile";
+    pub const BACKGROUND: &str = "native background activity in no-tool profile";
+    pub const SUBAGENT: &str = "native subagent activity in no-tool profile";
+    pub const HOOK: &str = "native hook activity in no-tool profile";
+    pub const MODE: &str = "native mode changed during owned execution";
+    pub const SELECTION: &str = "native selection changed during owned execution";
+
+    /// Who broke the policy a violation names.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Origin {
+        /// The model's own work against the test's rules: a tool, a plan,
+        /// background work or another agent where the test allows none.
+        Model,
+        /// The provider's runtime: a hook it ran, or a mode or selection it
+        /// changed while the turn ran. No model asks for either.
+        Runtime,
+    }
+
+    /// Whose doing `reason` is; none for a reason this build does not know.
+    pub fn origin(reason: &str) -> Option<Origin> {
+        match reason {
+            TOOL | PLAN | BACKGROUND | SUBAGENT => Some(Origin::Model),
+            HOOK | MODE | SELECTION => Some(Origin::Runtime),
+            _ => None,
+        }
+    }
+}
+
+/// The variable that keeps every owned Claude session on its selected model.
+/// Claude Code otherwise answers a turn the model refused with another model
+/// and keeps the session on it, or swaps models when the selected one is
+/// overloaded or not open to the account. A benchmark measures the selected
+/// model: its refusal is its own answer, and no other model answers for it
+/// (10-31: Sonnet 5.5 declined a cyber-flagged task and Claude Code went on
+/// with claude-sonnet-5). With it a refusal ends the turn as `refusal`.
+pub(super) fn claude_no_model_fallback() -> (String, String) {
+    ("CLAUDE_CODE_NO_MODEL_FALLBACK".into(), "1".into())
+}
+
 /// The provider whose profile serves `request`, once the request is one an
 /// owned session may be opened for.
 pub(super) fn validate_request(request: &OwnedSessionRequest) -> Result<NativeProvider, String> {

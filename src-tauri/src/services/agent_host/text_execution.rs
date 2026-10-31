@@ -212,6 +212,7 @@ fn environment(provider: NativeProvider) -> Vec<(String, String)> {
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
                 "1".into(),
             ));
+            env.push(execution::claude_no_model_fallback());
         }
         NativeProvider::Codex => {
             let mut config = policies["codex"]["config"].clone();

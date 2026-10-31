@@ -84,6 +84,7 @@ fn environment(provider: NativeProvider) -> Vec<(String, String)> {
         NativeProvider::Claude => {
             env.push(("CLAUDE_CONFIG_DIR".into(), "/tmp/provider".into()));
             env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
+            env.push(execution::claude_no_model_fallback());
         }
         NativeProvider::Codex => {
             let mut config = native_policies()["codex"]["config"].clone();

@@ -6499,8 +6499,7 @@ impl ExecutionBackend for NativeBackend {
                     Some("Recovered terminal state lacks acknowledged selection".into());
             }
             if let Some(violation) = capture.violation.take() {
-                attempt.outcome = Some("execution_violation".into());
-                attempt.reason = Some(violation);
+                settle_violation(&mut attempt, violation, capture.declined);
             }
             let mut artifact_error = None;
             let mut session_limit = None;
@@ -6968,8 +6967,7 @@ async fn wait_for_owned_turn(
                 consume_terminal_result(result, attempt);
             }
             if let Some(violation) = capture.violation.take() {
-                attempt.outcome = Some("execution_violation".into());
-                attempt.reason = Some(violation);
+                settle_violation(attempt, violation, capture.declined);
                 break;
             }
             if let Some(selection) = status
@@ -7062,6 +7060,12 @@ struct TurnCapture {
     cap: usize,
     output: String,
     violation: Option<String>,
+    /// Whether the provider's runtime said the model declined the request
+    /// before anything else answered it (see [`declined_notice`]).
+    declined: bool,
+    /// Whether the runtime changed the selection while the turn ran: what
+    /// streams after that is not the selected configuration's answer.
+    swapped: bool,
     answer_capped: bool,
     evidence: super::evidence::EvidenceLog,
 }
@@ -7076,18 +7080,27 @@ impl TurnCapture {
             cap: usize::try_from(max_artifact_bytes).unwrap_or(usize::MAX),
             output: String::new(),
             violation: None,
+            declined: false,
+            swapped: false,
             answer_capped: false,
             evidence,
         }
     }
 
     fn read(&mut self, payload: Value, attempt: &mut Attempt) -> Result<()> {
+        let answered = self.output.len();
         consume_event(&payload, &mut self.output, &mut attempt.usage);
+        if self.swapped {
+            self.output.truncate(answered);
+        }
         if let Some(model) = resolved_model_of(&payload) {
             attempt.resolved_model = Some(model);
         }
         if self.violation.is_none() {
+            self.declined |= declined_notice(&payload);
             self.violation = violation_of(&payload);
+            self.swapped = self.violation.as_deref()
+                == Some(crate::services::agent_host::execution::violation::SELECTION);
         }
         self.evidence.push(payload)
     }
@@ -7179,6 +7192,72 @@ fn violation_of(event: &Value) -> Option<String> {
         .pointer("/_meta/executionViolation")
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+/// Whether this event is the provider's runtime saying the model declined
+/// the request: the notice the pinned Claude bridge sends when Claude Code
+/// answers a refused turn with another model ("claude-sonnet-5-5 declined
+/// this request (cyber); retried with claude-sonnet-5 ...").
+fn declined_notice(event: &Value) -> bool {
+    let params = event.get("params").unwrap_or(event);
+    let update = params.get("update").unwrap_or(params);
+    update["sessionUpdate"] == "notice"
+        && ["title", "description"].iter().any(|field| {
+            update[*field]
+                .as_str()
+                .is_some_and(|text| text.contains("declined this request"))
+        })
+}
+
+/// Settles an attempt whose turn broke its test's policy, by whose doing
+/// that was. The model's own work against the rules (a tool, a plan,
+/// background work or another agent where the test allows none) is its
+/// failure, scored 0. A change the provider's runtime made is no answer of
+/// the model's and is not counted: a selection it changed is a changed
+/// selection, a hook it ran or a mode it changed is an infrastructure
+/// failure. Only a model swap after the model declined the request is the
+/// model's: its refusal fails the test, and another model's answer never
+/// counts for it. A violation this build does not know stays one.
+fn settle_violation(attempt: &mut Attempt, violation: String, declined: bool) {
+    use crate::services::agent_host::execution::violation as kind;
+    let (outcome, reason) = match kind::origin(&violation) {
+        Some(kind::Origin::Model) => {
+            let broke = match violation.as_str() {
+                kind::TOOL => "it used a tool in a test that allows none",
+                kind::PLAN => "it kept a task plan in a test that allows only an answer",
+                kind::BACKGROUND => "it started background work in a test that allows none",
+                _ => "it handed the work to another agent, which the test does not allow",
+            };
+            (
+                "fail",
+                format!("The model broke the test's rules: {broke} ({violation})"),
+            )
+        }
+        Some(kind::Origin::Runtime) if violation == kind::SELECTION && declined => (
+            "fail",
+            format!(
+                "The model refused the task, and the provider's runtime switched to another \
+                 model to answer it; that answer is not the selected model's ({violation})"
+            ),
+        ),
+        Some(kind::Origin::Runtime) if violation == kind::SELECTION => (
+            "selection_changed",
+            format!(
+                "The provider's runtime changed the model, effort or fast mode while the turn \
+                 ran, so the answer is not counted ({violation})"
+            ),
+        ),
+        Some(kind::Origin::Runtime) => (
+            "infrastructure_failure",
+            format!(
+                "The provider's runtime ran a hook or changed its mode while the turn ran, \
+                 which the test's policy turns off; the answer is not counted ({violation})"
+            ),
+        ),
+        None => ("execution_violation", violation),
+    };
+    attempt.outcome = Some(outcome.into());
+    attempt.reason = Some(reason);
 }
 fn mark_auxiliary_profile(attempt: &mut Attempt) {
     if attempt.configuration.execution_profile == "native_text"
@@ -15640,6 +15719,99 @@ mod tests {
             super::super::analysis::score(&attempt("execution_violation")),
             None
         );
+    }
+    /// The model's own breach of a test's rules is its failure; a change the
+    /// provider's runtime made is not counted, unless it answered a refusal
+    /// with another model (10-31: Sonnet 5.5 declined a cyber-flagged task
+    /// and Claude Code went on with claude-sonnet-5, which Flock stopped).
+    #[test]
+    fn a_violation_settles_by_whose_doing_it_was() {
+        use crate::services::agent_host::execution::violation as kind;
+        let settled = |violation: &str, declined: bool| {
+            let mut attempt = blank_attempt();
+            settle_violation(&mut attempt, violation.into(), declined);
+            (attempt.outcome.unwrap(), attempt.reason.unwrap())
+        };
+        for violation in [kind::TOOL, kind::PLAN, kind::BACKGROUND, kind::SUBAGENT] {
+            let (outcome, reason) = settled(violation, false);
+            assert_eq!(outcome, "fail", "{violation}");
+            assert!(reason.starts_with("The model broke the test's rules: "));
+            assert!(reason.ends_with(&format!("({violation})")));
+        }
+        let (outcome, reason) = settled(kind::SELECTION, false);
+        assert_eq!(outcome, "selection_changed");
+        assert!(reason.starts_with("The provider's runtime changed the model"));
+        let (outcome, reason) = settled(kind::SELECTION, true);
+        assert_eq!(outcome, "fail");
+        assert!(reason.starts_with("The model refused the task"));
+        for violation in [kind::HOOK, kind::MODE] {
+            assert_eq!(settled(violation, true).0, "infrastructure_failure");
+        }
+        assert_eq!(
+            settled("invented violation", false),
+            ("execution_violation".into(), "invented violation".into())
+        );
+        // A breach the model made is a measured 0; the runtime's are not.
+        let mut broke = blank_attempt();
+        broke.evaluations.clear();
+        settle_violation(&mut broke, kind::TOOL.into(), false);
+        broke.phase = "terminal".into();
+        broke.finished_at = Some(1);
+        assert_eq!(super::super::analysis::score(&broke), Some(0.0));
+        assert!(super::super::analysis::is_measured(&broke));
+
+        // The bridge's refusal notice, and nothing else, marks a decline;
+        // only the first violation's lead-up counts.
+        let notice = |title: &str| {
+            json!({"params": {"sessionId": "s", "update": {"sessionUpdate": "notice",
+                "severity": "warning", "title": title}}})
+        };
+        assert!(declined_notice(&notice(
+            "claude-sonnet-5-5 declined this request (cyber); retried with claude-sonnet-5. \
+             The session will continue on claude-sonnet-5."
+        )));
+        assert!(declined_notice(
+            &json!({"update": {"sessionUpdate": "notice",
+            "title": "Model fallback",
+            "description": "claude-sonnet-5-5 declined this request; retried with claude-sonnet-5."}})
+        ));
+        assert!(!declined_notice(&notice(
+            "Sonnet 5.5's safeguards stopped the response above · continuing once with that noted"
+        )));
+        assert!(!declined_notice(
+            &json!({"update": {"sessionUpdate": "agent_message_chunk",
+            "content": {"text": "I declined this request"}}})
+        ));
+        let mut capture = TurnCapture::new(1024);
+        let mut attempt = blank_attempt();
+        for event in [
+            json!({"update": {"sessionUpdate": "agent_message_chunk",
+                "content": {"text": "partial "}}}),
+            notice(
+                "claude-sonnet-5-5 declined this request (cyber); retried with claude-sonnet-5.",
+            ),
+            json!({"update": {"sessionUpdate": "config_option_update",
+                "_meta": {"executionViolation": kind::SELECTION}}}),
+            // The other model's answer streams before the cancel lands.
+            json!({"update": {"sessionUpdate": "agent_message_chunk",
+                "content": {"text": "ANSWER_FROM_claude-sonnet-5"}}}),
+        ] {
+            capture.read(event, &mut attempt).unwrap();
+        }
+        assert!(capture.declined);
+        assert_eq!(capture.violation.as_deref(), Some(kind::SELECTION));
+        assert_eq!(capture.output, "partial ");
+        let mut late = TurnCapture::new(1024);
+        for event in [
+            json!({"update": {"sessionUpdate": "config_option_update",
+                "_meta": {"executionViolation": kind::SELECTION}}}),
+            notice(
+                "claude-sonnet-5-5 declined this request (cyber); retried with claude-sonnet-5.",
+            ),
+        ] {
+            late.read(event, &mut attempt).unwrap();
+        }
+        assert!(!late.declined);
     }
     #[test]
     fn judge_provider_allowed_only_for_claude() {

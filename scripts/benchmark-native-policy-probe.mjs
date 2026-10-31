@@ -32,7 +32,11 @@ const secret = "DISTILL_HIDDEN_CONTEXT_927413";
 const requests = [];
 const isTitleRequest = (body) =>
   JSON.stringify(body.system).includes("You are naming a coding session");
+// A model Claude Code maps a refusal fallback for (it would go on with
+// claude-sonnet-5), so the refusal check below has something to stop.
+const refusingModel = "claude-sonnet-5-5";
 let hostileReply = false;
+let refusing = false;
 let child;
 let stderr = "";
 let server;
@@ -89,6 +93,48 @@ try {
       return;
     }
     requests.push(body);
+    if (refusing && !isTitleRequest(body)) {
+      const stopDetails = {
+        type: "refusal",
+        category: "cyber",
+        explanation: "POLICY_PROBE_REFUSED",
+      };
+      const refusal = {
+        id: "msg_refused",
+        type: "message",
+        role: "assistant",
+        model: body.model,
+        content: [],
+        stop_reason: "refusal",
+        stop_sequence: null,
+        stop_details: stopDetails,
+        usage: { input_tokens: 10, output_tokens: 0 },
+      };
+      if (!body.stream) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify(refusal));
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (type, data) =>
+        response.write(
+          `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`,
+        );
+      send("message_start", {
+        message: { ...refusal, stop_reason: null, stop_details: null },
+      });
+      send("message_delta", {
+        delta: {
+          stop_reason: "refusal",
+          stop_sequence: null,
+          stop_details: stopDetails,
+        },
+        usage: { output_tokens: 0 },
+      });
+      send("message_stop", {});
+      response.end();
+      return;
+    }
     const replyText = isTitleRequest(body)
       ? '{"title":"Loopback title"}'
       : "POLICY_PROBE_OK";
@@ -168,6 +214,7 @@ try {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     DISABLE_AUTOUPDATER: "1",
+    CLAUDE_CODE_NO_MODEL_FALLBACK: "1",
   });
   child = spawn(
     process.execPath,
@@ -249,6 +296,7 @@ try {
     "persistSession",
     "skills",
     '"title": "Benchmark execution"',
+    '"CLAUDE_CODE_NO_MODEL_FALLBACK"',
   ])
     assert(rust.includes(field));
   const nativeSessionParams = {
@@ -334,6 +382,51 @@ try {
         },
       ],
     }).catch(() => {});
+    hostileReply = false;
+    // A refused turn is the selected model's own answer: no other model may
+    // answer it, and the session stays on the model it was opened with.
+    refusing = true;
+    const beforeRefusal = requests.length;
+    const refusedSession = await call("session/new", {
+      ...nativeSessionParams,
+      _meta: {
+        ...nativeSessionParams._meta,
+        claudeCode: {
+          options: {
+            ...nativeSessionParams._meta.claudeCode.options,
+            model: refusingModel,
+          },
+        },
+      },
+    });
+    const refused = await call("session/prompt", {
+      sessionId: refusedSession.sessionId,
+      prompt: [{ type: "text", text: "Benchmark task:\nAnswer the request." }],
+    });
+    refusing = false;
+    assert.equal(refused.stopReason, "refusal", "A refusal must end the turn");
+    // The hostile session may still send its last request meanwhile.
+    const modelsSince = requests.slice(beforeRefusal).map((body) => body.model);
+    assert(
+      modelsSince.includes(refusingModel),
+      "The refused turn must reach the stub",
+    );
+    assert(
+      modelsSince.every(
+        (model) =>
+          model === refusingModel ||
+          model === nativeSessionParams._meta.claudeCode.options.model,
+      ),
+      "No other model may answer a refused turn",
+    );
+    assert(
+      !notifications.some(
+        (value) =>
+          value.params?.sessionId === refusedSession.sessionId &&
+          value.params.update?.sessionUpdate === "config_option_update",
+      ),
+      "A refusal must not move the session to another model",
+    );
     assert(
       requests.length > 0,
       "The native CLI must reach the loopback model endpoint",
@@ -484,6 +577,7 @@ try {
             "skills absent",
             "MCP launch denied",
             "hooks disabled",
+            "refused turn ends as a refusal on the selected model",
             "native ACP response",
             "positive control exposes tools/context and executes fixture",
             "owned bridge adapter prevents auxiliary inference; unadapted bridge restores it",

@@ -21,8 +21,8 @@ use super::app_sign_in;
 use super::bridge::{error_text, Bridge, BridgeEvent, SpawnEnv};
 use super::execution::ExecutionProfile;
 use super::execution::{
-    self, AccountActivity, ExecutionDispatch, NativeProvider, ObservedSelection, OwnedEventPage,
-    OwnedSession, OwnedSessionRequest, OwnedTurnImage, OwnedTurnRequest,
+    self, violation, AccountActivity, ExecutionDispatch, NativeProvider, ObservedSelection,
+    OwnedEventPage, OwnedSession, OwnedSessionRequest, OwnedTurnImage, OwnedTurnRequest,
 };
 use super::executor_receipts::{
     ExecutorLink, ReceiptFinish, ReceiptRejection, ReceiptStart, ReportedSelection, REPORTED_KEY,
@@ -2497,11 +2497,10 @@ impl Inner {
                             .execution_profile
                             .as_deref()
                             .is_some_and(repository_execution::is_route)
-                            || !matches!(
+                            || !Self::repository_work(
                                 params
                                     .pointer("/update/sessionUpdate")
                                     .and_then(Value::as_str),
-                                Some("tool_call" | "tool_call_update" | "plan")
                             )
                     }) {
                         params["update"]["_meta"]["executionViolation"] = json!(violation);
@@ -2560,7 +2559,7 @@ impl Inner {
                         && selection != Self::selection_from(&runtime.snapshot["configOptions"])
                     {
                         params["update"]["_meta"]["executionViolation"] =
-                            json!("native selection changed during owned execution");
+                            json!(violation::SELECTION);
                     }
                     Self::capture_reported(
                         &mut runtime.snapshot,
@@ -2628,21 +2627,27 @@ impl Inner {
     /// the turn runs.
     fn owned_violation(update: Option<&str>, running: bool) -> Option<&'static str> {
         match update? {
-            "tool_call" | "tool_call_update" => Some("native tool activity in no-tool profile"),
-            "plan" => Some("native plan activity in no-tool profile"),
-            kind if kind.starts_with("async_task") => {
-                Some("native background activity in no-tool profile")
-            }
-            kind if kind.starts_with("subagent") => {
-                Some("native subagent activity in no-tool profile")
-            }
+            "tool_call" | "tool_call_update" => Some(violation::TOOL),
+            "plan" => Some(violation::PLAN),
+            kind if kind.starts_with("async_task") => Some(violation::BACKGROUND),
+            kind if kind.starts_with("subagent") => Some(violation::SUBAGENT),
             // Grok's hook runs.
-            "hook_run_started" | "hook_execution" => {
-                Some("native hook activity in no-tool profile")
-            }
-            "current_mode_update" if running => Some("native mode changed during owned execution"),
+            "hook_run_started" | "hook_execution" => Some(violation::HOOK),
+            "current_mode_update" if running => Some(violation::MODE),
             _ => None,
         }
+    }
+
+    /// Whether a repository session may send `update`, which the no-tool
+    /// profile forbids: its granted tools, the plan it keeps, and the
+    /// background work those tools start (a shell command that runs long
+    /// goes on in the background: 10-31, a Codex `exec_command` writing a
+    /// file was cut off as a policy breach).
+    fn repository_work(update: Option<&str>) -> bool {
+        update.is_some_and(|kind| {
+            matches!(kind, "tool_call" | "tool_call_update" | "plan")
+                || kind.starts_with("async_task")
+        })
     }
 
     fn accept_turn_update(
@@ -9171,6 +9176,29 @@ mod tests {
             None
         );
         assert_eq!(Inner::owned_violation(None, true), None);
+        // A repository session's granted tools may run, plan and go on in the
+        // background; it still may not hand work to another agent, run a
+        // hook, or change its mode or selection.
+        for kind in [
+            "tool_call",
+            "tool_call_update",
+            "plan",
+            "async_task_spawned",
+            "async_task_progress",
+            "async_task_state_update",
+        ] {
+            assert!(Inner::owned_violation(Some(kind), true).is_some(), "{kind}");
+            assert!(Inner::repository_work(Some(kind)), "{kind}");
+        }
+        for kind in [
+            "subagent_spawned",
+            "hook_execution",
+            "current_mode_update",
+            "config_option_update",
+        ] {
+            assert!(!Inner::repository_work(Some(kind)), "{kind}");
+        }
+        assert!(!Inner::repository_work(None));
     }
 
     #[test]
