@@ -664,8 +664,8 @@
       "empty": "Nothing was recorded for this step yet."
     },
     "stall": {
-      "title": "This wave stopped making progress, so Flock ended it and collected what exists.",
-      "body": "Nothing moved for {{count}} consecutive checks — no step changed state, nothing new started. Running steps were stopped; steps without a report appear in the digest as “result unknown”. The digest below says the wave stalled, so judge it with that in mind."
+      "title": "This wave stopped moving, so Flock ended it and collected what exists.",
+      "body": "For {{count}} checks in a row no step was working and none changed state. Steps without a report appear in the digest as “result unknown”, and the digest says the wave stalled."
     },
     "reportVerification": {
       "title": "Step {{step}} ({{name}}) reported success, but its report failed verification and was quarantined.",

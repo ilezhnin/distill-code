@@ -29,6 +29,8 @@ import {
   resetWaveExecutorOutcomesForTests,
 } from "./waveExecutor";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
+import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   createSystemNotificationMessage,
@@ -239,10 +241,11 @@ export const WAVE_SPAWN_TIMEOUT_MS = 120_000;
 export const WAVE_REPORT_GRACE_MS = 20_000;
 
 /**
- * One stall sample per this much wall clock without progress (P61). Sized so
- * an honest long tool call — a build, a big search — never counts as a
- * stall on its own: two full silent minutes have to pass before the wave is
- * cut short, and any movement resets the count.
+ * One stall sample per this much wall clock without progress (P61). A sample
+ * is only taken while no child is working — none streaming, running a turn
+ * or waiting on a task it backgrounded — so a long build or a long think is
+ * never a stall; two such idle minutes in a row are, and any movement resets
+ * the count.
  */
 export const WAVE_STALL_SAMPLE_MS = 60_000;
 
@@ -287,14 +290,34 @@ const childActivitySnapshots = new Map<
  */
 const waveActivityAt = new Map<string, number>();
 
-/** True when any spawned child of the wave changed in the chat store. */
-function waveChildrenMoved(wave: WaveState): boolean {
+/**
+ * True when any spawned child of the wave is working: it changed in the chat
+ * store, its turn is still running, or a task it started in the background is.
+ *
+ * Silence is not a stall. A model at high effort thinks for minutes without
+ * sending a token, and a worker waiting on a build it backgrounded sends
+ * nothing until the build reports; both are a child at work, and on
+ * 2026-10-31 the stall detector stopped exactly such a worker two quiet
+ * minutes into composing its next step. A stall is a wave whose children
+ * have all stopped working while the wave itself is not done.
+ */
+function waveChildrenWorking(wave: WaveState): boolean {
   const chat = useChatStore.getState();
-  let moved = false;
+  const backgroundTasks = useBackgroundTasksStore.getState().bySession;
+  let working = false;
   for (const step of wave.steps) {
     if (step.phase !== "spawned" || !step.sessionId) continue;
     const messages = chat.messagesBySession[step.sessionId];
     const runtime = chat.sessionStateById[step.sessionId];
+    if (
+      (runtime &&
+        (isSessionRunning(runtime.chatState) || runtime.activeRunId)) ||
+      (backgroundTasks[step.sessionId] ?? []).some(
+        (task) => task.state === "running",
+      )
+    ) {
+      working = true;
+    }
     const seen = childActivitySnapshots.get(step.sessionId);
     if (seen && seen.messages === messages && seen.runtime === runtime) {
       continue;
@@ -303,9 +326,9 @@ function waveChildrenMoved(wave: WaveState): boolean {
     // The first sighting is a baseline, not movement: after a restart every
     // child is "new" to this process, and that says nothing about whether it
     // is doing anything.
-    if (seen) moved = true;
+    if (seen) working = true;
   }
-  return moved;
+  return working;
 }
 
 /** Drops the activity marks of waves that are no longer running. */
@@ -1280,14 +1303,15 @@ function advanceWaves(state: WaveEngineState): {
     // P61: the stall detector. An advance that moved anything resets the
     // count; a run of sample-sized silent windows ends the wave through the
     // existing digest/verdict cycle — never a bigger plan, never a retry.
-    // A child that is streaming or running tools is movement too, even though
-    // the wave's own state has nothing new to say about it.
+    // A child that streams, runs a turn or waits on a task it backgrounded is
+    // working too, even though the wave's own state has nothing new to say
+    // about it; only a wave whose children have all stopped can stall.
     const now = Date.now();
-    const childrenMoved = waveChildrenMoved(current);
-    if (!advanced.noProgress || childrenMoved) {
+    const childrenWorking = waveChildrenWorking(current);
+    if (!advanced.noProgress || childrenWorking) {
       waveActivityAt.set(wave.waveId, now);
     }
-    if (advanced.noProgress && !childrenMoved) {
+    if (advanced.noProgress && !childrenWorking) {
       const lastProgressAt = Math.max(
         current.lastProgressAt ?? current.createdAt,
         waveActivityAt.get(wave.waveId) ?? 0,

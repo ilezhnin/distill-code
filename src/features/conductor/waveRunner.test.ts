@@ -7,7 +7,9 @@ import type {
 } from "@/features/benchmarks/lib/executorSelection";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import type { SessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
+import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { INITIAL_SESSION_CHAT_RUNTIME } from "@/shared/types/chat";
 import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 
@@ -1346,9 +1348,55 @@ describe("wave stall detector (P61)", () => {
       // The wedged child was told to stop, and the operator was told why.
       expect(stopOrchestratorSession).toHaveBeenCalled();
       expect(
-        noticeTexts().some((text) => text.includes("stopped making progress")),
+        noticeTexts().some((text) => text.includes("stopped moving")),
       ).toBe(true);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a wave alone while a child thinks or waits on a background task", async () => {
+    vi.useFakeTimers();
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+
+      // A model at high effort sends nothing for minutes while its turn runs.
+      useChatStore.setState({
+        sessionStateById: {
+          ...useChatStore.getState().sessionStateById,
+          "child-0": {
+            ...INITIAL_SESSION_CHAT_RUNTIME,
+            chatState: "thinking",
+          },
+        },
+      });
+      for (let i = 0; i < WAVE_STALL_THRESHOLD * 3; i += 1) {
+        await vi.advanceTimersByTimeAsync(WAVE_STALL_SAMPLE_MS + 200);
+      }
+      expect(getWaveEngineState().waves[0]?.stalled).toBeFalsy();
+      expect(getWaveEngineState().waves[0]?.phase).toBe("running");
+
+      // Its turn ends with a build still running in the background.
+      useChatStore.setState({
+        sessionStateById: {
+          ...useChatStore.getState().sessionStateById,
+          "child-0": { ...INITIAL_SESSION_CHAT_RUNTIME },
+        },
+      });
+      useBackgroundTasksStore
+        .getState()
+        .replace("child-0", [{ id: "build", state: "running" }]);
+      for (let i = 0; i < WAVE_STALL_THRESHOLD * 3; i += 1) {
+        await vi.advanceTimersByTimeAsync(WAVE_STALL_SAMPLE_MS + 200);
+      }
+      expect(getWaveEngineState().waves[0]?.stalled).toBeFalsy();
+      expect(stopOrchestratorSession).not.toHaveBeenCalled();
+    } finally {
+      useBackgroundTasksStore.getState().replace("child-0", []);
       vi.useRealTimers();
     }
   });

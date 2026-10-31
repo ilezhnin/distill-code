@@ -661,8 +661,8 @@
       "empty": "Todavía no se ha registrado nada de este paso."
     },
     "stall": {
-      "title": "Esta ola dejó de avanzar, así que Flock la terminó y recogió lo que existe.",
-      "body": "Nada se movió durante {{count}} comprobaciones seguidas: ningún paso cambió de estado y no arrancó nada nuevo. Los pasos en ejecución se detuvieron; los pasos sin informe aparecen en el resumen como «resultado desconocido». El resumen indica que la ola se atascó; júzgala teniéndolo en cuenta."
+      "title": "Esta ola dejó de moverse, así que Flock la terminó y recogió lo que existe.",
+      "body": "Durante {{count}} comprobaciones seguidas ningún paso estaba trabajando y ninguno cambió de estado. Los pasos sin informe aparecen en el resumen como «resultado desconocido», y el resumen indica que la ola se atascó."
     },
     "reportVerification": {
       "title": "El paso {{step}} ({{name}}) informó éxito, pero su informe no superó la verificación y quedó en cuarentena.",
