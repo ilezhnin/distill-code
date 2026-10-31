@@ -3949,11 +3949,14 @@ impl Inner {
         let mcp_servers = self.mcp_servers(&Value::Null).await;
         let mut bridge_session_id = stored_bridge_id.clone();
         let mut resumed = false;
-        // A model the bridge runs only when a session is opened on it.
-        let open_meta = record
+        // A model the bridge runs only when a session is opened on it, over
+        // what every session on the harness opens and resumes with.
+        let model_meta = record
             .model_id
             .as_deref()
             .and_then(|model_id| harness::session_model_meta(spec, model_id));
+        let open_meta =
+            harness::merge_session_meta(harness::session_base_meta(spec.id), model_meta.as_ref());
         if let Some(resume_id) = Self::resumable_bridge_session(record)
             .filter(|_| bridge.supports_load_session())
             .map(str::to_string)
@@ -4021,7 +4024,7 @@ impl Inner {
                 &bridge_session_id,
                 &mut snapshot,
                 &wanted,
-                open_meta.is_some(),
+                model_meta.is_some(),
             )
             .await;
         let has_model_option = Self::has_model_option(&snapshot);

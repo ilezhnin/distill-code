@@ -370,8 +370,9 @@ pub fn bridge_mode(spec: &HarnessSpec, agent_mode: &str) -> Option<&'static str>
         .map(|(_, bridge_mode)| *bridge_mode)
 }
 
-/// `_meta` every session on the harness opens with, whatever model it is
-/// opened on; `None` where the bridge's defaults are the session's.
+/// `_meta` every session on the harness opens and resumes with, whatever
+/// model it is opened on; `None` where the bridge's defaults are the
+/// session's.
 ///
 /// The app sends the MCP servers it manages in `mcpServers` itself, so a
 /// Grok session opens on an agent profile that inherits none from a parent
@@ -379,6 +380,12 @@ pub fn bridge_mode(spec: &HarnessSpec, agent_mode: &str) -> Option<&'static str>
 /// bridge's environment (see the harness's `env`). The profile is an agent
 /// definition and needs its `name`: without one the CLI falls back to its
 /// default agent and the inheritance setting is lost.
+///
+/// Claude Code keeps a memory of its own — files it writes and re-reads
+/// under the account's home — and LAWS/MEMORY.md allows an agent to keep a
+/// memory only through the `distill-memory` protocol, where the operator
+/// sees, edits and deletes it. So the Claude session opens with that memory
+/// switched off.
 pub fn session_base_meta(harness_id: &str) -> Option<Value> {
     match harness_id {
         "grok-acp" => Some(json!({ "agentProfile": {
@@ -386,6 +393,9 @@ pub fn session_base_meta(harness_id: &str) -> Option<Value> {
             "description": "A Levocat Flock session: the app supplies the MCP servers",
             "mcpInheritance": "none"
         } })),
+        CLAUDE_HARNESS => Some(json!({ "claudeCode": { "options": {
+            "settings": { "autoMemoryEnabled": false }
+        } } })),
         _ => None,
     }
 }
@@ -403,21 +413,39 @@ pub fn probe_session_meta(harness_id: &str) -> Option<Value> {
     }
 }
 
-/// `base` with `overlay`'s keys merged in, one level deep: a session's base
-/// meta with the meta that opens it on a model.
+/// `base` with `overlay` merged in: a session's base meta with the meta that
+/// opens it on a model.
+///
+/// Objects merge key by key at every depth, because both halves of a Claude
+/// session's meta live under `claudeCode.options`; anything else in
+/// `overlay` replaces what `base` had.
 pub fn merge_session_meta(base: Option<Value>, overlay: Option<&Value>) -> Option<Value> {
     match (base, overlay) {
         (None, None) => None,
         (Some(base), None) => Some(base),
         (None, Some(overlay)) => Some(overlay.clone()),
         (Some(mut base), Some(overlay)) => {
-            if let (Some(target), Some(source)) = (base.as_object_mut(), overlay.as_object()) {
-                for (key, value) in source {
-                    target.insert(key.clone(), value.clone());
-                }
-            }
+            merge_json_objects(&mut base, overlay);
             Some(base)
         }
+    }
+}
+
+fn merge_json_objects(target: &mut Value, source: &Value) {
+    match (target.as_object_mut(), source.as_object()) {
+        (Some(target), Some(source)) => {
+            for (key, value) in source {
+                match target.get_mut(key) {
+                    Some(existing) if existing.is_object() && value.is_object() => {
+                        merge_json_objects(existing, value);
+                    }
+                    _ => {
+                        target.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        _ => *target = source.clone(),
     }
 }
 
@@ -680,6 +708,20 @@ mod tests {
         );
         assert_eq!(merged.unwrap()["model"], "grok-4.7");
         assert_eq!(merge_session_meta(None, None), None);
+    }
+
+    /// A Claude session keeps no memory of its own outside the operator's
+    /// (LAWS/MEMORY.md), and opening it on a model must not drop the switch:
+    /// both live under `claudeCode.options`.
+    #[test]
+    fn claude_sessions_open_without_claude_codes_own_memory() {
+        let claude = harness(CLAUDE_HARNESS).unwrap();
+        let model_meta = session_model_meta(claude, "claude-opus-4-7").unwrap();
+        let merged = merge_session_meta(session_base_meta(CLAUDE_HARNESS), Some(&model_meta))
+            .unwrap();
+        let options = &merged["claudeCode"]["options"];
+        assert_eq!(options["settings"]["autoMemoryEnabled"], false);
+        assert_eq!(options["model"], "claude-opus-4-7");
     }
 
     #[test]
