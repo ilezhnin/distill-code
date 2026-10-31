@@ -48,6 +48,7 @@ import {
   SectionHeading,
   SelectField,
 } from "./BenchmarkPrimitives";
+import { SandboxSetupPrompt } from "./BenchmarkSandboxSetup";
 import { BenchmarkTestPicker } from "./BenchmarkTestPicker";
 
 /** The effort field's one value for a model without an effort control. */
@@ -509,7 +510,12 @@ export function BenchmarkRunDialog({
                 </details>
                 {policyCheckMissing ? (
                   <p>{t("modelRun.policyCheckHelp")}</p>
-                ) : null}
+                ) : isRefusal(inventory.error) ? null : (
+                  <SandboxSetupPrompt
+                    providerId={providerId || null}
+                    onReady={() => void inventory.refetch()}
+                  />
+                )}
                 <Button
                   type="button"
                   variant="alert"

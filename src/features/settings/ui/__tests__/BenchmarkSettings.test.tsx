@@ -29,6 +29,9 @@ const mocks = vi.hoisted(() => ({
   calibrateJudge: vi.fn(),
   getCandidateObservations: vi.fn(),
   providerDataUse: vi.fn(),
+  sandboxSetupStatus: vi.fn(),
+  runSandboxSetup: vi.fn(),
+  listenSandboxSetup: vi.fn(),
 }));
 
 vi.mock("@/features/benchmarks/api/benchmarks", async (importOriginal) => {
@@ -45,6 +48,9 @@ vi.mock("@/features/benchmarks/api/benchmarks", async (importOriginal) => {
       calibrateJudge: mocks.calibrateJudge,
       getCandidateObservations: mocks.getCandidateObservations,
       providerDataUse: mocks.providerDataUse,
+      sandboxSetupStatus: mocks.sandboxSetupStatus,
+      runSandboxSetup: mocks.runSandboxSetup,
+      listenSandboxSetup: mocks.listenSandboxSetup,
     },
   };
 });
@@ -293,9 +299,67 @@ beforeEach(() => {
   });
   mocks.getCandidateObservations.mockResolvedValue([]);
   mocks.providerDataUse.mockResolvedValue(defaultDataUse);
+  mocks.sandboxSetupStatus.mockResolvedValue({
+    stage: "ready",
+    action: null,
+    detail: null,
+    running: null,
+  });
+  mocks.listenSandboxSetup.mockResolvedValue(() => {});
   useBenchmarkSettingsStore.setState({
     settings: { ...DEFAULT_BENCHMARK_SETTINGS },
     hydrated: false,
+  });
+});
+
+describe("BenchmarkSettings sandbox", () => {
+  it("installs WSL when it is missing and shows what the sandbox needs next", async () => {
+    const user = userEvent.setup();
+    mocks.sandboxSetupStatus.mockResolvedValue({
+      stage: "wslMissing",
+      action: "installWsl",
+      detail: "WSL is not installed (WSL service: no)",
+      running: null,
+    });
+    mocks.runSandboxSetup.mockResolvedValue({
+      stage: "restartRequired",
+      action: null,
+      detail: "Windows has a restart pending",
+      running: null,
+    });
+    showAccounts([]);
+    show();
+    expect(await screen.findByText("WSL is not installed")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Install WSL" }));
+    expect(mocks.runSandboxSetup).toHaveBeenCalledWith("installWsl", null);
+    expect(
+      await screen.findByText("Restart Windows to finish enabling WSL"),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Install WSL" })).toBeNull();
+  });
+
+  it("shows a running setup's step and last line instead of its actions", async () => {
+    mocks.sandboxSetupStatus.mockResolvedValue({
+      stage: "notSetUp",
+      action: "setUp",
+      detail: null,
+      running: {
+        step: "provisioning",
+        line: "provision: tool claude-acp",
+        log: ["provision: base packages", "provision: tool claude-acp"],
+        startedAt: 0,
+      },
+    });
+    showAccounts([]);
+    show();
+    expect(
+      await screen.findByText(
+        "Installing the sandbox runtime, tools and test browser…",
+      ),
+    ).toBeVisible();
+    expect(screen.getAllByText("provision: tool claude-acp")[0]).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Set up sandbox" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeDisabled();
   });
 });
 

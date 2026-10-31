@@ -48,6 +48,9 @@ vi.mock("../api/benchmarks", async () => ({
   benchmarkApi: {
     getInventory: vi.fn(),
     renewPolicyCheck: vi.fn(),
+    sandboxSetupStatus: vi.fn(),
+    runSandboxSetup: vi.fn(),
+    listenSandboxSetup: vi.fn(),
     previewRun: vi.fn(),
     startRun: vi.fn(),
     getRun: vi.fn(),
@@ -314,6 +317,95 @@ it("offers renewal when inventory lists the model with a stale proof instead of 
   expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
 });
 
+it("sets up a missing sandbox from the run dialog and checks availability again", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getInventory)
+    .mockRejectedValueOnce(
+      "capability_missing: the benchmark WSL distribution is not registered",
+    )
+    .mockResolvedValue([
+      {
+        configuration: { ...configuration, inventoryRevision: "runtime-now" },
+        name: "Test model",
+        efforts: ["high"],
+        supportsFastMode: true,
+        available: true,
+        reason: null,
+      },
+    ]);
+  vi.mocked(benchmarkApi.sandboxSetupStatus).mockResolvedValue({
+    stage: "notSetUp",
+    action: "setUp",
+    detail: "distill-bench is not registered",
+    running: null,
+  });
+  vi.mocked(benchmarkApi.runSandboxSetup).mockResolvedValue({
+    stage: "ready",
+    action: null,
+    detail: null,
+    running: null,
+  });
+  show();
+  await screen.findByText("Cannot start or continue");
+  expect(
+    await screen.findByText("The benchmark sandbox is not set up"),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Set up sandbox" }));
+  const dialog = await screen.findByRole("dialog", {
+    name: "Benchmark sandbox",
+  });
+  await user.click(
+    within(dialog).getByRole("button", { name: "Set up sandbox" }),
+  );
+  // The provider's offline check is renewed in the same setup.
+  expect(benchmarkApi.runSandboxSetup).toHaveBeenCalledWith(
+    "setUp",
+    configuration.providerId,
+  );
+  await waitFor(() =>
+    expect(screen.queryByText("Cannot start or continue")).toBeNull(),
+  );
+  expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(2);
+});
+
+it("offers to restart Windows, not an action, when only the operator can act", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue(
+    "capability_missing: the benchmark WSL distribution is not registered",
+  );
+  vi.mocked(benchmarkApi.sandboxSetupStatus).mockResolvedValue({
+    stage: "restartRequired",
+    action: null,
+    detail: "Windows has a restart pending",
+    running: null,
+  });
+  const user = userEvent.setup();
+  show();
+  expect(
+    await screen.findByText("Restart Windows to finish enabling WSL"),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Open sandbox setup" }));
+  const dialog = await screen.findByRole("dialog", {
+    name: "Benchmark sandbox",
+  });
+  expect(
+    within(dialog).queryByRole("button", { name: /Set up|Repair|Install/ }),
+  ).toBeNull();
+  expect(
+    within(dialog).getByRole("button", { name: "Check again" }),
+  ).toBeEnabled();
+  expect(benchmarkApi.runSandboxSetup).not.toHaveBeenCalled();
+});
+
+it("leaves a refused inventory to the queue without a sandbox prompt", async () => {
+  vi.mocked(benchmarkApi.getInventory).mockRejectedValue({
+    code: "resource_busy",
+    message: "resource_busy: Windows available RAM cannot cover the floor",
+  });
+  show();
+  await screen.findByText("Cannot start or continue");
+  expect(benchmarkApi.sandboxSetupStatus).not.toHaveBeenCalled();
+});
+
 it("blocks new starts and resumes when the current inventory check failed", async () => {
   vi.mocked(benchmarkApi.getInventory).mockRejectedValue(
     "Inventory check failed",
@@ -490,6 +582,13 @@ function liveRun(state: string): BenchmarkRun {
 beforeEach(() => {
   vi.clearAllMocks();
   Element.prototype.scrollIntoView = vi.fn();
+  vi.mocked(benchmarkApi.sandboxSetupStatus).mockResolvedValue({
+    stage: "ready",
+    action: null,
+    detail: null,
+    running: null,
+  });
+  vi.mocked(benchmarkApi.listenSandboxSetup).mockResolvedValue(() => {});
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
     {
       configuration: { ...configuration, inventoryRevision: "runtime-now" },

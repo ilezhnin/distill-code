@@ -10,10 +10,19 @@
 #                                launchers and receipts of every tool);
 #                                helpers, users and the browser stay as they are
 #
-# tools/<id>/package.json and package-lock.json come from Distill's
+# tools/<id>/package.json and package-lock.json come from Flock's
 # acp-tools.lock.json; tools/<id>/spec names a package to install by exact
 # version when there is no lock (Kimi Code, Grok, OpenCode for Z.ai).
+# runtime-sources.json names where Node and git come from: the exact builds
+# whose executables runtime-pins.json pins, from their publishers' permanent
+# URLs, checked by SHA-256. A fresh distribution therefore reproduces the
+# runtime the app accepts, whatever Ubuntu has published since.
+#
+# Lines starting with "provision:" name the step under way; the app shows
+# them while it sets the sandbox up.
 set -euo pipefail
+# A failed download or checksum inside $(...) must stop provisioning too.
+shopt -s inherit_errexit
 src=/tmp/distill-provision
 only=()
 if [[ ${1:-} == --tools ]]; then
@@ -24,11 +33,68 @@ fi
 selected() { ((${#only[@]} == 0)) || [[ " ${only[*]} " == *" $1 "* ]]; }
 export DEBIAN_FRONTEND=noninteractive
 tools=/opt/distill-tools
+# A value of runtime-sources.json by its dotted path; a list prints one
+# "url sha256" line per entry.
+source_value() {
+  python3 - "$src/runtime-sources.json" "$1" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+for key in sys.argv[2].split('.'):
+    value = value[key]
+if isinstance(value, list):
+    for entry in value:
+        print(entry['url'], entry['sha256'])
+else:
+    print(value)
+PY
+}
+# Downloads $1 over HTTPS alone, checks it against $2 and prints its path
+# (with the suffix $3, which apt and tar read the format from).
+fetch_pinned() {
+  local file
+  file=$(mktemp --suffix="$3") || return
+  curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 -o "$file" "$1" || return
+  echo "$2  $file" | sha256sum -c --quiet >&2 || return
+  printf '%s' "$file"
+}
 if ((${#only[@]} == 0)); then
-  if ! command -v iptables >/dev/null || ! command -v git >/dev/null; then
+  echo "provision: base packages"
+  apt_updated=
+  if ! command -v iptables >/dev/null || ! command -v curl >/dev/null || ! command -v xz >/dev/null ||
+    ! command -v python3 >/dev/null || ! command -v mkfs.ext4 >/dev/null; then
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends git iptables ca-certificates curl xz-utils python3 e2fsprogs util-linux >/dev/null
+    apt_updated=1
+    apt-get install -y -qq --no-install-recommends iptables ca-certificates curl xz-utils python3 e2fsprogs util-linux >/dev/null
   fi
+  git_version=$(source_value git.version)
+  if [[ $(dpkg-query -W -f='${Version}' git 2>/dev/null || true) != "$git_version" ]]; then
+    echo "provision: git $git_version"
+    [[ -n $apt_updated ]] || apt-get update -qq
+    debs=()
+    while read -r url sum; do
+      debs+=("$(fetch_pinned "$url" "$sum" .deb)")
+    done < <(source_value git.packages)
+    ((${#debs[@]})) || { echo "provision.sh: runtime-sources.json names no git packages" >&2; exit 65; }
+    # Ubuntu's own git may be newer than the pinned build: replace it.
+    apt-get install -y -qq --no-install-recommends --allow-downgrades "${debs[@]}" >/dev/null
+    rm -f "${debs[@]}"
+    [[ $(dpkg-query -W -f='${Version}' git) == "$git_version" ]] ||
+      { echo "provision.sh: git $git_version did not install" >&2; exit 65; }
+  fi
+  # Later installs (the browser's system libraries) must not move git.
+  apt-mark hold git git-man >/dev/null
+  node_version=$(source_value node.version)
+  if [[ $(/usr/local/bin/node --version 2>/dev/null || true) != "$node_version" ]]; then
+    echo "provision: Node $node_version"
+    archive=$(fetch_pinned "$(source_value node.url)" "$(source_value node.sha256)" .tar.xz)
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack
+    tar -xJf "$archive" -C /usr/local --strip-components=1 --no-same-owner \
+      --wildcards '*/bin/*' '*/lib/*' '*/include/*' '*/share/*'
+    rm -f "$archive"
+    [[ $(/usr/local/bin/node --version) == "$node_version" ]] ||
+      { echo "provision.sh: Node $node_version did not install" >&2; exit 65; }
+  fi
+  echo "provision: sandbox helpers"
   for script in bench-auth bench-budget bench-net bench-network bench-run bench-run-inner bench-enter bench-copy bench-digest bench-patch bench-artifact bench-check-prep \
     bench-kill bench-clean bench-status bench-login bench-judge bench-unpack bench-browser; do
     install -o root -g root -m 755 "$src/$script" "/usr/local/sbin/$script"
@@ -65,6 +131,7 @@ export npm_config_update_notifier=false npm_config_fund=false npm_config_audit=f
 for dir in "$src"/tools/*/; do
   id=$(basename "$dir")
   selected "$id" || continue
+  echo "provision: tool $id"
   target=$tools/$id
   rm -rf "$target.new"
   install -d -m 755 "$target.new"
@@ -136,6 +203,7 @@ if ((${#only[@]})); then
   echo "Installed ${only[*]}; run the Linux text policy probe for each before measuring"
   exit 0
 fi
+echo "provision: browser"
 bash "$src/browser-provision" "$src"
 rm -rf "$src"
 echo "Installed; browser readiness requires a host provision-receipt with fresh resource admission"

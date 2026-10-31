@@ -520,6 +520,43 @@ export interface BenchmarkChange {
   sequence: number;
   entityIds?: string[];
 }
+/** What stands between this computer and a benchmark sandbox this build accepts. */
+export type SandboxSetupStage =
+  | "unsupported"
+  | "wslMissing"
+  | "restartRequired"
+  | "virtualizationOff"
+  | "notSetUp"
+  | "needsRepair"
+  | "lowDisk"
+  | "busy"
+  | "unavailable"
+  | "ready";
+/** What the app can do about a stage itself. */
+export type SandboxSetupAction = "installWsl" | "setUp";
+export type SandboxSetupStep =
+  | "checking"
+  | "installingWsl"
+  | "creatingDistribution"
+  | "restoringDistribution"
+  | "provisioning"
+  | "updatingHelpers"
+  | "verifyingBrowser"
+  | "checkingPolicy";
+export interface SandboxSetupProgress {
+  step: SandboxSetupStep;
+  /** The last line the step printed. */
+  line: string | null;
+  /** The last lines of the whole setup, oldest first. */
+  log: string[];
+  startedAt: number;
+}
+export interface SandboxSetupState {
+  stage: SandboxSetupStage;
+  action: SandboxSetupAction | null;
+  detail: string | null;
+  running: SandboxSetupProgress | null;
+}
 export interface Capability {
   providerId: string;
   executionProfile: string;

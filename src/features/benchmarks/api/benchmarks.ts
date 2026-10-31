@@ -46,6 +46,9 @@ import type {
   ProviderDataUse,
   RunPreview,
   RunRequest,
+  SandboxSetupAction,
+  SandboxSetupProgress,
+  SandboxSetupState,
   WorkflowPolicyRunRequest,
   WorkflowTrace,
   RunSummary,
@@ -345,6 +348,28 @@ export const benchmarkApi = {
     }),
   renewPolicyCheck: (providerId: string) =>
     invoke<void>("benchmark_renew_policy_check", { providerId }),
+  sandboxSetupStatus: () =>
+    invoke<SandboxSetupState>("benchmark_sandbox_setup_status"),
+  /** Installs WSL or sets the sandbox up; `providerId` also renews its policy check. */
+  runSandboxSetup: (action: SandboxSetupAction, providerId: string | null) =>
+    invoke<SandboxSetupState>("benchmark_sandbox_setup_run", {
+      action,
+      providerId,
+    }),
+  /**
+   * Setup progress while it runs; when it ends, the state it reached (or
+   * none when it failed and the status must be asked again).
+   */
+  listenSandboxSetup: (
+    callback: (event: {
+      running: SandboxSetupProgress | null;
+      state: SandboxSetupState | null;
+    }) => void,
+  ) =>
+    listen<{
+      running: SandboxSetupProgress | null;
+      state: SandboxSetupState | null;
+    }>("benchmark-sandbox-setup", (event) => callback(event.payload)),
   listen: (callback: (change: BenchmarkChange) => void) =>
     listen<BenchmarkChange>("benchmark-changed", (event) =>
       callback(event.payload),

@@ -414,6 +414,78 @@
     "readinessRetry": "Comprobar de nuevo",
     "readinessChecking": "Comprobando…"
   },
+  "sandbox": {
+    "title": "Entorno aislado de benchmarks",
+    "description": "Los benchmarks se ejecutan en un entorno Linux aislado en WSL. Flock lo configura y lo mantiene en la versión que espera esta versión de la app.",
+    "checking": "Comprobando…",
+    "checkAgain": "Comprobar de nuevo",
+    "open": "Abrir la configuración del entorno",
+    "showProgress": "Ver el progreso",
+    "log": "Registro de la configuración",
+    "runningHelp": "Puedes cerrar esta ventana; la configuración continúa y los diálogos de ejecución lo mostrarán al terminar.",
+    "stages": {
+      "unsupported": {
+        "title": "Los benchmarks necesitan Windows con WSL 2",
+        "description": "El entorno aislado se ejecuta en WSL 2, que solo está disponible en Windows."
+      },
+      "wslMissing": {
+        "title": "WSL no está instalado",
+        "description": "El entorno se ejecuta en WSL 2. Flock puede instalarlo junto con la Plataforma de máquina virtual que necesita."
+      },
+      "restartRequired": {
+        "title": "Reinicia Windows para terminar de activar WSL",
+        "description": "WSL está instalado, pero Windows no se ha reiniciado desde entonces. Reinicia el equipo, abre Flock y comprueba de nuevo."
+      },
+      "virtualizationOff": {
+        "title": "Activa la virtualización",
+        "description": "WSL 2 necesita virtualización por hardware (Intel VT-x o AMD-V, a veces llamada SVM). Actívala en la configuración UEFI o BIOS del equipo, inicia Windows y comprueba de nuevo."
+      },
+      "notSetUp": {
+        "title": "El entorno de benchmarks no está configurado",
+        "description": "Flock instala Ubuntu 24.04 como su propia distribución de WSL y coloca en ella las herramientas fijadas y el navegador de pruebas. Las demás distribuciones de WSL no se tocan."
+      },
+      "needsRepair": {
+        "title": "El entorno difiere de esta versión de Flock",
+        "description": "Flock actualiza lo que difiere. Los inicios de sesión guardados en el entorno y todos los resultados se conservan."
+      },
+      "lowDisk": {
+        "title": "No hay suficiente espacio libre",
+        "description": "Los benchmarks necesitan al menos 30 GiB libres en la unidad del entorno. Libera espacio y comprueba de nuevo."
+      },
+      "busy": {
+        "title": "El equipo está ocupado",
+        "description": "Ahora no hay suficiente memoria libre o aún están terminando trabajos de benchmark. Comprueba de nuevo en un momento."
+      },
+      "unavailable": {
+        "title": "No se pudo comprobar el entorno",
+        "description": "WSL no respondió como se esperaba. Los detalles técnicos muestran lo que informó."
+      },
+      "ready": {
+        "title": "El entorno está listo",
+        "description": "Coincide con esta versión de Flock."
+      }
+    },
+    "actions": {
+      "installWsl": "Instalar WSL",
+      "setUp": "Configurar el entorno",
+      "repair": "Reparar el entorno"
+    },
+    "actionHelp": {
+      "installWsl": "Windows pide permiso de administrador y muestra la instalación en su propia ventana. Puede ser necesario reiniciar.",
+      "setUp": "Descarga Ubuntu, las herramientas fijadas y el navegador de pruebas (varios gigabytes) y puede tardar entre 15 y 40 minutos.",
+      "repair": "Actualiza solo lo que difiere. Puede volver a descargar herramientas y tardar varios minutos."
+    },
+    "steps": {
+      "checking": "Comprobando el entorno…",
+      "installingWsl": "Instalando WSL…",
+      "creatingDistribution": "Instalando Ubuntu…",
+      "restoringDistribution": "Registrando de nuevo el entorno conservado…",
+      "provisioning": "Instalando el entorno de ejecución, las herramientas y el navegador de pruebas…",
+      "updatingHelpers": "Actualizando los auxiliares del entorno…",
+      "verifyingBrowser": "Comprobando el navegador de pruebas…",
+      "checkingPolicy": "Ejecutando la comprobación sin conexión del entorno…"
+    }
+  },
   "runs": {
     "title": "Ejecuciones e historial",
     "description": "Cada plan congelado con su progreso. Abre una ejecución para pausarla, reanudarla o cancelarla.",

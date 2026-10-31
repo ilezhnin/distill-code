@@ -1,0 +1,25 @@
+{
+  "node": {
+    "version": "v24.18.0",
+    "url": "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.xz",
+    "sha256": "55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742"
+  },
+  "git": {
+    "version": "1:2.43.0-1ubuntu7.3",
+    "packages": [
+      {
+        "url": "https://launchpad.net/ubuntu/+archive/primary/+files/git-man_2.43.0-1ubuntu7.3_all.deb",
+        "sha256": "5701f931ed2cd30644700b0fc1cda7c2214f93a63ef84c0c80e43ce40d2cf1d2"
+      },
+      {
+        "url": "https://launchpad.net/ubuntu/+archive/primary/+files/git_2.43.0-1ubuntu7.3_amd64.deb",
+        "sha256": "099bb129f543adc4c14203334b0fa0a909f8bf038c4d56bc9cc7c774ebf78f87"
+      }
+    ]
+  },
+  "tools": {
+    "kimi": "@moonshot-ai/kimi-code@2.1.0",
+    "grok": "@xai-official/grok@1.0.40",
+    "zai": "opencode-linux-x64@1.18.35"
+  }
+}

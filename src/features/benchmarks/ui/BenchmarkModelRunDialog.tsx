@@ -71,6 +71,7 @@ import type {
   RunRequest,
 } from "../types";
 import { BenchmarkAlert, Metric, StateBadge } from "./BenchmarkPrimitives";
+import { SandboxSetupPrompt } from "./BenchmarkSandboxSetup";
 import {
   ACTIVE_RUN,
   FINISHED_RUN,
@@ -878,6 +879,14 @@ export function BenchmarkModelRunDialog({
                     {inventoryFailure}
                   </p>
                 </details>
+                {/* The sandbox itself, not this provider's check, may be
+                    what blocks: the app sets it up when it is. */}
+                {policyCheckMissing || isRefusal(inventory.error) ? null : (
+                  <SandboxSetupPrompt
+                    providerId={configuration.providerId}
+                    onReady={() => void inventory.refetch()}
+                  />
+                )}
                 <Button
                   type="button"
                   variant="alert"
