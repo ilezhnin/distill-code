@@ -236,18 +236,37 @@ export function platformLimitState(
   if (!entry) return "clear";
   if (entry.accountLimited || entry.refused) return "at-limit";
   const nearLimit = options.nearLimitPercent ?? NEAR_LIMIT_PERCENT;
+  const tightest = platformUsedPercent(providers, platform, options) ?? 0;
+  // Spent plan usage the account's credits cover leaves it usable; ranking
+  // still prefers a platform with plan usage left.
+  if (tightest >= 100) return entry.onCredits ? "near-limit" : "at-limit";
+  return tightest >= nearLimit ? "near-limit" : "clear";
+}
+
+/**
+ * How full the fullest window that meters this candidate is, in percent, or
+ * `undefined` when the platform reports no usage at all.
+ *
+ * The same windows {@link platformLimitState} judges — the account-wide ones
+ * plus the one model-scoped window the candidate spends — so a skip the
+ * ranking announces can say "at 98%" and mean the number that skipped it.
+ */
+export function platformUsedPercent(
+  providers: readonly ProviderRateLimits[],
+  platform: string,
+  options: { scopedWindow?: UsageSection["key"] } = {},
+): number | undefined {
+  const entry = providers.find((provider) => provider.provider === platform);
+  if (!entry) return undefined;
   const applicable = getUsageSections(entry).filter(
     (section) =>
       (!section.modelId && !MODEL_SCOPED_WINDOW_KEYS.includes(section.key)) ||
       section.key === options.scopedWindow,
   );
-  const tightest = applicable.reduce(
+  if (applicable.length === 0) return undefined;
+  return applicable.reduce(
     (highest, section) =>
       Math.max(highest, clampUsedPercent(section.window.usedPercent)),
     0,
   );
-  // Spent plan usage the account's credits cover leaves it usable; ranking
-  // still prefers a platform with plan usage left.
-  if (tightest >= 100) return entry.onCredits ? "near-limit" : "at-limit";
-  return tightest >= nearLimit ? "near-limit" : "clear";
 }

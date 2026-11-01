@@ -18,6 +18,7 @@ export function waveChildStopFailureText(reason: string): string {
 }
 
 import type { WaveRejectionReason } from "./waveEngine";
+import type { WaveStepSkip } from "./waveStepTarget";
 import {
   MAX_WAVE_REVISIONS,
   type WaveClosure,
@@ -330,19 +331,57 @@ export function waveStepModelNoticeText(facts: {
   model: string;
   nearLimit: boolean;
   selectionChanged?: boolean;
+  /**
+   * The higher-ranked candidates the ranking passed over, when it fell back.
+   * Each is named with its reason: "its first-choice model was not available"
+   * was what the operator used to read, and it hid both the model and the
+   * number that moved the choice.
+   */
+  skipped?: readonly WaveStepSkip[];
 }): string {
-  return i18n.t(
-    facts.nearLimit
-      ? "chat:conductor.wave.stepModel.nearLimit"
-      : facts.selectionChanged
-        ? "chat:conductor.wave.stepModel.selected"
-        : "chat:conductor.wave.stepModel.fallback",
-    {
-      step: facts.stepIndex + 1,
-      name: facts.name,
-      model: facts.model,
-    },
-  );
+  const common = {
+    step: facts.stepIndex + 1,
+    name: facts.name,
+    model: facts.model,
+  };
+  if (facts.nearLimit) {
+    return i18n.t("chat:conductor.wave.stepModel.nearLimit", common);
+  }
+  if (facts.selectionChanged) {
+    return i18n.t("chat:conductor.wave.stepModel.selected", common);
+  }
+  const reasons = (facts.skipped ?? []).map(waveStepSkipReasonText);
+  if (reasons.length > 0) {
+    return i18n.t("chat:conductor.wave.stepModel.skipped", {
+      ...common,
+      reasons: reasons.join("; "),
+    });
+  }
+  return i18n.t("chat:conductor.wave.stepModel.fallback", common);
+}
+
+/** One passed-over candidate as a clause: who, and why not. */
+function waveStepSkipReasonText(skip: WaveStepSkip): string {
+  if (skip.reason === "not-installed") {
+    return i18n.t("chat:conductor.wave.stepModel.skipReason.notInstalled", {
+      label: skip.label,
+    });
+  }
+  if (skip.reason === "at-limit") {
+    return i18n.t("chat:conductor.wave.stepModel.skipReason.atLimit", {
+      label: skip.label,
+    });
+  }
+  if (skip.usedPercent === undefined) {
+    return i18n.t("chat:conductor.wave.stepModel.skipReason.nearLimitUnknown", {
+      label: skip.label,
+    });
+  }
+  return i18n.t("chat:conductor.wave.stepModel.skipReason.nearLimit", {
+    label: skip.label,
+    percent: Math.round(skip.usedPercent),
+    threshold: skip.thresholdPercent,
+  });
 }
 
 /**

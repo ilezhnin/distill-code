@@ -643,6 +643,44 @@ function applyVerdictDecision(
 }
 
 /**
+ * Parks a wave as interrupted (C3): a wave none of whose steps ever reported.
+ *
+ * Phase and closure first, then the record, then the operator's notice with
+ * its retry — the same order as every other transition here, so a crash
+ * between them resumes into a wave the scheduler never touches again. The
+ * announcement is noted, so the restart restatement does not say it twice
+ * in one process. Both askers use it: the digest pass, when the last step
+ * goes terminal, and the scheduler, when a killed worker leaves nothing for
+ * the next step to build on.
+ */
+export function parkInterruptedWave(
+  state: WaveEngineState,
+  wave: WaveState,
+): { state: WaveEngineState; parked: WaveState } {
+  const decision = waveInterruptedDecision();
+  const closure = decision.closure ?? { reason: "wave-interrupted" };
+  const parked: WaveState = {
+    ...withWavePhase(wave, decision.phase),
+    closure,
+  };
+  const next = withWave(state, parked);
+  setWaveEngineState(next);
+  announcedClosures.add(parked.waveId);
+  recordWaveClose(parked, "needs-operator", closure.reason);
+  appendNotice(
+    wave.conductorSessionId,
+    waveClosureNoticeText(closure),
+    "error",
+    {
+      type: "retryWaveDigest",
+      sessionId: wave.conductorSessionId,
+      waveId: wave.waveId,
+    },
+  );
+  return { state: next, parked };
+}
+
+/**
  * Digest pass. Runs after the engine has scheduled spawns.
  *
  * Moves `digestPending` waves to `dispatchingDigest` and returns the deliveries
@@ -677,30 +715,7 @@ export function processWaveDigests(
     if (wave.phase === "digestPending" && wave.digestAttempt === 0) {
       const graph = useConductorGraphStore.getState();
       if (!hasAttestedWaveStepReport(wave, graph.getReport)) {
-        const decision = waveInterruptedDecision();
-        // Park first, notice second — same discipline as every other
-        // transition here: a persisted phase that a failing notice cannot
-        // undo is what stops the refusal repeating on the next tick.
-        const parked = withWavePhase(wave, decision.phase);
-        next = withWave(next, parked);
-        setWaveEngineState(next);
-        recordWaveClose(
-          parked,
-          "needs-operator",
-          decision.closure?.reason ?? "wave-interrupted",
-        );
-        appendNotice(
-          wave.conductorSessionId,
-          waveClosureNoticeText(
-            decision.closure ?? { reason: "wave-interrupted" },
-          ),
-          "error",
-          {
-            type: "retryWaveDigest",
-            sessionId: wave.conductorSessionId,
-            waveId: wave.waveId,
-          },
-        );
+        next = parkInterruptedWave(next, wave).state;
         continue;
       }
     }

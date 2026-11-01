@@ -125,6 +125,9 @@ async function startChatRuntime(
       console.error("Failed to load personas on startup:", err);
     } finally {
       store.setPersonasLoading(false);
+      // Success or failure, the list has now been read once; a wave waiting
+      // to route its steps must not wait on a read that already failed.
+      store.markPersonasHydrated();
     }
   };
 

@@ -19,6 +19,7 @@
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
 import { benchmarkErrorMessage } from "@/features/benchmarks/api/benchmarks";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+import { isAppClosing } from "@/shared/lib/appClosing";
 import { ownedTaskExecution } from "@/features/benchmarks/lib/ownedTaskExecution";
 import { sameSessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import { sameSessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
@@ -55,6 +56,7 @@ import {
   admitWavePlan,
   advanceWave,
   createWaveState,
+  waveInterruptedBeforeReport,
   withWavePhase,
   withWaveStepPhase,
   type WaveSpawnRequest,
@@ -70,6 +72,7 @@ import {
   whenWaveTelemetryHydrated,
 } from "./waveTelemetryStore";
 import {
+  parkInterruptedWave,
   processWaveDigests,
   processWaveVerdicts,
   resetWaveLifecycleForTests,
@@ -124,6 +127,8 @@ import {
   resolveExplicitWaveStepModel,
   resolveWaveStepTarget,
   resolveWaveStepTargets,
+  waveRoutingInputsReady,
+  whenWaveRoutingInputsReady,
 } from "./waveStepTarget";
 import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
@@ -210,6 +215,71 @@ function conductorDocumentsUnreadable(): boolean {
  * spawn that has not registered its node yet.
  */
 let hasResumedOrphanedSpawns = false;
+
+/**
+ * How long the engine waits, from the first tick that wanted to dispatch, for
+ * the agent list and the provider inventories before it dispatches on
+ * whatever has loaded. Startup normally settles both within seconds; the
+ * bound is for a bridge whose first poll never answers.
+ */
+export const WAVE_ROUTING_INPUTS_WAIT_MS = 60_000;
+let routingInputsReadyOverride: boolean | null = null;
+let routingInputsWaitStartedAt: number | null = null;
+let routingInputsWaitTimer: ReturnType<typeof setTimeout> | null = null;
+let unwatchRoutingInputs: (() => void) | null = null;
+
+/** Test seam for the dispatch gate; `null` restores the live answer. */
+export function setWaveRoutingInputsReadyForTests(value: boolean | null): void {
+  routingInputsReadyOverride = value;
+}
+
+function stopWaitingForRoutingInputs(): void {
+  if (routingInputsWaitTimer !== null) {
+    clearTimeout(routingInputsWaitTimer);
+    routingInputsWaitTimer = null;
+  }
+  if (unwatchRoutingInputs) {
+    unwatchRoutingInputs();
+    unwatchRoutingInputs = null;
+  }
+}
+
+/**
+ * Whether a step may be dispatched on this tick.
+ *
+ * Routing a step reads the agent list (for its role's ranking) and the
+ * provider inventories (for what each harness serves). Both load after the
+ * sessions the engine waits for, so the first ticks of a restarted process
+ * saw an empty world: a step left `spawning` by the previous process was
+ * resumed on its recorded decision and refused for naming an "unknown
+ * inventory row", and a fresh step would have inherited the conductor's
+ * model with nothing said about its ranking. Until the inputs have loaded,
+ * every step keeps its phase; the tick that finds them ready — woken by the
+ * stores, or by the bound running out — schedules what was waiting.
+ */
+function waveDispatchInputsReady(): boolean {
+  if (routingInputsReadyOverride !== null) return routingInputsReadyOverride;
+  if (waveRoutingInputsReady()) {
+    stopWaitingForRoutingInputs();
+    return true;
+  }
+  const now = Date.now();
+  if (routingInputsWaitStartedAt === null) {
+    routingInputsWaitStartedAt = now;
+    routingInputsWaitTimer = setTimeout(() => {
+      routingInputsWaitTimer = null;
+      console.warn(
+        `[wave] agents or model inventories still loading after ${WAVE_ROUTING_INPUTS_WAIT_MS} ms; dispatching on what has loaded`,
+      );
+      runWaveEngineTick();
+    }, WAVE_ROUTING_INPUTS_WAIT_MS);
+    unwatchRoutingInputs = whenWaveRoutingInputsReady(() => {
+      unwatchRoutingInputs = null;
+      runWaveEngineTick();
+    });
+  }
+  return now - routingInputsWaitStartedAt >= WAVE_ROUTING_INPUTS_WAIT_MS;
+}
 
 /**
  * Wave ids whose conductor was missing from the graph on the previous tick.
@@ -918,6 +988,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
             model: noticeModel,
             nearLimit: selectedRanking?.nearLimit === true,
             selectionChanged,
+            skipped: selectedRanking?.skipped,
           }),
           false,
           "warning",
@@ -1140,8 +1211,13 @@ function advanceWaves(state: WaveEngineState): {
 } {
   const graph = useConductorGraphStore.getState();
   const nodes = Object.values(graph.nodesById);
-  const resumeOrphanedSpawns = !hasResumedOrphanedSpawns;
-  hasResumedOrphanedSpawns = true;
+  // Nothing is dispatched — neither a step left `spawning` by the previous
+  // process nor a step whose turn has come — until the inputs routing reads
+  // have loaded once, or the wait for them has run out. The steps keep their
+  // phase; the tick that finds the inputs ready schedules them.
+  const mayDispatch = waveDispatchInputsReady();
+  const resumeOrphanedSpawns = mayDispatch && !hasResumedOrphanedSpawns;
+  if (mayDispatch) hasResumedOrphanedSpawns = true;
 
   // Orphan cleanup, guarded twice. A graph that knows NO conductors while
   // waves are on the books is a hydration gap or a corrupt graph key — not a
@@ -1297,6 +1373,31 @@ function advanceWaves(state: WaveEngineState): {
       }
       continue;
     }
+    // A wave that lost its working executors before anyone reported is over,
+    // the way C3 ends it at digest time — but said here, before a dependent
+    // step is spawned on a "result unknown" stub and before a digest of
+    // nothing is sent for the conductor to judge (it judged one on 2026-11-01
+    // and blamed the operator's model settings). Parked first, like the
+    // blocked path; the retry offered is the operator's "ask anyway".
+    if (
+      waveInterruptedBeforeReport(
+        advanced.wave,
+        (stepIndex) =>
+          nodes.find(
+            (node) =>
+              node.waveId === wave.waveId && node.stepIndex === stepIndex,
+          )?.status,
+        graph.getReport,
+      )
+    ) {
+      const { state: parkedState, parked } = parkInterruptedWave(
+        next,
+        advanced.wave,
+      );
+      next = parkedState;
+      stopWaveChildSessions(parked);
+      continue;
+    }
     let current = advanced.wave;
     // P61: the stall detector. An advance that moved anything resets the
     // count; a run of sample-sized silent windows ends the wave through the
@@ -1352,6 +1453,10 @@ function advanceWaves(state: WaveEngineState): {
       next = withWave(next, withWavePhase(current, "digestPending"));
       continue;
     }
+    if (!mayDispatch) {
+      next = withWave(next, current);
+      continue;
+    }
     for (const request of advanced.spawn) {
       current = withWaveStepPhase(current, request.stepIndex, {
         phase: "spawning",
@@ -1375,6 +1480,12 @@ function advanceWaves(state: WaveEngineState): {
  * than duplicates.
  */
 export function runWaveEngineTick(): void {
+  // The window is closing: the host is about to stop every worker, and a
+  // tick now would read those stops as steps finishing and start the next
+  // ones on a process that ends in a second — a decision recorded and a
+  // session half created, both orphaned. Whatever is live is resumed, or
+  // parked as interrupted, by the next start.
+  if (isAppClosing()) return;
   if (ticking) return;
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
   if (!conductorDocumentsHydrated()) {
@@ -1565,6 +1676,9 @@ export function resetWaveRunnerForTests(): void {
   ticking = false;
   awaitingWaveHydration = false;
   hasResumedOrphanedSpawns = false;
+  routingInputsReadyOverride = null;
+  routingInputsWaitStartedAt = null;
+  stopWaitingForRoutingInputs();
   onceOrphanedWaveIds = new Set();
   reportGraceDeadlines.clear();
   childActivitySnapshots.clear();

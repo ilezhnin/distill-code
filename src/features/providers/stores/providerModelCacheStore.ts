@@ -118,6 +118,16 @@ interface ProviderModelCacheState {
   providers: Map<string, CachedProviderModels>;
   refreshingProviderIds: Set<string>;
   runtimeManagedProviderIds: Set<string>;
+  /**
+   * Whether a full poll of every provider has finished in this process:
+   * `null` while none has been asked for, `false` while the first one runs,
+   * `true` once it has answered — whatever each provider answered. During the
+   * `false` window the entries are the previous run's persisted lists or
+   * still-failing probes, and anything that *starts* a session on an
+   * inventory — the wave engine first — waits rather than route against a
+   * list that is about to be rewritten.
+   */
+  inventorySettled: boolean | null;
 }
 
 export interface RefreshOptions {
@@ -424,6 +434,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
   (set, get) => ({
     ...readPersistedProviderState(),
     refreshingProviderIds: new Set(),
+    inventorySettled: null,
 
     loadPersisted: () => {
       set(readPersistedProviderState());
@@ -708,11 +719,16 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
     },
 
     refreshAllModelProviders: async (providerIds, options = {}) => {
+      if (get().inventorySettled === null) set({ inventorySettled: false });
       await Promise.allSettled(
         providerIds.map((providerId) =>
           get().refreshProviderModels(providerId, options),
         ),
       );
+      // The startup refresh is the first full poll; later ones (the model
+      // picker's) change nothing here. A failed provider counts as answered:
+      // its entry now says it failed, which is what routing needed to know.
+      if (!get().inventorySettled) set({ inventorySettled: true });
     },
 
     /**

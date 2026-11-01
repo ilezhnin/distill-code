@@ -133,6 +133,13 @@ export interface StructuredReport {
   nextSuggestedTask: string | null;
   publishedToParent?: boolean;
   operatorIntervened?: boolean;
+  /**
+   * True when the app wrote this report itself because the run ended without
+   * a word of its own — "The agent was cancelled." and its siblings. It is a
+   * stand-in for the digest, never evidence that the step reported: the wave
+   * engine's "did anyone report at all?" must not count it.
+   */
+  synthesized?: boolean;
 }
 
 export const DEFAULT_ORCHESTRATOR_NAME = "Atlas";

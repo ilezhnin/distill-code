@@ -91,6 +91,23 @@ export interface WaveStepTarget {
   fast?: boolean;
   /** `false` when fast mode was asked for and the picked model has none. */
   fastApplied?: boolean;
+  /**
+   * Every higher-ranked candidate the ranking passed over to reach this one,
+   * in rank order, each with why — so the notice that says "running on X"
+   * can say what X stands in for, and at what percent of which window.
+   */
+  skipped: WaveStepSkip[];
+}
+
+/** A candidate the ranking passed over on the way to a wave step's target. */
+export interface WaveStepSkip {
+  /** Operator-facing name of the candidate ("Astra"). */
+  label: string;
+  reason: "at-limit" | "near-limit" | "not-installed";
+  /** How full the candidate's window was, when the skip was about a limit. */
+  usedPercent?: number;
+  /** The wave's own threshold (P37/P38), for saying what "near" meant. */
+  thresholdPercent: number;
 }
 
 /** Test seam: everything about the world this resolution reads. */
@@ -108,6 +125,17 @@ export interface WaveStepTargetIo {
     : never;
   /** The conductor's own target, which a step with no model inherits. */
   conductorTarget: (sessionId: string) => SessionExecutionTarget | undefined;
+  /**
+   * Whether the inputs above have been read once by this process — the agent
+   * list and the provider inventories. Before that a role resolves to no
+   * ranking and a harness to no models, so a step dispatched then is routed
+   * on an empty world, and one resumed on a recorded decision is refused for
+   * naming an "unknown inventory row". Startup declares the reads pending
+   * before it starts them; a process that never starts them is ready.
+   */
+  routingInputsReady: () => boolean;
+  /** Calls `wake` once, when `routingInputsReady` turns true. */
+  whenRoutingInputsReady: (wake: () => void) => () => void;
 }
 
 const liveIo: WaveStepTargetIo = {
@@ -141,6 +169,35 @@ const liveIo: WaveStepTargetIo = {
   },
   rateLimits: () =>
     useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
+  routingInputsReady: () => {
+    const agents = useAgentStore.getState();
+    const inventory = useProviderModelCacheStore.getState();
+    // Loading-and-not-yet-loaded is the only "not ready": a process that has
+    // not asked for the agents (tests, a degraded startup) is not waiting on
+    // them, and the first poll of the inventories says `false` while it runs.
+    return (
+      (agents.personasHydrated || !agents.personasLoading) &&
+      inventory.inventorySettled !== false
+    );
+  },
+  whenRoutingInputsReady: (wake) => {
+    let done = false;
+    let unsubscribe = () => {};
+    const check = () => {
+      if (done || !io.routingInputsReady()) return;
+      done = true;
+      unsubscribe();
+      wake();
+    };
+    const unsubscribers = [
+      useAgentStore.subscribe(check),
+      useProviderModelCacheStore.subscribe(check),
+    ];
+    unsubscribe = () => {
+      for (const unsubscribeOne of unsubscribers) unsubscribeOne();
+    };
+    return unsubscribe;
+  },
 };
 
 let io: WaveStepTargetIo = liveIo;
@@ -151,6 +208,16 @@ export function setWaveStepTargetIoForTests(next: Partial<WaveStepTargetIo>) {
 
 export function resetWaveStepTargetIoForTests() {
   io = liveIo;
+}
+
+/** Whether a wave step may be routed now; see `WaveStepTargetIo`. */
+export function waveRoutingInputsReady(): boolean {
+  return io.routingInputsReady();
+}
+
+/** Calls `wake` once, when {@link waveRoutingInputsReady} turns true. */
+export function whenWaveRoutingInputsReady(wake: () => void): () => void {
+  return io.whenRoutingInputsReady(wake);
 }
 
 /**
@@ -242,6 +309,10 @@ export function resolveWaveStepTargets(
           label: choice.label,
           fallback: choice.rankIndex > 0,
           nearLimit: choice.nearLimit === true,
+          skipped: ranked.resolution.skipped.map((skip) => ({
+            ...skip,
+            thresholdPercent: policy.waveNearLimitPercent,
+          })),
           ...(ranked.runSettings.effort
             ? { effort: ranked.runSettings.effort }
             : {}),

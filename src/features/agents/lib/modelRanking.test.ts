@@ -61,6 +61,21 @@ describe("resolveRankedModel", () => {
     ]);
   });
 
+  it("says how full the window was that skipped a candidate, when the caller measures it", () => {
+    const result = resolveRankedModel(
+      "debug",
+      input({
+        platformLimitState: (platform) =>
+          platform === "codex-acp" ? "near-limit" : "clear",
+        platformUsedPercent: (platform) => (platform === "codex-acp" ? 98 : 12),
+      }),
+    );
+    expect(result.choice?.label).toBe("Fable 5.1");
+    expect(result.skipped).toEqual([
+      { label: "Astra", reason: "near-limit", usedPercent: 98 },
+    ]);
+  });
+
   it("takes a near-limit model rather than nothing, and says it settled", () => {
     const result = resolveRankedModel(
       "frontend-ui",

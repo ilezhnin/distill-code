@@ -48,6 +48,13 @@ interface AgentStoreState {
   // Personas
   personas: Persona[];
   personasLoading: boolean;
+  /**
+   * True once this process has read the agent list at least once, whether or
+   * not the read succeeded. Until then an empty `personas` means "not loaded
+   * yet", not "there are no agents" — the wave engine waits on this before it
+   * resolves a step's role to a model ranking.
+   */
+  personasHydrated: boolean;
 
   // Agents
   agents: Agent[];
@@ -77,6 +84,8 @@ interface AgentStoreActions {
   updatePersona: (id: string, updates: Partial<Persona>) => void;
   removePersona: (id: string) => void;
   setPersonasLoading: (loading: boolean) => void;
+  /** Records that the agent list has been read once, even if the read failed. */
+  markPersonasHydrated: () => void;
 
   // Agent CRUD
   setAgents: (agents: Agent[]) => void;
@@ -111,6 +120,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   // State
   personas: [],
   personasLoading: false,
+  personasHydrated: false,
   agents: [],
   agentsLoading: false,
   providers: [],
@@ -121,7 +131,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   isLoading: false,
 
   // Persona CRUD
-  setPersonas: (personas) => set({ personas }),
+  setPersonas: (personas) => set({ personas, personasHydrated: true }),
 
   addPersona: (persona) =>
     set((state) => ({ personas: [...state.personas, persona] })),
@@ -141,6 +151,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     })),
 
   setPersonasLoading: (personasLoading) => set({ personasLoading }),
+
+  markPersonasHydrated: () => set({ personasHydrated: true }),
 
   // Agent CRUD
   setAgents: (agents) => set({ agents }),

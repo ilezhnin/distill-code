@@ -11,10 +11,15 @@ import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksS
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { INITIAL_SESSION_CHAT_RUNTIME } from "@/shared/types/chat";
 import { i18n } from "@/shared/i18n";
+import {
+  markAppClosing,
+  resetAppClosingForTests,
+} from "@/shared/lib/appClosing";
 import type { Message } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode } from "./types";
+import { RUN_FALLBACK_SUMMARIES } from "./orchestratorReport";
 import { roleDisplayName } from "./roleLayers";
 import {
   resetWaveStepTargetIoForTests,
@@ -114,6 +119,7 @@ const {
   WAVE_STALL_THRESHOLD,
   resetWaveRunnerForTests,
   runWaveEngineTick,
+  setWaveRoutingInputsReadyForTests,
 } = await import("./waveRunner");
 const {
   CONDUCTOR_WAVES_STORAGE_KEY,
@@ -244,6 +250,7 @@ describe("waveRunner", () => {
     resetWaveRunnerForTests();
     resetWaveEngineStateCache();
     resetWaveStepTargetIoForTests();
+    resetAppClosingForTests();
   });
 
   function selectionPlan(
@@ -1340,6 +1347,228 @@ describe("waveRunner", () => {
     expect(hasWaveTombstone(getWaveEngineState(), "plan-2")).toBe(true);
     for (let index = 0; index < 4; index += 1) runWaveEngineTick();
     expect(noticeTexts()).toHaveLength(1);
+  });
+
+  it("dispatches nothing until the agents and model inventories have loaded", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    setWaveRoutingInputsReadyForTests(false);
+    runWaveEngineTick();
+    await Promise.resolve();
+    // The plan is admitted and the wave is live; its steps simply wait.
+    expect(getWaveEngineState().waves[0]?.phase).toBe("running");
+    expect(
+      getWaveEngineState().waves[0]?.steps.map((step) => step.phase),
+    ).toEqual(["pending", "pending"]);
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+
+    setWaveRoutingInputsReadyForTests(true);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("holds a spawn left by the previous process until the inputs have loaded", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "plan-1",
+        fence('{"steps":[{"role":"scout","subtask":"Look","access":[]}]}'),
+      ),
+    ]);
+    spawnConductorChildSession.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+    expect(getWaveEngineState().waves[0].steps[0].phase).toBe("spawning");
+
+    // Restart, with the agent list and the inventories still loading: the
+    // step is neither reset nor dispatched against an empty world (that is
+    // how a recorded decision came back as an "unknown inventory row").
+    resetWaveRunnerForTests();
+    resetWaveEngineStateCache();
+    spawnConductorChildSession.mockResolvedValue({
+      sessionId: "child-0",
+      runId: "run-9",
+    });
+    setWaveRoutingInputsReadyForTests(false);
+    runWaveEngineTick();
+    await Promise.resolve();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    expect(getWaveEngineState().waves[0].steps[0].phase).toBe("spawning");
+
+    setWaveRoutingInputsReadyForTests(true);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("does not advance a wave while the window is closing", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // The close guard has spoken; the host then stops the worker. The wave
+    // must not read that as step 1 finishing and start step 2 on the way out.
+    markAppClosing();
+    useConductorGraphStore
+      .getState()
+      .patchNode("child-0", { status: "stopped" });
+    runWaveEngineTick();
+    await Promise.resolve();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    expect(getWaveEngineState().waves[0]).toMatchObject({
+      phase: "running",
+      steps: [{ phase: "spawned" }, { phase: "pending" }],
+    });
+  });
+
+  it("parks a wave whose only worker was killed before it reported, instead of spawning the next step on a stub", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // The process died with the worker (or the operator stopped it): the
+    // startup reconcile leaves it `stopped`, and the graph sync writes the
+    // app's stand-in report so the digest has a line for it.
+    const graph = useConductorGraphStore.getState();
+    graph.patchNode("child-0", { status: "stopped" });
+    graph.attachReport({
+      runId: "run-1",
+      status: "cancelled",
+      summary: RUN_FALLBACK_SUMMARIES.cancelled,
+      decisions: [],
+      artifacts: [],
+      risks: [],
+      needsOperator: true,
+      nextSuggestedTask: null,
+      synthesized: true,
+    });
+    runWaveEngineTick();
+
+    // Parked first, like the blocked path, with the interrupted closure…
+    expect(getWaveEngineState().waves[0]).toMatchObject({
+      phase: "needsOperator",
+      closure: { reason: "wave-interrupted" },
+    });
+    // …the access:"all" successor was never spawned on a "result unknown"
+    // stub, and no digest of nothing went to the conductor…
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    const last = conductorMessages().at(-1);
+    expect(last?.content[0]).toMatchObject({
+      type: "systemNotification",
+      action: {
+        type: "retryWaveDigest",
+        waveId: getWaveEngineState().waves[0].waveId,
+      },
+    });
+    const notice = noticeTexts().at(-1);
+    expect(notice).toContain(
+      i18n.t("chat:conductor.wave.verdict.needsOperatorTitle"),
+    );
+    expect(notice).toContain(
+      i18n.t("chat:conductor.wave.verdict.reason.waveInterrupted"),
+    );
+    expect(getWaveTelemetry().records[0]).toMatchObject({
+      outcome: "needs-operator",
+      closureReason: "wave-interrupted",
+    });
+
+    // The retry is the operator's: nothing respawns or re-announces by itself.
+    const noticeCount = noticeTexts().length;
+    runWaveEngineTick();
+    runWaveEngineTick();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    expect(noticeTexts()).toHaveLength(noticeCount);
+  });
+
+  it("names the higher-ranked model a step was moved off, and the window that moved it", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [
+        {
+          id: "scout",
+          displayName: "Scout",
+          systemPrompt: "Inspect the sample project.",
+          isBuiltin: false,
+          writable: true,
+          modelRanking: JSON.stringify({
+            version: 1,
+            entries: [
+              { platform: "codex-acp", modelId: "example-one", label: "One" },
+              { platform: "claude-acp", modelId: "example-two", label: "Two" },
+            ],
+          }),
+        },
+      ],
+      providers: () =>
+        [
+          { id: "codex-acp", label: "Codex" },
+          { id: "claude-acp", label: "Claude" },
+        ] as never,
+      modelsForHarness: (harnessId) =>
+        harnessId === "codex-acp"
+          ? [{ id: "example-one", name: "One", displayName: "One" }]
+          : [{ id: "example-two", name: "Two", displayName: "Two" }],
+      rateLimits: () =>
+        [
+          {
+            provider: "codex-acp",
+            session: {
+              usedPercent: 98,
+              windowMinutes: 300,
+              resetsAt: null,
+              resetDescription: null,
+            },
+            weekly: null,
+            updatedAt: Date.now(),
+            error: null,
+            status: "ok",
+            configured: true,
+          },
+        ] as never,
+      conductorTarget: () => undefined,
+    });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "plan-1",
+        fence(
+          '{"steps":[{"role":"scout","subtask":"Inspect the sample input","access":[]}]}',
+        ),
+      ),
+    ]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
+    );
+    expect(spawnConductorChildSession.mock.calls[0][0]).toMatchObject({
+      executionTarget: { modelId: "example-two" },
+    });
+    // Not "its first-choice model was not available": which model, and the
+    // number that moved the step off it, against the wave's own threshold.
+    expect(noticeTexts()).toEqual([
+      i18n.t("chat:conductor.wave.stepModel.skipped", {
+        step: 1,
+        name: roleDisplayName("scout"),
+        model: "Two",
+        reasons: i18n.t("chat:conductor.wave.stepModel.skipReason.nearLimit", {
+          label: "One",
+          percent: 98,
+          threshold: 85,
+        }),
+      }),
+    ]);
   });
 });
 

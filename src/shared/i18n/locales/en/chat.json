@@ -616,6 +616,13 @@
         "downgrade": "Step {{step}} ({{name}}) was pinned to {{model}}, which you ranked below {{inherited}} — the model it would otherwise have inherited. It is running on {{model}} as the plan asked; a smaller model has more trouble holding the fenced report format, so check its report before accepting.",
         "explicitNearLimit": "Step {{step}} ({{name}}) is running on {{model}} — the model the plan named — which is close to or at its usage limit, so the step may be cut off before it finishes.",
         "fallback": "Step {{step}} ({{name}}) is running on {{model}} — its first-choice model was not available.",
+        "skipped": "Step {{step}} ({{name}}) is running on {{model}} — {{reasons}}.",
+        "skipReason": {
+          "nearLimit": "{{label}}, ranked above it, is at {{percent}}% of its usage window, past the {{threshold}}% a wave step may start on",
+          "nearLimitUnknown": "{{label}}, ranked above it, is close to its usage limit",
+          "atLimit": "{{label}}, ranked above it, is at its usage limit",
+          "notInstalled": "{{label}}, ranked above it, is not served by any installed harness"
+        },
         "selected": "Step {{step}} ({{name}}) is running on {{model}}, chosen by executor selection instead of the initial preference.",
         "nearLimit": "Step {{step}} ({{name}}) is running on {{model}}, which is close to its usage limit. Every model this role ranks is that full, so the step may be cut off before it finishes.",
         "effortNotApplied": "Step {{step}} ({{name}}) is running on {{model}} without the reasoning effort «{{effort}}» — {{model}} does not offer it, so the step runs at the model's own default.",

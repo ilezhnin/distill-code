@@ -22,6 +22,7 @@ import type {
   WaveStepBudget,
 } from "./flockWave";
 import { roleStage, workerRoleIdsForStage } from "./roleLayers";
+import { isSynthesizedStepReport } from "./orchestratorReport";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import type { CompletedWaveStepReport } from "./wavePrompts";
 import type { WaveClosure } from "./waveVerdict";
@@ -793,9 +794,44 @@ export function hasAttestedWaveStepReport(
   wave: WaveState,
   reportOf: (runId: string | null | undefined) => StructuredReport | undefined,
 ): boolean {
-  return wave.steps.some((step) =>
-    step.runId ? reportOf(step.runId) !== undefined : false,
-  );
+  return wave.steps.some((step) => {
+    const report = step.runId ? reportOf(step.runId) : undefined;
+    // The graph sync writes "The agent was cancelled." for a run that ended
+    // without a word of its own. That is the app's line for the digest, not
+    // the step reporting — counting it is how a wave of killed workers was
+    // digested and judged as if it had finished.
+    return report !== undefined && !isSynthesizedStepReport(report);
+  });
+}
+
+/**
+ * True for a running wave that lost an executor before anyone reported.
+ *
+ * A child at `stopped` or `cancelled` with no report of its own was killed —
+ * by a process that died with it, a window that was closed, or an operator's
+ * hand — and nothing it did is known. While no step has reported, letting the
+ * wave continue would hand the next step a "result unknown" stub as its only
+ * input and, at the end, a digest of nothing to the conductor. This is the
+ * C3 answer the digest pass gives, asked before the dependents are spawned.
+ *
+ * Only once every spawned child has stopped: a sibling still working may yet
+ * report, and the wave is as much its as the dead step's.
+ */
+export function waveInterruptedBeforeReport(
+  wave: WaveState,
+  statusOf: (stepIndex: number) => RunStatus | undefined,
+  reportOf: (runId: string | null | undefined) => StructuredReport | undefined,
+): boolean {
+  if (wave.phase !== "running") return false;
+  if (hasAttestedWaveStepReport(wave, reportOf)) return false;
+  let killed = false;
+  for (const step of wave.steps) {
+    if (step.phase !== "spawned") continue;
+    const status = statusOf(step.stepIndex);
+    if (status === undefined || !isTerminalRunStatus(status)) return false;
+    if (status === "stopped" || status === "cancelled") killed = true;
+  }
+  return killed;
 }
 
 /**

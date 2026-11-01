@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { i18n } from "@/shared/i18n";
 
 import type { WaveStep } from "./flockWave";
+import { RUN_FALLBACK_SUMMARIES } from "./orchestratorReport";
 import { waveRejectionNoticeText } from "./waveNotices";
 import { parseWaveEngineState } from "./waveStore";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
@@ -11,6 +12,8 @@ import {
   admitWavePlan,
   advanceWave,
   createWaveState,
+  hasAttestedWaveStepReport,
+  waveInterruptedBeforeReport,
   withWaveStepPhase,
   type WaveState,
 } from "./waveEngine";
@@ -412,5 +415,103 @@ describe("advanceWave verification gate (P62)", () => {
     expect(carried?.status).toBe("failed");
     expect(carried?.summary).toContain("failed verification");
     expect(carried?.summary).not.toContain("trust me");
+  });
+});
+
+describe("interrupted waves (C3)", () => {
+  function spawnedTwoStep(): WaveState {
+    return withWaveStepPhase(
+      withWaveStepPhase(
+        waveOf([step("scout", "one"), step("qa", "two", "all")]),
+        0,
+        { phase: "spawned", sessionId: "child-0", runId: "run-0" },
+      ),
+      1,
+      { phase: "pending" },
+    );
+  }
+
+  /** What the graph sync writes for a run that ended without a word. */
+  function standIn(runId: string, flagged = true): StructuredReport {
+    return {
+      ...report(runId, RUN_FALLBACK_SUMMARIES.cancelled),
+      status: "cancelled",
+      needsOperator: true,
+      ...(flagged ? { synthesized: true } : {}),
+    };
+  }
+
+  it("does not count the app's stand-in report as the step reporting", () => {
+    const wave = spawnedTwoStep();
+    expect(
+      hasAttestedWaveStepReport(wave, (runId) =>
+        runId === "run-0" ? standIn("run-0") : undefined,
+      ),
+    ).toBe(false);
+    // A stand-in persisted before the flag existed is known by its text.
+    expect(hasAttestedWaveStepReport(wave, () => standIn("run-0", false))).toBe(
+      false,
+    );
+    expect(
+      hasAttestedWaveStepReport(wave, () =>
+        report("run-0", "Found three callers"),
+      ),
+    ).toBe(true);
+  });
+
+  it("calls a wave interrupted once its killed worker is all it has", () => {
+    const wave = spawnedTwoStep();
+    const status = (value: RunStatus) => () => value;
+    expect(
+      waveInterruptedBeforeReport(wave, status("stopped"), () => undefined),
+    ).toBe(true);
+    expect(
+      waveInterruptedBeforeReport(wave, status("cancelled"), () =>
+        standIn("run-0"),
+      ),
+    ).toBe(true);
+    // Still working, or finished by itself, is not killed…
+    expect(
+      waveInterruptedBeforeReport(wave, status("running"), () => undefined),
+    ).toBe(false);
+    expect(
+      waveInterruptedBeforeReport(wave, status("completed"), () => undefined),
+    ).toBe(false);
+    // …and a report from any step makes it a finished wave for the digest.
+    expect(
+      waveInterruptedBeforeReport(wave, status("stopped"), () =>
+        report("run-0", "Done"),
+      ),
+    ).toBe(false);
+  });
+
+  it("waits for a sibling that is still working", () => {
+    const wave = withWaveStepPhase(
+      withWaveStepPhase(
+        waveOf([step("scout", "one"), step("scout", "two")]),
+        0,
+        {
+          phase: "spawned",
+          sessionId: "child-0",
+          runId: "run-0",
+        },
+      ),
+      1,
+      { phase: "spawned", sessionId: "child-1", runId: "run-1" },
+    );
+    expect(
+      waveInterruptedBeforeReport(
+        wave,
+        (stepIndex) => (stepIndex === 0 ? "stopped" : "running"),
+        () => undefined,
+      ),
+    ).toBe(false);
+    expect(
+      waveInterruptedBeforeReport(
+        wave,
+        (stepIndex) => (stepIndex === 0 ? "stopped" : "cancelled"),
+        () => undefined,
+      ),
+    ).toBe(true);
   });
 });

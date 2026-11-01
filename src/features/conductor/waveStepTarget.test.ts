@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_ROUTING_POLICY } from "@/features/agents/lib/routingPolicy";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 
@@ -11,7 +12,10 @@ import {
   planWaveStepRunSettings,
   resetWaveStepTargetIoForTests,
   resolveExplicitWaveStepModel,
+  resolveWaveStepTargets,
   setWaveStepTargetIoForTests,
+  waveRoutingInputsReady,
+  whenWaveRoutingInputsReady,
 } from "./waveStepTarget";
 
 function installRows(
@@ -224,5 +228,103 @@ describe("a plan-named model while every provider's poll has failed", () => {
     expect(resolved.ok === false && resolved.detail).toContain(
       "cannot be checked",
     );
+  });
+});
+
+describe("resolveWaveStepTargets", () => {
+  afterEach(() => {
+    resetWaveStepTargetIoForTests();
+  });
+
+  it("reports the higher-ranked candidates it passed over, with the wave's threshold", () => {
+    setWaveStepTargetIoForTests({
+      personas: () =>
+        [
+          {
+            id: "brigade",
+            displayName: "Brigade",
+            systemPrompt: "Build it.",
+            isBuiltin: true,
+            writable: false,
+            metadata: { flockBundledSource: "brigade" },
+          },
+        ] as never,
+      providers: () =>
+        [
+          { id: "codex-acp", label: "Codex" },
+          { id: "claude-acp", label: "Claude" },
+        ] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "codex-acp"
+          ? [{ id: "gpt-6-astra", displayName: "Astra" }]
+          : [{ id: "claude-fable-5-1", displayName: "Fable 5.1" }]) as never,
+      rateLimits: () =>
+        [
+          {
+            provider: "codex-acp",
+            session: {
+              usedPercent: 98,
+              windowMinutes: 300,
+              resetsAt: null,
+              resetDescription: null,
+            },
+            weekly: null,
+            updatedAt: 1,
+            error: null,
+            status: "ok",
+            configured: true,
+          },
+        ] as never,
+      routingPolicy: () => ({
+        ...DEFAULT_ROUTING_POLICY,
+        waveNearLimitPercent: 85,
+      }),
+    });
+    const [first] = resolveWaveStepTargets("brigade");
+    expect(first.target.modelId).toBe("claude-fable-5-1");
+    expect(first.fallback).toBe(true);
+    expect(first.skipped).toEqual([
+      {
+        label: "Astra",
+        reason: "near-limit",
+        usedPercent: 98,
+        thresholdPercent: 85,
+      },
+    ]);
+  });
+});
+
+describe("waveRoutingInputsReady", () => {
+  afterEach(() => {
+    resetWaveStepTargetIoForTests();
+    useAgentStore.setState({ personasLoading: false, personasHydrated: false });
+    useProviderModelCacheStore.setState({ inventorySettled: null });
+  });
+
+  it("is not ready only while the agents or the first inventory poll are loading", () => {
+    // A process that has asked for neither is not waiting on either.
+    expect(waveRoutingInputsReady()).toBe(true);
+    useAgentStore.setState({ personasLoading: true, personasHydrated: false });
+    expect(waveRoutingInputsReady()).toBe(false);
+    useAgentStore.setState({ personasLoading: false, personasHydrated: true });
+    expect(waveRoutingInputsReady()).toBe(true);
+    useProviderModelCacheStore.setState({ inventorySettled: false });
+    expect(waveRoutingInputsReady()).toBe(false);
+    useProviderModelCacheStore.setState({ inventorySettled: true });
+    expect(waveRoutingInputsReady()).toBe(true);
+  });
+
+  it("wakes once, when both have loaded", () => {
+    useAgentStore.setState({ personasLoading: true, personasHydrated: false });
+    useProviderModelCacheStore.setState({ inventorySettled: false });
+    const wake = vi.fn();
+    whenWaveRoutingInputsReady(wake);
+    useAgentStore.setState({ personasHydrated: true });
+    expect(wake).not.toHaveBeenCalled();
+    useProviderModelCacheStore.setState({ inventorySettled: true });
+    expect(wake).toHaveBeenCalledTimes(1);
+    useProviderModelCacheStore.setState({ inventorySettled: false });
+    useProviderModelCacheStore.setState({ inventorySettled: true });
+    expect(wake).toHaveBeenCalledTimes(1);
   });
 });

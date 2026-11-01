@@ -320,6 +320,15 @@ export interface RankedModelResolutionInput {
     platform: AgentPlatformId,
     scopedWindow: UsageSection["key"] | undefined,
   ) => PlatformLimitState;
+  /**
+   * The same window's fullness in percent, so a skip can say how full it
+   * was. Optional: a caller that measures no windows gets the same choices,
+   * and its skips simply carry no number.
+   */
+  platformUsedPercent?: (
+    platform: AgentPlatformId,
+    scopedWindow: UsageSection["key"] | undefined,
+  ) => number | undefined;
 }
 
 export interface RankedModelChoice {
@@ -401,6 +410,13 @@ function rankedChoice(
 export interface RankedModelSkip {
   label: string;
   reason: "at-limit" | "near-limit" | "not-installed";
+  /**
+   * How full the platform's window was when a limit skipped this candidate,
+   * in percent — the number the operator should read instead of "was not
+   * available". Absent for a `not-installed` skip, and when the caller does
+   * not measure windows.
+   */
+  usedPercent?: number;
 }
 
 export interface RankedModelResolution {
@@ -552,7 +568,15 @@ function attemptRanking(
         limit === "at-limit" ||
         (limit === "near-limit" && !acceptNearLimit)
       ) {
-        skipped.push({ label: candidate.label, reason: limit });
+        const usedPercent = input.platformUsedPercent?.(
+          candidate.platform,
+          candidate.scopedWindow,
+        );
+        skipped.push({
+          label: candidate.label,
+          reason: limit,
+          ...(usedPercent !== undefined ? { usedPercent } : {}),
+        });
         continue;
       }
       const model = pickCandidateMatch(

@@ -232,6 +232,38 @@ export function parseReportFenceBody(
   };
 }
 
+/**
+ * The summaries the graph sync writes for a run that ended without a word of
+ * its own. Kept beside the parser so the wave engine can tell such a stand-in
+ * from a report (see {@link isSynthesizedStepReport}), including stand-ins
+ * persisted by builds that did not yet flag them.
+ */
+export const RUN_FALLBACK_SUMMARIES = {
+  failed: "The agent failed.",
+  cancelled: "The agent was cancelled.",
+  completed: "The agent finished.",
+} as const;
+
+const RUN_FALLBACK_SUMMARY_TEXTS: readonly string[] = Object.values(
+  RUN_FALLBACK_SUMMARIES,
+);
+
+/**
+ * True for a report the app wrote in the run's stead, not one the run gave.
+ *
+ * The flag is the answer for anything written since it exists; the bare
+ * stand-in text with nothing else in the report recognises the ones persisted
+ * before it did.
+ */
+export function isSynthesizedStepReport(report: StructuredReport): boolean {
+  if (report.synthesized) return true;
+  return (
+    RUN_FALLBACK_SUMMARY_TEXTS.includes(report.summary) &&
+    report.decisions.length === 0 &&
+    report.artifacts.length === 0
+  );
+}
+
 export function parseStructuredReport(
   runId: string,
   status: StructuredReport["status"],

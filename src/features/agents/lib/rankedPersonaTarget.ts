@@ -19,7 +19,10 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import type { SessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
-import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
+import {
+  platformLimitState,
+  platformUsedPercent,
+} from "@/features/status/lib/rateLimitWindows";
 import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import type { Persona } from "@/shared/types/agents";
 
@@ -141,6 +144,8 @@ export function rankedPersonaExecutionTargets(
           ? { nearLimitPercent: context.nearLimitPercent }
           : {}),
       }),
+    platformUsedPercent: (platform, scopedWindow) =>
+      platformUsedPercent(context.rateLimits, platform, { scopedWindow }),
   };
   const targets: RankedPersonaTarget[] = [];
   const seen = new Set<string>();

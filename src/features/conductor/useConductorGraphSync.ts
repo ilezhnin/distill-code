@@ -13,7 +13,10 @@ import {
   useConductorGraphStore,
 } from "./conductorGraphStore";
 import { publishTerminalGroupDigests } from "./digestPublisher";
-import { parseStructuredReport } from "./orchestratorReport";
+import {
+  RUN_FALLBACK_SUMMARIES,
+  parseStructuredReport,
+} from "./orchestratorReport";
 import { reconcileStaleGraphStatuses } from "./reconcileStaleGraphStatuses";
 import {
   lastCompletedAssistantSummary,
@@ -383,13 +386,19 @@ function runSyncPass(): void {
     const fallback =
       summary ??
       (reportStatus === "failed"
-        ? runtime?.error || lastFailureReason(messages) || "The agent failed."
+        ? runtime?.error ||
+          lastFailureReason(messages) ||
+          RUN_FALLBACK_SUMMARIES.failed
         : reportStatus === "cancelled"
-          ? "The agent was cancelled."
-          : "The agent finished.");
+          ? RUN_FALLBACK_SUMMARIES.cancelled
+          : RUN_FALLBACK_SUMMARIES.completed);
+    // A run that ended without a word of its own gets a stand-in, flagged as
+    // the app's writing: the digest needs a line for the step, but the wave
+    // engine must not read "The agent was cancelled." as the step reporting.
     const next = {
       ...parseStructuredReport(node.runId, reportStatus, fallback),
       operatorIntervened,
+      ...(summary ? {} : { synthesized: true }),
     };
     // Compare against the report this pass would write, not against the truth
     // of what is already stored: an existing report whose summary parsed empty
@@ -402,7 +411,8 @@ function runSyncPass(): void {
       existing &&
       existing.status === next.status &&
       existing.summary === next.summary &&
-      existing.operatorIntervened === next.operatorIntervened
+      existing.operatorIntervened === next.operatorIntervened &&
+      Boolean(existing.synthesized) === Boolean(next.synthesized)
     ) {
       continue;
     }

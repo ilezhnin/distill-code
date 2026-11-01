@@ -215,6 +215,7 @@ function parseReport(value: unknown): StructuredReport | null {
       typeof raw.nextSuggestedTask === "string" ? raw.nextSuggestedTask : null,
     publishedToParent: raw.publishedToParent === true,
     operatorIntervened: raw.operatorIntervened === true,
+    ...(raw.synthesized === true ? { synthesized: true } : {}),
   };
 }
 
