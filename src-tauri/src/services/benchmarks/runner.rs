@@ -1236,6 +1236,34 @@ pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
     }
 }
 
+/// A session opened on a context lane that its bridge acknowledges under the
+/// lane's declared alias acknowledged the lane: Claude Code 2.1.312 runs
+/// `opus[1m]` at Opus 5.5's native 1M window and names it `opus` (10-31),
+/// and every Opus row, judge and task turn was refused as another model. The
+/// host's substitution for it is dropped and the selection names the lane
+/// the row measures; any other substitution stands.
+pub(crate) fn acknowledge_lane(
+    provider: &str,
+    requested: &str,
+    session: &mut crate::services::agent_host::execution::OwnedSession,
+) {
+    let lane = |applied: &str| {
+        requested.strip_suffix("[1m]") == Some(applied)
+            && crate::services::agent_host::harness::harness(provider)
+                .and_then(|spec| spec.models.iter().find(|model| model.id == applied))
+                .and_then(|model| model.alias_of)
+                == Some(requested)
+    };
+    session.substitutions.retain(|substitution| {
+        !(substitution["role"] == "model"
+            && substitution["requested"] == requested
+            && substitution["applied"].as_str().is_some_and(lane))
+    });
+    if session.selection.model_id.as_deref().is_some_and(lane) {
+        session.selection.model_id = Some(requested.to_string());
+    }
+}
+
 /// The model a model id names whatever context window it asks for, aliases
 /// resolved as [`concrete_model`] resolves them: Claude Code's `[1m]` suffix
 /// (`opus[1m]`, `claude-fable-5-1[1m]`) asks the same model for a longer
@@ -4240,7 +4268,7 @@ impl NativeBackend {
             attempt.id
         );
         let _sandbox_cleanup = sandbox::Cleanup(Some(job));
-        let session = host
+        let mut session = host
             .create_owned_session(
                 OwnedSessionRequest {
                     owner_id: judge_owner,
@@ -4257,6 +4285,7 @@ impl NativeBackend {
             )
             .await
             .map_err(host_error)?;
+        acknowledge_lane(&judge.provider_id, &judge.model_id, &mut session);
         trace.context["sessionId"] = json!(session.session_id);
         admission_window::admitted(
             &store.root.display().to_string(),
@@ -5430,7 +5459,7 @@ impl ExecutionBackend for NativeBackend {
             let rows = self
                 .inventory(&chosen.provider_id, Some(account), false)
                 .await?;
-            let owned = host
+            let mut owned = host
                 .create_task_owned_session(
                     OwnedSessionRequest {
                         owner_id: owner,
@@ -5454,6 +5483,7 @@ impl ExecutionBackend for NativeBackend {
                 )
                 .await
                 .map_err(host_error)?;
+            acknowledge_lane(&chosen.provider_id, &chosen.model_id, &mut owned);
             let mut observed = chosen.clone();
             observed.model_id = owned.selection.model_id.clone().unwrap_or_default();
             observed.effort = owned.selection.reasoning_effort.clone();
@@ -6156,8 +6186,13 @@ impl ExecutionBackend for NativeBackend {
             // (admission_window).
             let scope = store.root.display().to_string();
             let session = match session {
-                Ok(session) => {
+                Ok(mut session) => {
                     admission_window::admitted(&scope, &attempt.id);
+                    acknowledge_lane(
+                        &attempt.configuration.provider_id,
+                        &attempt.configuration.model_id,
+                        &mut session,
+                    );
                     session
                 }
                 Err(error) => {
@@ -12751,6 +12786,48 @@ mod tests {
             let panel = frozen_seats(&[&judge_row(candidate)], &seeded, offered());
             assert!(own_model(&[&judge_row(candidate)], &panel));
         }
+    }
+    #[test]
+    fn a_bridge_naming_the_1m_lane_by_its_alias_acknowledged_the_lane() {
+        use crate::services::agent_host::execution::{ObservedSelection, OwnedSession};
+        let session = |model: &str, substitutions: Vec<serde_json::Value>| OwnedSession {
+            session_id: "session".into(),
+            owner_id: "owner".into(),
+            policy_hash: "policy".into(),
+            selection: ObservedSelection {
+                model_id: Some(model.into()),
+                reasoning_effort: Some("high".into()),
+                fast_mode: Some(false),
+            },
+            substitutions,
+        };
+        let model = |applied: &str| {
+            json!({"role": "model", "requested": "opus[1m]", "applied": applied,
+                "reason": "not offered by claude-acp"})
+        };
+        // 10-31: opened on opus[1m], answered as opus.
+        let mut opus = session("opus", vec![model("opus")]);
+        acknowledge_lane("claude-acp", "opus[1m]", &mut opus);
+        assert_eq!(opus.selection.model_id.as_deref(), Some("opus[1m]"));
+        assert!(opus.substitutions.is_empty());
+        // Another model in its place is still a substitution, `default`
+        // included: declared Opus, but no context lane of it.
+        for other in ["sonnet", "default"] {
+            let mut moved = session(other, vec![model(other)]);
+            acknowledge_lane("claude-acp", "opus[1m]", &mut moved);
+            assert_eq!(moved.selection.model_id.as_deref(), Some(other));
+            assert_eq!(moved.substitutions.len(), 1, "{other}");
+        }
+        // So is an effort the lane would not take.
+        let effort =
+            json!({"role": "effort", "requested": "high", "applied": "low", "reason": "x"});
+        let mut slower = session("opus", vec![model("opus"), effort]);
+        acknowledge_lane("claude-acp", "opus[1m]", &mut slower);
+        assert_eq!(slower.substitutions.len(), 1);
+        // The lane is the harness's to declare.
+        let mut elsewhere = session("opus", vec![model("opus")]);
+        acknowledge_lane("codex-acp", "opus[1m]", &mut elsewhere);
+        assert_eq!(elsewhere.substitutions.len(), 1);
     }
     #[test]
     fn a_context_window_variant_of_a_model_is_that_model() {
