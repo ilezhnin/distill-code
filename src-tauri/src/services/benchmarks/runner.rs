@@ -1,5 +1,5 @@
 use super::{
-    analysis::matches_selection,
+    analysis::{self, matches_selection},
     evaluation, fixtures, judge_checks,
     store::{now, Store},
     types::*,
@@ -2559,10 +2559,17 @@ pub(super) fn refused_before_answer(attempt: &Attempt, error: &BenchmarkError) -
             || (attempt.phase == "preparing"
                 && matches!(
                     error.code.as_str(),
-                    "selection_changed" | "capability_missing"
+                    "selection_changed" | "capability_missing" | SESSION_LOST
                 ))
             || (error.code == "infrastructure_failure" && before_prompt))
 }
+
+/// A session the provider opened and lost before it acknowledged a model:
+/// its bridge ended at open. Nothing was asked, so the try goes back to the
+/// queue like a refusal before any answer, under the same bound.
+pub(super) const SESSION_LOST: &str = "session_lost";
+const SESSION_LOST_BEFORE_ANSWER: &str =
+    "The provider's session ended before it acknowledged a model; nothing was asked of it";
 
 /// When each run's account first refused for quota (see [`quota_scope`]),
 /// while the run waits on it. Kept in memory: a restart begins the wait again.
@@ -2882,7 +2889,11 @@ fn grouped_by_cell<V>(run: &BenchmarkRun, ready: Vec<(Attempt, V)>) -> Vec<(Atte
 /// sign-in, preflight or policy the host would not start.
 pub(super) fn returns_to_queue(code: &str, phase: &str) -> bool {
     is_wait(code)
-        || (phase == "preparing" && matches!(code, "selection_changed" | "capability_missing"))
+        || (phase == "preparing"
+            && matches!(
+                code,
+                "selection_changed" | "capability_missing" | SESSION_LOST
+            ))
 }
 
 /// Whether `attempt`, as saved, shows that a provider saw any of its try: a
@@ -6163,6 +6174,8 @@ impl ExecutionBackend for NativeBackend {
             };
             attempt.session_id = Some(session.session_id.clone());
             mark_phase(&mut attempt, "sessionOpened");
+            let acknowledged_nothing =
+                session.selection.model_id.is_none() && session.substitutions.is_empty();
             let mut observed = attempt.configuration.clone();
             observed.model_id = session.selection.model_id.unwrap_or_default();
             observed.effort = session.selection.reasoning_effort;
@@ -6175,13 +6188,30 @@ impl ExecutionBackend for NativeBackend {
             observed.provider_id = actual_session.harness;
             observed.account_id = actual_session.account_id;
             attempt.observed = Some(observed.clone());
+            // A session that acknowledged nothing and refused nothing is not
+            // a substitution: its process ended before it named a model (the
+            // bridge died at open, 2026-10-31). Read as "another model", the
+            // try counted as a refusal three times and stopped the run on
+            // the operator; it is a provider failure before any answer, and
+            // goes back to the queue as one.
+            if acknowledged_nothing {
+                store.save_attempt(&attempt).await?;
+                return Err(BenchmarkError::new(
+                    SESSION_LOST,
+                    SESSION_LOST_BEFORE_ANSWER,
+                ));
+            }
             if !session.substitutions.is_empty()
                 || !matches_selection(&attempt.configuration, &observed)
             {
                 store.save_attempt(&attempt).await?;
                 return Err(BenchmarkError::new(
                     "selection_changed",
-                    "Provider did not acknowledge the exact model, effort and fast mode",
+                    analysis::selection_refusal(
+                        &attempt.configuration,
+                        &observed,
+                        &session.substitutions,
+                    ),
                 ));
             }
             attempt.phase = "dispatching".into();
@@ -14848,6 +14878,11 @@ mod tests {
             &attempt,
             &error("capability_missing", "no sign-in")
         ));
+        // A session lost before it acknowledged a model asked nothing.
+        assert!(refused_before_answer(
+            &attempt,
+            &error(SESSION_LOST, SESSION_LOST_BEFORE_ANSWER)
+        ));
         assert!(refused_before_answer(
             &attempt,
             &error("account_busy", "interactive work")
@@ -15592,7 +15627,8 @@ mod tests {
     #[test]
     fn only_a_turn_the_provider_never_saw_returns_to_the_queue() {
         assert!(returns_to_queue(QUOTA_WAIT, "running"));
-        for code in ["selection_changed", "capability_missing"] {
+        // A session lost before it acknowledged a model asked nothing either.
+        for code in ["selection_changed", "capability_missing", SESSION_LOST] {
             assert!(returns_to_queue(code, "preparing"), "{code}");
             // Once the prompt is on its way, the turn is the provider's.
             assert!(!returns_to_queue(code, "dispatching"), "{code}");

@@ -440,6 +440,83 @@ pub(crate) fn fast_mode_acknowledged(requested: Option<bool>, observed: Option<b
     crate::services::agent_host::execution::fast_mode_acknowledged(requested, observed)
 }
 
+/// The refusal every unacknowledged selection starts with; what follows the
+/// colon says which part, and what the provider said or did instead.
+pub(crate) const SELECTION_REFUSED: &str =
+    "Provider did not acknowledge the exact model, effort and fast mode";
+
+/// Why a session is not the selection asked for, in words the operator can
+/// act on. The bridge's own refusal comes first where it gave one
+/// (`substitutions`, as the host records them: role, requested, applied,
+/// reason — "codex-acp would not run gpt-6-luna: Invalid params"); otherwise
+/// the field that came back different. A bare "did not acknowledge" left the
+/// operator guessing whether the model was gone, renamed or merely refused.
+pub(crate) fn selection_refusal(
+    requested: &Configuration,
+    observed: &Configuration,
+    substitutions: &[serde_json::Value],
+) -> String {
+    let text = |value: &serde_json::Value| {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let mut details: Vec<String> = substitutions
+        .iter()
+        .map(|substitution| {
+            let role = text(&substitution["role"]).unwrap_or_else(|| "selection".into());
+            let asked = text(&substitution["requested"]).unwrap_or_else(|| "?".into());
+            let mut detail = format!("the {role} {asked} was refused");
+            if let Some(reason) = text(&substitution["reason"]) {
+                detail.push_str(&format!(" ({reason})"));
+            }
+            match text(&substitution["applied"]) {
+                Some(applied) => detail.push_str(&format!("; {applied} would have run instead")),
+                None => detail.push_str("; nothing would have run in its place"),
+            }
+            detail
+        })
+        .collect();
+    if details.is_empty() {
+        let none = || "none".to_string();
+        if requested.model_id != observed.model_id {
+            let acknowledged = Some(observed.model_id.clone())
+                .filter(|model| !model.is_empty())
+                .unwrap_or_else(none);
+            details.push(format!(
+                "asked for model {}, the provider acknowledged {acknowledged}",
+                requested.model_id
+            ));
+        }
+        if let Some(effort) = &requested.effort {
+            if Some(effort) != observed.effort.as_ref() {
+                details.push(format!(
+                    "asked for effort {effort}, acknowledged {}",
+                    observed.effort.clone().unwrap_or_else(none)
+                ));
+            }
+        }
+        if !fast_mode_acknowledged(requested.fast_mode, observed.fast_mode) {
+            let state = |fast: Option<bool>| match fast {
+                Some(true) => "on".to_string(),
+                Some(false) => "off".to_string(),
+                None => none(),
+            };
+            details.push(format!(
+                "asked for fast mode {}, acknowledged {}",
+                state(requested.fast_mode),
+                state(observed.fast_mode)
+            ));
+        }
+    }
+    if details.is_empty() {
+        return SELECTION_REFUSED.to_string();
+    }
+    format!("{SELECTION_REFUSED}: {}", details.join("; "))
+}
+
 /// What ran. A refused selection (another model, effort or fast mode) stays
 /// with the candidate that was asked for; where that request left effort or
 /// fast mode to the provider, the requested model's acknowledged value fills it.
@@ -2467,6 +2544,70 @@ fn history_observations<T>(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    fn selection(model: &str, effort: Option<&str>, fast: Option<bool>) -> Configuration {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("codex-acp:account-1:{model}"),
+            "providerId": "codex-acp",
+            "accountId": "account-1",
+            "modelId": model,
+            "effort": effort,
+            "fastMode": fast,
+            "billingMode": "subscription",
+            "executionProfile": "native_text",
+            "inventoryRevision": "runtime-now",
+        }))
+        .expect("an invented configuration")
+    }
+
+    #[test]
+    fn a_refused_selection_names_the_bridges_own_refusal_first() {
+        let requested = selection("gpt-6-luna", Some("medium"), Some(false));
+        let observed = selection("gpt-6-sol", Some("medium"), Some(false));
+        let refusal = selection_refusal(
+            &requested,
+            &observed,
+            &[serde_json::json!({
+                "role": "model",
+                "requested": "gpt-6-luna",
+                "applied": "gpt-6-sol",
+                "reason": "Invalid params",
+            })],
+        );
+        assert_eq!(
+            refusal,
+            format!("{SELECTION_REFUSED}: the model gpt-6-luna was refused (Invalid params); gpt-6-sol would have run instead")
+        );
+        let nothing = selection_refusal(
+            &requested,
+            &observed,
+            &[
+                serde_json::json!({ "role": "model", "requested": "gpt-6-luna", "applied": null, "reason": "" }),
+            ],
+        );
+        assert!(nothing
+            .ends_with("the model gpt-6-luna was refused; nothing would have run in its place"));
+    }
+
+    #[test]
+    fn a_selection_that_came_back_different_names_each_field() {
+        let requested = selection("gpt-6-sol", Some("xhigh"), Some(true));
+        let observed = selection("gpt-6-astra", Some("medium"), None);
+        assert_eq!(
+            selection_refusal(&requested, &observed, &[]),
+            format!("{SELECTION_REFUSED}: asked for model gpt-6-sol, the provider acknowledged gpt-6-astra; asked for effort xhigh, acknowledged medium; asked for fast mode on, acknowledged none")
+        );
+        // An acknowledged selection with no difference and no refusal keeps
+        // the bare sentence rather than inventing a detail.
+        assert_eq!(
+            selection_refusal(&requested, &requested, &[]),
+            SELECTION_REFUSED
+        );
+        let silent = selection("", None, None);
+        assert!(selection_refusal(&requested, &silent, &[])
+            .contains("asked for model gpt-6-sol, the provider acknowledged none"));
+    }
+
     #[test]
     fn a_panel_that_samples_each_seat_counts_each_seat_once_at_its_median() {
         let evaluation = |provenance: &str,
