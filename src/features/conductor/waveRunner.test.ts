@@ -494,6 +494,52 @@ describe("waveRunner", () => {
     ]);
   });
 
+  it("dispatches a new session under a numbered key when the record names a session the graph holds as ended", async () => {
+    selectionPlan();
+    // The session the record names was the step's executor before a restart
+    // ended it; the graph still holds its node, stopped. Adopting it would
+    // hand the step a dead worker — on 2026-11-01 that parked a live wave as
+    // interrupted thirteen seconds after the app came back.
+    registerSpawnedChild({
+      sessionId: "dead-child",
+      waveId: "elsewhere",
+      stepIndex: 9,
+      runId: "dead-run",
+      status: "stopped",
+    });
+    executorSelection.get.mockImplementation(async (key) =>
+      key.endsWith(":attempt:1")
+        ? null
+        : ({
+            decision: null,
+            hostExecution: null,
+            observations: [
+              {
+                observation: {
+                  phase: "started",
+                  sessionId: "dead-child",
+                  runId: "dead-run",
+                },
+              },
+            ],
+          } as unknown as ExecutorDecisionRecord),
+    );
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      spawnConductorChildSession.mock.calls[0][0].executorDecisionKey,
+    ).toMatch(/:attempt:1$/);
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]).toMatchObject({
+        phase: "spawned",
+        sessionId: "child-0",
+        executorKey: expect.stringMatching(/:attempt:1$/),
+      }),
+    );
+  });
+
   it("does not redispatch a step with a durable execution record after a restart", async () => {
     selectionPlan();
     executorSelection.get.mockResolvedValueOnce({

@@ -395,6 +395,32 @@ describe("advanceWave restart resume", () => {
     });
   });
 
+  it("keeps the resume on a pending step the previous tick could not dispatch", () => {
+    // The resume tick ran while routing inputs were loading: the step was
+    // left pending with the dead session on its record and nothing spawned.
+    const base = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
+      phase: "pending",
+    });
+    const wave = {
+      ...base,
+      steps: base.steps.map((s) => ({
+        ...s,
+        resumeCount: 1,
+        resumedFromSessionId: "child-0",
+      })),
+    };
+    const advanced = advanceWave(wave, {
+      nodes: [interruptedNode(0)],
+      reportOf: noReports,
+    });
+    expect(advanced.spawn).toHaveLength(1);
+    expect(advanced.spawn[0].resume).toEqual({
+      previousSessionId: "child-0",
+      resumeCount: 1,
+    });
+    expect(advanced.wave.steps[0].phase).toBe("pending");
+  });
+
   it("does not resume a step whose dead session had already reported", () => {
     const wave = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
       phase: "spawned",

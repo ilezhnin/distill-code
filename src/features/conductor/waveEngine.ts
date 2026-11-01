@@ -1455,7 +1455,14 @@ export function advanceWave(
           ]
         : [];
 
-    const resume = resumes[step.stepIndex];
+    const resume =
+      resumes[step.stepIndex] ??
+      (step.resumedFromSessionId && step.resumeCount
+        ? {
+            previousSessionId: step.resumedFromSessionId,
+            resumeCount: step.resumeCount,
+          }
+        : undefined);
     spawn.push({
       stepIndex: step.stepIndex,
       step: stepToWaveStep(step),

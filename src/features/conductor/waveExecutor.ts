@@ -165,6 +165,13 @@ export async function prepareWaveExecutor(
     target?: ApplicationExecutorOption["target"];
     runSettings?: ApplicationExecutorOption["runSettings"];
     ranked?: boolean;
+    /**
+     * Whether a session a journal record names can still run this step.
+     * False for one the graph holds as ended (stopped, cancelled, failed,
+     * completed): adopting it would hand the step a dead executor, and the
+     * dispatch runs under a numbered key instead.
+     */
+    sessionUsable?: (sessionId: string) => boolean;
   },
 ): Promise<PreparedWaveExecutor> {
   const mode = await ownedTaskExecution.getMode(wave.conductorSessionId);
@@ -392,6 +399,7 @@ export async function prepareWaveExecutor(
     request.resume
       ? `${baseKey}:resume:${request.resume.resumeCount}`
       : baseKey,
+    baseline.sessionUsable ?? (() => true),
   );
   if (resolved.kind === "started") {
     // Another process already started a session for this very step (the
@@ -520,13 +528,22 @@ const MAX_WAVE_EXECUTOR_ATTEMPTS = 8;
  */
 async function resolveWaveExecutorRecord(
   baseKey: string,
+  sessionUsable: (sessionId: string) => boolean,
 ): Promise<WaveExecutorRecordResolution> {
   let requestKey = baseKey;
   for (let attempt = 0; attempt <= MAX_WAVE_EXECUTOR_ATTEMPTS; attempt += 1) {
     const record = await executorSelection.get(requestKey);
     if (!record) return { kind: "fresh", requestKey };
     const session = startedWaveExecutorSession(record);
-    if (session) return { kind: "started", requestKey, record, session };
+    if (session && sessionUsable(session.sessionId)) {
+      return { kind: "started", requestKey, record, session };
+    }
+    if (session) {
+      // The record names a session that has already ended; the step needs a
+      // new one, under the next key.
+      requestKey = `${baseKey}:attempt:${attempt + 1}`;
+      continue;
+    }
     if (record.observations.length === 0 && !record.hostExecution) {
       return { kind: "decided", requestKey, record };
     }

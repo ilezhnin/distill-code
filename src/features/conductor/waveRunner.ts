@@ -56,6 +56,7 @@ import {
   admitWavePlan,
   advanceWave,
   createWaveState,
+  isTerminalRunStatus,
   waveInterruptedBeforeReport,
   waveStepNode,
   withWavePhase,
@@ -910,6 +911,12 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         target: executionTarget,
         runSettings: stepRunSettings.runSettings,
         ranked: Boolean(stepTarget),
+        // A session the graph holds as ended — the one a restart killed, or
+        // the operator stopped — is not an executor to adopt.
+        sessionUsable: (sessionId) => {
+          const node = useConductorGraphStore.getState().getNode(sessionId);
+          return !node || !isTerminalRunStatus(node.status);
+        },
       });
       let selectionExpired = false;
       void selection
