@@ -248,7 +248,9 @@ export function BenchmarkRunDialog({
               : t(
                   resolved.issue === "changed"
                     ? "run.settingsUnavailable"
-                    : "run.runtimeUnavailable",
+                    : resolved.issue === "variantMissing"
+                      ? "run.contextUnavailable"
+                      : "run.runtimeUnavailable",
                 ),
         });
       }

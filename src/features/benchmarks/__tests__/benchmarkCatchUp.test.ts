@@ -91,6 +91,24 @@ describe("catch-up configuration", () => {
     });
   });
 
+  it("tells a withheld 1M-context variant from a model that is gone", () => {
+    // Claude Code lists `opus[1m]` only while the account is entitled to the
+    // longer context (2026-10-31: present at 20:24, gone at 20:59, back at
+    // 21:29). A row measured on it is not a vanished model.
+    const row = { ...configuration, modelId: "model-1[1m]" };
+    expect(resolveCatchUpConfiguration(row, [current])).toEqual({
+      issue: "variantMissing",
+    });
+    // Without the base model either, the model is gone.
+    expect(resolveCatchUpConfiguration(row, [])).toEqual({ issue: "missing" });
+    // The variant itself, when offered, is the row's own model.
+    const variant: InventoryModel = {
+      ...current,
+      configuration: { ...current.configuration, modelId: "model-1[1m]" },
+    };
+    expect(pinned(row, [current, variant]).modelId).toBe("model-1[1m]");
+  });
+
   it("refuses a model or option the runtime no longer offers", () => {
     const row = { ...configuration, inventoryRevision: "runtime-then" };
     expect(resolveCatchUpConfiguration(row, [])).toEqual({ issue: "missing" });

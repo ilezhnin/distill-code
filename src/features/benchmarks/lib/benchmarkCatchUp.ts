@@ -13,8 +13,23 @@ import { CLI_DEFAULT_EFFORT, explicitEfforts } from "./benchmarkEffort";
 
 export type CatchUpResolution =
   | { configuration: Configuration }
-  | { issue: "missing" | "changed" }
+  /**
+   * `variantMissing`: the model is offered, but not the longer-context
+   * variant the row was measured on (Claude Code's `[1m]` ids come and go
+   * with the account's entitlement), which is another row.
+   */
+  | { issue: "missing" | "changed" | "variantMissing" }
   | { issue: "unavailable"; reason: string | null };
+
+/** Claude Code's longer-context variant of a model id: `opus[1m]` of `opus`. */
+const CONTEXT_VARIANT = /\[1m\]$/;
+
+/** The model a longer-context variant id is a variant of, or null. */
+function variantBaseModelId(modelId: string): string | null {
+  return CONTEXT_VARIANT.test(modelId)
+    ? modelId.replace(CONTEXT_VARIANT, "")
+    : null;
+}
 
 /** An evidence label still retries through the original text profile. */
 function executionProfile(profile: string): string {
@@ -45,13 +60,18 @@ export function resolveCatchUpConfiguration(
   row: Configuration,
   inventory: InventoryModel[],
 ): CatchUpResolution {
-  const model = inventory.find(
-    (entry) =>
-      entry.configuration.modelId === row.modelId &&
-      entry.configuration.executionProfile ===
-        executionProfile(row.executionProfile),
-  );
-  if (!model) return { issue: "missing" };
+  const profile = executionProfile(row.executionProfile);
+  const offered = (modelId: string) =>
+    inventory.find(
+      (entry) =>
+        entry.configuration.modelId === modelId &&
+        entry.configuration.executionProfile === profile,
+    );
+  const model = offered(row.modelId);
+  if (!model) {
+    const base = variantBaseModelId(row.modelId);
+    return { issue: base && offered(base) ? "variantMissing" : "missing" };
+  }
   // A moving alias under another name serves another model now, which is
   // another row: the row's own model cannot run again.
   if (

@@ -946,7 +946,9 @@ export function BenchmarkModelRunDialog({
                   : t(
                       resolution.issue === "missing"
                         ? "run.catchUpMissing"
-                        : "run.catchUpChanged",
+                        : resolution.issue === "variantMissing"
+                          ? "run.catchUpVariantMissing"
+                          : "run.catchUpChanged",
                       { model },
                     )}
               </BenchmarkAlert>
