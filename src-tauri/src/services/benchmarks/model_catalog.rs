@@ -26,6 +26,20 @@ const ESTIMATES_CHECKED_AT: i64 = 1_791_201_600_000;
 /// 2026-10-23T00:00:00Z: K3.1 Pro and Highspeed were available in Kimi Code
 /// and their public API prices were checked on this date.
 const KIMI_K3_1_CHECKED_AT: i64 = 1_792_713_600_000;
+/// 2026-11-01T12:00:00Z: the day the vendor API windows were read beside
+/// the windows the CLIs serve.
+const CONTEXT_WINDOWS_CHECKED_AT: i64 = 1_793_534_400_000;
+/// 2026-11-02T00:00:00Z: from when an owned Codex runs with
+/// `model_context_window = 872000` (benchmark-native-policies.json), which
+/// the CLI clamps to each model's ceiling. A measurement before it ran at the
+/// 272,000 the CLI serves by default.
+pub const CODEX_WINDOW_RAISED_AT: i64 = 1_793_577_600_000;
+/// What every OpenAI model takes on the API, where a prompt over 272K input
+/// tokens is billed at 2x input and 1.5x output for the whole request.
+const OPENAI_API_CONTEXT: u64 = 1_050_000;
+/// What Grok 4.5 to 4.7 take on the xAI API, billed at 2x from 200K prompt
+/// tokens; the Grok CLI serves 256,000.
+const XAI_API_CONTEXT: u64 = 500_000;
 
 /// The model entry that applied to `configuration` at `at`, as
 /// `lib/modelCatalog.ts` resolves it: an entry of its provider or of none,
@@ -103,7 +117,177 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
         ("anthropic-2026-10-22", anthropic_context_seeds()),
         ("contexts-2026-10-22", context_seeds_2026_10_22()),
         ("moonshot-2026-10-23", moonshot_seeds_2026_10_23()),
+        ("contexts-2026-11-01", context_seeds_2026_11_01()),
     ]
+}
+
+/// Both windows of every OpenAI and xAI row, checked on 2026-11-01: the one
+/// the CLI serves and the vendor API's. The Codex CLI serves 272,000 by
+/// default and lets a configuration raise it to each model's ceiling,
+/// 872,000 (GPT-5.5: 272,000), against 1,050,000 on the API; the Grok CLI
+/// serves 256,000 against 500,000. Corrections of the vendor seeds and the
+/// Grok 4.7 Fast estimate, dated back so every measurement shows both, plus
+/// the OpenAI rows at the raised window from the policy that raises it.
+fn context_seeds_2026_11_01() -> Vec<CatalogEntry> {
+    let openai_note = "prompts over 272K input tokens are billed at 2x input and 1.5x output for the whole request";
+    // Slug, needle, name, prices, the window served by default and the raised one.
+    let openai: [(&str, &str, &str, [Option<f64>; 4], Option<u64>, Option<u64>); 8] = [
+        (
+            "gpt-6-astra",
+            "gpt-6-astra",
+            "GPT-6 Astra",
+            [Some(10.0), Some(50.0), Some(1.0), Some(12.5)],
+            Some(272_000),
+            Some(872_000),
+        ),
+        (
+            "gpt-6-sol",
+            "gpt-6-sol",
+            "GPT-6 Sol",
+            [Some(2.0), Some(10.0), Some(0.2), Some(2.5)],
+            Some(272_000),
+            Some(872_000),
+        ),
+        (
+            "gpt-6-luna",
+            "gpt-6-luna",
+            "GPT-6 Luna",
+            [Some(0.1), Some(0.5), Some(0.01), Some(0.125)],
+            Some(272_000),
+            Some(872_000),
+        ),
+        // Not served by the pinned Codex runtime; its window stays unknown.
+        (
+            "gpt-6-1-sol",
+            "gpt-6.1-sol",
+            "GPT-6.1 Sol",
+            [Some(2.0), Some(10.0), Some(0.1), Some(2.5)],
+            None,
+            None,
+        ),
+        (
+            "gpt-5-6-sol",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol",
+            [Some(4.0), Some(20.0), Some(0.4), Some(5.0)],
+            Some(272_000),
+            Some(872_000),
+        ),
+        (
+            "gpt-5-6-terra",
+            "gpt-5.6-terra",
+            "GPT-5.6 Terra",
+            [Some(2.0), Some(12.0), Some(0.2), Some(2.5)],
+            Some(272_000),
+            Some(872_000),
+        ),
+        (
+            "gpt-5-6-luna",
+            "gpt-5.6-luna",
+            "GPT-5.6 Luna",
+            [Some(0.2), Some(1.2), Some(0.02), Some(0.25)],
+            Some(272_000),
+            Some(872_000),
+        ),
+        // Its ceiling is its default.
+        (
+            "gpt-5-5",
+            "gpt-5.5",
+            "GPT-5.5",
+            [Some(5.0), Some(30.0), Some(0.5), None],
+            Some(272_000),
+            Some(272_000),
+        ),
+    ];
+    // After Grok 4.7, whose needle it also matches, and priced as the
+    // estimate it corrects, so the board keeps reading it as one.
+    let xai: [(&str, &str, &str, [Option<f64>; 4], &str); 4] = [
+        ("grok-4-7", "grok-4.7", "Grok 4.7", [Some(2.0), Some(6.0), Some(0.5), None], XAI_MODELS),
+        (
+            "grok-4-7-build-fast",
+            "grok-4.7-build-fast",
+            "Grok 4.7 Fast",
+            [Some(2.0), Some(6.0), Some(0.5), None],
+            "estimate: xAI lists no separate price for Grok 4.7 Fast and describes it as Grok 4.7 served faster, so it is priced as Grok 4.7 (https://docs.x.ai/docs/models) until a published price appears",
+        ),
+        ("grok-4-6", "grok-4.6", "Grok 4.6", [Some(2.0), Some(6.0), Some(0.5), None], XAI_MODELS),
+        ("grok-4-5", "grok-4.5", "Grok 4.5", [Some(2.0), Some(6.0), Some(0.3), None], XAI_MODELS),
+    ];
+    let mut rows = Vec::new();
+    let mut row = |id: String,
+                   provider: &str,
+                   vendor: &str,
+                   needle: &str,
+                   name: &str,
+                   prices: [Option<f64>; 4],
+                   context: Option<u64>,
+                   max_context: u64,
+                   effective_from: i64,
+                   source: String| {
+        let position = rows.len() as i64;
+        rows.push(CatalogEntry {
+            id,
+            kind: "model".into(),
+            provider_id: Some(provider.into()),
+            needle: needle.into(),
+            display_name: Some(name.into()),
+            vendor: Some(vendor.into()),
+            input_per_million: prices[0],
+            output_per_million: prices[1],
+            cache_read_per_million: prices[2],
+            cache_write_per_million: prices[3],
+            context_tokens: context,
+            max_context_tokens: Some(max_context),
+            effective_from,
+            checked_at: CONTEXT_WINDOWS_CHECKED_AT,
+            source,
+            created_at: CONTEXT_WINDOWS_CHECKED_AT + position,
+        });
+    };
+    for (slug, needle, name, prices, served, raised) in openai {
+        let page = format!("https://developers.openai.com/api/docs/models/{needle}");
+        row(
+            format!("seed-openai-{slug}-served-2026-11-01"),
+            "codex-acp",
+            "OpenAI",
+            needle,
+            name,
+            prices,
+            served,
+            OPENAI_API_CONTEXT,
+            VENDOR_SEEDS_CHECKED_AT,
+            format!("{OPENAI_PRICING} ; {page} ; {openai_note}"),
+        );
+        if raised != served {
+            row(
+                format!("seed-openai-{slug}-raised-2026-11-01"),
+                "codex-acp",
+                "OpenAI",
+                needle,
+                name,
+                prices,
+                raised,
+                OPENAI_API_CONTEXT,
+                CODEX_WINDOW_RAISED_AT,
+                format!("{OPENAI_PRICING} ; {page} ; {openai_note} ; window raised to the Codex CLI's ceiling by the benchmark policy (model_context_window)"),
+            );
+        }
+    }
+    for (slug, needle, name, prices, source) in xai {
+        row(
+            format!("seed-xai-{slug}-2026-11-01"),
+            "grok-acp",
+            "xAI",
+            needle,
+            name,
+            prices,
+            Some(256_000),
+            XAI_API_CONTEXT,
+            VENDOR_SEEDS_CHECKED_AT,
+            format!("{source} ; prompts of 200K tokens or more are billed at 2x"),
+        );
+    }
+    rows
 }
 
 /// Separate release rows: the older `kimi-code/k3` needle also matches
@@ -129,6 +313,7 @@ fn moonshot_seeds_2026_10_23() -> Vec<CatalogEntry> {
         cache_read_per_million: Some(0.20),
         cache_write_per_million: Some(input),
         context_tokens: Some(1_048_576),
+        max_context_tokens: None,
         effective_from: KIMI_K3_1_CHECKED_AT,
         checked_at: KIMI_K3_1_CHECKED_AT,
         source: format!("{MOONSHOT_PRICING} ; https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart ; cache writes: default 5m TTL"),
@@ -167,6 +352,7 @@ fn context_seeds_2026_10_22() -> Vec<CatalogEntry> {
             cache_read_per_million: prices[2],
             cache_write_per_million: prices[3],
             context_tokens: Some(context),
+            max_context_tokens: None,
             effective_from: VENDOR_SEEDS_CHECKED_AT,
             checked_at: ANTHROPIC_CONTEXT_CHECKED_AT,
             source: source.into(),
@@ -235,6 +421,7 @@ fn anthropic_context_seeds() -> Vec<CatalogEntry> {
             cache_read_per_million: Some(0.20),
             cache_write_per_million: Some(2.5),
             context_tokens: Some(1_000_000),
+            max_context_tokens: None,
             effective_from: SEED_CHECKED_AT,
             checked_at: ANTHROPIC_CONTEXT_CHECKED_AT,
             source: format!("{ANTHROPIC_PRICING} ; {ANTHROPIC_MODELS}"),
@@ -269,6 +456,7 @@ fn estimate_seeds() -> Vec<CatalogEntry> {
         cache_read_per_million: prices[2],
         cache_write_per_million: prices[3],
         context_tokens: context,
+        max_context_tokens: None,
         effective_from: VENDOR_SEEDS_CHECKED_AT,
         checked_at: ESTIMATES_CHECKED_AT,
         source: source.into(),
@@ -379,6 +567,7 @@ fn seeds() -> Vec<CatalogEntry> {
             cache_read_per_million: Some(seed.cache_read),
             cache_write_per_million: Some(seed.cache_write),
             context_tokens: seed.context,
+            max_context_tokens: None,
             effective_from: SEED_CHECKED_AT,
             checked_at: SEED_CHECKED_AT,
             source: format!("{ANTHROPIC_PRICING} ; {ANTHROPIC_MODELS}"),
@@ -423,6 +612,7 @@ fn vendor_set(
             cache_read_per_million: seed.prices[2],
             cache_write_per_million: seed.prices[3],
             context_tokens: seed.context,
+            max_context_tokens: None,
             effective_from: VENDOR_SEEDS_CHECKED_AT,
             checked_at: VENDOR_SEEDS_CHECKED_AT,
             source: seed.source.into(),
@@ -609,6 +799,13 @@ pub fn validate(entry: &CatalogEntry) -> Result<(), String> {
             return Err(format!("The {label} price must be a non-negative number"));
         }
     }
+    if let (Some(context), Some(max_context)) = (entry.context_tokens, entry.max_context_tokens) {
+        if max_context < context {
+            return Err(
+                "The API context window cannot be smaller than the one the harness runs".into(),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -630,12 +827,20 @@ mod tests {
                 "estimates-2026-10-05",
                 "anthropic-2026-10-22",
                 "contexts-2026-10-22",
-                "moonshot-2026-10-23"
+                "moonshot-2026-10-23",
+                "contexts-2026-11-01"
             ]
         );
         for seed in context_seeds_2026_10_22() {
             validate(&seed).unwrap();
             assert!(seed.source.starts_with("https://"), "{}", seed.id);
+        }
+        let mut window_ids = std::collections::HashSet::new();
+        for seed in context_seeds_2026_11_01() {
+            validate(&seed).unwrap();
+            assert!(window_ids.insert(seed.id.clone()), "{}", seed.id);
+            assert!(seed.max_context_tokens.is_some(), "{}", seed.id);
+            assert_eq!(seed.checked_at, CONTEXT_WINDOWS_CHECKED_AT, "{}", seed.id);
         }
         let seeds = seeds();
         assert_eq!(seeds.len(), 5);
@@ -687,6 +892,57 @@ mod tests {
         assert!(validate(&broken).is_err());
     }
 
+    /// Every OpenAI row reads with both windows: the 272K the Codex CLI
+    /// serves by default until the benchmark policy raises it, 872K from
+    /// then on, and the API's 1.05M beside either; GPT-5.5's ceiling is its
+    /// default. Grok rows show 256K against the API's 500K, and Grok 4.7
+    /// Fast stays the labelled estimate it was.
+    #[test]
+    fn the_window_correction_dates_the_raised_codex_window() {
+        let entries: Vec<CatalogEntry> = seed_sets()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        let model = |provider: &str, id: &str| Configuration {
+            provider_id: provider.into(),
+            model_id: id.into(),
+            model_name: None,
+            ..k3()
+        };
+        let windows = |entry: &CatalogEntry| (entry.context_tokens, entry.max_context_tokens);
+        let luna = model("codex-acp", "gpt-5.6-luna");
+        let before = resolve(&entries, &luna, CODEX_WINDOW_RAISED_AT - 1).unwrap();
+        assert_eq!(before.id, "seed-openai-gpt-5-6-luna-served-2026-11-01");
+        assert_eq!(windows(before), (Some(272_000), Some(1_050_000)));
+        assert_eq!(before.input_per_million, Some(0.2));
+        let after = resolve(&entries, &luna, CODEX_WINDOW_RAISED_AT).unwrap();
+        assert_eq!(after.id, "seed-openai-gpt-5-6-luna-raised-2026-11-01");
+        assert_eq!(windows(after), (Some(872_000), Some(1_050_000)));
+        assert_eq!(after.output_per_million, Some(1.2));
+        let five = model("codex-acp", "gpt-5.5");
+        let five = resolve(&entries, &five, CODEX_WINDOW_RAISED_AT).unwrap();
+        assert_eq!(windows(five), (Some(272_000), Some(1_050_000)));
+        // Not served: no window, the API's beside it.
+        let sol = model("codex-acp", "gpt-6.1-sol");
+        let sol = resolve(&entries, &sol, CODEX_WINDOW_RAISED_AT).unwrap();
+        assert_eq!(windows(sol), (None, Some(1_050_000)));
+        let fast = model("grok-acp", "grok-4.7-build-fast");
+        let fast = resolve(&entries, &fast, CODEX_WINDOW_RAISED_AT).unwrap();
+        assert_eq!(fast.id, "seed-xai-grok-4-7-build-fast-2026-11-01");
+        assert!(fast.source.starts_with("estimate:"), "{}", fast.source);
+        assert_eq!(windows(fast), (Some(256_000), Some(500_000)));
+        assert_eq!(fast.input_per_million, Some(2.0));
+        let grok = model("grok-acp", "grok-4.7");
+        let grok = resolve(&entries, &grok, CODEX_WINDOW_RAISED_AT).unwrap();
+        assert_eq!(grok.id, "seed-xai-grok-4-7-2026-11-01");
+        assert!(grok.source.starts_with("https://"), "{}", grok.source);
+        // Before the seeds' date nothing resolves, as for every seed.
+        assert!(resolve(&entries, &luna, VENDOR_SEEDS_CHECKED_AT - 1).is_none());
+        let mut broken = after.clone();
+        broken.max_context_tokens = Some(1);
+        assert!(validate(&broken).is_err());
+    }
+
     fn kimi(at: i64, input: f64) -> CatalogEntry {
         CatalogEntry {
             id: format!("kimi-{at}"),
@@ -700,6 +956,7 @@ mod tests {
             cache_read_per_million: Some(0.3),
             cache_write_per_million: None,
             context_tokens: None,
+            max_context_tokens: None,
             effective_from: at,
             checked_at: at,
             source: "https://example.test".into(),
@@ -800,10 +1057,15 @@ mod tests {
             inventory_revision: None,
             model_name: Some("Grok 4.7 Fast".into()),
         };
+        // The 2026-11-01 window correction carries the estimate forward.
         let entry = resolve(&entries, &fast, VENDOR_SEEDS_CHECKED_AT).unwrap();
-        assert_eq!(entry.id, "seed-estimate-grok-4-7-build-fast");
+        assert_eq!(entry.id, "seed-xai-grok-4-7-build-fast-2026-11-01");
         assert!(entry.source.starts_with("estimate:"));
         assert_eq!(entry.output_per_million, Some(6.0));
+        let estimates = estimate_seeds();
+        let estimate = resolve(&estimates, &fast, VENDOR_SEEDS_CHECKED_AT).unwrap();
+        assert_eq!(estimate.id, "seed-estimate-grok-4-7-build-fast");
+        assert_eq!(estimate.output_per_million, entry.output_per_million);
         let preview = Configuration {
             provider_id: "kimi-acp".into(),
             model_id: "kimi-code/kimi-for-coding".into(),

@@ -73,6 +73,20 @@ export function formatContext(
   return `${Math.round(tokens / 1_000)}K`;
 }
 
+/**
+ * Both windows of an entry: "272K / 1.05M" when the vendor's API offers more
+ * than the harness runs the model with, else the one window.
+ */
+export function formatContextWindows(
+  entry: Pick<CatalogEntry, "contextTokens" | "maxContextTokens"> | null,
+): string | null {
+  if (!entry) return null;
+  const run = formatContext(entry.contextTokens);
+  const api = formatContext(entry.maxContextTokens);
+  if (!api || api === run) return run;
+  return `${run ?? "–"} / ${api}`;
+}
+
 /** The most recent check date across the catalog, for the summary line. */
 export function latestCheckedAt(entries: CatalogEntry[]): number | null {
   return entries.reduce<number | null>(

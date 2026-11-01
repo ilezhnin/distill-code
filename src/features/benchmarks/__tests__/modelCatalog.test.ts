@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatContext,
+  formatContextWindows,
   formatPrice,
   latestCheckedAt,
   resolveCatalogEntry,
@@ -23,6 +24,7 @@ function entry(overrides: Partial<CatalogEntry>): CatalogEntry {
     cacheReadPerMillion: 0.2,
     cacheWritePerMillion: 5,
     contextTokens: 1_000_000,
+    maxContextTokens: null,
     effectiveFrom: 1_000,
     checkedAt: 1_000,
     source: "vendor page",
@@ -91,6 +93,24 @@ describe("model catalog resolution", () => {
     expect(formatContext(1_050_000)).toBe("1.05M");
     expect(formatContext(500_000)).toBe("500K");
     expect(formatContext(null)).toBeNull();
+    // Both windows where the API offers more than the harness runs.
+    expect(formatContextWindows(entry({}))).toBe("1M");
+    expect(
+      formatContextWindows(
+        entry({ contextTokens: 272_000, maxContextTokens: 1_050_000 }),
+      ),
+    ).toBe("272K / 1.05M");
+    expect(
+      formatContextWindows(
+        entry({ contextTokens: 1_000_000, maxContextTokens: 1_000_000 }),
+      ),
+    ).toBe("1M");
+    expect(
+      formatContextWindows(
+        entry({ contextTokens: null, maxContextTokens: 1_050_000 }),
+      ),
+    ).toBe("– / 1.05M");
+    expect(formatContextWindows(null)).toBeNull();
     expect(
       latestCheckedAt([entry({ checkedAt: 10 }), entry({ checkedAt: 30 })]),
     ).toBe(30);

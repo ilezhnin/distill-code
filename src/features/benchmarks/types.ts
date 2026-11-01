@@ -592,7 +592,10 @@ export interface CatalogEntry {
   outputPerMillion: number | null;
   cacheReadPerMillion: number | null;
   cacheWritePerMillion: number | null;
+  /** The window the harness runs the model with: its bridge or CLI default, not the API maximum. */
   contextTokens: number | null;
+  /** The model's full window on the vendor's API, when larger than the one the harness runs. */
+  maxContextTokens: number | null;
   effectiveFrom: number;
   checkedAt: number;
   source: string;

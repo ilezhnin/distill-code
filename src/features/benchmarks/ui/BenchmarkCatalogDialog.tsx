@@ -23,7 +23,7 @@ import {
 } from "@/shared/ui/table";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys, useModelCatalog } from "../hooks/useBenchmarks";
-import { formatContext, formatPrice } from "../lib/modelCatalog";
+import { formatContextWindows, formatPrice } from "../lib/modelCatalog";
 import type { CatalogEntry } from "../types";
 import {
   BenchmarkAlert,
@@ -43,6 +43,7 @@ interface Draft {
   cacheRead: string;
   cacheWrite: string;
   context: string;
+  maxContext: string;
   effectiveFrom: string;
   source: string;
 }
@@ -63,6 +64,7 @@ function emptyDraft(): Draft {
     cacheRead: "",
     cacheWrite: "",
     context: "",
+    maxContext: "",
     effectiveFrom: today(),
     source: "",
   };
@@ -81,6 +83,7 @@ function draftOf(entry: CatalogEntry): Draft {
     cacheRead: text(entry.cacheReadPerMillion),
     cacheWrite: text(entry.cacheWritePerMillion),
     context: text(entry.contextTokens),
+    maxContext: text(entry.maxContextTokens),
     effectiveFrom: new Date(entry.effectiveFrom).toISOString().slice(0, 10),
     source: entry.source,
   };
@@ -113,6 +116,7 @@ export function BenchmarkCatalogDialog({ onClose }: { onClose: () => void }) {
     cacheRead: number(draft.cacheRead),
     cacheWrite: number(draft.cacheWrite),
     context: number(draft.context),
+    maxContext: number(draft.maxContext),
   };
   const effectiveFrom = Date.parse(`${draft.effectiveFrom}T00:00:00Z`);
   const valid =
@@ -149,6 +153,8 @@ export function BenchmarkCatalogDialog({ onClose }: { onClose: () => void }) {
         cacheWritePerMillion: numbers.cacheWrite,
         contextTokens:
           numbers.context == null ? null : Math.round(numbers.context),
+        maxContextTokens:
+          numbers.maxContext == null ? null : Math.round(numbers.maxContext),
         effectiveFrom,
         checkedAt: Date.now(),
         source: draft.source.trim(),
@@ -233,7 +239,7 @@ export function BenchmarkCatalogDialog({ onClose }: { onClose: () => void }) {
                         : `${entry.cacheReadPerMillion ?? "–"} / ${entry.cacheWritePerMillion ?? "–"}`}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {formatContext(entry.contextTokens) ?? "–"}
+                      {formatContextWindows(entry) ?? "–"}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {formatDate(entry.effectiveFrom, { dateStyle: "medium" })}
@@ -305,6 +311,10 @@ export function BenchmarkCatalogDialog({ onClose }: { onClose: () => void }) {
               })}
               {field("context", t("catalog.fields.context"), {
                 type: "number",
+              })}
+              {field("maxContext", t("catalog.fields.maxContext"), {
+                type: "number",
+                hint: t("catalog.fields.maxContextHint"),
               })}
               {field("effectiveFrom", t("catalog.fields.effectiveFrom"), {
                 type: "date",

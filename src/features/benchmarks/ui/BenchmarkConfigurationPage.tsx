@@ -37,7 +37,7 @@ import {
   providerVendor,
   shortId,
 } from "../lib/benchmarkLabels";
-import { formatContext, resolveCatalogEntry } from "../lib/modelCatalog";
+import { formatContextWindows, resolveCatalogEntry } from "../lib/modelCatalog";
 import type {
   BenchmarkVersionSummary,
   LeaderboardReport,
@@ -339,10 +339,7 @@ export function BenchmarkConfigurationPage({
         : t("unknown"),
     ],
     [t("fields.provider"), shownRow.configuration.providerId],
-    [
-      t("configuration.context"),
-      formatContext(fact?.contextTokens) ?? t("unknown"),
-    ],
+    [t("configuration.context"), formatContextWindows(fact) ?? t("unknown")],
     // The leaderboard's own count and name: suite cases with a complete
     // cell, so the page and the board never disagree.
     [

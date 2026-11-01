@@ -547,6 +547,17 @@ workflow takes its most loaded step's admission. A cell alone in its band sets
 that band's record. Cost compares with every solve
 of the case, and a solve that reported no spend at all sets no cost record.
 
+The price and context columns come from the model catalog: dated vendor facts
+resolved at each row's measurement time. The context column shows the window
+the model ran with in its harness and, when the vendor's API offers more, that
+larger window beside it. The Codex CLI serves 272K by default; the benchmark
+policy raises it to the CLI's ceiling of 872K from 2 November 2026, against
+1.05M on the API. The Grok CLI serves 256K against 500K, and Claude Code runs
+its models at their native windows. List prices are the standard-rate tier:
+OpenAI bills a prompt over 272K input tokens at 2x input and 1.5x output for
+the whole request and xAI bills 2x from 200K prompt tokens, which the catalog
+notes in each row's source but boards do not model.
+
 The model chart uses one history recalculated against the current pool, with
 each observation anchored to its original measurement date. Runs without scored
 results add no observation and cannot extend the chart's time range. Original

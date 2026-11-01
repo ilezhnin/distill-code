@@ -868,10 +868,12 @@ mod tests {
         assert_eq!(NativeProvider::Codex.admission_issue(), None);
         let codex = POLICIES.codex.verified.as_ref().unwrap();
         assert_eq!(codex.runtime, POLICIES.codex.runtime);
-        assert_eq!(codex.date, "2026-10-04");
+        // 2026-11-01: the policy raises the served window to the CLI's
+        // ceiling (`model_context_window`).
+        assert_eq!(codex.date, "2026-11-01");
         assert_eq!(
             NativeProvider::Codex.policy_digest().as_deref(),
-            Some("76d8a7cd1626d8194c0d576436d929329fc331e5f5d9619aa24aff018b6d1381")
+            Some("622e0678db3269d0c0b8b0ce429adb2c1a7e388391a302c845abb4842f77397f")
         );
         assert_eq!(codex.adapter, Some(digest(CODEX_ADAPTER)));
         // Grok passed on the pinned grok.exe with the session sign-in read

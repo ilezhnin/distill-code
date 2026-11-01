@@ -2899,6 +2899,7 @@ mod tests {
                 cache_read_per_million: None,
                 cache_write_per_million: None,
                 context_tokens: None,
+                max_context_tokens: None,
                 effective_from: 1,
                 checked_at: 1,
                 source: "https://example.test".into(),

@@ -1044,7 +1044,13 @@ pub struct CatalogEntry {
     pub output_per_million: Option<f64>,
     pub cache_read_per_million: Option<f64>,
     pub cache_write_per_million: Option<f64>,
+    /// The window the model runs with in the harness that measured it: what
+    /// its bridge or CLI serves by default, not the vendor's API maximum.
     pub context_tokens: Option<u64>,
+    /// The model's full window on the vendor's API, when it is larger than
+    /// the one the harness runs; None when they agree or it is unknown.
+    #[serde(default)]
+    pub max_context_tokens: Option<u64>,
     pub effective_from: i64,
     pub checked_at: i64,
     pub source: String,

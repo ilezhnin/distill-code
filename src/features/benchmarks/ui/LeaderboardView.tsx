@@ -34,7 +34,7 @@ import {
   providerVendor,
 } from "../lib/benchmarkLabels";
 import {
-  formatContext,
+  formatContextWindows,
   formatPrice,
   resolveCatalogEntry,
 } from "../lib/modelCatalog";
@@ -283,7 +283,7 @@ export function LeaderboardView({
           {formatPrice(fact) ?? "–"}
         </TableCell>
         <TableCell className="text-right tabular-nums">
-          {formatContext(fact?.contextTokens) ?? "–"}
+          {formatContextWindows(fact) ?? "–"}
         </TableCell>
       </>
     );
@@ -398,7 +398,10 @@ export function LeaderboardView({
               <TableHead className="text-right">
                 {t("leaderboard.price")}
               </TableHead>
-              <TableHead className="text-right">
+              <TableHead
+                className="text-right"
+                title={t("leaderboard.contextHint")}
+              >
                 {t("leaderboard.context")}
               </TableHead>
               <TableHead />
