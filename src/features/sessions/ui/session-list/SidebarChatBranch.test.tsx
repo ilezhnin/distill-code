@@ -184,66 +184,76 @@ describe("chats nested under the chat that started them", () => {
     ).toBeInTheDocument();
   });
 
-  it("puts a project's chats one level in and each chat's agents one level below it", () => {
+  it("hangs a chat's agents from the line under its icon and draws it down to the last child", () => {
     renderProject();
-    // One step per level: the project's chats start where the project's
-    // name does (12 + 24), their agents one step further in. A chat with
-    // agents stays on its siblings' level.
-    expect(nameInsetOf("conductor")).toBe("36px");
-    expect(nameInsetOf("orchestrator")).toBe("60px");
-    expect(nameInsetOf("worker")).toBe("84px");
-    expect(nameInsetOf("reviewer")).toBe("60px");
-    expect(nameInsetOf("plain")).toBe("36px");
-    // The line starts under the parent, passes the children that have
-    // siblings after them, and closes with an elbow on the last one —
+    // A project's chats start where the project's name does (12 + 24). A
+    // chat with agents shows its icon there and its name one icon further
+    // in. A child's elbow sits under its parent's icon and its name starts
+    // where its parent's does; a child with children of its own takes the
+    // next column for its icon.
+    for (const id of ["conductor", "orchestrator", "worker", "reviewer"]) {
+      expect(nameInsetOf(id)).toBe("60px");
+    }
+    expect(rowOf("conductor").style.paddingLeft).toBe("");
+    expect(rowOf("orchestrator").style.paddingLeft).toBe("16px");
+    expect(rowOf("worker").style.paddingLeft).toBe("16px");
+    expect(rowOf("reviewer").style.paddingLeft).toBe("");
+    expect(iconInsetOf("conductor")).toBe("36px");
+    expect(iconInsetOf("orchestrator")).toBe("52px");
+    // The line starts under the parent's icon, passes the children that
+    // have siblings after them, and closes with an elbow on the last one —
     // through a grandchild's row too, so it never breaks.
     expect(guideShapes(rowOf("conductor"))).toEqual(["stub@36px"]);
     expect(guideShapes(rowOf("orchestrator"))).toEqual([
       "pass@36px",
-      "stub@60px",
+      "stub@52px",
     ]);
-    expect(guideShapes(rowOf("worker"))).toEqual(["pass@36px", "last@60px"]);
+    expect(guideShapes(rowOf("worker"))).toEqual(["pass@36px", "last@52px"]);
     expect(guideShapes(rowOf("reviewer"))).toEqual(["last@36px"]);
     expect(guideShapes(rowOf("plain"))).toEqual([]);
   });
 
-  it("lines a conductor and a chat with agents up with the plain chats beside them", () => {
+  it("starts a plain chat where a conductor's or a tree root's icon starts", () => {
     markConductor("lead");
     const lead = chat("lead", "Migration plan");
     renderProject(undefined, false, [lead, conductor, plain]);
-    // Without chat icons no row has one, a conductor's or a parent's
-    // included, so every name in the project starts on one line.
-    expect(iconInsetOf("lead")).toBeNull();
-    expect(iconInsetOf("conductor")).toBeNull();
-    expect(nameInsetOf("lead")).toBe("36px");
-    expect(nameInsetOf("conductor")).toBe("36px");
-    expect(nameInsetOf("plain")).toBe("36px");
-    cleanup();
-
-    renderProject(undefined, true, [lead, conductor, plain]);
-    // With them every row has one, one level in from the project's icon:
-    // under the project's name, never beside the project's own icon.
+    // Without chat icons a conductor and a chat with agents still show
+    // theirs, where the project's name starts, never level with the
+    // project's own icon. A plain chat starts its name on that same line,
+    // so it does not read as one of the tree's children.
     expect(
       rowOf("lead").querySelector("[data-testid=sidebar-conductor-icon]"),
     ).not.toBeNull();
+    expect(iconInsetOf("lead")).toBe("36px");
+    expect(iconInsetOf("conductor")).toBe("36px");
+    expect(nameInsetOf("lead")).toBe("60px");
+    expect(nameInsetOf("conductor")).toBe("60px");
+    expect(iconInsetOf("plain")).toBeNull();
+    expect(nameInsetOf("plain")).toBe("36px");
+    for (const id of ["lead", "conductor", "plain"]) {
+      expect(rowOf(id).style.paddingLeft).toBe("");
+    }
+    // A child without children shows no icon: its elbow marks it.
+    expect(iconInsetOf("reviewer")).toBeNull();
+    cleanup();
+
+    renderProject(undefined, true, [lead, conductor, plain]);
+    // With chat icons the plain chat shows one too, on the same line.
     for (const id of ["lead", "conductor", "plain"]) {
       expect(iconInsetOf(id)).toBe("36px");
       expect(nameInsetOf(id)).toBe("60px");
     }
-    expect(iconInsetOf("orchestrator")).toBe("60px");
-    expect(nameInsetOf("orchestrator")).toBe("84px");
-    expect(iconInsetOf("reviewer")).toBe("60px");
-    expect(nameInsetOf("reviewer")).toBe("84px");
+    expect(iconInsetOf("reviewer")).toBeNull();
   });
 
   it("puts the fold chevron after a parent's name and keeps its icon put", async () => {
     const user = userEvent.setup();
-    renderProject(undefined, true);
+    renderProject();
     // The icon is the row's identity and stays put, hover or not; the
     // chevron sits inside the row button after the title, and a leaf chat
-    // has none.
+    // has neither.
     expect(leadingIconOf("conductor")).not.toBeNull();
-    expect(leadingIconOf("plain")).not.toBeNull();
+    expect(leadingIconOf("plain")).toBeNull();
     const button = rowButtonOf("conductor", "Upstream review");
     expect(button).toHaveAttribute("aria-expanded", "true");
     const toggle = toggleOf("conductor");
@@ -317,7 +327,7 @@ describe("chats nested under the chat that started them", () => {
     const onSelect = vi.fn();
     render(
       <SidebarRecentsSection
-        sessions={[conductor]}
+        sessions={[conductor, plain]}
         collapsed={false}
         labelTransition=""
         labelVisible
@@ -335,19 +345,25 @@ describe("chats nested under the chat that started them", () => {
       "orchestrator",
       "worker",
       "reviewer",
+      "plain",
     ]);
-    // Recents is the top level: its chats start at the panel's inset and
-    // the same grid takes their agents one step in per level.
-    expect(nameInsetOf("conductor")).toBe("12px");
-    expect(nameInsetOf("orchestrator")).toBe("36px");
-    expect(nameInsetOf("worker")).toBe("60px");
+    // Recents starts at the panel's inset, under the nav icons, and draws
+    // the same tree columns as a project's chats from there.
+    expect(iconInsetOf("conductor")).toBe("12px");
+    expect(nameInsetOf("conductor")).toBe("36px");
     expect(nameInsetOf("reviewer")).toBe("36px");
+    expect(nameInsetOf("plain")).toBe("12px");
+    expect(iconInsetOf("orchestrator")).toBe("28px");
+    expect(rowOf("conductor").style.paddingLeft).toBe("");
+    expect(rowOf("orchestrator").style.paddingLeft).toBe("16px");
+    expect(rowOf("worker").style.paddingLeft).toBe("16px");
+    expect(rowOf("reviewer").style.paddingLeft).toBe("");
     expect(guideShapes(rowOf("conductor"))).toEqual(["stub@12px"]);
     expect(guideShapes(rowOf("orchestrator"))).toEqual([
       "pass@12px",
-      "stub@36px",
+      "stub@28px",
     ]);
-    expect(guideShapes(rowOf("worker"))).toEqual(["pass@12px", "last@36px"]);
+    expect(guideShapes(rowOf("worker"))).toEqual(["pass@12px", "last@28px"]);
     expect(guideShapes(rowOf("reviewer"))).toEqual(["last@12px"]);
     await user.click(
       screen.getByRole("button", { name: "Researcher · berd since fork" }),

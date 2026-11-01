@@ -19,7 +19,7 @@ import {
   SIDEBAR_NAV_ROW_SPACING_CLASS,
   SIDEBAR_NAV_TEXT_CLASS,
   SIDEBAR_ROW_TEXT_DEFAULT_CLASS,
-  sidebarTreeNameInsetPx,
+  sidebarChatRowInsetPx,
 } from "@/shared/ui/sidebar-tokens";
 import { SidebarChatBranch } from "./SidebarChatBranch";
 import { SidebarSectionHeaderAction } from "./SidebarSectionHeader";
@@ -300,11 +300,9 @@ export function SidebarProjectSection({
     showExpandedChats &&
     projectChats.length > MAX_EXPANDED_PROJECT_CHATS &&
     onNavigate != null;
-  // The project's chats are one level in, and the quiet rows among them
-  // ("No chats", "View more", "Show less") start where their names do.
-  const chatNameInset = {
-    paddingLeft: sidebarTreeNameInsetPx(1, showChatIcons),
-  };
+  // The quiet rows among the project's chats ("No chats", "View more",
+  // "Show less") start on the line the chats start on.
+  const chatRowInset = { paddingLeft: sidebarChatRowInsetPx(true) };
 
   // One action set, two entry points: the row's overflow menu and right-click.
   const projectMenuActions: SidebarItemMenuActions = {
@@ -452,7 +450,7 @@ export function SidebarProjectSection({
             {emptyState ? (
               <div
                 className="h-7 py-1 pr-3 text-sm font-normal leading-normal text-muted-foreground"
-                style={chatNameInset}
+                style={chatRowInset}
               >
                 {t("empty.noChats")}
               </div>
@@ -512,7 +510,7 @@ export function SidebarProjectSection({
                   />
                 ))}
                 {projectChats.length > MAX_VISIBLE_PROJECT_CHATS ? (
-                  <div className="flex items-center pr-3" style={chatNameInset}>
+                  <div className="flex items-center pr-3" style={chatRowInset}>
                     <DisclosureButton
                       type="button"
                       surface="sidebar"
@@ -545,7 +543,7 @@ export function SidebarProjectSection({
                   "w-full pr-3",
                   "animate-in fade-in-0 duration-300",
                 )}
-                style={chatNameInset}
+                style={chatRowInset}
               >
                 {t("viewMoreChats")}
               </DisclosureButton>

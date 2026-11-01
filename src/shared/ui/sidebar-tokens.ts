@@ -88,38 +88,34 @@ export const SIDEBAR_SECTION_HEADER_PADDING_CLASS =
 export const SIDEBAR_SECTION_HEADER_ROW_CLASS = `${SIDEBAR_SECTION_HEADER_PADDING_CLASS} pt-3.5 pb-0`;
 
 /**
- * The sidebar's rows sit on one grid. A row one level in starts where its
- * parent's name starts, so one step is a leading icon (16px) plus its gap to
- * the name (8px): with icons, a child's icon stands under its parent's name;
- * without, a child's name starts one step in from its parent's. A project's
- * chats are one level in from the project, the chats an agent started one
- * level in from it, and a row's kind never moves it off its level.
+ * Width of one column of a chat tree: the leading slot's 16px. A chat's
+ * children hang from the line under its icon, so a parent's icon and the
+ * elbows of its children share one column and their names start on one
+ * line.
  */
-export const SIDEBAR_TREE_STEP_PX = 24;
+export const SIDEBAR_CHAT_TREE_INDENT_PX = 16;
 
-/** Where a top-level row starts: the rows' shared `px-3`. */
-export const SIDEBAR_ROW_INSET_PX = 12;
-
-/** Levels past this share the deepest inset; the tree itself goes deeper. */
-export const SIDEBAR_TREE_MAX_LEVEL = 4;
-
-/** Where a row at `level` starts: its icon, or its name when it has none. */
-export function sidebarTreeInsetPx(level: number): number {
-  return (
-    SIDEBAR_ROW_INSET_PX +
-    Math.min(level, SIDEBAR_TREE_MAX_LEVEL) * SIDEBAR_TREE_STEP_PX
-  );
-}
-
-/** Where the name of a row at `level` starts. */
-export function sidebarTreeNameInsetPx(level: number, hasIcon: boolean) {
-  return sidebarTreeInsetPx(level) + (hasIcon ? SIDEBAR_TREE_STEP_PX : 0);
-}
+/** Columns past this share the deepest inset; the tree itself goes deeper. */
+export const SIDEBAR_CHAT_TREE_MAX_INDENT_DEPTH = 4;
 
 /**
- * Left padding of a row one level in that has no icon, such as the sections
- * under a main nav item: `sidebarTreeInsetPx(1)`, where its parent's name
- * starts.
+ * Where every chat row of a list starts: its icon, or its name when it shows
+ * none. A top-level list starts at the rows' shared inset (`px-3`), under
+ * the nav icons; a project's chats start where the project's name does, so
+ * everything in a project begins on one line, inside it.
+ */
+export function sidebarChatRowInsetPx(nested: boolean): number {
+  return 12 + (nested ? 24 : 0);
+}
+
+/** How far a row's name sits after its icon: the 16px icon and 8px gap. */
+export const SIDEBAR_CHAT_ICON_NAME_OFFSET_PX = 24;
+
+/**
+ * Left padding of a row nested under a parent row that has no icon of its
+ * own, such as the sections under a main nav item: it starts where its
+ * parent's name does, like a project's chats (`sidebarChatRowInsetPx(true)`),
+ * so every nested list in the sidebar reads the same.
  */
 export const SIDEBAR_NESTED_ROW_PADDING_CLASS = "pl-9";
 

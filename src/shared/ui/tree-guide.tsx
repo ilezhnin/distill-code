@@ -10,16 +10,13 @@ export type TreeGuideShape = "pass" | "last" | "stub";
  *
  * - `pass`: the line runs straight through — an ancestor's line beside a
  *   row, or a child that is not its parent's last;
- * - `last`: the line ends here in an elbow — the parent's last child;
- * - `stub`: the line starts under a parent's start and runs to the row's
- *   bottom edge, so the children's line hangs from the parent.
+ * - `last`: the line turns in a rounded elbow toward the parent's last
+ *   child;
+ * - `stub`: the line starts under a parent's icon and runs to the row's
+ *   bottom edge, so the children's line hangs from the icon.
  *
- * A column is one tree step wide. The caller sets `left` to where the
- * column's parent row starts; the line runs 8px in, under the middle of
- * that row's icon or the first letters of its name, and the elbow stops
- * just short of the child one step in.
- *
- * Absolutely positioned inside a `relative` row.
+ * Absolutely positioned inside a `relative` row; the caller sets `left` to
+ * the column of the icon the line hangs from.
  */
 export function TreeGuide({
   shape,
@@ -36,21 +33,23 @@ export function TreeGuide({
       data-slot="tree-guide"
       data-shape={shape}
       className={cn(
-        "pointer-events-none absolute inset-y-0 w-6 text-muted-foreground/45",
+        "pointer-events-none absolute inset-y-0 w-4 text-muted-foreground/45",
         className,
       )}
       style={style}
     >
-      <span
-        className={cn(
-          "absolute left-2 w-px -translate-x-1/2 bg-current",
-          shape === "stub" ? "top-[calc(50%+10px)]" : "top-0",
-          shape === "last" ? "bottom-1/2" : "bottom-0",
-        )}
-      />
       {shape === "last" ? (
-        <span className="absolute left-2 right-1 top-1/2 h-px -translate-y-1/2 bg-current" />
-      ) : null}
+        <span className="absolute left-[calc(50%-0.5px)] right-0 top-0 h-[calc(50%+0.5px)] rounded-bl-[6px] border-b border-l border-current" />
+      ) : (
+        // Drawn as a border like the elbow, so both snap to the same device
+        // pixels and the line never steps where they meet.
+        <span
+          className={cn(
+            "absolute bottom-0 left-[calc(50%-0.5px)] border-l border-current",
+            shape === "stub" ? "top-[calc(50%+10px)]" : "top-0",
+          )}
+        />
+      )}
     </span>
   );
 }
