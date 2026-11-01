@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   IconChevronDown,
@@ -11,6 +11,7 @@ import { Button } from "@/shared/ui/button";
 
 import type { AgentTreeNode } from "../agentTree";
 import { isWorkingStatus } from "../brigadeActivity";
+import type { SessionNode } from "../types";
 import { BrigadeStatusGlyph } from "./BrigadeChip";
 
 /**
@@ -66,6 +67,12 @@ export interface AgentTreeViewProps {
   onStop?: (sessionId: string) => void;
   /** Left inset of a depth-0 row, in px. Depth adds 12px per level. */
   baseIndentPx?: number;
+  /**
+   * Words after an agent's name: what it is doing, or why it stopped. A
+   * surface with room for them (the line over a conductor's composer) passes
+   * this; the sidebar, which has none, leaves it out.
+   */
+  renderDetail?: (node: SessionNode) => ReactNode;
   className?: string;
 }
 
@@ -75,6 +82,7 @@ export function AgentTreeView({
   onOpen,
   onStop,
   baseIndentPx = 0,
+  renderDetail,
   className,
 }: AgentTreeViewProps) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
@@ -103,6 +111,7 @@ export function AgentTreeView({
           onOpen={onOpen}
           onStop={onStop}
           baseIndentPx={baseIndentPx}
+          renderDetail={renderDetail}
         />
       ))}
     </div>
@@ -117,6 +126,7 @@ function AgentTreeBranch({
   onOpen,
   onStop,
   baseIndentPx,
+  renderDetail,
 }: {
   tree: AgentTreeNode;
   collapsed: ReadonlySet<string>;
@@ -125,6 +135,7 @@ function AgentTreeBranch({
   onOpen: (sessionId: string) => void;
   onStop?: (sessionId: string) => void;
   baseIndentPx: number;
+  renderDetail?: (node: SessionNode) => ReactNode;
 }) {
   const { t } = useTranslation("chat");
   const { node, children, workingInSubtree } = tree;
@@ -187,7 +198,14 @@ function AgentTreeBranch({
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm py-1 pl-0.5 pr-1 text-left text-xs"
         >
           <AgentAvatar name={node.displayName} />
-          <span className="min-w-0 flex-1 truncate">{node.displayName}</span>
+          <span className={cn("min-w-0 truncate", !renderDetail && "flex-1")}>
+            {node.displayName}
+          </span>
+          {renderDetail ? (
+            <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+              {renderDetail(node)}
+            </span>
+          ) : null}
           {hiddenWorking > 0 ? (
             <span
               data-testid="agent-tree-hidden-working"
@@ -225,6 +243,7 @@ function AgentTreeBranch({
               onOpen={onOpen}
               onStop={onStop}
               baseIndentPx={baseIndentPx}
+              renderDetail={renderDetail}
             />
           ))
         : null}

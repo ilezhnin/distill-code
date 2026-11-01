@@ -22,12 +22,18 @@ import {
 } from "@/features/chat/ui/ToolChainCards";
 import { ComposerChip } from "@/features/chat/ui/ComposerChip";
 import { ContextRing } from "@/features/chat/ui/ContextRing";
+import { ConductorTranscriptProvider } from "@/features/conductor/ConductorTranscriptContext";
+import type { SessionNode } from "@/features/conductor/types";
+import { BrigadeChip } from "@/features/conductor/ui/BrigadeChip";
+import { waveReportRenderer } from "@/features/conductor/ui/WaveReportRecord";
+import { WorkerBriefHeader } from "@/features/conductor/ui/WorkerBriefHeader";
 import type {
   ChatAttachmentDraft,
   Message,
   ToolCallStatus,
 } from "@/shared/types/messages";
 import type { Persona } from "@/shared/types/agents";
+import { MessageCodeRenderersProvider } from "@/shared/ui/ai-elements/message";
 import {
   Reasoning,
   ReasoningContent,
@@ -254,6 +260,121 @@ const systemCompactionMessage = message("system-compaction", "system", [
     text: "Conversation compacted",
   },
 ]);
+
+const sampleWorker: SessionNode = {
+  sessionId: "worker-scout",
+  projectId: "project",
+  role: "worker",
+  managedBy: "wave",
+  parentSessionId: "conductor-producer",
+  rootConductorId: "conductor-producer",
+  runId: "run-scout",
+  harnessId: "claude-acp",
+  modelId: "claude-sonnet-5-5",
+  effort: "high",
+  roleId: "scout",
+  displayName: "Scout · waveEngine",
+  status: "running",
+  stepIndex: 0,
+};
+
+const sampleConductor: SessionNode = {
+  ...sampleWorker,
+  sessionId: "conductor-producer",
+  role: "conductor",
+  parentSessionId: null,
+  roleId: undefined,
+  displayName: "Producer",
+};
+
+const workerBriefMessage = message(
+  "worker-brief",
+  "user",
+  [
+    {
+      type: "text",
+      text: "Read src/features/conductor/waveEngine.ts and report what one tick does: which transitions it observes, what it writes, and where a step that never reports would stall. Do not edit anything.",
+    },
+  ],
+  { origin: "distillctl_cross_session" },
+);
+
+const workerReportMessage = message(
+  "worker-report",
+  "assistant",
+  [
+    {
+      type: "text",
+      text: `The tick reads every wave's phase and advances the ones whose children all reported.
+
+\`\`\`distill-report
+{
+  "status": "completed",
+  "summary": "One tick walks the live waves, spawns the next step whose predecessors reported, and builds the digest once the last step is terminal. A step that never reports stalls its wave at digestPending.",
+  "decisions": ["Read the engine only; no fixtures were run"],
+  "artifacts": [{ "label": "waveEngine.ts", "path": "src/features/conductor/waveEngine.ts" }],
+  "risks": ["The stall has no timeout of its own"],
+  "needsOperator": false,
+  "nextSuggestedTask": null
+}
+\`\`\``,
+    },
+  ],
+  { providerId: "claude-acp" },
+);
+
+const workerBlockedReportMessage = message(
+  "worker-blocked-report",
+  "assistant",
+  [
+    {
+      type: "text",
+      text: `\`\`\`distill-report
+{
+  "status": "blocked",
+  "summary": "",
+  "reason": "The brief names tests/fixtures/wave.json, which is not in the checkout.",
+  "decisions": [],
+  "artifacts": [],
+  "risks": [],
+  "needsOperator": true,
+  "nextSuggestedTask": null
+}
+\`\`\``,
+    },
+  ],
+  { providerId: "claude-acp" },
+);
+
+function WorkerBriefPreview() {
+  return (
+    <ConductorTranscriptProvider
+      value={{
+        enabled: false,
+        children: [],
+        reportsByRunId: {},
+        brigadeNodesByMessageId: new Map(),
+        wavePlanStepsByMessageId: new Map(),
+        workerBrief: {
+          messageId: workerBriefMessage.id,
+          node: sampleWorker,
+          parent: sampleConductor,
+          onOpenParent: () => {},
+        },
+      }}
+    >
+      <MessageBubble message={workerBriefMessage} animateEntry={false} />
+    </ConductorTranscriptProvider>
+  );
+}
+
+function WorkerReportPreview({ message: report }: { message: Message }) {
+  return (
+    <MessageCodeRenderersProvider value={[waveReportRenderer]}>
+      <MessageBubble message={report} animateEntry={false} />
+    </MessageCodeRenderersProvider>
+  );
+}
 
 function ToolStatusPreview({ status }: { status: ToolCallStatus }) {
   const isRunning = status === "in_progress";
@@ -629,6 +750,96 @@ export function ConversationAnatomyPage() {
               copied
               onCopy={() => {}}
               onEditMessage={() => {}}
+            />
+          </StatePreview>
+        </PreviewCard>
+      </ComponentGrid>
+
+      <ComponentGrid>
+        <PreviewCard
+          title="Worker chat · brief and report"
+          when="in the chat of an agent another chat started: the brief first, the report last."
+        >
+          <StatePreview label="Header over the brief">
+            <InlinePreview>
+              <WorkerBriefPreview />
+            </InlinePreview>
+          </StatePreview>
+          <StatePreview label="Header alone">
+            <WorkerBriefHeader
+              messageId="worker-brief"
+              node={sampleWorker}
+              parent={sampleConductor}
+              onOpenParent={() => {}}
+            />
+          </StatePreview>
+          <StatePreview label="Report, completed">
+            <InlinePreview>
+              <WorkerReportPreview message={workerReportMessage} />
+            </InlinePreview>
+          </StatePreview>
+          <StatePreview label="Report, blocked">
+            <InlinePreview>
+              <WorkerReportPreview message={workerBlockedReportMessage} />
+            </InlinePreview>
+          </StatePreview>
+        </PreviewCard>
+
+        <PreviewCard
+          title="BrigadeChip"
+          when="under a conductor's plan, one per worker, and in the line over its composer."
+        >
+          <StatePreview label="Working, with what it is doing">
+            <BrigadeChip
+              id="chip-running"
+              name="Scout · waveEngine"
+              status="running"
+              stepIndex={0}
+              accessLabel="sees nothing"
+              summaryLabel="12.3k · 7 tools · Reading waveEngine.ts"
+              onOpen={() => {}}
+              onStop={() => {}}
+            />
+          </StatePreview>
+          <StatePreview label="Done">
+            <BrigadeChip
+              id="chip-done"
+              name="Builder · digest"
+              status="completed"
+              stepIndex={1}
+              accessLabel="sees earlier reports"
+              summaryLabel="$0.41 · 12 tools · 2m 10s"
+              onOpen={() => {}}
+            />
+          </StatePreview>
+          <StatePreview label="Failed, with the host's reason">
+            <BrigadeChip
+              id="chip-failed"
+              name="Verifier · tests"
+              status="failed"
+              stepIndex={2}
+              summaryLabel="3.2k · 2 tools · 41s"
+              reasonLabel="Agent process exited unexpectedly (exit code 1)."
+              onOpen={() => {}}
+            />
+          </StatePreview>
+          <StatePreview label="Blocked, with the worker's reason">
+            <BrigadeChip
+              id="chip-blocked"
+              name="Scout · fixtures"
+              status="blocked"
+              stepIndex={3}
+              reasonLabel="The brief names a file that is not in the checkout."
+              onOpen={() => {}}
+            />
+          </StatePreview>
+          <StatePreview label="Not started yet">
+            <BrigadeChip
+              id="chip-pending"
+              name="Builder"
+              status="starting"
+              stepIndex={4}
+              pending
             />
           </StatePreview>
         </PreviewCard>

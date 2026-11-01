@@ -43,7 +43,12 @@ export interface BrigadeChipViewModel {
   id: string;
   /** Chip label. */
   name: string;
-  status: RunStatus;
+  /**
+   * The run's status — or `blocked`, which a run never is but a finished
+   * step's report can claim, and which the chip then wears in the report's
+   * colour rather than the run's green.
+   */
+  status: BrigadeGlyphStatus;
   /** Hover tooltip; falls back to the localized status label. */
   title?: string;
   /**
@@ -66,14 +71,23 @@ export interface BrigadeChipViewModel {
    */
   modelLabel?: string;
   /**
-   * What this step has spent so far, already formatted ("12.3k", "$0.41").
+   * What the step is doing and has spent, as one line: `$0.41 · 7 tools ·
+   * Reading waveEngine.ts` while it works, `12.3k · 7 tools · 2m 10s` once
+   * it is done.
    *
    * On the chip rather than only in the row's total because the total answers
-   * "is this wave expensive" and this answers "which step is". A wave that
-   * runs away does so through one step, and the operator should not have to
-   * open four transcripts to find out which.
+   * "is this wave expensive" and this answers "which step is", and the step
+   * label answers "what is it doing right now" — the two questions an operator
+   * asks of a row of working agents without wanting to open four transcripts.
    */
-  spendLabel?: string;
+  summaryLabel?: string;
+  /**
+   * Why a run that is over ended the way it did, in one line: the host's
+   * reason for a failure, the worker's reason for a block. Drawn under the
+   * name in the status's own colour, and repeated in the tooltip, so a chip
+   * never says only "failed" when the chat behind it knows more.
+   */
+  reasonLabel?: string;
   /** Omitted → the chip is not clickable. */
   onOpen?: (id: string) => void;
   /** Omitted → no stop button, whatever the status. */
@@ -125,7 +139,8 @@ export function BrigadeChip({
   stepIndex,
   accessLabel,
   modelLabel,
-  spendLabel,
+  summaryLabel,
+  reasonLabel,
   onOpen,
   onStop,
   pending,
@@ -135,7 +150,14 @@ export function BrigadeChip({
   const statusLabel = pending
     ? t("conductor.status.pending")
     : t(`conductor.status.${status}`);
-  const showStop = Boolean(onStop) && !pending && isWorkingStatus(status);
+  const showStop =
+    Boolean(onStop) &&
+    !pending &&
+    status !== "blocked" &&
+    isWorkingStatus(status);
+  const tooltip = [title || statusLabel, reasonLabel]
+    .filter(Boolean)
+    .join("\n");
   // Step number and access mode are diagnostic affordances, not decoration:
   // when a wave returns a wrong answer they are how the operator gets from
   // "this is wrong" to "that step", matching the plan list above the row.
@@ -164,7 +186,7 @@ export function BrigadeChip({
         type="button"
         data-testid="conductor-agent-chip"
         aria-label={label}
-        title={title || statusLabel}
+        title={tooltip}
         onClick={onOpen && !pending ? () => onOpen(id) : undefined}
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full text-xs text-muted-foreground",
@@ -215,13 +237,28 @@ export function BrigadeChip({
             {modelLabel}
           </span>
         ) : null}
-        {spendLabel ? (
+        {summaryLabel ? (
           <span
             aria-hidden="true"
-            data-testid="brigade-chip-spend"
-            className="text-[11px] tabular-nums text-muted-foreground"
+            data-testid="brigade-chip-summary"
+            className="max-w-[40ch] truncate text-[11px] tabular-nums text-muted-foreground"
           >
-            {spendLabel}
+            · {summaryLabel}
+          </span>
+        ) : null}
+        {reasonLabel ? (
+          <span
+            data-testid="brigade-chip-reason"
+            className={cn(
+              "max-w-[40ch] truncate text-[11px]",
+              status === "failed"
+                ? "text-destructive"
+                : status === "blocked"
+                  ? "text-warning"
+                  : "text-muted-foreground",
+            )}
+          >
+            · {reasonLabel}
           </span>
         ) : null}
       </button>

@@ -7,36 +7,34 @@ import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
 import type { ConductorOpenChildIntent } from "../ConductorTranscriptContext";
 import { summarizeBrigadeActivity } from "../brigadeActivity";
+import { formatTokenCount } from "../brigadeChipSummary";
 import { pendingStepName, waveFooterRow } from "../waveFooterChips";
 import { waveStepAccessKey } from "../flockConductorTranscript";
 import type { WaveStep } from "../flockWave";
 import type { SessionNode, StructuredReport } from "../types";
 import { BrigadeChip, type BrigadeChipViewModel } from "./BrigadeChip";
+import { useBrigadeChipSummary } from "./useBrigadeChipSummary";
 
 /**
- * What one step has spent, or nothing at all.
- *
- * Cost wins when the provider prices its tokens, because money is the number
- * the operator is actually deciding about; tokens are the fallback for a
- * provider that reports none, and a step that has reported neither shows
- * nothing rather than a zero it has not earned.
+ * A chip for a real worker: the view model the row built, plus the live words
+ * its own chat supplies — tokens, tool count, the step it is on, and the one
+ * line that says why it stopped. Each chip subscribes to its own worker so a
+ * row of five does not re-render on every token of every worker.
  */
-function spendLabelFor(
-  tokenState:
-    | { accumulatedTotal: number; accumulatedCost?: number | null }
-    | undefined,
-): string | undefined {
-  if (!tokenState) return undefined;
-  if (
-    typeof tokenState.accumulatedCost === "number" &&
-    tokenState.accumulatedCost > 0
-  ) {
-    return `$${tokenState.accumulatedCost.toFixed(2)}`;
-  }
-  if (tokenState.accumulatedTotal > 0) {
-    return formatTokenCount(tokenState.accumulatedTotal);
-  }
-  return undefined;
+function GraphBrigadeChip({
+  node,
+  report,
+  ...chip
+}: BrigadeChipViewModel & { node: SessionNode; report?: StructuredReport }) {
+  const live = useBrigadeChipSummary(node, report);
+  return (
+    <BrigadeChip
+      {...chip}
+      status={live.status}
+      summaryLabel={live.summaryLabel}
+      reasonLabel={live.reasonLabel}
+    />
+  );
 }
 
 /**
@@ -60,14 +58,6 @@ function waveStepChipModelLabel(
     step.fast ? fastLabel : undefined,
   ].filter((part): part is string => Boolean(part));
   return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
-function formatTokenCount(value: number): string {
-  if (value >= 1000) {
-    const thousands = value / 1000;
-    return `${thousands >= 10 ? thousands.toFixed(0) : thousands.toFixed(1).replace(/\.0$/, "")}k`;
-  }
-  return String(Math.round(value));
 }
 
 /**
@@ -184,18 +174,19 @@ export function ConductorAgentFooter({
   // — a four-step wave whose first step is slow to start is four chips, not
   // one that the others appear beside as they spawn.
   const groups = useMemo<ChipGroup[]>(() => {
-    const chipForNode = (node: SessionNode): BrigadeChipViewModel => {
+    const chipForNode = (node: SessionNode): FooterChip => {
       const report = node.runId ? reportsByRunId[node.runId] : undefined;
       const step =
         typeof node.stepIndex === "number"
           ? planSteps?.[node.stepIndex]
           : undefined;
       return {
+        node,
+        report,
         id: node.sessionId,
         name: node.displayName,
         status: node.status,
         title: report?.summary || node.task || undefined,
-        spendLabel: spendLabelFor(sessionStateById[node.sessionId]?.tokenState),
         stepIndex: node.stepIndex,
         accessLabel: step ? t(waveStepAccessKey(step)) : undefined,
         // D5: a step the plan pinned to a model wears it on the chip, with the
@@ -211,7 +202,7 @@ export function ConductorAgentFooter({
     const rowFor = (
       forNodes: readonly SessionNode[],
       steps: readonly WaveStep[] | undefined,
-    ): BrigadeChipViewModel[] => {
+    ): FooterChip[] => {
       const { slots, unplanned } = waveFooterRow(steps ?? [], forNodes);
       return [
         ...slots.map((slot) =>
@@ -252,15 +243,7 @@ export function ConductorAgentFooter({
       revisionIndex: index,
       chips: rowFor(group.nodes, index === 0 ? planSteps : undefined),
     }));
-  }, [
-    nodes,
-    onStop,
-    openInTab,
-    planSteps,
-    reportsByRunId,
-    sessionStateById,
-    t,
-  ]);
+  }, [nodes, onStop, openInTab, planSteps, reportsByRunId, t]);
 
   if (groups.every((group) => group.chips.length === 0)) {
     return null;
@@ -302,9 +285,18 @@ export function ConductorAgentFooter({
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            {group.chips.map((chip) => (
-              <BrigadeChip key={chip.id} {...chip} />
-            ))}
+            {group.chips.map(({ node, report, ...chip }) =>
+              node ? (
+                <GraphBrigadeChip
+                  key={chip.id}
+                  {...chip}
+                  node={node}
+                  report={report}
+                />
+              ) : (
+                <BrigadeChip key={chip.id} {...chip} />
+              ),
+            )}
           </div>
         </div>
       ))}
@@ -312,11 +304,18 @@ export function ConductorAgentFooter({
   );
 }
 
+/** A chip in the row, with the worker behind it when one exists. */
+interface FooterChip extends BrigadeChipViewModel {
+  /** Absent for a step the plan promised that nothing has spawned yet. */
+  node?: SessionNode;
+  report?: StructuredReport;
+}
+
 interface ChipGroup {
   waveId?: string;
   /** Set only when this message hosts more than one wave. */
   revisionIndex?: number;
-  chips: BrigadeChipViewModel[];
+  chips: FooterChip[];
 }
 
 /**

@@ -686,6 +686,10 @@
       "startedBy": "Started by {{name}}",
       "startedByAnotherChat": "Started by another chat"
     },
+    "chip": {
+      "tools_one": "{{count}} tool",
+      "tools_other": "{{count}} tools"
+    },
     "report": {
       "title": "Report · {{status}}",
       "writing": "Writing the report…",

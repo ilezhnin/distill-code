@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
@@ -9,6 +9,7 @@ import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 
 import { buildAgentForest } from "../agentTree";
 import { brigadeWaitIndicator } from "../brigadeActivity";
+import { useConductorGraphStore } from "../conductorGraphStore";
 import { useConductorTranscript } from "../ConductorTranscriptContext";
 import type { SessionNode } from "../types";
 import {
@@ -22,6 +23,31 @@ import { isWaveLive } from "../waveVerdict";
 import type { WavePhase } from "../waveEngine";
 import { AgentTreeView } from "./AgentTreeView";
 import { stopOrchestratorSession } from "../orchestratorControls";
+import { useBrigadeChipSummary } from "./useBrigadeChipSummary";
+
+/**
+ * The words after an agent's name in the tree: the same live summary its
+ * chip under the plan carries, so the two surfaces never disagree about what
+ * a worker is doing or why it stopped.
+ */
+function AgentTreeDetail({ node }: { node: SessionNode }) {
+  const report = useConductorGraphStore((state) =>
+    node.runId ? state.reportsByRunId[node.runId] : undefined,
+  );
+  const live = useBrigadeChipSummary(node, report);
+  const text = live.reasonLabel ?? live.summaryLabel;
+  if (!text) return null;
+  return (
+    <span
+      data-testid="agent-tree-detail"
+      className={cn(
+        live.reasonLabel && live.status === "failed" && "text-destructive",
+      )}
+    >
+      · {text}
+    </span>
+  );
+}
 
 /**
  * Persistent "this chat is waiting on external work" line above the composer,
@@ -79,6 +105,10 @@ export function BrigadeWaitIndicator({
   });
   const { onOpenChild } = useConductorTranscript();
   const [treeOpen, setTreeOpen] = useState(true);
+  const renderDetail = useCallback(
+    (node: SessionNode) => <AgentTreeDetail node={node} />,
+    [],
+  );
   // The brigade as a tree rather than a row of names. `nodes` is this
   // session's whole brigade, flat — including the workers an orchestrator
   // step started — so nesting it by parent is the only way the line can say
@@ -186,6 +216,7 @@ export function BrigadeWaitIndicator({
           onStop={(childSessionId) => {
             void stopOrchestratorSession(childSessionId);
           }}
+          renderDetail={renderDetail}
         />
       ) : null}
     </div>
