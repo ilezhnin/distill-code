@@ -411,7 +411,8 @@
     "voiceSpeechFailedLabel": "Failed",
     "monitorLabel": "Background task update",
     "steerUnconfirmedLabel": "Delivery not confirmed. Check before resending.",
-    "steerFailedLabel": "Could not deliver to the running agent."
+    "steerFailedLabel": "Could not deliver to the running agent.",
+    "partialAnswer": "The agent stopped before it finished. This is what it had said."
   },
   "persona": {
     "chooseAssistant": "Choose assistant",
@@ -679,6 +680,24 @@
       "body": "{{documents}} could not be read from the Flock folder, even after retrying. Waves are not started at all while that is true — a plan in this chat will simply be ignored — because running on an empty copy would re-run old plans and then overwrite the only record of them.",
       "retry": "Something else was probably holding the file when the app started, such as an antivirus scan or a sync client. Settings → Stats has a Try again button that re-reads it without restarting.",
       "reason": "The read failed with: {{reason}}"
+    },
+    "brief": {
+      "title": "Brief",
+      "startedBy": "Started by {{name}}",
+      "startedByAnotherChat": "Started by another chat"
+    },
+    "report": {
+      "title": "Report · {{status}}",
+      "writing": "Writing the report…",
+      "unreadable": "Report could not be read",
+      "noSummary": "The report has no summary.",
+      "decisionCount_one": "{{count}} decision",
+      "decisionCount_other": "{{count}} decisions",
+      "artifactCount_one": "{{count}} file",
+      "artifactCount_other": "{{count}} files",
+      "riskCount_one": "{{count}} risk",
+      "riskCount_other": "{{count}} risks",
+      "nextCount": "a next step"
     }
   },
   "harnessBrigade": {

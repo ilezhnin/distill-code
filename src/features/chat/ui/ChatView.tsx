@@ -116,6 +116,7 @@ import {
   NO_WAVE_PLAN_STEPS,
 } from "@/features/conductor/flockConductorTranscript";
 import type { WaveStep } from "@/features/conductor/flockWave";
+import type { WorkerBrief } from "@/features/conductor/ConductorTranscriptContext";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
@@ -319,6 +320,14 @@ export function ChatView({
   );
   const conductorReportsByRunId = useConductorGraphStore(
     (state) => state.reportsByRunId,
+  );
+  // The chat that started this one, when this chat is an agent of another.
+  // Read for the way back (the banner over the transcript) and for the header
+  // over the brief, which names it.
+  const parentConductor = useConductorGraphStore((state) =>
+    conductorNode?.parentSessionId
+      ? state.nodesById[conductorNode.parentSessionId]
+      : undefined,
   );
   const isConductorChat = conductorNode?.role === "conductor";
   // Any session that has agents under it shows them, not only the two roles
@@ -812,6 +821,31 @@ export function ChatView({
     wavePlanStepsRef.current = next;
     return next;
   }, [controller.messages, isConductorChat]);
+  // The brief is the first thing this chat was told: an agent another chat
+  // started has it as its first user message. Only the id is derived here, so
+  // a transcript that streams does not make the context value new per token.
+  const briefMessageId = useMemo(
+    () =>
+      conductorNode?.parentSessionId
+        ? controller.messages.find((message) => message.role === "user")?.id
+        : undefined,
+    [conductorNode?.parentSessionId, controller.messages],
+  );
+  const handleOpenParent = useCallback(() => {
+    if (parentConductor) onSelectSession?.(parentConductor.sessionId);
+  }, [onSelectSession, parentConductor]);
+  const workerBrief = useMemo<WorkerBrief | undefined>(
+    () =>
+      conductorNode && briefMessageId
+        ? {
+            messageId: briefMessageId,
+            node: conductorNode,
+            parent: parentConductor,
+            onOpenParent: parentConductor ? handleOpenParent : undefined,
+          }
+        : undefined,
+    [briefMessageId, conductorNode, handleOpenParent, parentConductor],
+  );
   const conductorTranscriptValue = useMemo(
     () => ({
       enabled: showsNestedAgentFooter,
@@ -822,6 +856,7 @@ export function ChatView({
       wavePlanStepsByMessageId,
       onOpenChild: handleOpenChild,
       onStopChild: handleStopChild,
+      workerBrief,
     }),
     [
       brigadeNodesByMessageId,
@@ -832,6 +867,7 @@ export function ChatView({
       sessionId,
       showsNestedAgentFooter,
       wavePlanStepsByMessageId,
+      workerBrief,
     ],
   );
   const suppressEmptyConversationPlaceholder =
@@ -1073,11 +1109,6 @@ export function ChatView({
     workspaceSetup?.desired ?? [],
   );
 
-  const parentConductor = useConductorGraphStore((state) =>
-    conductorNode?.parentSessionId
-      ? state.nodesById[conductorNode.parentSessionId]
-      : undefined,
-  );
   const composerFooter = effectiveSession?.executionOwner ? (
     <div
       className="pointer-events-auto p-4 text-sm text-muted-foreground"

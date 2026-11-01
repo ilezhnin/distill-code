@@ -216,3 +216,107 @@ describe("buildTranscriptItems caches", () => {
     expect(linkageOf(project([...messages], null, "other-session"))).toBe(kept);
   });
 });
+
+describe("a turn that ended in tool calls", () => {
+  const created = Date.UTC(2026, 5, 4, 11);
+  const lastWords: MessageContent[] = [
+    { type: "thinking", text: "Finding the engine." },
+    toolCall("read-1", "read_file"),
+    {
+      type: "toolResponse",
+      id: "read-1",
+      name: "read_file",
+      result: "ok",
+      isError: false,
+    },
+    { type: "text", text: "Found it. Running the tests next." },
+    toolCall("run-1", "shell"),
+    {
+      type: "toolResponse",
+      id: "run-1",
+      name: "shell",
+      result: "killed",
+      isError: false,
+    },
+  ];
+
+  it("keeps the agent's last words as a partial answer once the turn settles", () => {
+    const items = project([assistant("assistant-partial", lastWords, created)]);
+    const answer = items.find(
+      (item) => item.kind === "message" && item.rowId.endsWith(":answer"),
+    );
+    expect(answer).toBeDefined();
+    expect(answer?.kind === "message" && answer.partialAnswer).toBe(true);
+    expect(
+      answer?.kind === "message" &&
+        answer.visibleContent.map((block) =>
+          block.type === "text" ? block.text : block.type,
+        ),
+    ).toEqual(["Found it. Running the tests next."]);
+    // The tools that ran after the words stay after them, and own the footers.
+    const work = items.filter((item) => item.kind === "agent-work");
+    expect(work).toHaveLength(2);
+    expect(items.indexOf(work[1] as TranscriptItemDescriptor)).toBeGreaterThan(
+      items.indexOf(answer as TranscriptItemDescriptor),
+    );
+    expect(work[1]?.kind === "agent-work" && work[1].hostsTurnFooters).toBe(
+      false,
+    );
+    expect(work[1]?.kind === "agent-work" && work[1].hasFinalAnswer).toBe(
+      false,
+    );
+  });
+
+  it("folds the same words into the live steps while the turn still runs", () => {
+    const items = project(
+      [assistant(STREAMING_MESSAGE_ID, lastWords, created, "inProgress")],
+      STREAMING_MESSAGE_ID,
+    );
+    expect(items.some((item) => item.kind === "message")).toBe(false);
+    expect(items.filter((item) => item.kind === "agent-work")).toHaveLength(1);
+  });
+
+  it("does not invent an answer for a turn that never said anything", () => {
+    const items = project([
+      assistant(
+        "assistant-silent",
+        [
+          toolCall("read-1", "read_file"),
+          {
+            type: "toolResponse",
+            id: "read-1",
+            name: "read_file",
+            result: "ok",
+            isError: false,
+          },
+        ],
+        created,
+      ),
+    ]);
+    expect(items.some((item) => item.kind === "message")).toBe(false);
+    const [work] = items.filter((item) => item.kind === "agent-work");
+    expect(work?.kind === "agent-work" && work.hostsTurnFooters).toBe(true);
+  });
+
+  it("marks nothing partial when the turn ends in its answer", () => {
+    const items = project([
+      assistant(
+        "assistant-whole",
+        [
+          toolCall("read-1", "read_file"),
+          {
+            type: "toolResponse",
+            id: "read-1",
+            name: "read_file",
+            result: "ok",
+            isError: false,
+          },
+          { type: "text", text: "Done." },
+        ],
+        created,
+      ),
+    ]);
+    const answer = items.find((item) => item.kind === "message");
+    expect(answer?.kind === "message" && answer.partialAnswer).toBeFalsy();
+  });
+});

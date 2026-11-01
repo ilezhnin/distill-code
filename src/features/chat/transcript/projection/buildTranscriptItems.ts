@@ -684,6 +684,7 @@ function createMessageItem({
   measurementDecision,
   responseStartMessageId,
   subagentLinkage,
+  partialAnswer,
 }: {
   message: Message;
   visibleContent: readonly MessageContent[];
@@ -695,6 +696,7 @@ function createMessageItem({
   measurementDecision: TranscriptMeasurementPolicyDecision;
   responseStartMessageId?: string;
   subagentLinkage?: TranscriptSubagentLinkage;
+  partialAnswer?: boolean;
 }): TranscriptMessageItem {
   return {
     itemId: `message:${message.id}`,
@@ -708,6 +710,7 @@ function createMessageItem({
     searchableText,
     isStreaming,
     ...(subagentLinkage ? { subagentLinkage } : {}),
+    ...(partialAnswer ? { partialAnswer } : {}),
     renderRevision: revisions.renderRevision,
     heightRevision: revisions.heightRevision,
     estimatedHeight,
@@ -1527,6 +1530,7 @@ function buildMessageItemForContent({
   responseStartMessageId,
   preserveMessageContext = false,
   subagentLinkage,
+  partialAnswer = false,
 }: {
   message: Message;
   content: readonly MessageContent[];
@@ -1535,6 +1539,7 @@ function buildMessageItemForContent({
   responseStartMessageId?: string;
   preserveMessageContext?: boolean;
   subagentLinkage?: TranscriptSubagentLinkage;
+  partialAnswer?: boolean;
 }): TranscriptMessageItem {
   const syntheticMessage: Message = {
     ...message,
@@ -1559,6 +1564,7 @@ function buildMessageItemForContent({
     measurementDecision,
     responseStartMessageId,
     subagentLinkage,
+    partialAnswer,
   });
 }
 
@@ -1740,6 +1746,38 @@ function buildAgentWorkItems({
     answerEndEntryIndex -= 1;
   }
 
+  // A settled turn that ends in tool calls still said something, unless it
+  // never did: the agent was stopped, hit a limit, or its bridge died after
+  // its last words and before its answer. Those words are the turn's text —
+  // partial, and labelled so — rather than a step folded into "11 steps"
+  // under which the operator finds nothing. The tools that ran after them
+  // stay where they ran, after the text.
+  let partialAnswer = false;
+  if (
+    !isStreaming &&
+    answerEndEntryIndex >= 0 &&
+    !isTextContent(
+      workAndTextEntries[answerEndEntryIndex]?.block as MessageContent,
+    )
+  ) {
+    let lastTextEntryIndex = answerEndEntryIndex;
+    while (
+      lastTextEntryIndex >= 0 &&
+      !isTextContent(
+        workAndTextEntries[lastTextEntryIndex]?.block as MessageContent,
+      )
+    ) {
+      lastTextEntryIndex -= 1;
+    }
+    if (
+      lastTextEntryIndex >= 0 &&
+      (workAndTextEntries[lastTextEntryIndex]?.block as TextContent).text.trim()
+    ) {
+      answerEndEntryIndex = lastTextEntryIndex;
+      partialAnswer = true;
+    }
+  }
+
   const answerEntries: typeof workAndTextEntries = [];
   if (
     !isStreaming &&
@@ -1799,9 +1837,13 @@ function buildAgentWorkItems({
     // that work directly before the answer so the answer keeps its source-order
     // relationship with companion content such as images and MCP apps. Groups
     // are built in ascending source order and the sort below is stable, so
-    // sharing one position keeps multiple trailing groups in sequence.
+    // sharing one position keeps multiple trailing groups in sequence. Tool
+    // calls after a partial answer are not that: they ran after the words and
+    // are shown after them.
     const isTrailingWork =
-      finalAnswerIndex !== undefined && sourceIndex > finalAnswerIndex;
+      finalAnswerIndex !== undefined &&
+      sourceIndex > finalAnswerIndex &&
+      entries.every(({ block }) => isReasoningContent(block));
     positionedItems.push({
       index: isTrailingWork ? finalAnswerIndex - 0.5 : sourceIndex,
       item: buildAgentWorkItem({
@@ -1809,7 +1851,12 @@ function buildAgentWorkItems({
         content,
         parts: groupParts,
         isStreaming,
-        hasFinalAnswer: isLastGroup && hasFinalAnswer,
+        // "Previous steps" is said of the work before the answer; the steps
+        // that ran after a partial answer are not previous to anything.
+        hasFinalAnswer:
+          isLastGroup &&
+          hasFinalAnswer &&
+          (finalAnswerIndex === undefined || sourceIndex < finalAnswerIndex),
         // A turn that ends in tool calls with no final text has no answer
         // bubble to hang the harness chips off, so the last work group keeps
         // them once the turn settles. Exactly one row per turn hosts them.
@@ -1834,6 +1881,7 @@ function buildAgentWorkItems({
         isStreaming,
         idSuffix: "answer",
         responseStartMessageId: message.id,
+        partialAnswer,
         // The answer bubble reads the chips off the whole message, so the
         // linkage gate looks at the whole message too.
         ...(subagentLinkage && awaitsBackgroundTask(message.content)

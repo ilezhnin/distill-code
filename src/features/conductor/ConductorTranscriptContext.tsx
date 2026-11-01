@@ -42,6 +42,28 @@ export interface ConductorTranscriptContextValue {
   wavePlanStepsByMessageId: ReadonlyMap<string, readonly WaveStep[]>;
   onOpenChild?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStopChild?: (sessionId: string) => void;
+  /**
+   * The brief this chat was started with, when the chat is an agent another
+   * chat started.
+   *
+   * A worker's first user message is the task its parent gave it, written for
+   * a model. The transcript draws a header over it that says who this agent
+   * is — its role, name, model and effort — and which chat sent it to work,
+   * so the operator who opened the worker from a chip knows where they are.
+   * Read by the brief's bubble alone; every other message ignores it.
+   */
+  workerBrief?: WorkerBrief;
+}
+
+export interface WorkerBrief {
+  /** The message the header sits over: the chat's first user message. */
+  messageId: string;
+  /** This chat's own node in the graph. */
+  node: SessionNode;
+  /** The chat that started this one, when the graph still has it. */
+  parent?: SessionNode;
+  /** Opens the parent chat; absent where the parent is already on screen. */
+  onOpenParent?: () => void;
 }
 
 /**

@@ -48,6 +48,7 @@ import type {
 } from "@/shared/types/messages";
 import type { TranscriptAgentWorkPayload } from "@/features/chat/transcript/projection/transcriptItemTypes";
 import { useTranscriptRowStateAdapter } from "@/features/chat/transcript/row-state";
+import { SystemNoticeLine } from "./SystemNoticeLine";
 import { ToolCallAdapter } from "./ToolCallAdapter";
 import { VoiceSpeechStatusIndicator } from "./VoiceSpeechStatusIndicator";
 
@@ -522,12 +523,20 @@ function ExplorationBody({
   item,
   expandedKeys,
   onExpandedChange,
+  live = false,
 }: {
   item: ExplorationTimelineItem;
   expandedKeys: ReadonlySet<string>;
   onExpandedChange: (key: string, open: boolean) => void;
+  /**
+   * The newest group of a turn still running. It stays open on its own, so
+   * the operator watches the steps land rather than a line that counts them
+   * — until they close it, which is theirs to decide for the rest of the run.
+   */
+  live?: boolean;
 }) {
   const { t } = useTranslation("chat");
+  const [closedWhileLive, setClosedWhileLive] = useState(false);
   const tools = item.steps.filter(
     (step): step is ToolTimelineItem => step.kind === "tool",
   );
@@ -542,13 +551,16 @@ function ExplorationBody({
   const verb = t(
     running ? "agent_work.exploration.active" : "agent_work.exploration.done",
   );
-  const open = expandedKeys.has(item.key);
+  const open = expandedKeys.has(item.key) || (live && !closedWhileLive);
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" data-exploration-open={open ? "true" : "false"}>
       <DisclosureLine
         label={summary ? `${verb} · ${summary}` : verb}
         open={open}
-        onOpenChange={(next) => onExpandedChange(item.key, next)}
+        onOpenChange={(next) => {
+          if (live && !next) setClosedWhileLive(true);
+          onExpandedChange(item.key, next);
+        }}
       >
         <div className="space-y-1 pt-1 pl-1">
           {item.steps.map((step) =>
@@ -598,6 +610,7 @@ function ExplorationBody({
 function AgentWorkItemRow({
   item,
   isLast,
+  isLive = false,
   usePrimaryText = false,
   expandedKeys,
   onExpandedChange,
@@ -606,6 +619,8 @@ function AgentWorkItemRow({
 }: {
   item: AgentWorkTimelineItem;
   isLast: boolean;
+  /** The newest step of a turn that is still running. */
+  isLive?: boolean;
   usePrimaryText?: boolean;
   /** Durable expansion of the step's disclosures, keyed by step. */
   expandedKeys: ReadonlySet<string>;
@@ -702,6 +717,7 @@ function AgentWorkItemRow({
             item={item}
             expandedKeys={expandedKeys}
             onExpandedChange={onExpandedChange}
+            live={isLive && active}
           />
         </div>
       </div>
@@ -994,6 +1010,21 @@ export function AgentWorkPanel({
         {showsHarnessBrigade ? (
           <HarnessBrigadeRow entries={harnessBrigade} className="px-1 pb-1.5" />
         ) : null}
+        {/*
+          A turn that failed with no words of its own has no answer row to
+          carry the host's reason, so the last work row says it: the operator
+          must never open a dead worker and find only a count of steps.
+        */}
+        {payload.hostsTurnFooters &&
+        !payload.isActiveWork &&
+        payload.message.metadata?.failureReason ? (
+          <div className="px-1 pb-1.5" data-role="turn-failure">
+            <SystemNoticeLine
+              kind="error"
+              text={payload.message.metadata.failureReason}
+            />
+          </div>
+        ) : null}
         <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
           <div className="min-h-0 space-y-0">
             {shouldShowPreviousSteps ? (
@@ -1110,6 +1141,10 @@ export function AgentWorkPanel({
                     <AgentWorkItemRow
                       item={item}
                       isLast={index === visibleItems.length - 1}
+                      isLive={
+                        payload.isActiveWork &&
+                        index === visibleItems.length - 1
+                      }
                       usePrimaryText={open}
                       expandedKeys={expandedToolKeys}
                       onExpandedChange={setToolOpen}

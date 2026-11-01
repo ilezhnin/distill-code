@@ -76,6 +76,7 @@ export function buildTranscriptRows(
               ? undefined
               : item.message.content,
           subagentLinkage: item.subagentLinkage,
+          ...(item.partialAnswer ? { partialAnswer: true } : {}),
           renderRevision: item.renderRevision,
           heightRevision: item.heightRevision,
           layoutRevision: TRANSCRIPT_ZERO_LAYOUT_REVISION,
@@ -184,6 +185,7 @@ export function canReuseTranscriptRowDescriptor(
     previous.messageContent === next.messageContent &&
     previous.messageContentContext === next.messageContentContext &&
     previous.subagentLinkage === next.subagentLinkage &&
+    previous.partialAnswer === next.partialAnswer &&
     previous.fragment === next.fragment &&
     previous.date === next.date &&
     previous.agentWork === next.agentWork &&
@@ -206,6 +208,7 @@ export function canReuseTranscriptRowDescriptor(
       next.messageContentContext,
     ) &&
     previous.subagentLinkage === next.subagentLinkage &&
+    previous.partialAnswer === next.partialAnswer &&
     fragmentsEqual(previous.fragment, next.fragment) &&
     datePayloadsEqual(previous.date, next.date) &&
     agentWorkPayloadsEqual(previous.agentWork, next.agentWork) &&

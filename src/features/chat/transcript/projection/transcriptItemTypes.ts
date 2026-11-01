@@ -103,6 +103,8 @@ export interface TranscriptRowDescriptor {
   messageContentContext?: readonly MessageContent[];
   /** Earlier delegate tool calls this row's brigade chips may need to resolve. */
   subagentLinkage?: TranscriptSubagentLinkage;
+  /** The row is an answer the agent did not get to finish. */
+  partialAnswer?: boolean;
   fragment?: TranscriptAssistantContentFragmentPayload;
   date?: TranscriptDateSeparatorPayload;
   agentWork?: TranscriptAgentWorkPayload;
@@ -141,6 +143,11 @@ export interface TranscriptMessageItem {
   searchableText: string;
   isStreaming: boolean;
   subagentLinkage?: TranscriptSubagentLinkage;
+  /**
+   * True when this answer is the last thing the agent said before a turn
+   * that ended in tool calls: words it had, not the answer it meant to give.
+   */
+  partialAnswer?: boolean;
   renderRevision: string;
   heightRevision: string;
   estimatedHeight: number;

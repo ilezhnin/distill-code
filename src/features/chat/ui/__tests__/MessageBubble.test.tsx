@@ -8,6 +8,8 @@ import type { Message } from "@/shared/types/messages";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { ArtifactPolicyProvider } from "@/features/chat/hooks/ArtifactPolicyContext";
+import { ConductorTranscriptProvider } from "@/features/conductor/ConductorTranscriptContext";
+import type { SessionNode } from "@/features/conductor/types";
 const mockPathExists = vi.hoisted(() =>
   vi.fn<(path: string) => Promise<boolean>>(),
 );
@@ -333,5 +335,95 @@ describe("MessageBubble", () => {
 
     expect(screen.getByText("Checking that now.")).toBeInTheDocument();
     expect(screen.getAllByText(/readfile/i)).toHaveLength(1);
+  });
+});
+
+describe("MessageBubble over a worker's brief", () => {
+  const worker: SessionNode = {
+    sessionId: "worker-1",
+    projectId: "project",
+    role: "worker",
+    managedBy: "wave",
+    parentSessionId: "conductor-1",
+    rootConductorId: "conductor-1",
+    runId: "run-1",
+    harnessId: "claude-acp",
+    modelId: "claude-sonnet-5-5",
+    effort: "high",
+    roleId: "scout",
+    displayName: "Scout · waveEngine",
+    status: "running",
+  };
+  const conductor: SessionNode = {
+    ...worker,
+    sessionId: "conductor-1",
+    role: "conductor",
+    parentSessionId: null,
+    roleId: undefined,
+    displayName: "Producer",
+  };
+  const brief = userMessage(
+    "Read the wave engine and report what the tick does.",
+    {
+      metadata: { origin: "distillctl_cross_session" },
+    },
+  );
+
+  it("puts the worker's header over the brief in place of the cross-session label", () => {
+    const onOpenParent = vi.fn();
+    render(
+      <ConductorTranscriptProvider
+        value={{
+          enabled: false,
+          children: [],
+          reportsByRunId: {},
+          brigadeNodesByMessageId: new Map(),
+          wavePlanStepsByMessageId: new Map(),
+          workerBrief: {
+            messageId: brief.id,
+            node: worker,
+            parent: conductor,
+            onOpenParent,
+          },
+        }}
+      >
+        <MessageBubble message={brief} />
+      </ConductorTranscriptProvider>,
+    );
+    expect(screen.getByText("Scout · waveEngine")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Started by Producer" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Sent by Flock from another session"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Read the wave engine and report what the tick does."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the plain label on a cross-session message that is not the brief", () => {
+    render(
+      <ConductorTranscriptProvider
+        value={{
+          enabled: false,
+          children: [],
+          reportsByRunId: {},
+          brigadeNodesByMessageId: new Map(),
+          wavePlanStepsByMessageId: new Map(),
+          workerBrief: {
+            messageId: "another",
+            node: worker,
+            parent: conductor,
+          },
+        }}
+      >
+        <MessageBubble message={brief} />
+      </ConductorTranscriptProvider>,
+    );
+    expect(
+      screen.getByText("Sent by Flock from another session"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Started by Producer")).not.toBeInTheDocument();
   });
 });

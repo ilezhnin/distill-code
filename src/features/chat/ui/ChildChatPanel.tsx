@@ -445,11 +445,29 @@ function ChildChatTranscript({
         : messages,
     [childNode?.role, grandchildren.length, i18n.language, messages],
   );
+  // The header over this worker's brief. The parent is the chat this panel
+  // hangs beside, or another tab in the strip, so no way back is offered: the
+  // name alone says who sent the work.
+  const briefMessageId = childNode?.parentSessionId
+    ? messages.find((message) => message.role === "user")?.id
+    : undefined;
+  const parentNode = childNode?.parentSessionId
+    ? nodesById[childNode.parentSessionId]
+    : undefined;
   const conductorTranscriptValue =
     useMemo<ConductorTranscriptContextValue>(() => {
-      if (grandchildren.length === 0) return NO_CONDUCTOR_TRANSCRIPT;
+      const workerBrief =
+        childNode && briefMessageId
+          ? { messageId: briefMessageId, node: childNode, parent: parentNode }
+          : undefined;
+      if (grandchildren.length === 0) {
+        return workerBrief
+          ? { ...NO_CONDUCTOR_TRANSCRIPT, workerBrief }
+          : NO_CONDUCTOR_TRANSCRIPT;
+      }
       return {
         enabled: true,
+        workerBrief,
         hostSessionId: childSessionId,
         children: grandchildren,
         reportsByRunId,
@@ -473,12 +491,15 @@ function ChildChatTranscript({
         },
       };
     }, [
+      briefMessageId,
+      childNode,
       childSessionId,
       grandchildren,
       hostSessionId,
       messages,
       nodesById,
       openChildChatTab,
+      parentNode,
       reportsByRunId,
       timelineMessages,
     ]);

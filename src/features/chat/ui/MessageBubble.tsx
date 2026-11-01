@@ -86,6 +86,7 @@ import {
   NO_BRIGADE_NODES,
 } from "@/features/conductor/brigadeAnchors";
 import { ConductorAgentFooter } from "@/features/conductor/ui/ConductorAgentFooter";
+import { WorkerBriefHeader } from "@/features/conductor/ui/WorkerBriefHeader";
 
 interface MessageAttachmentPreviewItem {
   key: string;
@@ -386,6 +387,12 @@ interface MessageBubbleProps {
    * holds one itself.
    */
   subagentLinkage?: ReadonlyArray<{ content: readonly MessageContent[] }>;
+  /**
+   * The text is what the agent had said when its turn ended in tool calls,
+   * not the answer it meant to give. Said under it, so partial output reads
+   * as output and not as the result.
+   */
+  partialAnswer?: boolean;
   actionMessageId?: string;
   fragmentRole?: "single" | "start" | "middle" | "end";
   onCopy?: () => void;
@@ -739,6 +746,7 @@ export const MessageBubble = memo(function MessageBubble({
   contentOverride,
   contentContext,
   subagentLinkage,
+  partialAnswer,
   actionMessageId = message.id,
   fragmentRole,
   onRetryMessage,
@@ -1017,6 +1025,12 @@ export const MessageBubble = memo(function MessageBubble({
   const distillSenderLabel = isFlockctlCrossSessionMessage
     ? message.metadata?.distillSenderLabel
     : undefined;
+  // The brief a worker was started with wears a header that says who the
+  // worker is and who sent it, in place of the generic cross-session label.
+  const workerBrief =
+    isUser && conductorTranscript.workerBrief?.messageId === message.id
+      ? conductorTranscript.workerBrief
+      : undefined;
   const timestamp = (
     <span
       data-role="message-timestamp"
@@ -1128,13 +1142,14 @@ export const MessageBubble = memo(function MessageBubble({
                   : "w-full",
               )}
             >
-              {isFlockctlCrossSessionMessage ||
+              {workerBrief ? <WorkerBriefHeader {...workerBrief} /> : null}
+              {(isFlockctlCrossSessionMessage && !workerBrief) ||
               isSteeredMessage ||
               isPendingSteerMessage ||
               isUnconfirmedSteerMessage ||
               isFailedSteerMessage ? (
                 <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
-                  {isFlockctlCrossSessionMessage ? (
+                  {isFlockctlCrossSessionMessage && !workerBrief ? (
                     <span
                       data-role="flockctl-cross-session-message-label"
                       className="leading-4"
@@ -1319,13 +1334,18 @@ export const MessageBubble = memo(function MessageBubble({
         </div>
 
         {/* A reply that failed after it started says why it stops where it
-            does — the host's reason, kept with the transcript. */}
+            does — the host's reason, kept with the transcript. A reply that
+            merely stopped short says that it did. */}
         {!isUser && canHostMessageActions && message.metadata?.failureReason ? (
           <div className="pt-1" data-role="turn-failure">
             <SystemNoticeLine
               kind="error"
               text={message.metadata.failureReason}
             />
+          </div>
+        ) : !isUser && canHostMessageActions && partialAnswer ? (
+          <div className="pt-1" data-role="partial-answer">
+            <SystemNoticeLine kind="info" text={t("message.partialAnswer")} />
           </div>
         ) : null}
         {/* Below the actions/timestamp row: the chip row is a normal-flow

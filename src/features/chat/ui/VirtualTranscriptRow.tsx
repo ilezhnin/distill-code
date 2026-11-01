@@ -8,6 +8,7 @@ import {
   type ReactElement,
 } from "react";
 import { wavePlanRenderer } from "@/features/conductor/ui/WavePlanRecord";
+import { waveReportRenderer } from "@/features/conductor/ui/WaveReportRecord";
 import { memoryFenceRenderer } from "@/features/memory/ui/MemoryFenceRecord";
 import { cn } from "@/shared/lib/cn";
 import type { Message } from "@/shared/types/messages";
@@ -283,8 +284,12 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
   const codeRenderers = useMemo(
     () =>
       sessionId && sourceMessageId
-        ? [wavePlanRenderer, memoryFenceRenderer(sessionId, sourceMessageId)]
-        : [wavePlanRenderer],
+        ? [
+            wavePlanRenderer,
+            waveReportRenderer,
+            memoryFenceRenderer(sessionId, sourceMessageId),
+          ]
+        : [wavePlanRenderer, waveReportRenderer],
     [sessionId, sourceMessageId],
   );
   let rowContent: ReactElement;
@@ -409,6 +414,7 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
           contentOverride={row.messageContent}
           contentContext={row.messageContentContext}
           subagentLinkage={row.subagentLinkage}
+          partialAnswer={row.partialAnswer}
           actionMessageId={row.responseStartMessageId ?? row.messageId}
           isStreaming={isStreaming}
           actionsAlwaysVisible={actionsAlwaysVisible}

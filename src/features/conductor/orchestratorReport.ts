@@ -2,6 +2,9 @@ import { i18n } from "@/shared/i18n";
 
 import type { SessionNode, StructuredReport } from "./types";
 
+/** The fence tag an executor reports through (LAWS/WAVES.md, The report). */
+export const REPORT_FENCE_TAG = "distill-report";
+
 const REPORT_FENCE_PATTERN = /```distill-report\s*([\s\S]*?)```/i;
 
 /**
@@ -125,103 +128,133 @@ When you finish, end with this report block and no extra commentary after it:
 The report block belongs in your reply and nowhere else: never write it — or any other fenced protocol block — into the files you create or edit. A file that ends up holding your report is a defect the next step will have to clean up.`;
 }
 
+/** A report as its fence carries it: everything but the run it belongs to. */
+export type ReportFenceBody = Omit<StructuredReport, "runId">;
+
+/**
+ * The JSON inside one `distill-report` fence, read leniently, or `null` when
+ * it is not JSON at all.
+ *
+ * Shared by the run's report (which keys it by run and fills an empty summary
+ * from the worker's prose) and by the worker's own transcript, which draws the
+ * fence as a record. One reader, so what the conductor is told and what the
+ * operator sees in the worker's chat can never disagree on a field.
+ *
+ * `status` is what the run itself did, and wins when the fence's own status is
+ * missing or not one of the four words the contract allows; the mismatch is
+ * then recorded as a risk, so a typo can neither invent a `blocked` nor
+ * un-invent a failure in silence.
+ */
+export function parseReportFenceBody(
+  body: string,
+  status: StructuredReport["status"],
+): ReportFenceBody | null {
+  let parsed: Partial<StructuredReport>;
+  try {
+    const value: unknown = JSON.parse(body);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    parsed = value as Partial<StructuredReport>;
+  } catch {
+    return null;
+  }
+  const claimedStatus = (parsed as { status?: unknown }).status;
+  const reportedStatus =
+    claimedStatus === "completed" ||
+    claimedStatus === "failed" ||
+    claimedStatus === "cancelled" ||
+    claimedStatus === "blocked"
+      ? claimedStatus
+      : status;
+  // A status field that is present but unreadable is announced, never
+  // swallowed: the fallback to the run's outcome is the safe *status*, and
+  // the risk line is what keeps it from being a silent "done".
+  const statusRisks =
+    claimedStatus === undefined ||
+    claimedStatus === null ||
+    claimedStatus === reportedStatus
+      ? []
+      : [unrecognizedReportStatusRisk(claimedStatus)];
+  return {
+    status: reportedStatus,
+    ...(reportedStatus === "blocked"
+      ? { reason: blockedReasonOf((parsed as { reason?: unknown }).reason) }
+      : {}),
+    summary: cappedText(
+      typeof parsed.summary === "string" ? parsed.summary : "",
+      MAX_REPORT_SUMMARY_LENGTH,
+    ),
+    decisions: cappedList(
+      Array.isArray(parsed.decisions)
+        ? parsed.decisions.filter(
+            (item): item is string => typeof item === "string",
+          )
+        : [],
+    ),
+    artifacts: (Array.isArray(parsed.artifacts)
+      ? parsed.artifacts.flatMap((item) => {
+          if (!item || typeof item !== "object") return [];
+          const artifact = item as StructuredReport["artifacts"][number];
+          if (typeof artifact.label !== "string") return [];
+          return [
+            {
+              label: cappedText(artifact.label, MAX_REPORT_ENTRY_LENGTH),
+              ...(typeof artifact.path === "string"
+                ? { path: cappedText(artifact.path, MAX_REPORT_ENTRY_LENGTH) }
+                : {}),
+              ...(typeof artifact.url === "string"
+                ? { url: cappedText(artifact.url, MAX_REPORT_ENTRY_LENGTH) }
+                : {}),
+            },
+          ];
+        })
+      : []
+    ).slice(0, MAX_REPORT_LIST_ENTRIES),
+    risks: [
+      ...cappedList(
+        Array.isArray(parsed.risks)
+          ? parsed.risks.filter(
+              (item): item is string => typeof item === "string",
+            )
+          : [],
+      ),
+      ...statusRisks,
+    ],
+    // A blocked step is by definition the operator's to unblock, whatever
+    // the worker set the flag to.
+    needsOperator:
+      parsed.needsOperator === true || reportedStatus === "blocked",
+    nextSuggestedTask:
+      typeof parsed.nextSuggestedTask === "string"
+        ? cappedText(parsed.nextSuggestedTask, MAX_REPORT_ENTRY_LENGTH)
+        : null,
+  };
+}
+
 export function parseStructuredReport(
   runId: string,
   status: StructuredReport["status"],
   assistantText: string,
 ): StructuredReport {
   const fenced = assistantText.match(REPORT_FENCE_PATTERN);
-  if (fenced?.[1]) {
-    try {
-      const parsed = JSON.parse(fenced[1]) as Partial<StructuredReport>;
-      // A worker whose whole reply is the report block leaves nothing behind
-      // once the fence is stripped. Falling back to the raw text (as the
-      // unfenced path already does) keeps every report's summary non-empty:
-      // an empty one reads as "no report yet" to every consumer, and one of
-      // them re-attached it on every graph pass until the renderer crashed.
-      const summary = cappedText(
-        typeof parsed.summary === "string" && parsed.summary.trim()
-          ? parsed.summary
-          : stripReportFence(assistantText) || assistantText,
-        MAX_REPORT_SUMMARY_LENGTH,
-      );
-      const claimedStatus = (parsed as { status?: unknown }).status;
-      const reportedStatus =
-        claimedStatus === "completed" ||
-        claimedStatus === "failed" ||
-        claimedStatus === "cancelled" ||
-        claimedStatus === "blocked"
-          ? claimedStatus
-          : status;
-      // A status field that is present but unreadable is announced, never
-      // swallowed: the fallback to the run's outcome is the safe *status*,
-      // and the risk line is what keeps it from being a silent "done".
-      const statusRisks =
-        claimedStatus === undefined ||
-        claimedStatus === null ||
-        claimedStatus === reportedStatus
-          ? []
-          : [unrecognizedReportStatusRisk(claimedStatus)];
-      return {
-        runId,
-        status: reportedStatus,
-        ...(reportedStatus === "blocked"
-          ? { reason: blockedReasonOf((parsed as { reason?: unknown }).reason) }
-          : {}),
-        summary,
-        decisions: cappedList(
-          Array.isArray(parsed.decisions)
-            ? parsed.decisions.filter(
-                (item): item is string => typeof item === "string",
-              )
-            : [],
+  const body = fenced?.[1] ? parseReportFenceBody(fenced[1], status) : null;
+  if (body) {
+    // A worker whose whole reply is the report block leaves nothing behind
+    // once the fence is stripped. Falling back to the raw text (as the
+    // unfenced path already does) keeps every report's summary non-empty:
+    // an empty one reads as "no report yet" to every consumer, and one of
+    // them re-attached it on every graph pass until the renderer crashed.
+    return {
+      runId,
+      ...body,
+      summary:
+        body.summary ||
+        cappedText(
+          stripReportFence(assistantText) || assistantText,
+          MAX_REPORT_SUMMARY_LENGTH,
         ),
-        artifacts: (Array.isArray(parsed.artifacts)
-          ? parsed.artifacts.flatMap((item) => {
-              if (!item || typeof item !== "object") return [];
-              const artifact = item as StructuredReport["artifacts"][number];
-              if (typeof artifact.label !== "string") return [];
-              return [
-                {
-                  label: cappedText(artifact.label, MAX_REPORT_ENTRY_LENGTH),
-                  ...(typeof artifact.path === "string"
-                    ? {
-                        path: cappedText(
-                          artifact.path,
-                          MAX_REPORT_ENTRY_LENGTH,
-                        ),
-                      }
-                    : {}),
-                  ...(typeof artifact.url === "string"
-                    ? { url: cappedText(artifact.url, MAX_REPORT_ENTRY_LENGTH) }
-                    : {}),
-                },
-              ];
-            })
-          : []
-        ).slice(0, MAX_REPORT_LIST_ENTRIES),
-        risks: [
-          ...cappedList(
-            Array.isArray(parsed.risks)
-              ? parsed.risks.filter(
-                  (item): item is string => typeof item === "string",
-                )
-              : [],
-          ),
-          ...statusRisks,
-        ],
-        // A blocked step is by definition the operator's to unblock, whatever
-        // the worker set the flag to.
-        needsOperator:
-          parsed.needsOperator === true || reportedStatus === "blocked",
-        nextSuggestedTask:
-          typeof parsed.nextSuggestedTask === "string"
-            ? cappedText(parsed.nextSuggestedTask, MAX_REPORT_ENTRY_LENGTH)
-            : null,
-      };
-    } catch {
-      // Fall through to the plain-text summary.
-    }
+    };
   }
 
   return {

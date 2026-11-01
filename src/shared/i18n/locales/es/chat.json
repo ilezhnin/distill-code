@@ -411,7 +411,8 @@
     "voiceSpeechFailedLabel": "Fallido",
     "monitorLabel": "Novedad de una tarea en segundo plano",
     "steerUnconfirmedLabel": "Entrega sin confirmar. Compruébalo antes de reenviar.",
-    "steerFailedLabel": "No se pudo entregar al agente en ejecución."
+    "steerFailedLabel": "No se pudo entregar al agente en ejecución.",
+    "partialAnswer": "El agente se detuvo antes de terminar. Esto es lo que había dicho."
   },
   "persona": {
     "chooseAssistant": "Elegir asistente",
@@ -679,6 +680,24 @@
       "body": "No se pudo leer {{documents}} de la carpeta de Flock, ni siquiera tras reintentarlo. Mientras eso siga así no se inicia ninguna ola —un plan en este chat simplemente se ignora—, porque trabajar sobre una copia vacía repetiría planes antiguos y luego sobrescribiría el único registro que queda de ellos.",
       "retry": "Lo más probable es que algo estuviera bloqueando el archivo al arrancar la app, como un análisis antivirus o un cliente de sincronización. En Ajustes → Estadísticas hay un botón «Reintentar» que vuelve a leerlo sin reiniciar.",
       "reason": "La lectura falló con: {{reason}}"
+    },
+    "brief": {
+      "title": "Encargo",
+      "startedBy": "Iniciado por {{name}}",
+      "startedByAnotherChat": "Iniciado por otro chat"
+    },
+    "report": {
+      "title": "Informe · {{status}}",
+      "writing": "Escribiendo el informe…",
+      "unreadable": "No se pudo leer el informe",
+      "noSummary": "El informe no tiene resumen.",
+      "decisionCount_one": "{{count}} decisión",
+      "decisionCount_other": "{{count}} decisiones",
+      "artifactCount_one": "{{count}} archivo",
+      "artifactCount_other": "{{count}} archivos",
+      "riskCount_one": "{{count}} riesgo",
+      "riskCount_other": "{{count}} riesgos",
+      "nextCount": "un paso siguiente"
     }
   },
   "harnessBrigade": {

@@ -214,3 +214,134 @@ describe("AgentWorkPanel step actions", () => {
     expect(screen.queryByRole("button", { name: "Remove step" })).toBeNull();
   });
 });
+
+describe("AgentWorkPanel on a turn that ended without an answer", () => {
+  let registry: TranscriptRowStateRegistry;
+
+  beforeEach(() => {
+    registry = createTranscriptRowStateRegistry();
+  });
+
+  it("says why the turn failed where the operator will look, under the step count", () => {
+    const failed: Message = {
+      ...MESSAGE,
+      metadata: {
+        userVisible: true,
+        completionStatus: "error",
+        failureReason: "Agent process exited unexpectedly (exit code 1).",
+      },
+    };
+    render(
+      <Host registry={registry}>
+        <AgentWorkPanel
+          payload={{
+            ...payload(),
+            message: failed,
+            hasFinalAnswer: false,
+            hostsTurnFooters: true,
+          }}
+        />
+      </Host>,
+    );
+    expect(
+      screen.getByText("Agent process exited unexpectedly (exit code 1)."),
+    ).toBeInTheDocument();
+  });
+
+  it("stays quiet about a turn whose answer row carries the reason", () => {
+    const failed: Message = {
+      ...MESSAGE,
+      metadata: {
+        userVisible: true,
+        completionStatus: "error",
+        failureReason: "The provider refused the request.",
+      },
+    };
+    render(
+      <Host registry={registry}>
+        <AgentWorkPanel
+          payload={{
+            ...payload(),
+            message: failed,
+            hasFinalAnswer: true,
+            hostsTurnFooters: false,
+          }}
+        />
+      </Host>,
+    );
+    expect(
+      screen.queryByText("The provider refused the request."),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentWorkPanel while the turn runs", () => {
+  let registry: TranscriptRowStateRegistry;
+
+  beforeEach(() => {
+    registry = createTranscriptRowStateRegistry();
+  });
+
+  const lookups: MessageContent[] = [
+    {
+      type: "toolRequest",
+      id: "call-a",
+      name: "read_file",
+      toolName: "read_file",
+      arguments: { path: "/repo/alpha.ts" },
+      status: "completed",
+      toolKind: "read",
+      locations: [],
+    },
+    {
+      type: "toolResponse",
+      id: "call-a",
+      name: "read_file",
+      result: "alpha contents",
+      isError: false,
+    },
+    {
+      type: "toolRequest",
+      id: "call-b",
+      name: "read_file",
+      toolName: "read_file",
+      arguments: { path: "/repo/beta.ts" },
+      status: "in_progress",
+      toolKind: "read",
+      locations: [],
+    },
+  ];
+
+  it("keeps the newest group of lookups open until the operator closes it", async () => {
+    const user = userEvent.setup();
+    render(
+      <Host registry={registry}>
+        <AgentWorkPanel
+          payload={{
+            ...payload(),
+            content: lookups,
+            isActiveWork: true,
+            hasFinalAnswer: false,
+            toolCount: 2,
+            thoughtCount: 0,
+          }}
+        />
+      </Host>,
+    );
+    const group = screen.getByRole("button", { name: /Exploring/ });
+    expect(group.closest("[data-exploration-open]")).toHaveAttribute(
+      "data-exploration-open",
+      "true",
+    );
+    // Both lookups are on screen, the finished one and the one in flight.
+    expect(screen.getAllByRole("button", { name: /read_file/i })).toHaveLength(
+      2,
+    );
+
+    await user.click(group);
+    expect(group.closest("[data-exploration-open]")).toHaveAttribute(
+      "data-exploration-open",
+      "false",
+    );
+  });
+});
