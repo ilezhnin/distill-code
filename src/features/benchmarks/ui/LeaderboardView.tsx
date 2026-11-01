@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
+import { IconChevronRight } from "@tabler/icons-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
@@ -13,7 +13,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/shared/ui/table";
-import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import {
   modelNameKey,
   useModelCatalog,
@@ -125,7 +124,6 @@ export function LeaderboardView({
   const catalog = useModelCatalog();
   // Chosen models stand side by side; nothing chosen means every model.
   const [chosen, setChosen] = useState<Set<string>>(() => new Set());
-  const [view, setView] = useState<"chart" | "table">("chart");
   const [boardId, setBoardId] = useState<BoardId>("overall");
   const models = useMemo(() => reportModels(report), [report]);
   const rows = useMemo(() => models.map((model) => model.row), [models]);
@@ -222,14 +220,10 @@ export function LeaderboardView({
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 420, damping: 38 };
   const boardLabel = (entry: Board) => boardTitle(t, entry);
-  // In table mode the rank and model stay put while the boards scroll.
-  const pinned = (offset: string) =>
-    view === "table" && `sticky ${offset} z-10 bg-background`;
   const rankCell = (entry: RankedRow) => (
     <TableCell
       className={cn(
         "w-8 px-1 font-display text-lg tabular-nums",
-        pinned("left-0"),
         entry.rank === 1
           ? "text-chart-1"
           : entry.rank == null && "text-muted-foreground",
@@ -246,7 +240,7 @@ export function LeaderboardView({
   ) => {
     const attention = activity.attention;
     return (
-      <TableCell className={cn("min-w-72", pinned("left-10"))}>
+      <TableCell className="min-w-72">
         <ModelIdentity
           configuration={entry.row.configuration}
           name={nameOf(entry.row)}
@@ -283,25 +277,19 @@ export function LeaderboardView({
   };
   const factCells = (entry: RankedRow) => {
     const fact = factOf(entry.row);
-    const compact = view === "table" && "px-1 text-xs";
     return (
       <>
-        <TableCell className={cn("text-right tabular-nums", compact)}>
+        <TableCell className="text-right tabular-nums">
           {formatPrice(fact) ?? "–"}
         </TableCell>
-        <TableCell className={cn("text-right tabular-nums", compact)}>
+        <TableCell className="text-right tabular-nums">
           {formatContext(fact?.contextTokens) ?? "–"}
         </TableCell>
       </>
     );
   };
   const fullyTestedCell = (entry: RankedRow) => (
-    <TableCell
-      className={cn(
-        "whitespace-nowrap text-right tabular-nums",
-        view === "table" && "px-1 text-xs",
-      )}
-    >
+    <TableCell className="whitespace-nowrap text-right tabular-nums">
       <FullyTested row={entry.row} />
     </TableCell>
   );
@@ -349,8 +337,8 @@ export function LeaderboardView({
   };
   return (
     <section className="space-y-4">
-      {/* Boards on the left; the model filter, the view switch and the page
-          actions on the right. */}
+      {/* Boards on the left; the model filters and the page actions on the
+          right. */}
       <BenchmarkToolbar
         actions={actions}
         trailing={
@@ -374,22 +362,6 @@ export function LeaderboardView({
                 onChange={onHiddenJudgeFlagsChange}
               />
             ) : null}
-            <ToggleGroup
-              type="single"
-              size="sm"
-              className="shrink-0"
-              value={view}
-              onValueChange={(value) => {
-                if (value === "table" || value === "chart") setView(value);
-              }}
-            >
-              <ToggleGroupItem value="chart">
-                {t("filters.chart")}
-              </ToggleGroupItem>
-              <ToggleGroupItem value="table">
-                {t("filters.table")}
-              </ToggleGroupItem>
-            </ToggleGroup>
           </>
         }
       >
@@ -410,7 +382,7 @@ export function LeaderboardView({
           title={t("leaderboard.empty")}
           description={t("leaderboard.emptyHint")}
         />
-      ) : view === "chart" ? (
+      ) : (
         <Table>
           <TableHeader>
             <TableRow>
@@ -468,81 +440,6 @@ export function LeaderboardView({
                     />
                   </TableCell>
                 </>,
-              ),
-            )}
-          </TableBody>
-        </Table>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="sticky left-0 z-10 bg-background">
-                {t("fields.rank")}
-              </TableHead>
-              <TableHead className="sticky left-10 z-10 min-w-40 bg-background">
-                {t("fields.model")}
-              </TableHead>
-              {boards.map((entry) => (
-                <TableHead key={entry.id} className="px-1 text-right">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    className="h-auto max-w-32 whitespace-normal text-right leading-tight"
-                    aria-pressed={entry.id === board.id}
-                    rightIcon={
-                      entry.id === board.id ? <IconChevronDown /> : undefined
-                    }
-                    onClick={() => chooseBoard(entry.id)}
-                  >
-                    {boardLabel(entry)}
-                  </Button>
-                </TableHead>
-              ))}
-              <TableHead className="px-1 text-right text-xs">
-                {t("leaderboard.fullyTested")}
-              </TableHead>
-              <TableHead className="px-1 text-right text-xs">
-                {t("leaderboard.priceShort")}
-              </TableHead>
-              <TableHead className="px-1 text-right text-xs">
-                {t("leaderboard.context")}
-              </TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {shown.map((entry) =>
-              row(
-                entry,
-                boards.map((axis) => {
-                  const standing = standings
-                    .get(axis.id)
-                    ?.rows.get(modelKey(entry.row.configuration));
-                  const points = standing?.points ?? null;
-                  return (
-                    <TableCell
-                      key={axis.id}
-                      className={cn(
-                        "px-1 text-right text-xs tabular-nums",
-                        axis.id === board.id && "font-semibold",
-                        axis.id === board.id &&
-                          entry.rank === 1 &&
-                          "text-chart-1",
-                        // Each board's own rank decides whether its
-                        // score reads as comparable.
-                        (points == null || standing?.rank == null) &&
-                          "text-muted-foreground",
-                      )}
-                    >
-                      <RatingValue
-                        points={points}
-                        row={entry.row}
-                        board={axis}
-                      />
-                    </TableCell>
-                  );
-                }),
               ),
             )}
           </TableBody>

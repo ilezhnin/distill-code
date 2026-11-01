@@ -613,8 +613,6 @@ describe("benchmark authoring and saved evidence", () => {
       .closest("tr")!;
     expect(within(fast).getByText("max")).toBeInTheDocument();
     expect(within(fast).getByText("fast")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("radio", { name: "Table" }));
-    expect(screen.getAllByRole("row")).toHaveLength(3);
     await userEvent.click(
       screen.getByRole("button", { name: "Open model-1 · high" }),
     );
@@ -1593,33 +1591,10 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByRole("tab", { name: "Algorithms and clean code" }),
     );
     expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
-    await userEvent.click(screen.getByRole("radio", { name: "Table" }));
-    await userEvent.click(screen.getByRole("button", { name: "Overall" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Overall" }));
     expect(order()).toEqual(["1 alpha", "1 gamma", "3 beta", "– delta"]);
-    await userEvent.click(
-      screen.getByRole("button", { name: "Algorithms and clean code" }),
-    );
-    expect(order()).toEqual(["1 beta", "2 alpha", "3 gamma", "– delta"]);
-    expect(
-      screen.getByRole("button", { name: "Algorithms and clean code" }),
-    ).toHaveAttribute("aria-pressed", "true");
-    const first = screen.getAllByRole("row")[1];
-    expect(
-      within(first)
-        .getAllByRole("cell")
-        .map((cell) => cell.textContent),
-    ).toEqual([
-      "1",
-      // The vendor icon carries its own title text; the effort follows the name.
-      "ClaudebetahighAnthropic",
-      "500",
-      "1000",
-      // Fully tested, then price and context: unknown here.
-      "–",
-      "–",
-      "–",
-      "",
-    ]);
+    // The leaderboard has one view: no table switch.
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
   });
   it("places ranks over every row and pages only the rendered list", async () => {
     const rows = Array.from({ length: 55 }, (_, index) =>

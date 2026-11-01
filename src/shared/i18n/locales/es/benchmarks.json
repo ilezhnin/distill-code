@@ -129,8 +129,6 @@
     "includeArchived": "Incluyendo archivadas",
     "search": "Buscar pruebas",
     "searchModels": "Buscar modelos",
-    "table": "Tabla",
-    "chart": "Gráfico",
     "runLabel": "{{date}} · {{id}}",
     "models": "Modelos",
     "allModels": "Todos",
@@ -654,7 +652,6 @@
     "chartLabel": "{{model}}: {{value}}",
     "price": "API entrada / salida por 1M",
     "context": "Contexto",
-    "priceShort": "Precio API",
     "fullyTested": "Probado por completo",
     "fullyTestedCoverage": "{{complete}}/{{planned}}"
   },
