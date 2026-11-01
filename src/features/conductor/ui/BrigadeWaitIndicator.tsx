@@ -17,7 +17,7 @@ import {
   pokeSessionForInterimSummary,
   subscribeToPokeState,
 } from "../wavePoke";
-import { stopWaveByOperator } from "../waveStop";
+import { OPERATOR_STOP_REASON, stopWaveByOperator } from "../waveStop";
 import { getWaveEngineState } from "../waveStore";
 import { isWaveLive } from "../waveVerdict";
 import type { WavePhase } from "../waveEngine";
@@ -214,7 +214,7 @@ export function BrigadeWaitIndicator({
           className="mt-0.5"
           onOpen={(childSessionId) => onOpenChild(childSessionId, "openInTab")}
           onStop={(childSessionId) => {
-            void stopOrchestratorSession(childSessionId);
+            void stopOrchestratorSession(childSessionId, OPERATOR_STOP_REASON);
           }}
           renderDetail={renderDetail}
         />

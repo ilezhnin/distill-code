@@ -105,6 +105,55 @@ export function readConductorTranscript(
   return { kind: "unknown" };
 }
 
+/**
+ * How many settled hydrations of a still-empty transcript are tried before
+ * the session is declared unreadable. Three attempts, five seconds apart, is
+ * long enough for a replay the host is still writing and short enough that a
+ * step whose session truly said nothing is not held back for long.
+ */
+export const TRANSCRIPT_HYDRATION_MAX_ATTEMPTS = 3;
+
+/** Settled, still-empty hydrations per session. */
+const emptyAttempts = new Map<string, number>();
+
+/**
+ * A worker's transcript, with a bound on the waiting.
+ *
+ * The sync pass reads a finished worker's last message to write its report;
+ * a transcript the cache never loaded read as "the worker said nothing", and
+ * the report became the stand-in "The agent finished." with the worker's
+ * real report lost from the digest (2026-11-01, wave 6971dab5). So a missing
+ * transcript is hydrated first, and only a session that stays empty after
+ * {@link TRANSCRIPT_HYDRATION_MAX_ATTEMPTS} loads is read as having nothing
+ * to say.
+ */
+export function readWorkerTranscript(
+  sessionId: string,
+  onHydrated: () => void,
+):
+  | { kind: "loaded"; messages: readonly Message[] }
+  | { kind: "unknown" }
+  | { kind: "unavailable" } {
+  const messages = useChatStore.getState().messagesBySession[sessionId];
+  if (messages && hasConversationMessages(messages)) {
+    emptyAttempts.delete(sessionId);
+    return { kind: "loaded", messages };
+  }
+  if (
+    (emptyAttempts.get(sessionId) ?? 0) >= TRANSCRIPT_HYDRATION_MAX_ATTEMPTS
+  ) {
+    return { kind: "unavailable" };
+  }
+  requestHydration(sessionId, () => {
+    const after = useChatStore.getState().messagesBySession[sessionId];
+    if (!after || !hasConversationMessages(after)) {
+      emptyAttempts.set(sessionId, (emptyAttempts.get(sessionId) ?? 0) + 1);
+    }
+    onHydrated();
+  });
+  return { kind: "unknown" };
+}
+
 /** True while a hydration started here has not settled. Tests only. */
 export function isHydratingTranscriptForTests(sessionId: string): boolean {
   return hydrating.has(sessionId);
@@ -114,4 +163,5 @@ export function isHydratingTranscriptForTests(sessionId: string): boolean {
 export function resetConductorTranscriptsForTests(): void {
   hydrating.clear();
   lastAttemptAt.clear();
+  emptyAttempts.clear();
 }

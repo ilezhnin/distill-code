@@ -19,10 +19,18 @@ import { useConductorGraphStore } from "./conductorGraphStore";
 
 export async function stopOrchestratorSession(
   sessionId: string,
+  /**
+   * Why the agent is being stopped, kept on its node: the digest and the
+   * chip say it, where a bare "cancelled" used to be all the operator saw.
+   */
+  reason?: string,
 ): Promise<void> {
   const graph = useConductorGraphStore.getState();
   const node = graph.getNode(sessionId);
   if (!node) return;
+  if (reason && !node.stopReason) {
+    graph.patchNode(sessionId, { stopReason: reason.slice(0, 500) });
+  }
   const chat = useChatStore.getState();
   // The queue first, and before the session is marked idle. A wave child's
   // first prompt is *queued*, not sent: it waits for the cross-session drain,

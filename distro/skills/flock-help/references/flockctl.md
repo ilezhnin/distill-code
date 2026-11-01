@@ -52,3 +52,25 @@ are separate choices, and each model offers its own set of them.
   that model, effort and fast mode.
 - `flockctl session get` and `flockctl session list` report the `effort` and
   `fast_mode` each session's model last acknowledged.
+
+## A conductor reading its own waves
+
+- `flockctl wave list --conductor-session-id <your id>` lists the waves a
+  conductor chat planned — running, waiting for a digest or a verdict, queued
+  behind a free slot, and with `--include-closed` those parked for the
+  operator — with the session running each step and that step's report
+  status. `flockctl wave get --wave-id <id>` adds the step briefs and the
+  conductor's roadmap; an unambiguous prefix of the id is enough.
+- `flockctl wave cancel` is the operator's stop control: a live wave is parked
+  and its running executors are told to stop, a queued wave is dropped.
+  `flockctl wave steer` sends one message to every running executor of a
+  wave; `flockctl wave amend` and `flockctl wave skip` change a step that has
+  not been dispatched yet. Each posts a notice in the conductor chat.
+- `flockctl wave roadmap --conductor-session-id <id>` reads the goal a
+  conductor published with a `distill-roadmap` block; the conductor changes
+  it by publishing a new block.
+- `flockctl session list` and `flockctl session get` report
+  `parent_session_id`, `wave_id` and `wave_step`, so a conductor can tell its
+  own workers from the operator's chats. `flockctl info context
+  --session-id <your id>` describes your own session beside the chat the user
+  is viewing.

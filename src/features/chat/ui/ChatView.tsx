@@ -118,6 +118,7 @@ import {
 import type { WaveStep } from "@/features/conductor/flockWave";
 import type { WorkerBrief } from "@/features/conductor/ConductorTranscriptContext";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
+import { OPERATOR_STOP_REASON } from "@/features/conductor/waveStop";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
 import { ConductorBackBanner } from "@/features/conductor/ui/ConductorBackBanner";
@@ -749,7 +750,7 @@ export function ChatView({
     isPreparingInitialTranscript,
   ]);
   const handleStopChild = useCallback((childSessionId: string) => {
-    void stopOrchestratorSession(childSessionId);
+    void stopOrchestratorSession(childSessionId, OPERATOR_STOP_REASON);
   }, []);
   const openChildChatTab = useChildChatTabsStore((s) => s.open);
   const handleNavigateToChild = useCallback(

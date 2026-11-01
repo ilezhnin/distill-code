@@ -32,6 +32,9 @@ interface ListSessionsResult {
     session_id: string;
     title: string;
     project_id: string | null;
+    parent_session_id: string | null;
+    wave_id: string | null;
+    wave_step: number | null;
     effort: string | null;
     fast_mode: boolean | null;
     updated_at: string;
@@ -59,13 +62,17 @@ export const listSessionsCommand = defineCommand({
 
 Result:
   {"sessions": [{"session_id": "...", "title": "...",
-                 "project_id": "..."|null, "effort": "..."|null,
-                 "fast_mode": true|false|null, "updated_at": "...",
-                 "is_running": false, "chat_state": "idle",
-                 "message_count": 12}, ...]}
-  Most recent first; archived sessions are excluded. "effort" and
-  "fast_mode" are what each session's model last acknowledged; null means
-  none was recorded and the model runs at its own default.`,
+                 "project_id": "..."|null, "parent_session_id": "..."|null,
+                 "wave_id": "..."|null, "wave_step": 1|null,
+                 "effort": "..."|null, "fast_mode": true|false|null,
+                 "updated_at": "...", "is_running": false,
+                 "chat_state": "idle", "message_count": 12}, ...]}
+  Most recent first; archived sessions are excluded. "parent_session_id"
+  is the chat the session was started under (a conductor, or the session
+  that passed --parent-session-id); "wave_id" and "wave_step" are set for a
+  wave's executors. "effort" and "fast_mode" are what each session's model
+  last acknowledged; null means none was recorded and the model runs at its
+  own default.`,
   schema: listSessionsSchema,
   execute: async (args): Promise<ListSessionsResult> => {
     const [
@@ -111,6 +118,9 @@ Result:
           session_id: session.id,
           title: session.title,
           project_id: session.projectId ?? null,
+          parent_session_id: metadata.parent_session_id,
+          wave_id: metadata.wave_id,
+          wave_step: metadata.wave_step,
           effort: metadata.effort,
           fast_mode: metadata.fast_mode,
           updated_at: session.updatedAt,

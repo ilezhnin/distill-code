@@ -132,6 +132,15 @@ function parseNode(value: unknown): SessionNode | null {
       : undefined,
     taskId: typeof raw.taskId === "string" ? raw.taskId : undefined,
     parentAcknowledged: raw.parentAcknowledged === true ? true : undefined,
+    stopReason:
+      typeof raw.stopReason === "string" && raw.stopReason
+        ? raw.stopReason.slice(0, 500)
+        : undefined,
+    interruptedByRestart: raw.interruptedByRestart === true ? true : undefined,
+    supersededBySessionId:
+      typeof raw.supersededBySessionId === "string" && raw.supersededBySessionId
+        ? raw.supersededBySessionId
+        : undefined,
   };
 }
 

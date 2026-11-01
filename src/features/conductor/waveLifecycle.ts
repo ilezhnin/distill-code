@@ -49,12 +49,15 @@ import { createSystemNotificationMessage } from "@/shared/types/messages";
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { deliverEnvelope } from "./digestDelivery";
 import { parseFlockVerdict } from "./flockVerdict";
+import type { ConductorRoadmap } from "./flockRoadmap";
+import { parseFlockWave } from "./flockWave";
 import type { SessionNode } from "./types";
 import {
   admitWavePlan,
   collectWaveStepReports,
   createWaveState,
   hasAttestedWaveStepReport,
+  waveStepNode,
   withVerdictIssue,
   withWavePhase,
   type WavePhase,
@@ -65,10 +68,13 @@ import {
   buildWaveDigest,
   findDigestMessageIndex,
   findVerdictMessageAfter,
+  shortWaveId,
   waveDigestMarker,
   waveGitDeltaOf,
   type DigestEntry,
 } from "./waveDigest";
+import { buildGoalContinueInstruction } from "./wavePrompts";
+import { goalLoopNoticeText } from "./waveNotices";
 import {
   ownedWaveFinalBinding,
   resetWaveArtifactProbeForTests,
@@ -86,9 +92,11 @@ import {
   waveClosureNoticeText,
 } from "./waveNotices";
 import {
+  MAX_WAVE_REVISIONS,
   decideWaveVerdict,
   digestLostDecision,
   digestUndeliverableDecision,
+  isWaveLive,
   isWaveRetired,
   verdictUnansweredDecision,
   waveInterruptedDecision,
@@ -108,9 +116,11 @@ import {
 } from "./taskMemory";
 import { readConductorTranscript } from "./waveTranscripts";
 import {
+  hasWaveTombstone,
   setWaveEngineState,
   updateWaveEngineState,
   withProcessedMessageWatermark,
+  withRoadmap,
   withWave,
   withWaveTombstone,
   withoutWave,
@@ -178,14 +188,12 @@ export function restoreParkedWaveNotices(
   }
 }
 
-function nodesByWave(waveId: string): Map<number, SessionNode> {
+function nodesByWave(wave: WaveState): Map<number, SessionNode> {
+  const nodes = Object.values(useConductorGraphStore.getState().nodesById);
   const byStep = new Map<number, SessionNode>();
-  for (const node of Object.values(
-    useConductorGraphStore.getState().nodesById,
-  )) {
-    if (node.waveId !== waveId) continue;
-    if (typeof node.stepIndex !== "number") continue;
-    byStep.set(node.stepIndex, node);
+  for (const step of wave.steps) {
+    const node = waveStepNode(wave, step.stepIndex, nodes);
+    if (node) byStep.set(step.stepIndex, node);
   }
   return byStep;
 }
@@ -199,19 +207,50 @@ function nodesByWave(waveId: string): Map<number, SessionNode> {
  */
 function digestEntriesFor(wave: WaveState): DigestEntry[] {
   const graph = useConductorGraphStore.getState();
-  const byStep = nodesByWave(wave.waveId);
+  const byStep = nodesByWave(wave);
   return collectWaveStepReports(
     wave,
     graph.getReport,
     (stepIndex) => byStep.get(stepIndex)?.status,
-  ).map((entry) => ({
-    node: {
-      displayName:
-        byStep.get(entry.stepIndex)?.displayName ??
-        `Step ${entry.stepIndex + 1}`,
-    },
-    report: entry.report,
-  }));
+  ).map((entry) => {
+    const node = byStep.get(entry.stepIndex);
+    const step = wave.steps.find(
+      (candidate) => candidate.stepIndex === entry.stepIndex,
+    );
+    // The app's own facts about the step, beside the worker's account: how
+    // it was routed, and why it was stopped when the app stopped it.
+    const notes = [
+      ...(step?.dispatchNote ? [step.dispatchNote] : []),
+      ...(node?.stopReason &&
+      (entry.report.status === "cancelled" || node.status === "stopped") &&
+      !entry.report.summary.includes(node.stopReason)
+        ? [node.stopReason]
+        : []),
+    ];
+    return {
+      node: {
+        displayName: node?.displayName ?? `Step ${entry.stepIndex + 1}`,
+      },
+      report: entry.report,
+      ...(notes.length > 0 ? { appNote: notes.join(" ") } : {}),
+    };
+  });
+}
+
+/** The conductor's other live or queued waves, as the digest names them. */
+function otherWavesOf(state: WaveEngineState, wave: WaveState) {
+  return state.waves
+    .filter(
+      (candidate) =>
+        candidate.conductorSessionId === wave.conductorSessionId &&
+        candidate.waveId !== wave.waveId &&
+        (isWaveLive(candidate) || candidate.phase === "queued"),
+    )
+    .map((candidate) => ({
+      waveId: shortWaveId(candidate.waveId),
+      stepCount: candidate.steps.length,
+      phase: candidate.phase,
+    }));
 }
 
 /**
@@ -225,7 +264,7 @@ function digestEntriesFor(wave: WaveState): DigestEntry[] {
  */
 function recordWaveInMemory(wave: WaveState): void {
   const graph = useConductorGraphStore.getState();
-  const byStep = nodesByWave(wave.waveId);
+  const byStep = nodesByWave(wave);
   const labels = new Map(
     wave.steps.map((step) => [step.stepIndex, step.label]),
   );
@@ -448,7 +487,16 @@ export function processWaveVerdicts(
       }
       continue;
     }
-    const answer = findVerdictMessageAfter(messages, digestIndex);
+    const answer = findVerdictMessageAfter(messages, digestIndex, {
+      // A message the engine already spent — another wave's verdict, or a
+      // plan it admitted — is not this wave's answer, wherever it sits.
+      isConsumed: (messageId) => hasWaveTombstone(next, messageId),
+      waveId: wave.waveId,
+      namedWaveOf: (message) => {
+        const parsed = parseFlockVerdict(getTextContent(message));
+        return parsed.kind === "verdict" ? parsed.verdict.waveId : undefined;
+      },
+    });
     if (!answer) {
       // The digest landed and no answer followed it. While the conductor is
       // working, that is the normal state of the loop; once it is idle or in
@@ -591,12 +639,12 @@ function applyVerdictDecision(
       carriedReports: collectWaveStepReports(
         wave,
         useConductorGraphStore.getState().getReport,
-        (stepIndex) => nodesByWave(wave.waveId).get(stepIndex)?.status,
+        (stepIndex) => nodesByWave(wave).get(stepIndex)?.status,
       ).map((entry) => ({ ...entry, fromPreviousWave: true })),
       // An owned revision continues the native lineage and root budget.
       carriedBindingIds: ownedWaveLineage(
         wave,
-        (stepIndex) => nodesByWave(wave.waveId).get(stepIndex)?.status,
+        (stepIndex) => nodesByWave(wave).get(stepIndex)?.status,
       ),
     });
     next = withWave(next, revision);
@@ -613,6 +661,9 @@ function applyVerdictDecision(
   next = isWaveRetired(closed)
     ? withoutWave(next, wave.waveId)
     : withWave(next, closed);
+  if (decision.phase === "accepted") {
+    next = armGoalContinuation(next, wave.conductorSessionId);
+  }
   // The wave is leaving the live loop (retired now or parked for the
   // operator); its record outlives it — the engine state will not.
   recordWaveClose(
@@ -794,6 +845,9 @@ export function processWaveDigests(
       waveId: live.waveId,
       attempt: live.digestAttempt,
       entries: digestEntriesFor(live),
+      revisionsLeft: Math.max(0, MAX_WAVE_REVISIONS - live.revisionCount),
+      maxRevisions: MAX_WAVE_REVISIONS,
+      otherWaves: otherWavesOf(next, live),
       ...(live.stalled ? { stalled: true } : {}),
       ...(gitDelta ? { gitDelta } : {}),
       ...(artifacts ? { artifacts } : {}),
@@ -902,9 +956,272 @@ export function startDigestDispatch(
   })();
 }
 
+/**
+ * How many "continue toward the goal" turns one goal may spend. Each one is a
+ * conductor turn plus the wave it plans; forty is a long working day of
+ * stages, and a goal that needs more is one the operator should look at.
+ */
+export const MAX_GOAL_CONTINUE_TURNS = 40;
+
+/** Opening of every goal-turn marker. */
+export const GOAL_MARKER_PREFIX = "[flock-goal:";
+
+/** The marker line of one continue turn, by conductor and attempt. */
+export function goalTurnMarker(conductorSessionId: string, attempt: number) {
+  return `${GOAL_MARKER_PREFIX}${conductorSessionId.replace(/[^A-Za-z0-9:_-]/g, "-")}#${attempt}]`;
+}
+
+/** A continue turn the shell wants to send once the tick has committed. */
+export interface PendingGoalDispatch {
+  conductorSessionId: string;
+  attempt: number;
+  text: string;
+}
+
+/** Continue turns whose delivery is in flight in this process. */
+const inFlightGoalTurns = new Set<string>();
+
+function goalKey(conductorSessionId: string, attempt: number): string {
+  return `${conductorSessionId}#${attempt}`;
+}
+
+/**
+ * Decides, on an accepted wave, whether the conductor is asked to go on.
+ *
+ * Only a roadmap whose status is "in-progress" arms a turn; a conductor with
+ * no roadmap or a closed one is done when its wave is accepted, exactly as
+ * before. One turn at a time: a second accept while a turn is in flight (two
+ * concurrent waves closing together) joins the one already armed. Phase
+ * first, like every other transition here — `pending` is persisted before
+ * anything is sent, so a crash resumes into a turn that is still owed.
+ */
+function armGoalContinuation(
+  state: WaveEngineState,
+  conductorSessionId: string,
+): WaveEngineState {
+  const roadmap = state.roadmaps[conductorSessionId];
+  if (!roadmap || roadmap.status !== "in-progress") return state;
+  if (roadmap.continueTurn) return state;
+  // While another wave of the conductor is still live, its digest is still
+  // to come; the goal turn waits for the conductor's hands to be free.
+  if (
+    state.waves.some(
+      (wave) =>
+        wave.conductorSessionId === conductorSessionId && isWaveLive(wave),
+    )
+  ) {
+    return state;
+  }
+  return armGoalTurnNow(state, roadmap);
+}
+
+function armGoalTurnNow(
+  state: WaveEngineState,
+  roadmap: ConductorRoadmap,
+): WaveEngineState {
+  if (roadmap.continueTurns >= MAX_GOAL_CONTINUE_TURNS) {
+    appendNotice(
+      roadmap.conductorSessionId,
+      goalLoopNoticeText({ kind: "capped", max: MAX_GOAL_CONTINUE_TURNS }),
+      "warning",
+    );
+    return withRoadmap(state, {
+      ...roadmap,
+      status: "paused",
+      updatedAt: Date.now(),
+    });
+  }
+  const attempt = roadmap.continueTurns + 1;
+  return withRoadmap(state, {
+    ...roadmap,
+    continueTurns: attempt,
+    continueTurn: { attempt, phase: "pending", startedAt: Date.now() },
+  });
+}
+
+/**
+ * Goal pass. Runs after the roadmap pass and before plan admission.
+ *
+ * Three jobs: a roadmap that went "in-progress" while its conductor has no
+ * live wave gets a turn armed (the operator set the goal while nothing ran);
+ * an armed turn is built into a message for the shell to send; and a sent
+ * turn's answer is read — a plan means the loop goes on (admission picks it
+ * up on this same tick), a roadmap that closed the goal ends it, and an
+ * answer with neither pauses it so the conductor is never nudged in a loop
+ * it has stopped answering.
+ */
+export function processGoalTurns(
+  state: WaveEngineState,
+  onHydrated: () => void,
+): { state: WaveEngineState; pending: PendingGoalDispatch[] } {
+  let next = state;
+  const pending: PendingGoalDispatch[] = [];
+  for (const roadmap of Object.values(next.roadmaps)) {
+    const conductorSessionId = roadmap.conductorSessionId;
+    const live = next.waves.some(
+      (wave) =>
+        wave.conductorSessionId === conductorSessionId && isWaveLive(wave),
+    );
+    if (!roadmap.continueTurn) {
+      // A roadmap closed by the conductor while a turn was owed, or set with
+      // nothing running: the first case is done, the second starts the loop.
+      if (roadmap.status !== "in-progress" || live) continue;
+      if (roadmap.continueTurns > 0) continue;
+      // The goal was just published and nothing of the conductor's is live:
+      // the conductor's own message carried the first plan, or it will plan
+      // on the operator's next word. Nothing to send yet.
+      continue;
+    }
+    const turn = roadmap.continueTurn;
+    const key = goalKey(conductorSessionId, turn.attempt);
+    if (roadmap.status !== "in-progress") {
+      // The roadmap pass applied a block that closed or paused the goal.
+      next = withRoadmap(next, withoutContinueTurn(roadmap));
+      appendNotice(
+        conductorSessionId,
+        goalLoopNoticeText(
+          roadmap.status === "reached"
+            ? { kind: "reached" }
+            : roadmap.status === "needs-operator"
+              ? { kind: "needs-operator" }
+              : { kind: "paused" },
+        ),
+        "warning",
+      );
+      continue;
+    }
+    if (turn.phase === "pending") {
+      if (inFlightGoalTurns.has(key)) continue;
+      const text = `${goalTurnMarker(conductorSessionId, turn.attempt)}\n${buildGoalContinueInstruction(
+        {
+          roadmap,
+          turn: turn.attempt,
+          maxTurns: MAX_GOAL_CONTINUE_TURNS,
+        },
+      )}`;
+      next = withRoadmap(next, {
+        ...roadmap,
+        continueTurn: { ...turn, phase: "dispatching" },
+      });
+      inFlightGoalTurns.add(key);
+      pending.push({ conductorSessionId, attempt: turn.attempt, text });
+      appendNotice(
+        conductorSessionId,
+        goalLoopNoticeText({ kind: "continued", turn: turn.attempt }),
+        "warning",
+      );
+      continue;
+    }
+    if (inFlightGoalTurns.has(key)) continue;
+    const transcript = readConductorTranscript(conductorSessionId, onHydrated);
+    if (transcript.kind === "unknown") continue;
+    const marker = goalTurnMarker(conductorSessionId, turn.attempt);
+    const markerIndex = findDigestMessageIndex(transcript.messages, marker);
+    if (markerIndex < 0) {
+      if (turn.phase === "dispatching") continue;
+      // Landed once (the phase says so) and gone now: the queue was cleared.
+      // The loop pauses rather than nudging into a transcript that lost it.
+      next = withRoadmap(next, {
+        ...withoutContinueTurn(roadmap),
+        status: "paused",
+        updatedAt: Date.now(),
+      });
+      appendNotice(
+        conductorSessionId,
+        goalLoopNoticeText({ kind: "paused" }),
+        "warning",
+      );
+      continue;
+    }
+    const answer = findVerdictMessageAfter(transcript.messages, markerIndex);
+    if (!answer) {
+      if (turn.phase === "dispatching") {
+        next = withRoadmap(next, {
+          ...roadmap,
+          continueTurn: { ...turn, phase: "awaiting" },
+        });
+      }
+      continue;
+    }
+    // Answered. A plan in it is the loop going on — admission reads that
+    // message on this very tick; a roadmap that closed the goal was applied
+    // by the roadmap pass and handled above; anything else pauses the loop.
+    const planned = parseFlockWave(getTextContent(answer)).kind === "plan";
+    if (planned) {
+      next = withRoadmap(next, withoutContinueTurn(roadmap));
+      continue;
+    }
+    next = withRoadmap(next, {
+      ...withoutContinueTurn(roadmap),
+      status: "paused",
+      updatedAt: Date.now(),
+    });
+    appendNotice(
+      conductorSessionId,
+      goalLoopNoticeText({ kind: "paused" }),
+      "warning",
+    );
+  }
+  return { state: next, pending };
+}
+
+function withoutContinueTurn(roadmap: ConductorRoadmap): ConductorRoadmap {
+  const { continueTurn: _cleared, ...rest } = roadmap;
+  return rest;
+}
+
+/**
+ * Sends one continue turn. Called after the tick has committed its state,
+ * exactly like a digest; `onSettled` re-runs the tick.
+ */
+export function startGoalDispatch(
+  dispatch: PendingGoalDispatch,
+  onSettled: () => void,
+): void {
+  const key = goalKey(dispatch.conductorSessionId, dispatch.attempt);
+  void (async () => {
+    try {
+      const result = await deliverEnvelope(
+        dispatch.conductorSessionId,
+        dispatch.text,
+      );
+      updateWaveEngineState((state) => {
+        const roadmap = state.roadmaps[dispatch.conductorSessionId];
+        if (!roadmap?.continueTurn) return state;
+        if (roadmap.continueTurn.attempt !== dispatch.attempt) return state;
+        if (result.status === "failed") {
+          return withRoadmap(state, {
+            ...withoutContinueTurn(roadmap),
+            status: "paused",
+            updatedAt: Date.now(),
+          });
+        }
+        return withRoadmap(state, {
+          ...roadmap,
+          continueTurn: { ...roadmap.continueTurn, phase: "awaiting" },
+        });
+      });
+      if (result.status === "failed") {
+        appendNotice(
+          dispatch.conductorSessionId,
+          goalLoopNoticeText({
+            kind: "undeliverable",
+            detail: result.detail ?? "",
+          }),
+          "error",
+        );
+      }
+    } finally {
+      inFlightGoalTurns.delete(key);
+      onSettled();
+    }
+  })();
+}
+
 /** Clears the process-local guards. Tests only. */
 export function resetWaveLifecycleForTests(): void {
   inFlightDigests.clear();
+  inFlightGoalTurns.clear();
   announcedClosures.clear();
   verdictSilence.clear();
   resetWaveGitProbeForTests();

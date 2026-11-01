@@ -23,6 +23,13 @@ import { listModelsCommand } from "./impl/listModels";
 import { listProjectsCommand } from "./impl/listProjects";
 import { listSessionsCommand } from "./impl/listSessions";
 import { listSkillsCommand } from "./impl/listSkills";
+import { amendWaveStepCommand } from "./impl/amendWaveStep";
+import { cancelWaveCommand } from "./impl/cancelWave";
+import { getRoadmapCommand } from "./impl/getRoadmap";
+import { getWaveCommand } from "./impl/getWave";
+import { listWavesCommand } from "./impl/listWaves";
+import { skipWaveStepCommand } from "./impl/skipWaveStep";
+import { steerWaveCommand } from "./impl/steerWave";
 import { moveSessionCommand } from "./impl/moveSession";
 import { openSessionCommand } from "./impl/openSession";
 import { renameSessionCommand } from "./impl/renameSession";
@@ -143,6 +150,34 @@ export const ALL_TOOL_GROUPS = {
       create: createSkillCommand,
       list: listSkillsCommand,
       get: getSkillCommand,
+    },
+  },
+  waves: {
+    description:
+      "Inspect and steer the conductor's waves: list, get, cancel, steer the " +
+      "running executors, amend or skip a pending step, read the roadmap.",
+    cli: {
+      noun: "wave",
+      about:
+        "Inspect and steer the conductor's waves: list, get, cancel, steer, amend, skip, roadmap",
+      verbs: {
+        list: "list",
+        get: "get",
+        cancel: "cancel",
+        steer: "steer",
+        amend: "amend",
+        skip: "skip",
+        roadmap: "roadmap",
+      },
+    },
+    actions: {
+      list: listWavesCommand,
+      get: getWaveCommand,
+      cancel: cancelWaveCommand,
+      steer: steerWaveCommand,
+      amend: amendWaveStepCommand,
+      skip: skipWaveStepCommand,
+      roadmap: getRoadmapCommand,
     },
   },
   info: {

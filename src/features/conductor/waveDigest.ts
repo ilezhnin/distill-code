@@ -39,8 +39,10 @@ import {
   buildWaveStalledLine,
   buildWaveGitDeltaLine,
   buildWaveVerdictRetryInstruction,
+  type DigestLiveWaveFact,
   type WaveGitDeltaFacts,
 } from "./wavePrompts";
+import { MAX_WAVE_REVISIONS } from "./waveVerdict";
 
 /** Opening of every digest marker. Also the cheap reject before a real parse. */
 export const DIGEST_MARKER_PREFIX = "[flock-digest:";
@@ -153,15 +155,51 @@ export function findDigestMessageIndex(
 export function findVerdictMessageAfter(
   messages: readonly Message[] | undefined,
   digestIndex: number,
+  options: {
+    /**
+     * True for a message the engine already spent — another wave's verdict,
+     * or a plan it admitted. With several waves awaiting verdicts, the first
+     * assistant message after one digest may be the answer to another.
+     */
+    isConsumed?: (messageId: string) => boolean;
+    /**
+     * The wave this scan is for. An answer that names a different wave in its
+     * verdict is not this wave's, however it is positioned.
+     */
+    waveId?: string;
+    /** The wave a message's verdict names, when it names one. */
+    namedWaveOf?: (message: Message) => string | undefined;
+  } = {},
 ): Message | undefined {
   if (!messages?.length || digestIndex < 0) return undefined;
   for (let index = digestIndex + 1; index < messages.length; index += 1) {
     const message = messages[index];
     if (message.role !== "assistant") continue;
     if (message.metadata?.completionStatus === "inProgress") continue;
+    if (options.isConsumed?.(message.id)) continue;
+    const named = options.namedWaveOf?.(message);
+    if (named && options.waveId && !sameWaveId(named, options.waveId)) {
+      continue;
+    }
     return message;
   }
   return undefined;
+}
+
+/**
+ * True when a wave id the conductor wrote names this wave: the full id, or
+ * the short prefix the digest spelled it with.
+ */
+export function sameWaveId(named: string, waveId: string): boolean {
+  const short = named.trim().toLowerCase();
+  if (!short) return false;
+  const full = waveId.toLowerCase();
+  return full === short || (short.length >= 6 && full.startsWith(short));
+}
+
+/** The id a digest spells a wave with: the first block of its UUID. */
+export function shortWaveId(waveId: string): string {
+  return waveId.split("-")[0] ?? waveId;
 }
 
 /**
@@ -245,6 +283,12 @@ function nextProtocolBlock(
 export interface DigestEntry {
   node: Pick<SessionNode, "displayName">;
   report: StructuredReport;
+  /**
+   * A fact about the step the app knows and the worker does not: it ran on a
+   * model the ranking fell back to, say, or it was resumed after a restart.
+   * Printed as the app's line, after the report and marked as such.
+   */
+  appNote?: string;
 }
 
 /**
@@ -265,7 +309,14 @@ export function waveGitDeltaOf(
 }
 
 function digestBody(entries: readonly DigestEntry[]): string {
-  return stripProtocolFences(formatConductorAnswer([...entries]));
+  return entries
+    .map((entry) => {
+      const body = stripProtocolFences(formatConductorAnswer([entry]));
+      return entry.appNote
+        ? `${body}\nAPP NOTE — written by the app, not by this worker: ${entry.appNote}`
+        : body;
+    })
+    .join("\n\n");
 }
 
 /**
@@ -312,6 +363,11 @@ export function buildWaveDigest(args: {
    * saying so — the conductor must judge a shortened digest knowingly.
    */
   stalled?: boolean;
+  /** Revisions the root request may still spend, out of `maxRevisions`. */
+  revisionsLeft?: number;
+  maxRevisions?: number;
+  /** The conductor's other live or queued waves, named so the verdict can be. */
+  otherWaves?: readonly DigestLiveWaveFact[];
 }): string {
   return [
     waveDigestMarker(args.waveId, args.attempt),
@@ -319,7 +375,13 @@ export function buildWaveDigest(args: {
     args.verdictIssue
       ? buildWaveVerdictRetryInstruction(args.verdictIssue)
       : "",
-    buildWaveDigestInstruction(args.entries.length),
+    buildWaveDigestInstruction({
+      stepCount: args.entries.length,
+      waveId: args.waveId,
+      revisionsLeft: args.revisionsLeft ?? MAX_WAVE_REVISIONS,
+      maxRevisions: args.maxRevisions ?? MAX_WAVE_REVISIONS,
+      ...(args.otherWaves?.length ? { otherWaves: args.otherWaves } : {}),
+    }),
     args.gitDelta ? buildWaveGitDeltaLine(args.gitDelta) : "",
     args.nativeChangedFiles !== undefined
       ? buildWaveNativeChangeLine(args.nativeChangedFiles)

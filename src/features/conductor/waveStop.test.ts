@@ -80,7 +80,10 @@ describe("stopWaveByOperator", () => {
     // `spawning` step has nothing to stop yet — the runner's adoption guard
     // covers its late arrival.
     expect(stopOrchestratorSession).toHaveBeenCalledTimes(1);
-    expect(stopOrchestratorSession).toHaveBeenCalledWith("child-0");
+    expect(stopOrchestratorSession).toHaveBeenCalledWith(
+      "child-0",
+      expect.stringContaining("the wave was cancelled"),
+    );
     expect(noticeTexts()).toEqual([
       expect.stringContaining(
         i18n.t("chat:conductor.wave.verdict.reason.operatorStopped"),

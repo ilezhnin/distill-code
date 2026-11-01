@@ -570,6 +570,13 @@ describe("action schemas", () => {
       "info.list_harnesses": {},
       "info.list_models": {},
       "info.get_context": {},
+      "waves.list": {},
+      "waves.get": { wave_id: "wave-1" },
+      "waves.cancel": { wave_id: "wave-1" },
+      "waves.steer": { wave_id: "wave-1", prompt: "pause" },
+      "waves.amend": { wave_id: "wave-1", step: 2, text: "also check" },
+      "waves.skip": { wave_id: "wave-1", step: 2 },
+      "waves.roadmap": { conductor_session_id: "s1" },
     };
 
     for (const [groupName, group] of Object.entries(TOOL_GROUPS)) {

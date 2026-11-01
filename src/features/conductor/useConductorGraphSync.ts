@@ -28,6 +28,8 @@ import type { Message } from "@/shared/types/messages";
 import type { RunStatus, SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
 import { runWaveEngineTick } from "./waveRunner";
+import { WAVE_STOP_REASONS } from "./waveStop";
+import { readWorkerTranscript } from "./waveTranscripts";
 import {
   isBenchmarkSession,
   taskBindingId,
@@ -79,7 +81,14 @@ function reconcileStaleStatusesOnce(): void {
     },
   );
   for (const sessionId of staleSessionIds) {
-    graph.patchNode(sessionId, { status: "stopped" });
+    // The mark is what lets the wave engine tell a step the app died under
+    // from one the operator stopped: the first is resumed once, the second
+    // is not. The reason rides along so the chip and the digest say it.
+    graph.patchNode(sessionId, {
+      status: "stopped",
+      interruptedByRestart: true,
+      stopReason: WAVE_STOP_REASONS.appRestart,
+    });
   }
 }
 
@@ -383,6 +392,15 @@ function runSyncPass(): void {
     ) {
       continue;
     }
+    // No last message in the cache is not "the worker said nothing": the
+    // cache holds only the sessions this window opened, and a wave child is
+    // one nobody opens. Before a stand-in is written for a run that ended,
+    // the transcript is read from the host; a stand-in goes in only for a
+    // session that stays empty after the bounded retries.
+    if (!summary && node.managedBy === "wave") {
+      const transcript = readWorkerTranscript(node.sessionId, () => undefined);
+      if (transcript.kind === "unknown") continue;
+    }
     const fallback =
       summary ??
       (reportStatus === "failed"
@@ -390,7 +408,9 @@ function runSyncPass(): void {
           lastFailureReason(messages) ||
           RUN_FALLBACK_SUMMARIES.failed
         : reportStatus === "cancelled"
-          ? RUN_FALLBACK_SUMMARIES.cancelled
+          ? node.stopReason
+            ? `${RUN_FALLBACK_SUMMARIES.cancelled} ${node.stopReason}`
+            : RUN_FALLBACK_SUMMARIES.cancelled
           : RUN_FALLBACK_SUMMARIES.completed);
     // A run that ended without a word of its own gets a stand-in, flagged as
     // the app's writing: the digest needs a line for the step, but the wave

@@ -638,6 +638,187 @@ describe("wave closed loop", () => {
     });
   });
 
+  it("says in the digest how many revisions the request has left", async () => {
+    await runWaveToDigest();
+    const digest = conductorMessages().find(
+      (message) => message.role === "user",
+    );
+    expect(digest).toBeDefined();
+    const text = digest?.content.find((block) => block.type === "text");
+    expect(text && "text" in text ? text.text : "").toContain(
+      "has 2 of 2 revisions left",
+    );
+  });
+
+  it("closes the wave a verdict names when two digests are waiting", async () => {
+    const SECOND_PLAN = `\`\`\`distill-wave\n{"steps":[{"role":"scout","subtask":"Map the assets","access":[]}]}\n\`\`\``;
+    appendConductorMessage(assistant("plan-2", SECOND_PLAN));
+    await settle();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+    const waves = getWaveEngineState().waves;
+    expect(waves).toHaveLength(2);
+    completeAllSteps();
+    await settle();
+    const [first, second] = getWaveEngineState().waves;
+    expect(first.phase).toBe("awaitingVerdict");
+    expect(second.phase).toBe("awaitingVerdict");
+    const digests = conductorMessages().filter(
+      (message) => message.role === "user",
+    );
+    expect(digests).toHaveLength(2);
+
+    // The conductor answers the SECOND wave's digest first, naming it by the
+    // short id the digest spelled. Positionally that message follows the
+    // first wave's digest too — and it must not close the first wave.
+    const shortSecond = second.waveId.split("-")[0];
+    appendConductorMessage(
+      assistant(
+        "verdict-2",
+        `Done with the assets.\n\n\`\`\`distill-verdict\n{"verdict":"accept","wave":"${shortSecond}"}\n\`\`\``,
+      ),
+    );
+    await settle();
+    expect(
+      getWaveEngineState().waves.map((wave) => [wave.waveId, wave.phase]),
+    ).toEqual([[first.waveId, "awaitingVerdict"]]);
+
+    // An unnamed verdict then closes the one still waiting.
+    appendConductorMessage(
+      assistant(
+        "verdict-1",
+        `Callers found.\n\n\`\`\`distill-verdict\n{"verdict":"accept"}\n\`\`\``,
+      ),
+    );
+    await settle();
+    expect(getWaveEngineState().waves).toHaveLength(0);
+  });
+
+  describe("the goal loop", () => {
+    const ROADMAP = `\`\`\`distill-roadmap\n{"goal":"Make the game playable","status":"in-progress","stages":[{"title":"Callers","status":"active"},{"title":"Assets","status":"pending"}]}\n\`\`\``;
+    const NEXT_PLAN = `\`\`\`distill-wave\n{"steps":[{"role":"scout","subtask":"Map the assets","access":[]}]}\n\`\`\``;
+
+    function goalTurns(): string[] {
+      return conductorMessages()
+        .filter((message) => message.role === "user")
+        .map((message) => {
+          const block = message.content.find((part) => part.type === "text");
+          return block && "text" in block ? block.text : "";
+        })
+        .filter((text) => text.startsWith("[flock-goal:"));
+    }
+
+    it("asks the conductor to continue after an accepted wave while the roadmap is in progress, and admits the next plan", async () => {
+      useChatStore.setState({
+        messagesBySession: {
+          [CONDUCTOR_ID]: [assistant("plan-1", `${PLAN}\n\n${ROADMAP}`)],
+        },
+      });
+      await runWaveToDigest();
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        goal: "Make the game playable",
+        status: "in-progress",
+        continueTurns: 0,
+      });
+      expect(noticeTexts().join("\n")).toContain("0 of 2 stages");
+
+      appendConductorMessage(
+        assistant(
+          "verdict-1",
+          `Callers found.\n\n\`\`\`distill-verdict\n{"verdict":"accept"}\n\`\`\``,
+        ),
+      );
+      await settle();
+      // The wave is closed and the app, not the operator, asks for the next
+      // stage: once, with the goal and the roadmap in the message.
+      expect(getWaveEngineState().waves).toHaveLength(0);
+      expect(goalTurns()).toHaveLength(1);
+      expect(goalTurns()[0]).toContain("GOAL CONTINUATION");
+      expect(goalTurns()[0]).toContain("Make the game playable");
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        continueTurns: 1,
+        continueTurn: { attempt: 1, phase: "awaiting" },
+      });
+      for (let index = 0; index < 3; index += 1) await settle();
+      expect(goalTurns()).toHaveLength(1);
+
+      // The conductor answers with the next wave: the loop goes on and the
+      // new wave is a fresh root request.
+      appendConductorMessage(assistant("plan-2", `Next.\n\n${NEXT_PLAN}`));
+      await settle();
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+      expect(getWaveEngineState().waves).toHaveLength(1);
+      expect(getWaveEngineState().waves[0]).toMatchObject({
+        planMessageId: "plan-2",
+        revisionCount: 0,
+      });
+      expect(
+        getWaveEngineState().roadmaps[CONDUCTOR_ID].continueTurn,
+      ).toBeUndefined();
+    });
+
+    it("stops the loop when the conductor declares the goal reached, and pauses it on an answer with no plan", async () => {
+      useChatStore.setState({
+        messagesBySession: {
+          [CONDUCTOR_ID]: [assistant("plan-1", `${PLAN}\n\n${ROADMAP}`)],
+        },
+      });
+      await runWaveToDigest();
+      appendConductorMessage(
+        assistant(
+          "verdict-1",
+          `\`\`\`distill-verdict\n{"verdict":"accept"}\n\`\`\``,
+        ),
+      );
+      await settle();
+      expect(goalTurns()).toHaveLength(1);
+
+      // Reached: the roadmap closes the goal, nothing more is asked.
+      appendConductorMessage(
+        assistant(
+          "done",
+          `All stages done.\n\n\`\`\`distill-roadmap\n{"goal":"Make the game playable","status":"reached","stages":[{"title":"Callers","status":"done"},{"title":"Assets","status":"done"}]}\n\`\`\``,
+        ),
+      );
+      await settle();
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        status: "reached",
+      });
+      expect(
+        getWaveEngineState().roadmaps[CONDUCTOR_ID].continueTurn,
+      ).toBeUndefined();
+      expect(noticeTexts().join("\n")).toContain(
+        i18n.t("chat:conductor.wave.goal.reached"),
+      );
+      expect(goalTurns()).toHaveLength(1);
+    });
+
+    it("pauses the loop when the conductor answers the continue turn without a plan", async () => {
+      useChatStore.setState({
+        messagesBySession: {
+          [CONDUCTOR_ID]: [assistant("plan-1", `${PLAN}\n\n${ROADMAP}`)],
+        },
+      });
+      await runWaveToDigest();
+      appendConductorMessage(
+        assistant(
+          "verdict-1",
+          `\`\`\`distill-verdict\n{"verdict":"accept"}\n\`\`\``,
+        ),
+      );
+      await settle();
+      appendConductorMessage(
+        assistant("shrug", "I am not sure what comes next."),
+      );
+      await settle();
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        status: "paused",
+      });
+      expect(noticeTexts().join("\n")).toContain(
+        i18n.t("chat:conductor.wave.goal.paused"),
+      );
+    });
+  });
+
   it("drops a parked wave when the conductor starts a new root request", async () => {
     await runWaveToDigest();
     appendConductorMessage(assistant("verdict-1", "no fence"));

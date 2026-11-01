@@ -23,12 +23,12 @@
         "list": {
           "action": "list",
           "about": "List the user's chat sessions (most recent first)",
-          "afterHelp": "Example:\n  flockctl session list --query \"review\" --limit 10 --json\n\nResult:\n  {\"sessions\": [{\"session_id\": \"...\", \"title\": \"...\",\n                 \"project_id\": \"...\"|null, \"effort\": \"...\"|null,\n                 \"fast_mode\": true|false|null, \"updated_at\": \"...\",\n                 \"is_running\": false, \"chat_state\": \"idle\",\n                 \"message_count\": 12}, ...]}\n  Most recent first; archived sessions are excluded. \"effort\" and\n  \"fast_mode\" are what each session's model last acknowledged; null means\n  none was recorded and the model runs at its own default."
+          "afterHelp": "Example:\n  flockctl session list --query \"review\" --limit 10 --json\n\nResult:\n  {\"sessions\": [{\"session_id\": \"...\", \"title\": \"...\",\n                 \"project_id\": \"...\"|null, \"parent_session_id\": \"...\"|null,\n                 \"wave_id\": \"...\"|null, \"wave_step\": 1|null,\n                 \"effort\": \"...\"|null, \"fast_mode\": true|false|null,\n                 \"updated_at\": \"...\", \"is_running\": false,\n                 \"chat_state\": \"idle\", \"message_count\": 12}, ...]}\n  Most recent first; archived sessions are excluded. \"parent_session_id\"\n  is the chat the session was started under (a conductor, or the session\n  that passed --parent-session-id); \"wave_id\" and \"wave_step\" are set for a\n  wave's executors. \"effort\" and \"fast_mode\" are what each session's model\n  last acknowledged; null means none was recorded and the model runs at its\n  own default."
         },
         "get": {
           "action": "get",
           "about": "Read one session's metadata and optionally its latest messages",
-          "afterHelp": "Example:\n  flockctl session get --session-id <session-id> --messages 5 --json\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"harness_id\": \"...\",\n   \"model_id\": \"...\"|null, \"effort\": \"...\"|null,\n   \"fast_mode\": true|false|null, \"agent_id\": \"...\"|null,\n   \"project_id\": \"...\"|null, \"working_dir\": \"...\"|null,\n   \"created_at\": \"...\", \"updated_at\": \"...\", \"archived\": false,\n   \"is_running\": false, \"is_open_in_window\": false,\n   \"chat_state\": \"idle\", \"message_count\": 12,\n   \"messages\": [{\"role\": \"user\"|\"assistant\"|null, \"text\": \"...\"}, ...]}\n  \"effort\" and \"fast_mode\" are the reasoning effort and fast mode the\n  session's model last acknowledged, in the harness's own words; null means\n  none was recorded and the model runs at its own default. \"messages\" is\n  present only when --messages > 0; each message text is truncated to 2000\n  chars."
+          "afterHelp": "Example:\n  flockctl session get --session-id <session-id> --messages 5 --json\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"parent_session_id\": \"...\"|null,\n   \"wave_id\": \"...\"|null, \"wave_step\": 1|null, \"harness_id\": \"...\",\n   \"model_id\": \"...\"|null, \"effort\": \"...\"|null,\n   \"fast_mode\": true|false|null, \"agent_id\": \"...\"|null,\n   \"project_id\": \"...\"|null, \"working_dir\": \"...\"|null,\n   \"created_at\": \"...\", \"updated_at\": \"...\", \"archived\": false,\n   \"is_running\": false, \"is_open_in_window\": false,\n   \"chat_state\": \"idle\", \"message_count\": 12,\n   \"messages\": [{\"role\": \"user\"|\"assistant\"|null, \"text\": \"...\"}, ...]}\n  \"effort\" and \"fast_mode\" are the reasoning effort and fast mode the\n  session's model last acknowledged, in the harness's own words; null means\n  none was recorded and the model runs at its own default. \"messages\" is\n  present only when --messages > 0; each message text is truncated to 2000\n  chars."
         },
         "rename": {
           "action": "rename",
@@ -156,6 +156,47 @@
         }
       }
     },
+    "wave": {
+      "group": "waves",
+      "about": "Inspect and steer the conductor's waves: list, get, cancel, steer, amend, skip, roadmap",
+      "verbs": {
+        "list": {
+          "action": "list",
+          "about": "List the conductor's waves with their steps and executors",
+          "afterHelp": "Example:\n  flockctl wave list --conductor-session-id <session-id> --json\n\nResult:\n  {\"waves\": [{\"wave_id\": \"...\", \"conductor_session_id\": \"...\",\n              \"phase\": \"running\"|\"queued\"|\"digestPending\"|\"dispatchingDigest\"|\"awaitingVerdict\"|\"needsOperator\",\n              \"live\": true, \"created_at\": \"...\", \"revision\": 0,\n              \"root_request_id\": \"...\", \"queued_position\": null|1,\n              \"closure\": null|{\"reason\": \"...\", \"note\": \"...\"|null, \"detail\": \"...\"|null},\n              \"steps\": [{\"step\": 1, \"role\": \"...\", \"label\": \"...\"|null,\n                         \"access\": \"none\"|\"all\", \"phase\": \"pending\"|\"spawning\"|\"spawned\"|\"failed\",\n                         \"session_id\": \"...\"|null, \"run_id\": \"...\"|null,\n                         \"status\": \"running\"|\"completed\"|...|null,\n                         \"stop_reason\": \"...\"|null, \"failure_reason\": \"...\"|null,\n                         \"dispatch_note\": \"...\"|null, \"resumed_from_session_id\": \"...\"|null,\n                         \"report\": null|{\"status\": \"...\", \"summary\": \"...\"}, \"subtask\": null}]}]}\n  Newest first. \"session_id\" is the chat running the step; read it with\n  `flockctl session get`. A step's \"report\" summary is truncated to 500\n  chars here; `flockctl wave get` gives 4000 and the step briefs."
+        },
+        "get": {
+          "action": "get",
+          "about": "Read one wave: its steps, briefs, executors, reports and roadmap",
+          "afterHelp": "Example:\n  flockctl wave get --wave-id <wave-id> --json\n\nResult:\n  {\"wave\": {... as `flockctl wave list`, with \"subtask\" filled and report\n            summaries up to 4000 chars ...},\n   \"roadmap\": null|{\"conductor_session_id\": \"...\", \"goal\": \"...\",\n                    \"status\": \"in-progress\"|\"paused\"|\"reached\"|\"needs-operator\",\n                    \"note\": \"...\"|null, \"updated_at\": \"...\", \"continue_turns\": 0,\n                    \"continue_turn_in_flight\": null|{\"attempt\": 1, \"phase\": \"...\"},\n                    \"stages\": [{\"stage\": 1, \"title\": \"...\", \"status\": \"pending\"|\"active\"|\"done\"|\"blocked\",\n                                \"evidence\": [\"...\"]}]}}"
+        },
+        "cancel": {
+          "action": "cancel",
+          "about": "Cancel a wave: stop its running executors or drop it from the queue",
+          "afterHelp": "Example:\n  flockctl wave cancel --wave-id <wave-id>\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"outcome\": \"stopped\"|\"dropped\"|\"already_closed\"}\n  \"stopped\": the wave was live and its executors were told to stop.\n  \"dropped\": the wave was queued and never started.\n  \"already_closed\": the wave had already left the live loop; nothing changed."
+        },
+        "steer": {
+          "action": "steer",
+          "about": "Send one message to every running executor of a wave",
+          "afterHelp": "Example:\n  flockctl wave steer --wave-id <wave-id> --prompt \"Pause: the operator is about to restart Unity. Save your state to STATUS.md and wait.\" --json\n\nResult:\n  {\"wave_id\": \"...\", \"deliveries\": [{\"session_id\": \"...\",\n      \"send_status\": \"dispatched\"|\"steered\"|\"queued\"|\"deduplicated\"|\"delivery_unconfirmed\"|\"not_delivered\"}]}\n  An empty \"deliveries\" list means no executor of the wave is running."
+        },
+        "amend": {
+          "action": "amend",
+          "about": "Add text to the brief of a step that has not started yet",
+          "afterHelp": "Example:\n  flockctl wave amend --wave-id <wave-id> --step 2 --text \"Also confirm the editor lock in Temp/UnityLockfile is released.\"\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 2}\n  Refused with \"wave_step_not_pending\" once the step has been dispatched."
+        },
+        "skip": {
+          "action": "skip",
+          "about": "Skip a step that has not started yet",
+          "afterHelp": "Example:\n  flockctl wave skip --wave-id <wave-id> --step 3\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 3}\n  Refused with \"wave_step_not_pending\" once the step has been dispatched."
+        },
+        "roadmap": {
+          "action": "roadmap",
+          "about": "Read a conductor's roadmap: its goal, stages and loop state",
+          "afterHelp": "Example:\n  flockctl wave roadmap --conductor-session-id <session-id> --json\n\nResult:\n  {\"roadmap\": null|{\"conductor_session_id\": \"...\", \"goal\": \"...\",\n                    \"status\": \"in-progress\"|\"paused\"|\"reached\"|\"needs-operator\",\n                    \"note\": \"...\"|null, \"updated_at\": \"...\", \"continue_turns\": 0,\n                    \"continue_turn_in_flight\": null|{\"attempt\": 1, \"phase\": \"pending\"|\"dispatching\"|\"awaiting\"},\n                    \"stages\": [{\"stage\": 1, \"title\": \"...\", \"status\": \"...\", \"evidence\": [\"...\"]}]}}\n  null means the conductor has not published a roadmap. The conductor\n  changes it by publishing a new block; there is no command that edits it."
+        }
+      }
+    },
     "info": {
       "group": "info",
       "about": "Look up installed harnesses, available models, and the app context",
@@ -172,8 +213,8 @@
         },
         "context": {
           "action": "get_context",
-          "about": "Read what the user is looking at in the app right now",
-          "afterHelp": "Example:\n  flockctl info context --json\n\nResult:\n  {\"view\": \"...\", \"active_session_id\": \"...\"|null,\n   \"active_project_id\": \"...\"|null, \"app_version\": \"...\"}"
+          "about": "Read what the user is looking at, or the caller's own context",
+          "afterHelp": "Example:\n  flockctl info context --session-id <your-session-id> --json\n\nResult:\n  {\"view\": \"...\", \"active_session_id\": \"...\"|null,\n   \"active_project_id\": \"...\"|null, \"app_version\": \"...\",\n   \"session\": null|{\"session_id\": \"...\", \"title\": \"...\", \"project_id\": \"...\"|null,\n                    \"working_dir\": \"...\"|null, \"parent_session_id\": \"...\"|null,\n                    \"root_conductor_id\": \"...\"|null, \"wave_id\": \"...\"|null,\n                    \"wave_step\": 1|null, \"role\": \"conductor\"|\"worker\"|...|null}}\n  \"active_*\" describe the chat the user is viewing, which need not be the\n  caller's; \"session\" describes the session named with --session-id."
         }
       }
     }

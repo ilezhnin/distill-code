@@ -135,14 +135,31 @@ work. Do not add interactive prompts or piecemeal auth in a command PR.
 
 An agent cannot discover which session it is running in from its environment:
 `AGENT_SESSION_ID` is never exported (one bridge process per harness), and
-`flockctl info context` reports the chat the operator is viewing, which need not
-be the caller's. The one channel is the app preamble: `appPreamble.ts`
-(`formatFlockctlPreamble`) states the session's own id, and `acpSendMessage`
-composes it per session. Commands that need a session id — `flock-monitor run`
-and `stop` above all — require it as an explicit `--session-id`, and the
-bundled `flock-monitor` skill tells the agent to take it from that preamble
-line. Do not add a "current session" default anywhere: the broker cannot tell
-which session called it, so any such default would deliver into the wrong chat.
+`flockctl info context` without `--session-id` reports the chat the operator
+is viewing, which need not be the caller's. The one channel is the app
+preamble: `appPreamble.ts` (`formatFlockctlPreamble`) states the session's
+own id, and `acpSendMessage` composes it per session. Commands that need a
+session id — `flock-monitor run` and `stop` above all — require it as an
+explicit `--session-id`, and the bundled `flock-monitor` skill tells the agent
+to take it from that preamble line. `info context --session-id <id>` then
+describes that session (its project, folder, parent chat and wave) beside the
+viewed chat. Do not add a "current session" default anywhere: the broker
+cannot tell which session called it, so any such default would deliver into
+the wrong chat.
+
+## Waves
+
+The `wave` noun is the conductor's view of its own brigade: `list` and
+`get` read the wave engine's state (`src/features/conductor/waveStore.ts`)
+with the session running each step; `cancel` is the operator's stop control
+(a live wave is parked and its executors told to stop, a queued wave is
+dropped); `steer` sends one message to every running executor through the
+same `session send` path; `amend` and `skip` change a step that has not
+been dispatched yet; `roadmap` reads the goal a conductor published with a
+`distill-roadmap` block. Every mutation posts a notice in the conductor chat.
+`session list` and `session get` carry `parent_session_id`, `wave_id` and
+`wave_step` from the conductor graph, so a conductor can tell its own workers
+apart from the operator's chats.
 
 ## Sessions started by a session
 

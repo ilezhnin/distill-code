@@ -26,6 +26,7 @@ Usage: flockctl <noun> <verb> [--json]
 - project: create, list, get, archive
 - agent: create, list
 - skill: create, list, get
+- wave: list, get, cancel, steer, amend, skip, roadmap
 - info: context, harnesses, models
 
 Run \`flockctl <noun> <verb> --help\` for arguments. When asked to switch or move this chat to a new worktree/folder, use \`folder replace\` on the current cwd attachment so the old folder is removed from context. Use \`folder set-cwd\` to select an already attached folder, or only when the old folder should remain additional context. Use \`folder attach\` only to add context without changing cwd; \`folder detach\` removes context without deleting files.`;
@@ -49,7 +50,7 @@ export function formatFlockctlPreamble(sessionId: string): string {
   if (!id) return FLOCKCTL_PREAMBLE;
   return `${FLOCKCTL_PREAMBLE}
 
-Your own session id is ${id}. Pass it explicitly as \`--session-id ${id}\` whenever a flockctl or flock-monitor command needs your session; there is no environment variable for it, \`flockctl info context\` reports the chat the user is viewing (not necessarily this one), and the working directory never identifies a session.
+Your own session id is ${id}. Pass it explicitly as \`--session-id ${id}\` whenever a flockctl or flock-monitor command needs your session; there is no environment variable for it, \`flockctl info context\` without --session-id reports the chat the user is viewing (not necessarily this one), and the working directory never identifies a session. \`flockctl wave list --conductor-session-id ${id}\` lists the waves this chat planned with the session running each step.
 When you start a session to take on part of your work, pass \`--parent-session-id ${id}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit it only for an independent chat the user asked for.`;
 }
 

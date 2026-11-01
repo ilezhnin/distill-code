@@ -197,6 +197,25 @@ function noticeTexts(): string[] {
   );
 }
 
+/**
+ * Children named by wave and step, for tests that run several waves at once:
+ * the default mock names them by step alone, and two waves' first steps would
+ * share one graph node.
+ */
+function spawnChildrenPerWave(): void {
+  spawnConductorChildSession.mockImplementation(async (args) => {
+    const sessionId = `${args.waveId}-child-${args.stepIndex}`;
+    const runId = `run-${sessionId}`;
+    registerSpawnedChild({
+      sessionId,
+      waveId: args.waveId,
+      stepIndex: args.stepIndex,
+      runId,
+    });
+    return { sessionId, runId };
+  });
+}
+
 function registerSpawnedChild(args: {
   sessionId: string;
   waveId: string;
@@ -411,7 +430,8 @@ describe("waveRunner", () => {
         phase: "started",
         sessionId: "child-0",
         runId: "run-1",
-        configuration: null,
+        // The journal records what actually ran, not a blank.
+        configuration: expect.objectContaining({ id: expect.any(String) }),
       }),
     );
   });
@@ -845,16 +865,17 @@ describe("waveRunner", () => {
     // replays its transcript, and the watermark is what keeps a months-old
     // plan from being read as a brand-new root request and spawning workers.
     useConductorGraphStore.getState().registerNode(conductorNode());
+    spawnChildrenPerWave();
     const oldPlan = { ...assistant("plan-old", TWO_STEP_PLAN), created: 1_000 };
     const newPlan = { ...assistant("plan-new", TWO_STEP_PLAN), created: 5_000 };
     setTranscript([oldPlan, newPlan]);
     runWaveEngineTick();
+    // Both plans are admitted — a conductor may run several waves at once —
+    // and each gets its own first worker.
     await vi.waitFor(() =>
-      expect(getWaveEngineState().waves[0]?.steps[0]?.sessionId).toBe(
-        "child-0",
-      ),
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
     );
-    expect(getWaveEngineState().waves).toHaveLength(1);
+    expect(getWaveEngineState().waves).toHaveLength(2);
     const spawnsSoFar = spawnConductorChildSession.mock.calls.length;
 
     // The cap evicts both tombstones and the wave closes: the only record left
@@ -1211,7 +1232,10 @@ describe("waveRunner", () => {
       // operator was already told this step died (Q2, no auto-retry).
       resolveSpawn({ sessionId: "late-child", runId: "late-run" });
       await vi.advanceTimersByTimeAsync(0);
-      expect(stopOrchestratorSession).toHaveBeenCalledWith("late-child");
+      expect(stopOrchestratorSession).toHaveBeenCalledWith(
+        "late-child",
+        expect.any(String),
+      );
       expect(getWaveEngineState().waves[0].steps[0].phase).toBe("failed");
     } finally {
       vi.useRealTimers();
@@ -1282,7 +1306,10 @@ describe("waveRunner", () => {
 
     resolveSpawn({ sessionId: "late-child", runId: "late-run" });
     await vi.waitFor(() =>
-      expect(stopOrchestratorSession).toHaveBeenCalledWith("late-child"),
+      expect(stopOrchestratorSession).toHaveBeenCalledWith(
+        "late-child",
+        expect.any(String),
+      ),
     );
     const wave = getWaveEngineState().waves.find(
       (candidate) => candidate.waveId === waveId,
@@ -1317,36 +1344,63 @@ describe("waveRunner", () => {
     expect(getWaveTelemetry().records[0]).toMatchObject({ outcome: "pruned" });
   });
 
-  it("refuses a second wave while the first one is still live (§4.1)", async () => {
+  it("runs a second wave beside the first, queues a plan past the cap, and starts it when a slot frees", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
+    spawnChildrenPerWave();
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
     runWaveEngineTick();
     await vi.waitFor(() =>
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
     );
 
-    // Ninety seconds in, the operator adds "also, while you're in there…".
-    // The conductor answers the only way it was told to: with another plan.
+    // Ninety seconds in, the operator adds "also, while you're in there…" and
+    // the conductor answers with another plan. It runs beside the first: each
+    // wave keeps its own digest and verdict (WAVES, Concurrency).
     setTranscript([...conductorMessages(), assistant("plan-2", TWO_STEP_PLAN)]);
     runWaveEngineTick();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Nothing new was spawned into the same working folder…
-    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-    expect(getWaveEngineState().waves).toHaveLength(1);
-    // …the operator is told, in their own language, what happened and what to
-    // do instead…
-    expect(noticeTexts().join("\n")).toContain(
-      i18n.t("chat:conductor.wave.concurrent.title"),
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
     );
-    expect(noticeTexts().join("\n")).toContain(
-      i18n.t("chat:conductor.wave.concurrent.body"),
-    );
-    // …and the refusal is tombstoned, so it is not repeated on every tick.
+    expect(
+      getWaveEngineState().waves.filter((wave) => wave.phase === "running"),
+    ).toHaveLength(2);
     expect(hasWaveTombstone(getWaveEngineState(), "plan-2")).toBe(true);
-    for (let index = 0; index < 4; index += 1) runWaveEngineTick();
-    expect(noticeTexts()).toHaveLength(1);
+
+    // Past the cap the plan is admitted into a queue, not dropped: the
+    // operator is told where it stands, and nothing of it is spawned yet.
+    setTranscript([
+      ...conductorMessages(),
+      assistant("plan-3", TWO_STEP_PLAN),
+      assistant("plan-4", TWO_STEP_PLAN),
+    ]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(3),
+    );
+    const queued = getWaveEngineState().waves.find(
+      (wave) => wave.phase === "queued",
+    );
+    expect(queued?.planMessageId).toBe("plan-4");
+    expect(noticeTexts().join("\n")).toContain(
+      i18n.t("chat:conductor.wave.queued.body", { position: 1 }),
+    );
+    for (let index = 0; index < 3; index += 1) runWaveEngineTick();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(3);
+
+    // A running wave closes; the queued plan takes its slot on the same tick.
+    const [first] = getWaveEngineState().waves;
+    expect(stopWaveByOperator(CONDUCTOR_ID, first.waveId)).toBe(true);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(4),
+    );
+    expect(
+      getWaveEngineState().waves.find((wave) => wave.planMessageId === "plan-4")
+        ?.phase,
+    ).toBe("running");
+    expect(noticeTexts().join("\n")).toContain(
+      i18n.t("chat:conductor.wave.queued.started"),
+    );
   });
 
   it("dispatches nothing until the agents and model inventories have loaded", async () => {

@@ -30,6 +30,11 @@ import {
 } from "./waveEngine";
 import type { CompletedWaveStepReport } from "./wavePrompts";
 import type { StructuredReport } from "./types";
+import {
+  ROADMAP_STAGE_STATUSES,
+  ROADMAP_STATUSES,
+  type ConductorRoadmap,
+} from "./flockRoadmap";
 
 export const CONDUCTOR_WAVES_STORAGE_KEY = "flock:conductor-waves";
 
@@ -96,6 +101,13 @@ export interface WaveEngineState {
    * construction, already behind the engine when the mark was set.
    */
   newestProcessedMessageCreatedAt: Record<string, number>;
+  /**
+   * Per conductor, the newest roadmap it published: the goal it pursues on
+   * its own, its stages, and the continue turn in flight. Kept here rather
+   * than in a document of its own so it rides the same hydration and the same
+   * conductor-id remap as the waves it drives.
+   */
+  roadmaps: Record<string, ConductorRoadmap>;
 }
 
 export function emptyWaveEngineState(): WaveEngineState {
@@ -104,6 +116,106 @@ export function emptyWaveEngineState(): WaveEngineState {
     waves: [],
     tombstones: [],
     newestProcessedMessageCreatedAt: {},
+    roadmaps: {},
+  };
+}
+
+/** A persisted roadmap, keeping only what reads back as one. */
+function parseRoadmap(value: unknown): ConductorRoadmap | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<ConductorRoadmap>;
+  if (
+    typeof raw.conductorSessionId !== "string" ||
+    !raw.conductorSessionId ||
+    typeof raw.goal !== "string" ||
+    !raw.goal ||
+    !(ROADMAP_STATUSES as readonly unknown[]).includes(raw.status) ||
+    typeof raw.sourceMessageId !== "string"
+  ) {
+    return null;
+  }
+  const stages = Array.isArray(raw.stages)
+    ? raw.stages.flatMap((stage) => {
+        if (!stage || typeof stage !== "object") return [];
+        const candidate = stage as Partial<ConductorRoadmap["stages"][number]>;
+        if (
+          typeof candidate.title !== "string" ||
+          !(ROADMAP_STAGE_STATUSES as readonly unknown[]).includes(
+            candidate.status,
+          )
+        )
+          return [];
+        return [
+          {
+            title: candidate.title,
+            status:
+              candidate.status as ConductorRoadmap["stages"][number]["status"],
+            evidence: Array.isArray(candidate.evidence)
+              ? candidate.evidence.filter(
+                  (item): item is string => typeof item === "string",
+                )
+              : [],
+          },
+        ];
+      })
+    : [];
+  const turn = raw.continueTurn;
+  const continueTurn =
+    turn &&
+    typeof turn === "object" &&
+    typeof turn.attempt === "number" &&
+    (turn.phase === "pending" ||
+      turn.phase === "dispatching" ||
+      turn.phase === "awaiting")
+      ? {
+          attempt: turn.attempt,
+          phase: turn.phase,
+          startedAt: typeof turn.startedAt === "number" ? turn.startedAt : 0,
+        }
+      : undefined;
+  return {
+    conductorSessionId: raw.conductorSessionId,
+    goal: raw.goal,
+    status: raw.status as ConductorRoadmap["status"],
+    stages,
+    ...(typeof raw.note === "string" && raw.note ? { note: raw.note } : {}),
+    updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
+    sourceMessageId: raw.sourceMessageId,
+    sourceCreatedAt:
+      typeof raw.sourceCreatedAt === "number" ? raw.sourceCreatedAt : 0,
+    continueTurns:
+      typeof raw.continueTurns === "number" &&
+      Number.isInteger(raw.continueTurns) &&
+      raw.continueTurns >= 0
+        ? raw.continueTurns
+        : 0,
+    ...(continueTurn ? { continueTurn } : {}),
+  };
+}
+
+function parseRoadmaps(value: unknown): Record<string, ConductorRoadmap> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const roadmaps: Record<string, ConductorRoadmap> = {};
+  for (const [conductorSessionId, raw] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    const parsed = parseRoadmap(raw);
+    if (parsed && parsed.conductorSessionId === conductorSessionId) {
+      roadmaps[conductorSessionId] = parsed;
+    }
+  }
+  return roadmaps;
+}
+
+/** Replaces one conductor's roadmap. */
+export function withRoadmap(
+  state: WaveEngineState,
+  roadmap: ConductorRoadmap,
+): WaveEngineState {
+  if (state.roadmaps[roadmap.conductorSessionId] === roadmap) return state;
+  return {
+    ...state,
+    roadmaps: { ...state.roadmaps, [roadmap.conductorSessionId]: roadmap },
   };
 }
 
@@ -162,6 +274,20 @@ function parseStep(value: unknown): WaveStepState | null {
     typeof raw.failureReason === "string" &&
     raw.failureReason
       ? { failureReason: raw.failureReason.slice(0, 2000) }
+      : {}),
+    ...(typeof raw.executorKey === "string" && raw.executorKey
+      ? { executorKey: raw.executorKey.slice(0, 300) }
+      : {}),
+    ...(typeof raw.dispatchNote === "string" && raw.dispatchNote
+      ? { dispatchNote: raw.dispatchNote.slice(0, 1000) }
+      : {}),
+    ...(typeof raw.resumeCount === "number" &&
+    Number.isInteger(raw.resumeCount) &&
+    raw.resumeCount > 0
+      ? { resumeCount: raw.resumeCount }
+      : {}),
+    ...(typeof raw.resumedFromSessionId === "string" && raw.resumedFromSessionId
+      ? { resumedFromSessionId: raw.resumedFromSessionId }
       : {}),
     ...(raw.reportDegraded === true ? { reportDegraded: true } : {}),
     ...(raw.reportVerified === true ? { reportVerified: true } : {}),
@@ -481,6 +607,7 @@ export function parseWaveEngineState(value: unknown): WaveEngineState {
     newestProcessedMessageCreatedAt: parseWatermarks(
       raw.newestProcessedMessageCreatedAt,
     ),
+    roadmaps: parseRoadmaps(raw.roadmaps),
   };
 }
 
@@ -714,8 +841,26 @@ export function withRemappedConductorSessionId(
     const { [fromId]: _dropped, ...rest } = marks;
     marks = { ...rest, [toId]: Math.max(carried, rest[toId] ?? 0) };
   }
+  // The roadmap is keyed by conductor too, and a promotion that left it
+  // behind would lose the goal the conductor is working toward.
+  let roadmaps = state.roadmaps;
+  const roadmap = roadmaps[fromId];
+  if (roadmap) {
+    changed = true;
+    const { [fromId]: _moved, ...rest } = roadmaps;
+    roadmaps = {
+      ...rest,
+      [toId]: { ...roadmap, conductorSessionId: toId },
+    };
+  }
   return changed
-    ? { ...state, waves, tombstones, newestProcessedMessageCreatedAt: marks }
+    ? {
+        ...state,
+        waves,
+        tombstones,
+        newestProcessedMessageCreatedAt: marks,
+        roadmaps,
+      }
     : state;
 }
 
@@ -982,9 +1127,26 @@ function mergeStoredWaveEngineState(stored: WaveEngineState): void {
         stored.newestProcessedMessageCreatedAt,
         live.newestProcessedMessageCreatedAt,
       ),
+      // The newer version per conductor: the file's, unless this session
+      // already applied a roadmap the conductor published since.
+      roadmaps: mergeRoadmaps(stored.roadmaps, live.roadmaps),
     },
     { hydration: true },
   );
+}
+
+function mergeRoadmaps(
+  stored: Record<string, ConductorRoadmap>,
+  live: Record<string, ConductorRoadmap>,
+): Record<string, ConductorRoadmap> {
+  const merged: Record<string, ConductorRoadmap> = { ...stored };
+  for (const [conductorSessionId, roadmap] of Object.entries(live)) {
+    const existing = merged[conductorSessionId];
+    if (!existing || existing.updatedAt <= roadmap.updatedAt) {
+      merged[conductorSessionId] = roadmap;
+    }
+  }
+  return merged;
 }
 
 function mergeWatermarks(

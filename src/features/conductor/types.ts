@@ -95,6 +95,27 @@ export interface SessionNode {
    * is a fact about the child that nothing above it has acted on.
    */
   parentAcknowledged?: boolean;
+  /**
+   * Why this agent was stopped or cancelled, when the app knows: the
+   * operator's stop, a blocked sibling, a stalled wave, a budget ceiling, or
+   * a restart that ended the process under it. A worker shown as "cancelled"
+   * with no reason was the operator's blind spot; this is the one line that
+   * answers it, and the digest carries it too.
+   */
+  stopReason?: string;
+  /**
+   * True when the startup reconcile ended this node: the process that ran
+   * it died, and nothing it did is known. The wave engine reads this to
+   * resume the step once in a new session, which is not a retry of a failed
+   * step — the step never failed, the app went down under it.
+   */
+  interruptedByRestart?: boolean;
+  /**
+   * The session that took this node's wave step over after a restart. The
+   * node stays in the graph (the operator can still open its chat), but the
+   * wave engine no longer reads it as the step's executor.
+   */
+  supersededBySessionId?: string;
 }
 
 export interface NodeBudget {

@@ -4,7 +4,11 @@ import {
   applicationExecutorTask,
   type ApplicationExecutorOption,
 } from "@/features/benchmarks/lib/applicationExecutor";
-import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
+import {
+  executorSelection,
+  type ExecutorDecision,
+  type ExecutorDecisionRecord,
+} from "@/features/benchmarks/lib/executorSelection";
 import {
   ownedTaskExecution,
   isOwnedTaskModeV2,
@@ -22,6 +26,7 @@ import {
   advertisedModelForTarget,
   conductorExecutionTarget,
   isAdvertisedModel,
+  modelDisplayName,
   planWaveStepRunSettings,
   resolveWaveStepTargets,
   waveExecutorRoleContext,
@@ -138,6 +143,20 @@ function ownedWavePlan(
   }
 }
 
+/** What a step's dispatch resolved to before any session is created. */
+export interface PreparedWaveExecutor {
+  requestKey: string;
+  decision: ExecutorDecision;
+  selected: ApplicationExecutorOption | undefined;
+  /** Why nothing can be dispatched, when nothing can. */
+  error?: string;
+  owned?: PreparedOwnedTask;
+  /** A session another process already started for this step: adopt it. */
+  adopt?: { sessionId: string; runId: string | null };
+  /** The recorded choice vanished from the inventory; this row runs instead. */
+  fallbackNote?: string;
+}
+
 export async function prepareWaveExecutor(
   wave: WaveState,
   request: WaveSpawnRequest,
@@ -147,7 +166,7 @@ export async function prepareWaveExecutor(
     runSettings?: ApplicationExecutorOption["runSettings"];
     ranked?: boolean;
   },
-) {
+): Promise<PreparedWaveExecutor> {
   const mode = await ownedTaskExecution.getMode(wave.conductorSessionId);
   if (mode && isOwnedTaskModeV2(mode)) {
     const carried = wave.carriedBindingIds ?? [];
@@ -366,13 +385,28 @@ export async function prepareWaveExecutor(
     available: Boolean(advertisedModelForTarget(option.target)),
     reason: null,
   }));
-  const requestKey = waveExecutorKey(wave.waveId, request.stepIndex);
-  const existing = await executorSelection.get(requestKey);
-  if (existing?.observations.length || existing?.hostExecution) {
-    throw new Error(
-      "This wave step already has a recorded execution; refusing another dispatch",
-    );
+  const baseKey = waveExecutorKey(wave.waveId, request.stepIndex);
+  // A resumed step is a new dispatch of the same step and gets a key of its
+  // own, so the record of the session the restart ended stays whole.
+  const resolved = await resolveWaveExecutorRecord(
+    request.resume
+      ? `${baseKey}:resume:${request.resume.resumeCount}`
+      : baseKey,
+  );
+  if (resolved.kind === "started") {
+    // Another process already started a session for this very step (the
+    // previous run of this app, or a second Flock on the same folder). Hand
+    // it back to be adopted instead of starting a second worker beside it.
+    return {
+      requestKey: resolved.requestKey,
+      decision: resolved.record.decision,
+      selected: undefined,
+      adopt: resolved.session,
+      owned: undefined as PreparedOwnedTask | undefined,
+    };
   }
+  const requestKey = resolved.requestKey;
+  const existing = resolved.kind === "decided" ? resolved.record : null;
   // A decision already on record with nothing dispatched on it is the one
   // this step runs on. That is a spawn that died between deciding and
   // starting — the renderer went down mid-spawn and the restarted engine is
@@ -412,16 +446,37 @@ export async function prepareWaveExecutor(
       },
       true,
     ));
-  const selected = decision.chosen
+  let selected = decision.chosen
     ? rows.get(decision.chosen.id)?.option
     : undefined;
-  if (decision.chosen && !selected)
-    return {
-      requestKey,
-      selected,
-      decision,
-      error: "Executor selection returned an unknown inventory row",
-    };
+  let fallbackNote: string | undefined;
+  if (decision.chosen && !selected) {
+    // The recorded choice names a row the live inventory no longer has (the
+    // model cache moved between the decision and this dispatch). The next
+    // row the ranking offers runs the step, and the digest says so; only when
+    // nothing at all is left does the step fail.
+    const fallback = [...rows.values()].find(
+      ({ option }) =>
+        option !== undefined &&
+        Boolean(advertisedModelForTarget(option.target)),
+    );
+    if (fallback) {
+      selected = fallback.option;
+      const model = advertisedModelForTarget(fallback.option.target);
+      const label = model
+        ? modelDisplayName(model)
+        : (fallback.option.target.modelName ??
+          String(fallback.option.target.modelId ?? fallback.configuration.id));
+      fallbackNote = `Executor selection chose "${decision.chosen.id}", which is no longer in the model inventory; the step runs on ${label} instead.`;
+    } else {
+      return {
+        requestKey,
+        selected,
+        decision,
+        error: `Executor selection chose "${decision.chosen.id}", which is no longer in the model inventory, and no other candidate is available`,
+      };
+    }
+  }
   if (!selected && (baseline.target?.modelId || candidates.length > 0)) {
     return {
       requestKey,
@@ -434,8 +489,86 @@ export async function prepareWaveExecutor(
     requestKey,
     selected,
     decision,
+    ...(fallbackNote ? { fallbackNote } : {}),
     owned: undefined as PreparedOwnedTask | undefined,
   };
+}
+
+/** What the journal already holds for a step's request key. */
+type WaveExecutorRecordResolution =
+  | { kind: "fresh"; requestKey: string }
+  | { kind: "decided"; requestKey: string; record: ExecutorDecisionRecord }
+  | {
+      kind: "started";
+      requestKey: string;
+      record: ExecutorDecisionRecord;
+      session: { sessionId: string; runId: string | null };
+    };
+
+/** Bound on numbered keys one step may use up; each is a dispatch that died. */
+const MAX_WAVE_EXECUTOR_ATTEMPTS = 8;
+
+/**
+ * Reads the journal for a step and says what this dispatch may do with it.
+ *
+ * A record with a session on it is a worker that exists: it is adopted. A
+ * record whose only observations are terminal with no session is a dispatch
+ * closed before anything ran — the host answers a request key once, so the
+ * next attempt runs under a numbered key instead of being refused for the
+ * rest of the wave's life. A bare decision is reused as before: it was made
+ * by a process that died between deciding and starting.
+ */
+async function resolveWaveExecutorRecord(
+  baseKey: string,
+): Promise<WaveExecutorRecordResolution> {
+  let requestKey = baseKey;
+  for (let attempt = 0; attempt <= MAX_WAVE_EXECUTOR_ATTEMPTS; attempt += 1) {
+    const record = await executorSelection.get(requestKey);
+    if (!record) return { kind: "fresh", requestKey };
+    const session = startedWaveExecutorSession(record);
+    if (session) return { kind: "started", requestKey, record, session };
+    if (record.observations.length === 0 && !record.hostExecution) {
+      return { kind: "decided", requestKey, record };
+    }
+    if (
+      record.hostExecution ||
+      record.observations.some((row) => row.observation.phase === "started")
+    ) {
+      // A session was started for this key and the record does not say
+      // which. Another worker beside an unknown one is the one outcome worse
+      // than a failed step, so the step fails and says what it found.
+      throw new Error(
+        `This wave step's execution record (${requestKey}) says a session was started but does not name it; look at the record before asking again`,
+      );
+    }
+    requestKey = `${baseKey}:attempt:${attempt + 1}`;
+  }
+  throw new Error(
+    `This wave step was dispatched and closed ${MAX_WAVE_EXECUTOR_ATTEMPTS} times without a session starting; look at its execution records before asking again`,
+  );
+}
+
+/** The session a journal record says was started, when one was. */
+function startedWaveExecutorSession(
+  record: ExecutorDecisionRecord,
+): { sessionId: string; runId: string | null } | null {
+  const started = record.observations.find(
+    (row) => row.observation.sessionId !== null,
+  );
+  if (started?.observation.sessionId) {
+    return {
+      sessionId: started.observation.sessionId,
+      runId: started.observation.runId,
+    };
+  }
+  const receipt = record.hostExecution;
+  if (receipt?.start.sessionId) {
+    return {
+      sessionId: receipt.start.sessionId,
+      runId: receipt.start.link.logicalRunId,
+    };
+  }
+  return null;
 }
 
 const recordedOutcomes = new BoundedSet(1000);
@@ -446,6 +579,11 @@ const failedOutcomes = new Map<string, number>();
 export function syncWaveExecutorOutcomes(
   nodes: readonly SessionNode[],
   onError: (node: SessionNode, error: unknown) => void,
+  /**
+   * The request key a step's dispatch was recorded under, when the wave
+   * remembers one that is not the default — a numbered attempt or a resume.
+   */
+  executorKeyOf?: (node: SessionNode) => string | undefined,
 ): void {
   for (const node of nodes) {
     if (
@@ -464,7 +602,7 @@ export function syncWaveExecutorOutcomes(
       continue;
     const key = node.runId.startsWith("owned-task:")
       ? node.runId
-      : waveExecutorKey(node.waveId, node.stepIndex);
+      : (executorKeyOf?.(node) ?? waveExecutorKey(node.waveId, node.stepIndex));
     const runId = node.runId;
     if (
       recordedOutcomes.has(key) ||

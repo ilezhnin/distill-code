@@ -14,6 +14,7 @@ import {
   type AcpSessionInfo,
   type AcpSessionsPage,
 } from "@/shared/api/acp";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { sessionNotFoundMessage } from "../helpers";
 import { CommandError } from "../types";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
@@ -191,9 +192,16 @@ export function sessionMetadata(
   hostSession?: AcpSessionInfo,
 ) {
   const runtime = useChatStore.getState().getSessionRuntime(session.id);
+  const node = useConductorGraphStore.getState().getNode(session.id);
   return {
     session_id: session.id,
     title: session.title,
+    // The chat this session was started under — by a conductor's wave or by
+    // `session create --parent-session-id` — so a conductor can tell which
+    // sessions are its own workers. null is an independent chat.
+    parent_session_id: node?.parentSessionId ?? null,
+    wave_id: node?.waveId ?? null,
+    wave_step: typeof node?.stepIndex === "number" ? node.stepIndex + 1 : null,
     harness_id: session.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID,
     model_id: session.executionTarget?.modelId ?? null,
     // The host's value is what the bridge last acknowledged for this chat, so

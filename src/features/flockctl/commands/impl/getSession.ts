@@ -28,6 +28,9 @@ const MESSAGE_TEXT_LIMIT = 2000;
 interface SessionMetadataResult {
   session_id: string;
   title: string;
+  parent_session_id: string | null;
+  wave_id: string | null;
+  wave_step: number | null;
   harness_id: string;
   model_id: string | null;
   effort: string | null;
@@ -67,7 +70,8 @@ export const getSessionCommand = defineCommand({
   flockctl session get --session-id <session-id> --messages 5 --json
 
 Result:
-  {"session_id": "...", "title": "...", "harness_id": "...",
+  {"session_id": "...", "title": "...", "parent_session_id": "..."|null,
+   "wave_id": "..."|null, "wave_step": 1|null, "harness_id": "...",
    "model_id": "..."|null, "effort": "..."|null,
    "fast_mode": true|false|null, "agent_id": "..."|null,
    "project_id": "..."|null, "working_dir": "..."|null,

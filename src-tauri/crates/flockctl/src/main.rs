@@ -324,6 +324,13 @@ mod tests {
             ("info", "harnesses") => vec![],
             ("info", "models") => vec![],
             ("info", "context") => vec![],
+            ("wave", "list") => vec![],
+            ("wave", "get") => vec!["--wave-id", "w"],
+            ("wave", "cancel") => vec!["--wave-id", "w"],
+            ("wave", "steer") => vec!["--wave-id", "w", "--prompt", "p"],
+            ("wave", "amend") => vec!["--wave-id", "w", "--step", "1", "--text", "t"],
+            ("wave", "skip") => vec!["--wave-id", "w", "--step", "1"],
+            ("wave", "roadmap") => vec!["--conductor-session-id", "s"],
             _ => return None,
         })
     }

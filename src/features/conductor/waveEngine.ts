@@ -105,7 +105,39 @@ export interface WaveStepState {
   verificationFailed?: boolean;
   /** The gate's stated reason, carried into the substitute stub. */
   verificationDetail?: string;
+  /**
+   * The executor-selection request key this step's dispatch was recorded
+   * under, when it is not the default `wave:<id>:step:<n>`. A dispatch that
+   * was closed before any session started leaves a terminal record under the
+   * default key, and the host never re-decides a key it has answered — so the
+   * next honest attempt runs under a numbered key, and this is how the
+   * outcome sync finds the right record afterwards.
+   */
+  executorKey?: string;
+  /**
+   * A fact about how this step was dispatched that the conductor must read
+   * beside the step's report: it ran on a model the ranking fell back to
+   * because the recorded choice vanished from the inventory, say. The digest
+   * prints it as the app's line, not the worker's.
+   */
+  dispatchNote?: string;
+  /**
+   * How many times this step was resumed in a fresh session after the app
+   * restarted under it. Bounded by {@link MAX_WAVE_STEP_RESUMES}: a worker
+   * that takes the app down every time it runs is not resumed forever.
+   */
+  resumeCount?: number;
+  /** The session whose interrupted run the current executor continues. */
+  resumedFromSessionId?: string;
 }
+
+/**
+ * How many times one step may be resumed after an app restart before the
+ * wave is parked as interrupted instead. Each resume is a new session with
+ * the previous one's last words attached; three in a row means the step
+ * itself is what keeps bringing the app down.
+ */
+export const MAX_WAVE_STEP_RESUMES = 3;
 
 /**
  * Where a wave sits in the closed loop (D4).
@@ -124,6 +156,12 @@ export interface WaveStepState {
  * persistence guard reads, so a phase added here cannot go missing there.
  */
 export const WAVE_PHASES = [
+  /**
+   * Admitted, but waiting for a slot: its conductor already runs as many
+   * live waves as the app allows at once. Not live — it owes nobody a digest
+   * yet — and promoted to `running`, oldest first, when a live wave closes.
+   */
+  "queued",
   /** Steps are still being scheduled, spawned or executed. */
   "running",
   /** Every step is terminal; the digest has not been built yet. */
@@ -914,6 +952,8 @@ export function withWaveStepPhase(
     sessionId?: string;
     runId?: string;
     failureReason?: string;
+    executorKey?: string;
+    dispatchNote?: string;
   },
 ): WaveState {
   let changed = false;
@@ -923,12 +963,15 @@ export function withWaveStepPhase(
       patch.phase === "failed"
         ? (patch.failureReason ?? step.failureReason)
         : undefined;
+    const executorKey = patch.executorKey ?? step.executorKey;
+    const dispatchNote = patch.dispatchNote ?? step.dispatchNote;
     const next: WaveStepState = {
       stepIndex: step.stepIndex,
       role: step.role,
       subtask: step.subtask,
       access: step.access,
       ...optionalPlanFields(step),
+      ...resumeFields(step),
       phase: patch.phase,
       ...((patch.sessionId ?? step.sessionId)
         ? { sessionId: patch.sessionId ?? step.sessionId }
@@ -937,12 +980,55 @@ export function withWaveStepPhase(
         ? { runId: patch.runId ?? step.runId }
         : {}),
       ...(failureReason ? { failureReason } : {}),
+      ...(executorKey ? { executorKey } : {}),
+      ...(dispatchNote ? { dispatchNote } : {}),
     };
-    if (!sameStep(step, next) || step.failureReason !== next.failureReason)
+    if (
+      !sameStep(step, next) ||
+      step.failureReason !== next.failureReason ||
+      step.executorKey !== next.executorKey ||
+      step.dispatchNote !== next.dispatchNote
+    )
       changed = true;
     return next;
   });
   return changed ? { ...wave, steps } : wave;
+}
+
+/**
+ * Appends text to a step that has not been dispatched yet, so the operator
+ * (through flockctl) can extend a brief after the wave was admitted — the
+ * acceptor's, say, once the worker it will check has started. Returns the
+ * same wave when the step is not pending: a running or finished step's
+ * subtask is what its worker already read.
+ */
+export function withAmendedPendingStep(
+  wave: WaveState,
+  stepIndex: number,
+  addendum: string,
+): WaveState {
+  const text = addendum.trim();
+  if (!text) return wave;
+  const steps = wave.steps.map((step) =>
+    step.stepIndex === stepIndex && step.phase === "pending"
+      ? { ...step, subtask: `${step.subtask}\n\n${text}` }
+      : step,
+  );
+  return steps.some((step, index) => step !== wave.steps[index])
+    ? { ...wave, steps }
+    : wave;
+}
+
+/** The resume bookkeeping a step carries across its phase changes. */
+function resumeFields(
+  step: Pick<WaveStepState, "resumeCount" | "resumedFromSessionId">,
+): Pick<WaveStepState, "resumeCount" | "resumedFromSessionId"> {
+  return {
+    ...(step.resumeCount ? { resumeCount: step.resumeCount } : {}),
+    ...(step.resumedFromSessionId
+      ? { resumedFromSessionId: step.resumedFromSessionId }
+      : {}),
+  };
 }
 
 export interface WaveSpawnRequest {
@@ -952,6 +1038,11 @@ export interface WaveSpawnRequest {
   /** Reports of every earlier step. Empty unless `step.access` is `"all"`. */
   previousReports: readonly CompletedWaveStepReport[];
   totalSteps: number;
+  /**
+   * Set when this spawn continues a run the app restart ended: the session
+   * whose last words the new executor is handed, and which resume this is.
+   */
+  resume?: { previousSessionId: string; resumeCount: number };
 }
 
 export interface WaveAdvanceContext {
@@ -1041,6 +1132,43 @@ export interface WaveAdvance {
   verificationFailed: readonly number[];
 }
 
+/**
+ * The graph node executing one step of a wave.
+ *
+ * By the step's own session id first: a resumed step has two nodes with its
+ * index, and the dead one must not answer for it. A step with no session yet
+ * falls back to the first node of its index that no resume superseded.
+ */
+export function waveStepNode(
+  wave: WaveState,
+  stepIndex: number,
+  nodes: readonly SessionNode[],
+): SessionNode | undefined {
+  const step = wave.steps.find(
+    (candidate) => candidate.stepIndex === stepIndex,
+  );
+  if (step?.sessionId) {
+    const own = nodes.find((node) => node.sessionId === step.sessionId);
+    if (own) return own;
+  }
+  return nodes.find(
+    (node) =>
+      node.waveId === wave.waveId &&
+      node.stepIndex === stepIndex &&
+      !node.supersededBySessionId &&
+      node.sessionId !== step?.resumedFromSessionId,
+  );
+}
+
+/** True when the node's run produced a report of its own, not a stand-in. */
+function nodeReported(
+  node: SessionNode,
+  reportOf: (runId: string | null | undefined) => StructuredReport | undefined,
+): boolean {
+  const report = node.runId ? reportOf(node.runId) : undefined;
+  return report !== undefined && !isSynthesizedStepReport(report);
+}
+
 function stepToWaveStep(state: WaveStepState): WaveStep {
   return {
     role: state.role,
@@ -1083,18 +1211,63 @@ export function advanceWave(
   context: WaveAdvanceContext,
 ): WaveAdvance {
   const inFlight = context.inFlight ?? new Set<number>();
-  const nodeByStepIndex = new Map<number, SessionNode>();
+  const nodesByStepIndex = new Map<number, SessionNode[]>();
   for (const node of context.nodes) {
     if (node.waveId !== wave.waveId) continue;
     if (typeof node.stepIndex !== "number") continue;
-    nodeByStepIndex.set(node.stepIndex, node);
+    const siblings = nodesByStepIndex.get(node.stepIndex);
+    if (siblings) siblings.push(node);
+    else nodesByStepIndex.set(node.stepIndex, [node]);
+  }
+  // A step resumed after a restart has two nodes: the session the app died
+  // under and the one that took over. The first stays in the graph for the
+  // operator to open, but the step's executor is the second — so the dead
+  // session is skipped by the step's own record of it, and by the mark the
+  // shell leaves on it once the new session exists.
+  const nodeByStepIndex = new Map<number, SessionNode>();
+  for (const step of wave.steps) {
+    const node = (nodesByStepIndex.get(step.stepIndex) ?? []).find(
+      (candidate) =>
+        !candidate.supersededBySessionId &&
+        candidate.sessionId !== step.resumedFromSessionId,
+    );
+    if (node) nodeByStepIndex.set(step.stepIndex, node);
   }
 
   let changed = false;
+  const resumes: WaveSpawnRequest["resume"][] = [];
   const reconciled = wave.steps.map((step) => {
     const node = nodeByStepIndex.get(step.stepIndex);
     let next: WaveStepState = step;
-    if (node && step.phase !== "failed") {
+    if (
+      node &&
+      step.phase !== "failed" &&
+      node.interruptedByRestart &&
+      !nodeReported(node, context.reportOf) &&
+      (step.resumeCount ?? 0) < MAX_WAVE_STEP_RESUMES &&
+      !inFlight.has(step.stepIndex)
+    ) {
+      // The app went down under this executor before it said anything. That
+      // is not the step failing, so it is not the retry WAVES forbids: the
+      // step goes back to `pending` carrying the dead session's id, and the
+      // spawn below hands the new executor what that session last said.
+      const resumeCount = (step.resumeCount ?? 0) + 1;
+      next = {
+        stepIndex: step.stepIndex,
+        role: step.role,
+        subtask: step.subtask,
+        access: step.access,
+        ...optionalPlanFields(step),
+        phase: "pending",
+        resumeCount,
+        resumedFromSessionId: node.sessionId,
+      };
+      resumes[step.stepIndex] = {
+        previousSessionId: node.sessionId,
+        resumeCount,
+      };
+      changed = true;
+    } else if (node && step.phase !== "failed") {
       next = {
         ...step,
         phase: "spawned",
@@ -1282,11 +1455,13 @@ export function advanceWave(
           ]
         : [];
 
+    const resume = resumes[step.stepIndex];
     spawn.push({
       stepIndex: step.stepIndex,
       step: stepToWaveStep(step),
       previousReports,
       totalSteps: steps.length,
+      ...(resume ? { resume } : {}),
     });
   }
 

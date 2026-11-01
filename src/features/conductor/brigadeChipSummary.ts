@@ -214,8 +214,11 @@ export function brigadeChipFacts(
  */
 function terminalReason(
   status: BrigadeGlyphStatus,
-  { runtime, messages, report }: BrigadeChipFactsInput,
+  { node, runtime, messages, report }: BrigadeChipFactsInput,
 ): string | undefined {
+  // A stop the app made says why it made it; the operator's own stop says so
+  // too, which beats a bare status word the operator has to remember causing.
+  if (status === "cancelled" || status === "stopped") return node.stopReason;
   if (status === "failed") {
     return (
       lastFailureReason(messages) ??

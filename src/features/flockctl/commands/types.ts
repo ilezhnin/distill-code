@@ -94,6 +94,8 @@ export const COMMAND_ERROR_CODES = [
   "feedback_form_busy",
   "feedback_submission_failed",
   "spawn_not_allowed",
+  "wave_not_found",
+  "wave_step_not_pending",
   "timed_out",
   "internal_error",
 ] as const;
@@ -113,5 +115,29 @@ export function toCommandError(e: unknown): { code: string; message: string } {
   if (e instanceof CommandError) {
     return { code: e.code, message: e.message };
   }
-  return { code: "internal_error", message: String(e) };
+  return { code: "internal_error", message: errorText(e) };
+}
+
+/**
+ * An error as a sentence. The host answers with `{ code, message }` objects,
+ * not `Error`s, and `String(object)` is "[object Object]" — which is what a
+ * wave step's refusal read in the digest until the runner formatted it.
+ */
+export function errorText(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const record = error as { message?: unknown; code?: unknown };
+    if (typeof record.message === "string" && record.message.trim()) {
+      return typeof record.code === "string" || typeof record.code === "number"
+        ? `${record.message} (${String(record.code)})`
+        : record.message;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
 }

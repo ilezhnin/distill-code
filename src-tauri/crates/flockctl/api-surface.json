@@ -1128,6 +1128,279 @@
         }
       }
     },
+    "waves": {
+      "description": "Inspect and steer the conductor's waves: list, get, cancel, steer the running executors, amend or skip a pending step, read the roadmap.",
+      "actions": {
+        "list": {
+          "description": "List the waves the wave engine holds — running, waiting for a digest or a verdict, queued behind a slot, and (with --include-closed) parked for the operator — each with its steps, the session running each step and that step's report status; does not change anything on screen.",
+          "fields": [
+            {
+              "name": "conductor_session_id",
+              "required": false,
+              "kind": "string",
+              "description": "Only list the waves of this conductor chat. Omit it for every conductor's waves.",
+              "max": 200
+            },
+            {
+              "name": "include_closed",
+              "required": false,
+              "kind": "boolean",
+              "description": "Also list waves parked for the operator (stopped, blocked, undecided). Defaults to false: live and queued waves only."
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "conductor_session_id": {
+                "description": "Only list the waves of this conductor chat. Omit it for every conductor's waves.",
+                "type": "string",
+                "maxLength": 200
+              },
+              "include_closed": {
+                "default": false,
+                "description": "Also list waves parked for the operator (stopped, blocked, undecided). Defaults to false: live and queued waves only.",
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "get": {
+          "description": "Read one wave in full — every step's brief, the session running it, its status and stop reason, its report, and the conductor's roadmap when it has one; does not change anything on screen.",
+          "fields": [
+            {
+              "name": "wave_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the wave to read (from `flockctl wave list`); an unambiguous prefix is accepted.",
+              "min": 1,
+              "max": 200
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "wave_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the wave to read (from `flockctl wave list`); an unambiguous prefix is accepted."
+              }
+            },
+            "required": ["wave_id"],
+            "additionalProperties": false
+          }
+        },
+        "cancel": {
+          "description": "Cancel a wave the same way the operator's stop control does: a live wave is parked for the operator and its running executors are told to stop (their work on disk is kept), a queued wave is dropped before it starts. Nothing is digested or judged. The conductor chat shows a notice, and the stopped executors' chats stay open to read.",
+          "fields": [
+            {
+              "name": "wave_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the wave to cancel (from `flockctl wave list`); an unambiguous prefix is accepted.",
+              "min": 1,
+              "max": 200
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "wave_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the wave to cancel (from `flockctl wave list`); an unambiguous prefix is accepted."
+              }
+            },
+            "required": ["wave_id"],
+            "additionalProperties": false
+          }
+        },
+        "steer": {
+          "description": "Send the same message into the chat of every executor of the wave that is still running — steered into its current turn when it is working, queued when it is between turns. Executors that already finished are left alone. Each message is visible in that executor's chat.",
+          "fields": [
+            {
+              "name": "wave_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the wave whose running executors receive the message; an unambiguous prefix is accepted.",
+              "min": 1,
+              "max": 200
+            },
+            {
+              "name": "prompt",
+              "required": true,
+              "kind": "string",
+              "description": "The message every running executor of the wave receives (1-50000 chars).",
+              "min": 1,
+              "max": 50000
+            },
+            {
+              "name": "from",
+              "required": false,
+              "kind": "string",
+              "description": "Optional visible sender label for the message (1-120 chars).",
+              "min": 1,
+              "max": 120
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "wave_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the wave whose running executors receive the message; an unambiguous prefix is accepted."
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50000,
+                "description": "The message every running executor of the wave receives (1-50000 chars)."
+              },
+              "from": {
+                "description": "Optional visible sender label for the message (1-120 chars).",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": "^[^\\r\\n]*$"
+              }
+            },
+            "required": ["wave_id", "prompt"],
+            "additionalProperties": false
+          }
+        },
+        "amend": {
+          "description": "Append text to the brief of a wave step that is still pending — an acceptor whose check should cover something the worker only just reported, say. A step that was already dispatched is refused: its executor has read its brief. The conductor chat shows a notice.",
+          "fields": [
+            {
+              "name": "wave_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the wave; an unambiguous prefix is accepted.",
+              "min": 1,
+              "max": 200
+            },
+            {
+              "name": "step",
+              "required": true,
+              "kind": "number",
+              "description": "The step to extend, 1-based as `flockctl wave list` numbers them.",
+              "min": 1,
+              "max": 5
+            },
+            {
+              "name": "text",
+              "required": true,
+              "kind": "string",
+              "description": "Text appended to the step's brief, after a blank line (1-20000 chars).",
+              "min": 1,
+              "max": 20000
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "wave_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the wave; an unambiguous prefix is accepted."
+              },
+              "step": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "The step to extend, 1-based as `flockctl wave list` numbers them."
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 20000,
+                "description": "Text appended to the step's brief, after a blank line (1-20000 chars)."
+              }
+            },
+            "required": ["wave_id", "step", "text"],
+            "additionalProperties": false
+          }
+        },
+        "skip": {
+          "description": "Mark a pending wave step as not done without starting it, so the steps that wait on it proceed and the digest shows it as skipped. A step already dispatched is refused: stop its executor with `flockctl wave cancel` or its own chat instead. The conductor chat shows a notice.",
+          "fields": [
+            {
+              "name": "wave_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the wave; an unambiguous prefix is accepted.",
+              "min": 1,
+              "max": 200
+            },
+            {
+              "name": "step",
+              "required": true,
+              "kind": "number",
+              "description": "The step to skip, 1-based as `flockctl wave list` numbers them.",
+              "min": 1,
+              "max": 5
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "wave_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the wave; an unambiguous prefix is accepted."
+              },
+              "step": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "The step to skip, 1-based as `flockctl wave list` numbers them."
+              }
+            },
+            "required": ["wave_id", "step"],
+            "additionalProperties": false
+          }
+        },
+        "roadmap": {
+          "description": "Read the roadmap a conductor published with a distill-roadmap block — the goal it pursues on its own, its stages and their status, and where the autonomous continue loop stands; does not change anything on screen.",
+          "fields": [
+            {
+              "name": "conductor_session_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the conductor chat whose roadmap to read.",
+              "min": 1,
+              "max": 200
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "conductor_session_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the conductor chat whose roadmap to read."
+              }
+            },
+            "required": ["conductor_session_id"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
     "info": {
       "description": "Read-only app information: installed agent harnesses, available models, and the current app context.",
       "actions": {
@@ -1166,12 +1439,28 @@
           }
         },
         "get_context": {
-          "description": "Read the app's current context: which view and session the user is looking at, the active session's project, and the app version; does not change anything on screen.",
-          "fields": [],
+          "description": "Read the app's current context: which view and session the user is looking at, the active session's project, and the app version; does not change anything on screen. With --session-id, also describe that session — the caller's own, usually — rather than only the viewed chat.",
+          "fields": [
+            {
+              "name": "session_id",
+              "required": false,
+              "kind": "string",
+              "description": "Your own session id (the Flock preamble states it). With it the result describes that session — its project, working folder, parent chat and wave — instead of the chat the user is viewing.",
+              "min": 1,
+              "max": 200
+            }
+          ],
           "schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "properties": {},
+            "properties": {
+              "session_id": {
+                "description": "Your own session id (the Flock preamble states it). With it the result describes that session — its project, working folder, parent chat and wave — instead of the chat the user is viewing.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
             "additionalProperties": false
           }
         }

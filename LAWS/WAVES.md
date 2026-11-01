@@ -41,8 +41,12 @@ expectations all have to agree on the same words.
 ## The verdict
 
 - When a wave finishes, the app MUST deliver a digest of its reports to the
-  conductor as a message, and the conductor's next settled answer MUST be read
-  as the verdict for that wave.
+  conductor as a message, and the conductor's next settled answer to that
+  digest MUST be read as the verdict for that wave.
+- A digest MUST name the wave it reports, and a verdict that names a wave
+  MUST be read for that wave and no other.
+- A digest MUST deliver every report's text as the executor wrote it; the app
+  MUST NOT replace a report it has not read with a stand-in.
 - A verdict MUST be a single fenced block tagged `distill-verdict` whose
   `verdict` is exactly one of `accept`, `revise` or `needs-operator`.
 - An answer to a digest that carries no readable verdict MUST leave the wave
@@ -63,12 +67,34 @@ expectations all have to agree on the same words.
 - The app MUST NOT substitute a model for the one a step named without saying
   so where that step is shown.
 - The app MUST NOT retry a failed step without the operator asking for it.
+- A step whose executor the app itself ended — a restart under a running
+  session — is not a failed step: the app MUST resume it once in a new
+  session, MUST hand that session what the ended one last said, and MUST say
+  in the step's brief and to the operator that it was resumed.
+- Wherever an agent is shown as stopped or cancelled, the app MUST say who
+  stopped it and why when it knows.
 - The app MUST record, for every wave, the sequence of transitions it observed,
   and that record MUST be readable without the application running.
 
 ## Concurrency
 
-- A conductor MUST NOT have more than one live wave at a time.
+- A conductor MAY have several live waves at a time; each MUST keep its own
+  digest and its own verdict.
+- The app MUST bound how many of one conductor's waves are live at once, and a
+  plan admitted past that bound MUST be queued in order and said so — never
+  dropped and never refused in silence.
 - A wave MUST be live while it is spawning, waiting on a digest, or waiting on
-  a verdict, and MUST NOT be live once it is accepted, superseded, or parked
-  for the operator.
+  a verdict, and MUST NOT be live once it is accepted, superseded, parked for
+  the operator, or still queued.
+- A step MUST be dispatched at most once per attempt: a record that a session
+  already runs the step MUST make that session the step's executor, never a
+  second worker beside it.
+
+## Goals
+
+- While a conductor's roadmap says its goal is in progress, the app MUST
+  follow every accepted wave with a request to continue toward the goal, and
+  MUST stop doing so when the conductor declares the goal reached, paused, or
+  in need of the operator — or answers without a plan.
+- The roadmap MUST survive an app restart and MUST be shown to the operator
+  whenever it changes.

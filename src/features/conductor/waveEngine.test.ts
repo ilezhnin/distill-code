@@ -333,6 +333,106 @@ describe("advanceWave reconciliation", () => {
   });
 });
 
+describe("advanceWave restart resume", () => {
+  function interruptedNode(stepIndex: number): SessionNode {
+    return {
+      ...workerNode(stepIndex, "stopped"),
+      interruptedByRestart: true,
+      stopReason: "Ended by an app restart.",
+    };
+  }
+
+  it("sends a step the restart ended back out once, carrying the dead session", () => {
+    const wave = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
+      phase: "spawned",
+      sessionId: "child-0",
+      runId: "run-0",
+    });
+    const advanced = advanceWave(wave, {
+      nodes: [interruptedNode(0)],
+      reportOf: noReports,
+    });
+    expect(advanced.changed).toBe(true);
+    expect(advanced.wave.steps[0]).toMatchObject({
+      phase: "pending",
+      resumeCount: 1,
+      resumedFromSessionId: "child-0",
+    });
+    expect(advanced.spawn).toHaveLength(1);
+    expect(advanced.spawn[0].resume).toEqual({
+      previousSessionId: "child-0",
+      resumeCount: 1,
+    });
+    // The wave is not interrupted: its step is being resumed, not given up.
+    expect(advanced.complete).toBe(false);
+
+    // The next pass sees the dead node still in the graph and the step mid
+    // spawn: the dead node must not reconcile the step back to `spawned`.
+    const again = advanceWave(
+      withWaveStepPhase(advanced.wave, 0, { phase: "spawning" }),
+      {
+        nodes: [interruptedNode(0)],
+        reportOf: noReports,
+        inFlight: new Set([0]),
+      },
+    );
+    expect(again.wave.steps[0].phase).toBe("spawning");
+    expect(again.spawn).toHaveLength(0);
+
+    // The new session registers under the same step: it is the executor now.
+    const resumed = advanceWave(again.wave, {
+      nodes: [
+        { ...interruptedNode(0), supersededBySessionId: "child-0b" },
+        { ...workerNode(0, "running"), sessionId: "child-0b", runId: "run-0b" },
+      ],
+      reportOf: noReports,
+    });
+    expect(resumed.wave.steps[0]).toMatchObject({
+      phase: "spawned",
+      sessionId: "child-0b",
+      runId: "run-0b",
+      resumedFromSessionId: "child-0",
+    });
+  });
+
+  it("does not resume a step whose dead session had already reported", () => {
+    const wave = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
+      phase: "spawned",
+      sessionId: "child-0",
+      runId: "run-0",
+    });
+    const advanced = advanceWave(wave, {
+      nodes: [interruptedNode(0)],
+      reportOf: (runId) =>
+        runId === "run-0"
+          ? report("run-0", "all done before the crash")
+          : undefined,
+    });
+    expect(advanced.spawn).toHaveLength(0);
+    expect(advanced.wave.steps[0].phase).toBe("spawned");
+  });
+
+  it("stops resuming at the cap and lets the wave be read as interrupted", () => {
+    const base = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
+      phase: "spawned",
+      sessionId: "child-0",
+      runId: "run-0",
+    });
+    const wave = {
+      ...base,
+      steps: base.steps.map((s) => ({ ...s, resumeCount: 3 })),
+    };
+    const advanced = advanceWave(wave, {
+      nodes: [interruptedNode(0)],
+      reportOf: noReports,
+    });
+    expect(advanced.spawn).toHaveLength(0);
+    expect(
+      waveInterruptedBeforeReport(advanced.wave, () => "stopped", noReports),
+    ).toBe(true);
+  });
+});
+
 describe("advanceWave stub degradation (5b)", () => {
   const completedReportless = () =>
     withWaveStepPhase(waveOf([step("scout", "one")]), 0, {

@@ -52,11 +52,11 @@ export const VERDICT_TOKEN_VALUES: readonly VerdictToken[] = [
 
 export type Verdict =
   /** The wave's result answers the operator; nothing more is dispatched. */
-  | { outcome: "accept"; note?: string }
+  | { outcome: "accept"; note?: string; waveId?: string }
   /** Exactly one revision wave; the caller enforces the cap of 2 (D4). */
-  | { outcome: "revise"; steps: WaveStep[]; note?: string }
+  | { outcome: "revise"; steps: WaveStep[]; note?: string; waveId?: string }
   /** The conductor hands the root request back to the operator. */
-  | { outcome: "needs-operator"; note?: string };
+  | { outcome: "needs-operator"; note?: string; waveId?: string };
 
 /** Machine-readable reasons a verdict message was rejected. */
 export type VerdictInvalidReason =
@@ -139,6 +139,25 @@ function withNote<T extends Verdict>(verdict: T, note: string): T {
 }
 
 /**
+ * The wave the verdict says it closes, when the conductor named one.
+ *
+ * A conductor may have several waves awaiting verdicts at once; the digest
+ * names its wave and asks for the id back, so the right wave is closed when
+ * the answers do not arrive in the digests' order. Read leniently — anything
+ * that is not a string reads as unnamed — because the positional anchor is
+ * still there for a verdict that leaves it out.
+ */
+function readWaveId(raw: Record<string, unknown>): string | undefined {
+  return typeof raw.wave === "string" && raw.wave.trim()
+    ? raw.wave.trim()
+    : undefined;
+}
+
+function withWaveId<T extends Verdict>(verdict: T, waveId?: string): T {
+  return waveId ? { ...verdict, waveId } : verdict;
+}
+
+/**
  * Tri-state parse of the conductor's answer to a wave digest.
  *
  * `{ kind: "none" }` means the conductor replied with neither a verdict fence
@@ -207,11 +226,14 @@ export function parseFlockVerdict(messageText: string): FlockVerdictParse {
     }
     return {
       kind: "verdict",
-      verdict: withNote(
-        token === VERDICT_TOKENS.accept
-          ? { outcome: "accept" }
-          : { outcome: "needs-operator" },
-        note,
+      verdict: withWaveId(
+        withNote(
+          token === VERDICT_TOKENS.accept
+            ? { outcome: "accept" }
+            : { outcome: "needs-operator" },
+          note,
+        ),
+        readWaveId(parsed),
       ),
       prose: scan.prose,
     };
@@ -232,7 +254,10 @@ export function parseFlockVerdict(messageText: string): FlockVerdictParse {
   }
   return {
     kind: "verdict",
-    verdict: withNote({ outcome: "revise", steps: wave.steps }, note),
+    verdict: withWaveId(
+      withNote({ outcome: "revise", steps: wave.steps }, note),
+      readWaveId(parsed),
+    ),
     // The revision wave stays in the prose: it is the plan the operator
     // reads as its steps (`ui/WavePlanRecord.tsx`), exactly like a plan the
     // conductor wrote on its own, and only the verdict was machine-facing.

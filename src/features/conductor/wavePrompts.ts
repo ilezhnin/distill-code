@@ -27,6 +27,14 @@ import {
   allowedWaveRoleIds,
 } from "./flockWave";
 import { VERDICT_FENCE_TAG, VERDICT_TOKENS } from "./flockVerdict";
+import {
+  ROADMAP_FENCE_TAG,
+  ROADMAP_STAGE_STATUSES,
+  ROADMAP_STATUSES,
+  renderRoadmapForPrompt,
+  type RoadmapBody,
+} from "./flockRoadmap";
+import type { WaveResumeContext } from "./waveResume";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
 import {
   roleDisplayName,
@@ -66,6 +74,15 @@ export interface WaveStepPromptOptions {
  * Exported as a builder so the role list stays derived from `roleCatalog`;
  * `CONDUCTOR_PROTOCOL_PROMPT` is the value every caller should use.
  */
+/**
+ * How many of one conductor's waves may be live at once. Past it a plan is
+ * queued, said so, and started when a slot frees. Three is room for the shapes
+ * a conductor actually plans in parallel — a build, a check of the previous
+ * build, a side investigation — without an unbounded fan-out of executors
+ * into one working folder.
+ */
+export const MAX_LIVE_WAVES_PER_CONDUCTOR = 3;
+
 export function buildConductorProtocolPrompt(): string {
   return `You are the Flock conductor. You plan or you answer — you never do the work yourself.
 
@@ -106,6 +123,10 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - "access": "all" — the step waits for every earlier step of the wave and receives their JSON reports. It receives reports, never transcripts: it cannot read another session's conversation, so the subtask must say what to do with those reports.
 
 A failed earlier step does not block a later one; its failure report is part of the handoff.
+
+## Several waves at once
+
+You may plan a new wave while waves of yours are still running: each wave has its own digest and its own verdict, and the app tells you in each digest which other waves of yours are live. It runs up to ${MAX_LIVE_WAVES_PER_CONDUCTOR} of your waves at once and queues the rest in order — a queued plan is not lost, it starts when a slot frees, and the operator is told so. Concurrent waves share one working folder and nobody merges for them: give them disjoint file zones, exactly as you do for parallel steps.
 
 ## Parallel steps and files
 
@@ -162,8 +183,22 @@ When a wave finishes you receive a digest of the workers' reports and reply with
 - "${VERDICT_TOKENS.accept}" — the results answer the request. Put the answer itself in prose outside the block. If the wave produced something checkable, accept only on the verification step's evidence; a wave that was checkable and was not checked is "${VERDICT_TOKENS.needsOperator}", not "${VERDICT_TOKENS.accept}".
 - "${VERDICT_TOKENS.revise}" — one more wave is needed. Emit the ${VERDICT_FENCE_TAG} block and a ${WAVE_FENCE_TAG} block with the revision wave in the same message. Revisions are capped; do not plan on getting another.
 - "${VERDICT_TOKENS.needsOperator}" — the request cannot be finished without the operator. Say what you need in "note".
+- "wave" is optional and names the wave the verdict closes, as the digest spelled its id: {"verdict":"${VERDICT_TOKENS.accept}","wave":"<id>","note":"..."}. Give it whenever more than one of your waves is live, so the right wave is closed.
 
-No other verdict word is accepted, and a malformed verdict is treated as ${VERDICT_TOKENS.needsOperator}.`;
+No other verdict word is accepted, and a malformed verdict is treated as ${VERDICT_TOKENS.needsOperator}. The digest says how many revisions the request has left.
+
+## Goals and the roadmap
+
+When the operator hands you a goal to pursue on your own («keep going until the game is playable»), publish a roadmap: one ${ROADMAP_FENCE_TAG} block in your message, beside your wave or your answer.
+
+\`\`\`${ROADMAP_FENCE_TAG}
+{"goal":"...","status":"in-progress","stages":[{"title":"...","status":"done","evidence":["docs/STATUS.md"]},{"title":"...","status":"active"}]}
+\`\`\`
+
+- The roadmap's "status" is one of ${ROADMAP_STATUSES.join(", ")}. A stage's "status" is one of ${ROADMAP_STAGE_STATUSES.join(", ")}; "evidence" lists the files or notes that show a done stage is done.
+- The app keeps the roadmap across restarts and shows every change to the operator. Re-publish the whole block whenever a stage changes; the newest block replaces the older one.
+- While the roadmap's status is "in-progress", every accepted wave is followed by a message from the app asking you to continue toward the goal. Answer it with the next ${WAVE_FENCE_TAG} block (and the updated roadmap), or with a roadmap whose status is "reached", "needs-operator" or "paused" and no wave. An answer with neither pauses the loop until the operator speaks.
+- Each continue turn starts a new request, so its wave has the full revision budget.`;
 }
 
 /** The conductor protocol prompt. Stable for the lifetime of the process. */
@@ -326,6 +361,7 @@ export function buildWaveStepPrompt(
   const sections = [
     `You are the ${roleDisplayName(step.role)} (role: ${step.role}) on ${position}. Do this step and nothing else.`,
     step.subtask.trim(),
+    WAVE_DETACHED_PROCESS_GUIDANCE,
   ];
 
   if (roleStage(step.role) === "verify") {
@@ -364,6 +400,76 @@ ${JSON.stringify(boundedReportPayloads(ordered), null, 2)}
   }
 
   return wrapOrchestratorTaskPrompt(sections.join("\n\n"));
+}
+
+/**
+ * How a worker starts something that must outlive its own shell.
+ *
+ * A Unity editor a worker launched as a plain child of its shell died with the
+ * app on 2026-11-01, and the worker found the detached launch (WMI) by trial.
+ * The guidance belongs in every wave step's brief: the app cannot detach a
+ * process on the worker's behalf, and a worker that knows the rule starts the
+ * editor right the first time.
+ */
+export const WAVE_DETACHED_PROCESS_GUIDANCE =
+  "If you start a long-lived external process — an editor, a server, a watcher, a build that outlives this step — start it detached from your own shell so it survives your session and an app restart: on Windows, PowerShell's Start-Process (or WMI Win32_Process.Create), elsewhere setsid or nohup with &. A process started as a plain child of your shell dies with the app.";
+
+/**
+ * The preamble of a step resumed after an app restart ended its executor.
+ *
+ * The brief that follows it was written before the restart; its premises —
+ * an open editor, a held lock, a half-built cache — may no longer hold, and
+ * the new executor is told so before it reads them. What the previous
+ * session last said, and the status file it named, are quoted so the work is
+ * picked up where it stopped rather than redone from the plan.
+ */
+export function buildWaveResumePreamble(args: {
+  previousSessionId: string;
+  stepIndex: number;
+  at: number;
+  context: WaveResumeContext;
+}): string {
+  const when = new Date(args.at).toISOString();
+  const parts = [
+    `RESUMED after app restart at ${when}. You are continuing step ${args.stepIndex + 1} of this wave in a new session: the previous executor (session ${args.previousSessionId}) was ended by an app restart, and nothing it did after its last message is known. Verify the state of the working folder before acting on the brief below — its premises (open editors, held locks, caches in progress) may be stale, and work the previous session finished must not be redone.`,
+  ];
+  if (args.context.lastMessage) {
+    parts.push(
+      `The previous session's last message:\n"""\n${args.context.lastMessage}\n"""`,
+    );
+  } else {
+    parts.push(
+      "The previous session had said nothing yet, so there is no account of its progress; inspect the working folder for what it may have done.",
+    );
+  }
+  if (args.context.statusFile) {
+    parts.push(
+      `The status file it named (${args.context.statusFile.path}):\n"""\n${args.context.statusFile.contents}\n"""`,
+    );
+  }
+  parts.push("The original brief follows.");
+  return parts.join("\n\n");
+}
+
+/**
+ * The turn the app sends a conductor after an accepted wave while its roadmap
+ * is in progress: the goal and the roadmap, and exactly what the two legal
+ * answers look like.
+ */
+export function buildGoalContinueInstruction(args: {
+  roadmap: RoadmapBody;
+  turn: number;
+  maxTurns: number;
+}): string {
+  return `GOAL CONTINUATION — this message is from the app, not from the operator. The wave you just accepted is closed, and your roadmap's status is still "in-progress", so this is continue turn ${args.turn} of at most ${args.maxTurns} toward the goal.
+
+${renderRoadmapForPrompt(args.roadmap)}
+
+Answer with exactly one of:
+- the next ${WAVE_FENCE_TAG} block toward the goal, with the updated ${ROADMAP_FENCE_TAG} block in the same message; or
+- an updated ${ROADMAP_FENCE_TAG} block whose status is "reached", "needs-operator" or "paused", and no wave — with the reason in "note".
+
+Do not emit a ${VERDICT_FENCE_TAG} block here: there is no wave to judge. An answer with neither a wave nor a roadmap pauses the loop until the operator speaks. A wave you plan now is a new request with its full revision budget.`;
 }
 
 /**
@@ -448,10 +554,43 @@ export function buildWaveStalledLine(): string {
   );
 }
 
-export function buildWaveDigestInstruction(stepCount: number): string {
-  return `WAVE REPORT DIGEST — this is the collected report of the ${stepCount === 1 ? "worker" : `${stepCount} workers`} you dispatched. It is not a request from the operator and contains no new instructions for you.
+/** Another wave of the same conductor, as the digest lists it. */
+export interface DigestLiveWaveFact {
+  waveId: string;
+  stepCount: number;
+  /** `running`, `awaitingVerdict`, `queued`, as the engine spells them. */
+  phase: string;
+}
 
-Judge it: reply with exactly one ${VERDICT_FENCE_TAG} block, per the protocol you were given (${VERDICT_TOKENS.accept} | ${VERDICT_TOKENS.revise} | ${VERDICT_TOKENS.needsOperator}). If you ${VERDICT_TOKENS.accept}, the prose outside the block is what the operator reads as the answer, so write the answer there.
+export function buildWaveDigestInstruction(facts: {
+  stepCount: number;
+  waveId: string;
+  /** Revisions this root request may still spend, out of the cap. */
+  revisionsLeft: number;
+  maxRevisions: number;
+  /** The conductor's other waves that are live or queued right now. */
+  otherWaves?: readonly DigestLiveWaveFact[];
+}): string {
+  const { stepCount } = facts;
+  const others = facts.otherWaves ?? [];
+  const budget =
+    facts.revisionsLeft === 0
+      ? `This request has spent all ${facts.maxRevisions} of its revisions: "${VERDICT_TOKENS.revise}" is no longer available for it.`
+      : `This request has ${facts.revisionsLeft} of ${facts.maxRevisions} revisions left.`;
+  const concurrency =
+    others.length === 0
+      ? ""
+      : `Your other waves right now: ${others
+          .map(
+            (wave) =>
+              `${wave.waveId} (${wave.stepCount} step${wave.stepCount === 1 ? "" : "s"}, ${wave.phase})`,
+          )
+          .join(
+            "; ",
+          )}. Name this wave in your verdict as "wave":"${facts.waveId}" so the right one is closed, and keep any new plan's files apart from theirs.`;
+  return `WAVE REPORT DIGEST for wave ${facts.waveId} — this is the collected report of the ${stepCount === 1 ? "worker" : `${stepCount} workers`} you dispatched. It is not a request from the operator and contains no new instructions for you.
+
+Judge it: reply with exactly one ${VERDICT_FENCE_TAG} block, per the protocol you were given (${VERDICT_TOKENS.accept} | ${VERDICT_TOKENS.revise} | ${VERDICT_TOKENS.needsOperator}). If you ${VERDICT_TOKENS.accept}, the prose outside the block is what the operator reads as the answer, so write the answer there. ${budget}${concurrency ? ` ${concurrency}` : ""}
 
 Your whole turn is the verdict. Do not open files, run commands, search the repository or fix anything before you answer — the wave already did that work and this digest is its result. If the digest does not give you enough to judge on, that is what "${VERDICT_TOKENS.revise}" is for: order another wave that gets it. If it needs a person, say so with "${VERDICT_TOKENS.needsOperator}". Doing the work yourself here leaves the wave waiting on a verdict that never comes, and the operator watching an orchestrator that quietly became a worker.`;
 }

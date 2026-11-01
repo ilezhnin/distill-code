@@ -140,7 +140,10 @@ export function enforceBudgets(now: number = Date.now()): BudgetBreach[] {
       status: "stopped",
       task: describeBreach(breach, graph.getNode(breach.sessionId)?.task),
     });
-    void stopOrchestratorSession(breach.sessionId);
+    void stopOrchestratorSession(
+      breach.sessionId,
+      `Stopped by the app: the step reached the budget its plan set (${breach.limit}).`,
+    );
   }
   return breaches;
 }

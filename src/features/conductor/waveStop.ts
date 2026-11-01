@@ -43,7 +43,7 @@ import {
 } from "./waveEngine";
 import { waveClosureNoticeText } from "./waveNotices";
 import { isWaveLive } from "./waveVerdict";
-import { updateWaveEngineState, withWave } from "./waveStore";
+import { updateWaveEngineState, withWave, withoutWave } from "./waveStore";
 import { recordWaveClose } from "./waveTelemetryStore";
 
 /**
@@ -55,7 +55,10 @@ import { recordWaveClose } from "./waveTelemetryStore";
  * others running — and callers park the wave *before* calling this, so a
  * crash mid-stop resumes into a wave the scheduler never advances again.
  */
-export function stopWaveChildSessions(wave: WaveState): void {
+export function stopWaveChildSessions(
+  wave: WaveState,
+  reason: string = WAVE_STOP_REASONS.waveStopped,
+): void {
   const graph = useConductorGraphStore.getState();
   for (const step of wave.steps) {
     if (!step.sessionId) continue;
@@ -66,9 +69,33 @@ export function stopWaveChildSessions(wave: WaveState): void {
     // "cancelled" before that digest is read.
     const node = graph.getNode(step.sessionId);
     if (node && isTerminalRunStatus(node.status)) continue;
-    void stopOrchestratorSession(step.sessionId);
+    void stopOrchestratorSession(step.sessionId, reason);
   }
 }
+
+/**
+ * Why a wave's executors were told to stop, in the words the digest and the
+ * worker's chip repeat. Model-facing and operator-facing at once, so plain
+ * English like the rest of the wave protocol.
+ */
+export const WAVE_STOP_REASONS = {
+  waveStopped: "Stopped by the app: its wave was stopped.",
+  operator: "Stopped by the operator.",
+  operatorCancelledWave: "Stopped by the operator: the wave was cancelled.",
+  siblingBlocked:
+    "Stopped by the app: another step of the wave reported it is blocked, so the wave was stopped.",
+  stalled:
+    "Stopped by the app: the wave stalled, and what exists was collected for the digest.",
+  interrupted:
+    "Stopped by the app: the wave was interrupted before any step reported.",
+  appRestart:
+    "Ended by an app restart: the process running this agent went down, and nothing it did after its last message is known.",
+  unadopted:
+    "Stopped by the app: its step had already been given up on when this session appeared.",
+} as const;
+
+/** The chip and digest line for a stop the operator made by hand. */
+export const OPERATOR_STOP_REASON = WAVE_STOP_REASONS.operator;
 
 /**
  * Stops a running wave on the operator's order.
@@ -81,17 +108,37 @@ export function stopWaveChildSessions(wave: WaveState): void {
  */
 export function stopWaveByOperator(sessionId: string, waveId: string): boolean {
   let parked: WaveState | undefined;
+  let dropped: WaveState | undefined;
   updateWaveEngineState((state) => {
     const wave = state.waves.find((candidate) => candidate.waveId === waveId);
     if (!wave || wave.conductorSessionId !== sessionId) return state;
+    // A queued wave has started nothing: cancelling it is dropping the plan,
+    // and the record of that is the telemetry row plus the notice below.
+    if (wave.phase === "queued") {
+      dropped = wave;
+      return withoutWave(state, wave.waveId);
+    }
     if (!isWaveLive(wave)) return state;
     parked = withWavePhase(wave, "needsOperator");
     return withWave(state, parked);
   });
+  if (dropped) {
+    recordWaveClose(dropped, "needs-operator", "operator-stopped");
+    useChatStore
+      .getState()
+      .addMessage(
+        sessionId,
+        createSystemNotificationMessage(
+          waveClosureNoticeText({ reason: "operator-stopped" }),
+          "warning",
+        ),
+      );
+    return true;
+  }
   if (!parked) return false;
   recordWaveClose(parked, "needs-operator", "operator-stopped");
 
-  stopWaveChildSessions(parked);
+  stopWaveChildSessions(parked, WAVE_STOP_REASONS.operatorCancelledWave);
   useChatStore
     .getState()
     .addMessage(

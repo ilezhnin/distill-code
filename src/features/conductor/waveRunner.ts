@@ -17,6 +17,8 @@
  */
 
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
+import { applicationExecutorConfiguration } from "@/features/benchmarks/lib/applicationExecutor";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import { benchmarkErrorMessage } from "@/features/benchmarks/api/benchmarks";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { isAppClosing } from "@/shared/lib/appClosing";
@@ -29,15 +31,13 @@ import {
   waveExecutorAvailable,
   syncWaveExecutorOutcomes,
   resetWaveExecutorOutcomesForTests,
+  waveExecutorKey,
 } from "./waveExecutor";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import {
-  createSystemNotificationMessage,
-  type Message,
-} from "@/shared/types/messages";
+import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import {
   hasConductorGraphHydrationFailed,
@@ -57,6 +57,7 @@ import {
   advanceWave,
   createWaveState,
   waveInterruptedBeforeReport,
+  waveStepNode,
   withWavePhase,
   withWaveStepPhase,
   type WaveSpawnRequest,
@@ -73,17 +74,25 @@ import {
 } from "./waveTelemetryStore";
 import {
   parkInterruptedWave,
+  processGoalTurns,
   processWaveDigests,
   processWaveVerdicts,
   resetWaveLifecycleForTests,
   restoreParkedWaveNotices,
   startDigestDispatch,
+  startGoalDispatch,
   type PendingDigestDispatch,
+  type PendingGoalDispatch,
 } from "./waveLifecycle";
+import { processRoadmaps, resetRoadmapSyncForTests } from "./roadmapSync";
 import { verifyWaveStepReport } from "./waveReportVerification";
 import {
   conductorDocumentsUnreadableNoticeText,
-  waveConcurrentPlanNoticeText,
+  waveQueuedNoticeText,
+  waveQueuedStartedNoticeText,
+  waveStepAdoptedNoticeText,
+  waveStepInventoryFallbackNoticeText,
+  waveStepResumedNoticeText,
   waveReportVerificationFailedNoticeText,
   waveStalledNoticeText,
   waveStepBlockedNoticeText,
@@ -110,11 +119,16 @@ import {
   totalPersistFailures,
   type PersistScope,
 } from "./persistHealth";
-import { stopWaveChildSessions } from "./waveStop";
+import { WAVE_STOP_REASONS, stopWaveChildSessions } from "./waveStop";
 import { enforceBudgets } from "./budgetGuard";
 import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
 import { loadFailedAttemptsBlock } from "./taskMemory";
-import { buildWaveStepPrompt } from "./wavePrompts";
+import {
+  MAX_LIVE_WAVES_PER_CONDUCTOR,
+  buildWaveResumePreamble,
+  buildWaveStepPrompt,
+} from "./wavePrompts";
+import { loadWaveResumeContext } from "./waveResume";
 import {
   advertisedModelForTarget,
   checkExplicitWaveStepModel,
@@ -465,77 +479,108 @@ function appendConductorNotice(
   return message.id;
 }
 
-/**
- * The concurrent-refusal card of one live wave, and how many plans it has
- * refused so far.
- *
- * The refusal used to be posted per refused plan, which is right as an audit
- * fact — every plan really was tombstoned — and wrong as something to read: a
- * message queue drained after a restart turns "one card per plan" into seven
- * identical walls of text in a row (seen 2026-08-25). One card per wave says
- * the rule once and carries the only thing that changes, the count.
- *
- * In memory on purpose: after a restart the wave may still be live and a fresh
- * card is the honest outcome — this process never posted the earlier one, and
- * a stale message id would silently update nothing.
- */
-const concurrentRefusalNotices = new Map<
-  string,
-  { sessionId: string; messageId: string; count: number }
->();
-
-function withNoticeText(message: Message, text: string): Message {
-  return {
-    ...message,
-    content: message.content.map((part) =>
-      part.type === "systemNotification" ? { ...part, text } : part,
-    ),
-  };
-}
-
-/** Posts — or, for a wave that already refused one, updates — the card. */
-function noteConcurrentRefusal(
-  state: WaveEngineState,
-  sessionId: string,
-  waveId: string,
-): void {
-  for (const knownWaveId of [...concurrentRefusalNotices.keys()]) {
-    const stillLive = state.waves.some(
-      (wave) => wave.waveId === knownWaveId && isWaveLive(wave),
-    );
-    if (!stillLive) concurrentRefusalNotices.delete(knownWaveId);
-  }
-
-  const existing = concurrentRefusalNotices.get(waveId);
-  if (existing) {
-    const count = existing.count + 1;
-    concurrentRefusalNotices.set(waveId, { ...existing, count });
-    useChatStore
-      .getState()
-      .updateMessage(existing.sessionId, existing.messageId, (message) =>
-        withNoticeText(message, waveConcurrentPlanNoticeText(count)),
-      );
-    return;
-  }
-
-  const messageId = appendConductorNotice(
-    sessionId,
-    waveConcurrentPlanNoticeText(1),
-    false,
-    "warning",
-  );
-  concurrentRefusalNotices.set(waveId, { sessionId, messageId, count: 1 });
-}
-
-/** True when this conductor already has a wave that has not closed yet. */
-function liveWaveFor(
+/** This conductor's waves that have not closed yet. */
+function liveWavesFor(
   state: WaveEngineState,
   conductorSessionId: string,
-): WaveState | undefined {
-  return state.waves.find(
+): WaveState[] {
+  return state.waves.filter(
     (wave) =>
       wave.conductorSessionId === conductorSessionId && isWaveLive(wave),
   );
+}
+
+/** This conductor's admitted waves still waiting for a slot, oldest first. */
+function queuedWavesFor(
+  state: WaveEngineState,
+  conductorSessionId: string,
+): WaveState[] {
+  return state.waves
+    .filter(
+      (wave) =>
+        wave.conductorSessionId === conductorSessionId &&
+        wave.phase === "queued",
+    )
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+/**
+ * Puts an admitted wave into the live loop: it sweeps the conductor's parked
+ * waves (a new plan is a new root request), says when that resets a spent
+ * revision budget, and takes the git baseline. One function for a plan
+ * admitted straight into a slot and for a queued plan promoted into one, so
+ * the two cannot drift.
+ */
+function activateWave(
+  state: WaveEngineState,
+  wave: WaveState,
+): WaveEngineState {
+  // P14: the cap is counted per plan message, so this new plan silently
+  // restores a budget the previous request had spent to the last revision.
+  // Read it before the parked wave is dropped — a moment later there is
+  // nothing left to read it from.
+  const budgetReset = state.waves.some(
+    (parked) =>
+      parked.conductorSessionId === wave.conductorSessionId &&
+      parked.phase === "needsOperator" &&
+      parked.revisionCount >= MAX_WAVE_REVISIONS,
+  );
+  const next = withWave(
+    withoutParkedWavesFor(state, wave.conductorSessionId),
+    withWavePhase(wave, "running"),
+  );
+  setWaveEngineState(next);
+  bumpWaveTelemetryCounter("admittedWaves");
+  if (budgetReset) {
+    appendConductorNotice(
+      wave.conductorSessionId,
+      waveRevisionBudgetResetNoticeText(),
+      false,
+      "warning",
+    );
+  }
+  // E3a baseline: what git saw in the working folder before any worker did
+  // anything. Fire-and-forget — nothing waits on it; a baseline that never
+  // lands just degrades the digest line to "not captured".
+  startWaveGitProbe({
+    waveId: wave.waveId,
+    conductorSessionId: wave.conductorSessionId,
+    point: "admission",
+  });
+  return next;
+}
+
+/**
+ * Starts queued waves whose conductor has a free slot, oldest first.
+ *
+ * Runs every tick after the verdict and admission passes, so the tick that
+ * closes a wave is the tick that starts the next one in its conductor's
+ * queue. Nothing else wakes a queued wave, and nothing needs to.
+ */
+function promoteQueuedWaves(state: WaveEngineState): WaveEngineState {
+  let next = state;
+  const conductors = new Set(
+    next.waves
+      .filter((wave) => wave.phase === "queued")
+      .map((wave) => wave.conductorSessionId),
+  );
+  for (const conductorSessionId of conductors) {
+    let free =
+      MAX_LIVE_WAVES_PER_CONDUCTOR -
+      liveWavesFor(next, conductorSessionId).length;
+    for (const queued of queuedWavesFor(next, conductorSessionId)) {
+      if (free <= 0) break;
+      free -= 1;
+      next = activateWave(next, queued);
+      appendConductorNotice(
+        conductorSessionId,
+        waveQueuedStartedNoticeText(),
+        false,
+        "warning",
+      );
+    }
+  }
+  return next;
 }
 
 function admitCandidates(state: WaveEngineState): WaveEngineState {
@@ -581,37 +626,6 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     if (inFlightPlans.has(candidate.planMessageId)) continue;
     inFlightPlans.add(candidate.planMessageId);
 
-    // One wave at a time per conductor. Admitting a second one while the first
-    // is still live is the only unbounded cost path in the system: the
-    // operator adds "and while you're in there…" mid-run, the conductor
-    // answers with a plan because that is what it was told to do, and five
-    // more sessions start editing the same working folder with no coordination
-    // between the two waves. The refusal is tombstoned like any other, so it
-    // is said once and not on every tick, and it is a warning rather than an
-    // error because nobody did anything wrong.
-    const liveWave = liveWaveFor(next, candidate.conductorSessionId);
-    if (liveWave) {
-      next = withProcessedMessageWatermark(
-        withWaveTombstone(next, {
-          planMessageId: candidate.planMessageId,
-          conductorSessionId: candidate.conductorSessionId,
-          outcome: "rejected",
-          at: Date.now(),
-        }),
-        candidate.conductorSessionId,
-        candidate.createdAt,
-      );
-      setWaveEngineState(next);
-      bumpWaveTelemetryCounter("concurrentRefusals");
-      noteConcurrentRefusal(
-        next,
-        candidate.conductorSessionId,
-        liveWave.waveId,
-      );
-      next = getWaveEngineState();
-      continue;
-    }
-
     // 4a/D5: a step's explicit model is checked against the live inventory
     // and limits HERE, while nothing is spawned — a refused plan costs the
     // conductor a replan, not a half-started wave.
@@ -655,52 +669,41 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       steps: admission.steps,
       createdAt: Date.now(),
     });
-    // P14: the cap is counted per plan message, so this new plan silently
-    // restores a budget the previous request had spent to the last revision.
-    // Read it before the parked wave is dropped — a moment later there is
-    // nothing left to read it from.
-    const budgetReset = next.waves.some(
-      (parked) =>
-        parked.conductorSessionId === candidate.conductorSessionId &&
-        parked.phase === "needsOperator" &&
-        parked.revisionCount >= MAX_WAVE_REVISIONS,
+    // Tombstone and watermark first, whatever happens to the wave next: an
+    // admitted plan is never read as new again.
+    next = withProcessedMessageWatermark(
+      withWaveTombstone(next, {
+        planMessageId: candidate.planMessageId,
+        conductorSessionId: candidate.conductorSessionId,
+        outcome: "spawned",
+        at: Date.now(),
+      }),
+      candidate.conductorSessionId,
+      candidate.createdAt,
     );
-    next = withWave(
-      // A new plan is a new root request, so this conductor's wave parked on
-      // `needsOperator` (and the retry it backed) is stale and goes away.
-      withoutParkedWavesFor(
-        withProcessedMessageWatermark(
-          withWaveTombstone(next, {
-            planMessageId: candidate.planMessageId,
-            conductorSessionId: candidate.conductorSessionId,
-            outcome: "spawned",
-            at: Date.now(),
-          }),
-          candidate.conductorSessionId,
-          candidate.createdAt,
-        ),
-        candidate.conductorSessionId,
-      ),
-      wave,
-    );
-    setWaveEngineState(next);
-    bumpWaveTelemetryCounter("admittedWaves");
-    if (budgetReset) {
+    // Several waves may be live per conductor, each with its own digest and
+    // verdict; the cap bounds how many executors one conductor can put into
+    // one working folder at once. Past it the plan waits its turn — in
+    // order, behind anything already waiting — and the operator is told
+    // where it stands. It is never dropped: a plan the conductor wrote and
+    // the app silently ignored is what this replaces.
+    const liveCount = liveWavesFor(next, candidate.conductorSessionId).length;
+    const queuedCount = queuedWavesFor(
+      next,
+      candidate.conductorSessionId,
+    ).length;
+    if (liveCount >= MAX_LIVE_WAVES_PER_CONDUCTOR || queuedCount > 0) {
+      next = withWave(next, withWavePhase(wave, "queued"));
+      setWaveEngineState(next);
       appendConductorNotice(
         candidate.conductorSessionId,
-        waveRevisionBudgetResetNoticeText(),
+        waveQueuedNoticeText({ liveCount, position: queuedCount + 1 }),
         false,
         "warning",
       );
+      continue;
     }
-    // E3a baseline: what git saw in the working folder before any worker did
-    // anything. Fire-and-forget — nothing waits on it; a baseline that never
-    // lands just degrades the digest line to "not captured".
-    startWaveGitProbe({
-      waveId: wave.waveId,
-      conductorSessionId: candidate.conductorSessionId,
-      point: "admission",
-    });
+    next = activateWave(next, wave);
   }
   return next;
 }
@@ -709,13 +712,15 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   const key = spawnKey(wave.waveId, request.stepIndex);
   inFlightSpawns.add(key);
   const stopUnadoptedChild = (sessionId: string) => {
-    void stopOrchestratorSession(sessionId).catch((error: unknown) => {
-      appendConductorNotice(
-        wave.conductorSessionId,
-        waveChildStopFailureText(benchmarkErrorMessage(error)),
-        false,
-      );
-    });
+    void stopOrchestratorSession(sessionId, WAVE_STOP_REASONS.unadopted).catch(
+      (error: unknown) => {
+        appendConductorNotice(
+          wave.conductorSessionId,
+          waveChildStopFailureText(benchmarkErrorMessage(error)),
+          false,
+        );
+      },
+    );
   };
   // 4a: an explicit step model wins over the role's ranking — the plan said
   // exactly where this step runs; the ranking is the default for steps that
@@ -749,12 +754,48 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
               revisionCount: wave.revisionCount,
             })
           : null;
-      const step = failedAttempts
+      let step = failedAttempts
         ? {
             ...request.step,
             subtask: `${request.step.subtask}\n\n${failedAttempts}`,
           }
         : request.step;
+      // A step the app restart ended is continued, not redone: the new
+      // executor is handed what the previous session last said and the status
+      // file it named, under a line that says the brief's premises may be
+      // stale. Read now, at dispatch, so it quotes the transcript as the host
+      // has it rather than whatever the renderer's cache still held.
+      if (request.resume) {
+        const context = await loadWaveResumeContext({
+          previousSessionId: request.resume.previousSessionId,
+          workingDir:
+            useChatSessionStore.getState().getSession(wave.conductorSessionId)
+              ?.workingDir ?? undefined,
+        });
+        step = {
+          ...step,
+          subtask: `${buildWaveResumePreamble({
+            previousSessionId: request.resume.previousSessionId,
+            stepIndex: request.stepIndex,
+            at: Date.now(),
+            context,
+          })}\n\n${step.subtask}`,
+        };
+        appendConductorNotice(
+          wave.conductorSessionId,
+          waveStepResumedNoticeText({
+            stepIndex: request.stepIndex,
+            name: roleDisplayName(request.step.role),
+            handed: context.statusFile
+              ? "status"
+              : context.lastMessage
+                ? "message"
+                : "nothing",
+          }),
+          false,
+          "warning",
+        );
+      }
       // Resolved at spawn, not carried from admission: an `access: "all"`
       // step can start long after the plan was admitted, and the inventory is
       // read fresh so the target names the model as it exists now. A model
@@ -930,6 +971,34 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           await ownedTaskExecution.cancel(ownedBindingId, true);
         return;
       }
+      if (prepared.adopt) {
+        // A session for this very step already exists — started by the
+        // previous run of this app, or by a second Flock on the same folder.
+        // Running a second worker beside it is the one thing worse than
+        // refusing, so the existing session becomes the step's executor.
+        const adopted = adoptExistingWaveSession(
+          wave,
+          request,
+          prepared.adopt,
+          preparedKey,
+        );
+        if (!adopted) {
+          throw new Error(
+            `Another Flock process started session ${prepared.adopt.sessionId} for this step, but this app does not know that session; open or stop it there before asking again`,
+          );
+        }
+        childStarted = true;
+        appendConductorNotice(
+          wave.conductorSessionId,
+          waveStepAdoptedNoticeText({
+            stepIndex: request.stepIndex,
+            name: roleDisplayName(request.step.role),
+          }),
+          false,
+          "warning",
+        );
+        return;
+      }
       if (
         prepared.selected &&
         !waveExecutorAvailable(request, prepared.selected, Boolean(stepTarget))
@@ -952,6 +1021,18 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       const noticeModel = settingsModel
         ? modelDisplayName(settingsModel)
         : executionTarget?.modelName;
+      if (prepared.fallbackNote) {
+        appendConductorNotice(
+          wave.conductorSessionId,
+          waveStepInventoryFallbackNoticeText({
+            stepIndex: request.stepIndex,
+            name: roleDisplayName(request.step.role),
+            model: noticeModel ?? "another model",
+          }),
+          false,
+          "warning",
+        );
+      }
       const selectedRanking = explicitModel
         ? undefined
         : resolveWaveStepTargets(
@@ -1120,17 +1201,36 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
             phase: "spawned",
             sessionId,
             runId,
+            ...stepDispatchFacts(
+              wave,
+              request,
+              prepared.requestKey,
+              prepared.fallbackNote,
+            ),
           }),
         );
       });
       if (!adopted) stopUnadoptedChild(sessionId);
+      if (adopted && request.resume) {
+        // The dead session stays in the graph for the operator to open; the
+        // mark is what keeps the engine from reading it as the step again.
+        useConductorGraphStore
+          .getState()
+          .patchNode(request.resume.previousSessionId, {
+            supersededBySessionId: sessionId,
+          });
+      }
       if (!prepared.owned)
         await executorSelection
           .observe(preparedKey, {
             phase: "started",
             sessionId,
             runId,
-            configuration: null,
+            // What actually runs, which a fallback may have changed from the
+            // recorded choice; the journal says so too, not only the digest.
+            configuration: prepared.selected
+              ? (applicationExecutorConfiguration(prepared.selected) ?? null)
+              : null,
             outcome: null,
             reason:
               "Session created; the provider has not reported an executor configuration yet",
@@ -1203,6 +1303,99 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       runWaveEngineTick();
     }
   })();
+}
+
+/**
+ * The dispatch facts a step keeps beside its session: the journal key when
+ * it is not the default one, and the app's note about how the step was
+ * routed, which the digest prints as the app's line.
+ */
+function stepDispatchFacts(
+  wave: WaveState,
+  request: WaveSpawnRequest,
+  preparedKey: string,
+  fallbackNote: string | undefined,
+): { executorKey?: string; dispatchNote?: string } {
+  const notes = [
+    ...(request.resume
+      ? [
+          `Resumed in a new session after an app restart ended session ${request.resume.previousSessionId} (resume ${request.resume.resumeCount}); the new executor was handed that session's last message.`,
+        ]
+      : []),
+    ...(fallbackNote ? [fallbackNote] : []),
+  ];
+  return {
+    ...(preparedKey !== waveExecutorKey(wave.waveId, request.stepIndex)
+      ? { executorKey: preparedKey }
+      : {}),
+    ...(notes.length > 0 ? { dispatchNote: notes.join(" ") } : {}),
+  };
+}
+
+/**
+ * Makes a session another process started for this step the step's executor.
+ *
+ * Only a session this app knows: the node needs its harness and project, and
+ * a session the store has never seen is one the operator cannot open from
+ * here either. Returns false then, and the caller fails the step with the
+ * session named so the operator can go and look.
+ */
+function adoptExistingWaveSession(
+  wave: WaveState,
+  request: WaveSpawnRequest,
+  adopt: { sessionId: string; runId: string | null },
+  preparedKey: string,
+): boolean {
+  const session = useChatSessionStore.getState().getSession(adopt.sessionId);
+  if (!session) return false;
+  const graph = useConductorGraphStore.getState();
+  const runId = adopt.runId ?? `adopted:${adopt.sessionId}`;
+  if (!graph.getNode(adopt.sessionId)) {
+    const target = session.executionTarget;
+    graph.registerNode({
+      sessionId: adopt.sessionId,
+      projectId: session.projectId ?? "",
+      role: "worker",
+      managedBy: "wave",
+      parentSessionId: wave.conductorSessionId,
+      rootConductorId: wave.conductorSessionId,
+      runId,
+      harnessId: target?.harnessId ?? DEFAULT_HARNESS_ID,
+      ...(typeof target?.modelId === "string"
+        ? { modelId: target.modelId }
+        : {}),
+      displayName: waveStepDisplayName(
+        request.step.role,
+        request.step.subtask,
+        request.step.label,
+      ),
+      roleId: request.step.role,
+      status: "running",
+      task: request.step.subtask,
+      createdAt: Date.now(),
+      anchorMessageId: wave.planMessageId,
+      waveId: wave.waveId,
+      stepIndex: request.stepIndex,
+      taskId: wave.rootRequestId,
+    });
+  }
+  const node = useConductorGraphStore.getState().getNode(adopt.sessionId);
+  updateWaveEngineState((state) => {
+    const current = state.waves.find(
+      (candidate) => candidate.waveId === wave.waveId,
+    );
+    if (!current) return state;
+    return withWave(
+      state,
+      withWaveStepPhase(current, request.stepIndex, {
+        phase: "spawned",
+        sessionId: adopt.sessionId,
+        runId: node?.runId ?? runId,
+        ...stepDispatchFacts(wave, request, preparedKey, undefined),
+      }),
+    );
+  });
+  return true;
 }
 
 function advanceWaves(state: WaveEngineState): {
@@ -1290,10 +1483,7 @@ function advanceWaves(state: WaveEngineState): {
       const step = advanced.wave.steps.find(
         (candidate) => candidate.stepIndex === stepIndex,
       );
-      const child = nodes.find(
-        (candidate) =>
-          candidate.waveId === wave.waveId && candidate.stepIndex === stepIndex,
-      );
+      const child = waveStepNode(advanced.wave, stepIndex, nodes);
       appendConductorNotice(
         wave.conductorSessionId,
         waveReportDegradedNoticeText(
@@ -1312,10 +1502,7 @@ function advanceWaves(state: WaveEngineState): {
       const step = advanced.wave.steps.find(
         (candidate) => candidate.stepIndex === stepIndex,
       );
-      const child = nodes.find(
-        (candidate) =>
-          candidate.waveId === wave.waveId && candidate.stepIndex === stepIndex,
-      );
+      const child = waveStepNode(advanced.wave, stepIndex, nodes);
       appendConductorNotice(
         wave.conductorSessionId,
         waveReportVerificationFailedNoticeText({
@@ -1346,16 +1533,12 @@ function advanceWaves(state: WaveEngineState): {
       next = withWave(next, parked);
       setWaveEngineState(next);
       recordWaveClose(parked, "needs-operator", "step-blocked");
-      stopWaveChildSessions(parked);
+      stopWaveChildSessions(parked, WAVE_STOP_REASONS.siblingBlocked);
       for (const blockedStep of advanced.blocked) {
         const step = parked.steps.find(
           (candidate) => candidate.stepIndex === blockedStep.stepIndex,
         );
-        const child = nodes.find(
-          (candidate) =>
-            candidate.waveId === wave.waveId &&
-            candidate.stepIndex === blockedStep.stepIndex,
-        );
+        const child = waveStepNode(parked, blockedStep.stepIndex, nodes);
         appendConductorNotice(
           wave.conductorSessionId,
           waveStepBlockedNoticeText({
@@ -1382,11 +1565,7 @@ function advanceWaves(state: WaveEngineState): {
     if (
       waveInterruptedBeforeReport(
         advanced.wave,
-        (stepIndex) =>
-          nodes.find(
-            (node) =>
-              node.waveId === wave.waveId && node.stepIndex === stepIndex,
-          )?.status,
+        (stepIndex) => waveStepNode(advanced.wave, stepIndex, nodes)?.status,
         graph.getReport,
       )
     ) {
@@ -1395,7 +1574,7 @@ function advanceWaves(state: WaveEngineState): {
         advanced.wave,
       );
       next = parkedState;
-      stopWaveChildSessions(parked);
+      stopWaveChildSessions(parked, WAVE_STOP_REASONS.interrupted);
       continue;
     }
     let current = advanced.wave;
@@ -1437,7 +1616,7 @@ function advanceWaves(state: WaveEngineState): {
       );
       next = withWave(next, stalledWave);
       setWaveEngineState(next);
-      stopWaveChildSessions(stalledWave);
+      stopWaveChildSessions(stalledWave, WAVE_STOP_REASONS.stalled);
       appendConductorNotice(
         wave.conductorSessionId,
         waveStalledNoticeText(current.stallCount ?? WAVE_STALL_THRESHOLD),
@@ -1523,6 +1702,7 @@ export function runWaveEngineTick(): void {
   ticking = true;
   let pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
   let digests: PendingDigestDispatch[] = [];
+  let goalTurns: PendingGoalDispatch[] = [];
   try {
     // Budgets first, and before any of the phase machinery: an executor that
     // has passed its ceiling should not be given another tick of runway while
@@ -1547,10 +1727,17 @@ export function runWaveEngineTick(): void {
     // loaded in this process; when one lands, they re-run through this same
     // tick rather than waiting for an unrelated chat-store change.
     const judged = processWaveVerdicts(getWaveEngineState(), runWaveEngineTick);
-    const admitted = admitCandidates(judged);
-    const advanced = advanceWaves(admitted);
+    // The roadmap the conductor publishes beside its plans and verdicts: read
+    // before admission so a goal turn's answer is judged on the same tick.
+    const mapped = processRoadmaps(judged, appendConductorNotice);
+    const continued = processGoalTurns(mapped, runWaveEngineTick);
+    const admitted = admitCandidates(continued.state);
+    // A wave closed above may have freed a slot in its conductor's queue.
+    const promoted = promoteQueuedWaves(admitted);
+    const advanced = advanceWaves(promoted);
     const digested = processWaveDigests(advanced.state, runWaveEngineTick);
     setWaveEngineState(digested.state);
+    goalTurns = continued.pending;
     restoreParkedWaveNotices(digested.state, runWaveEngineTick);
     // P61's heartbeat: a wedged child streams nothing, and nothing else
     // re-ticks a quiet engine — so as long as any wave is running, the next
@@ -1561,6 +1748,9 @@ export function runWaveEngineTick(): void {
     if (
       digested.state.waves.some(
         (wave) => wave.phase === "running" || wave.phase === "awaitingVerdict",
+      ) ||
+      Object.values(digested.state.roadmaps).some(
+        (roadmap) => roadmap.continueTurn !== undefined,
       )
     ) {
       scheduleStallTick(WAVE_STALL_SAMPLE_MS);
@@ -1576,6 +1766,10 @@ export function runWaveEngineTick(): void {
   for (const dispatch of digests) {
     startDigestDispatch(dispatch, runWaveEngineTick);
   }
+  for (const dispatch of goalTurns) {
+    startGoalDispatch(dispatch, runWaveEngineTick);
+  }
+  const engineState = getWaveEngineState();
   syncWaveExecutorOutcomes(
     Object.values(useConductorGraphStore.getState().nodesById).filter(
       (node) =>
@@ -1591,6 +1785,14 @@ export function runWaveEngineTick(): void {
           false,
         );
     },
+    (node) =>
+      engineState.waves
+        .find((wave) => wave.waveId === node.waveId)
+        ?.steps.find(
+          (step) =>
+            step.stepIndex === node.stepIndex &&
+            step.sessionId === node.sessionId,
+        )?.executorKey,
   );
   reportPersistFailureOnce();
 }
@@ -1672,7 +1874,7 @@ export function resetWaveRunnerForTests(): void {
   inFlightPlans.clear();
   inFlightSpawns.clear();
   scannedWithoutPlan.clear();
-  concurrentRefusalNotices.clear();
+  resetRoadmapSyncForTests();
   ticking = false;
   awaitingWaveHydration = false;
   hasResumedOrphanedSpawns = false;

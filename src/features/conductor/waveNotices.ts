@@ -214,32 +214,131 @@ export function waveClosureNoticeText(closure: WaveClosure): string {
 }
 
 /**
- * The notice posted when a conductor plans a second wave while its first one
- * is still live (§4.1).
+ * The notice posted when a conductor plans a wave while it already runs as
+ * many as the app lets one conductor run at once.
  *
- * It is not an error the conductor made — the operator asking for one more
- * thing mid-run is the most natural thing in the world — so it says what
- * happened, that nothing was spawned, and what to do instead: wait for the
- * wave to close, or ask the running wave for a status.
+ * Not a refusal: the plan is admitted and waits its turn, and the notice says
+ * where in the queue it stands. The refusal it replaces dropped the plan with
+ * nothing but a warning the model never saw, which read to the conductor as
+ * a wave that silently never started.
  */
-export function waveConcurrentPlanNoticeText(refusedCount = 1): string {
-  const lines = [
-    i18n.t("chat:conductor.wave.concurrent.title"),
-    i18n.t("chat:conductor.wave.concurrent.body"),
-  ];
-  // One card per wave, not per refused plan: the rule is the same every time,
-  // and a drained message queue can turn "say it once per plan" into seven
-  // identical walls of text in a row. The count is what actually differs, and
-  // it is the part the operator needs — without it they cannot tell how many
-  // of their requests were dropped while the wave ran.
-  if (refusedCount > 1) {
-    lines.push(
-      i18n.t("chat:conductor.wave.concurrent.refusedCount", {
-        count: refusedCount,
-      }),
-    );
+export function waveQueuedNoticeText(facts: {
+  liveCount: number;
+  position: number;
+}): string {
+  return [
+    i18n.t("chat:conductor.wave.queued.title", { count: facts.liveCount }),
+    i18n.t("chat:conductor.wave.queued.body", { position: facts.position }),
+  ].join("\n\n");
+}
+
+/** The notice posted when a queued plan gets its slot and starts. */
+export function waveQueuedStartedNoticeText(): string {
+  return i18n.t("chat:conductor.wave.queued.started");
+}
+
+/**
+ * The notice posted when a step runs on a different model than executor
+ * selection recorded, because the recorded row left the inventory between the
+ * decision and the dispatch. The step runs; the substitution is said here and
+ * beside the step's report in the digest.
+ */
+export function waveStepInventoryFallbackNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  model: string;
+}): string {
+  return i18n.t("chat:conductor.wave.stepModel.inventoryFallback", {
+    step: facts.stepIndex + 1,
+    name: facts.name,
+    model: facts.model,
+  });
+}
+
+/**
+ * The notice posted when a step whose executor the app restart ended is
+ * resumed in a new session. Says what the new executor was handed, because
+ * that is what decides whether it can pick the work up or starts over.
+ */
+export function waveStepResumedNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  handed: "status" | "message" | "nothing";
+}): string {
+  const key =
+    facts.handed === "status"
+      ? "withStatus"
+      : facts.handed === "message"
+        ? "withoutStatus"
+        : "blind";
+  return i18n.t(`chat:conductor.wave.resumed.${key}`, {
+    step: facts.stepIndex + 1,
+    name: facts.name,
+  });
+}
+
+/** The notice posted when a step adopts a session another process started. */
+export function waveStepAdoptedNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+}): string {
+  return i18n.t("chat:conductor.wave.adopted", {
+    step: facts.stepIndex + 1,
+    name: facts.name,
+  });
+}
+
+/** The notice posted when flockctl extends a pending step's brief. */
+export function waveStepAmendedNoticeText(stepIndex: number): string {
+  return i18n.t("chat:conductor.wave.amended", { step: stepIndex + 1 });
+}
+
+/** The notice posted when flockctl skips a pending step. */
+export function waveStepSkippedNoticeText(stepIndex: number): string {
+  return i18n.t("chat:conductor.wave.stepSkipped", { step: stepIndex + 1 });
+}
+
+/** The notice posted each time the conductor's roadmap changes. */
+export function roadmapUpdatedNoticeText(facts: {
+  goal: string;
+  done: number;
+  total: number;
+  status: string;
+}): string {
+  return i18n.t("chat:conductor.wave.roadmap.updated", facts);
+}
+
+/** The notice posted when a roadmap block could not be read. */
+export function roadmapInvalidNoticeText(detail: string): string {
+  return i18n.t("chat:conductor.wave.roadmap.invalid", { detail });
+}
+
+/** The notices of the autonomous goal loop. */
+export function goalLoopNoticeText(
+  event:
+    | { kind: "continued"; turn: number }
+    | { kind: "reached" }
+    | { kind: "needs-operator" }
+    | { kind: "paused" }
+    | { kind: "capped"; max: number }
+    | { kind: "undeliverable"; detail: string },
+): string {
+  switch (event.kind) {
+    case "continued":
+      return i18n.t("chat:conductor.wave.goal.continued", { turn: event.turn });
+    case "reached":
+      return i18n.t("chat:conductor.wave.goal.reached");
+    case "needs-operator":
+      return i18n.t("chat:conductor.wave.goal.needsOperator");
+    case "paused":
+      return i18n.t("chat:conductor.wave.goal.paused");
+    case "capped":
+      return i18n.t("chat:conductor.wave.goal.capped", { max: event.max });
+    case "undeliverable":
+      return i18n.t("chat:conductor.wave.goal.undeliverable", {
+        detail: event.detail,
+      });
   }
-  return lines.join("\n\n");
 }
 
 /**

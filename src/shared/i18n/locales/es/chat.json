@@ -570,12 +570,6 @@
         "title": "El presupuesto de revisiones empieza de cero con este plan.",
         "body": "La petición anterior gastó sus {{max}} revisiones y te fue devuelta. Volver a preguntar inicia una petición nueva, así que el conductor puede gastar {{max}} revisiones más — el límite es por petición, no por conversación."
       },
-      "concurrent": {
-        "title": "Este chat ya tiene una ola en curso, así que el plan nuevo no se inició.",
-        "body": "Solo se ejecuta una ola por conductor a la vez: una segunda pondría más ejecutores en la misma carpeta de trabajo sin coordinación entre ellos. Espera a que termine la ola en curso, o pídele su estado; después vuelve a enviar esta petición.",
-        "refusedCount_one": "Se rechazó {{count}} plan mientras esta ola estaba en marcha.",
-        "refusedCount_other": "Se rechazaron {{count}} planes mientras esta ola estaba en marcha."
-      },
       "verdict": {
         "needsOperatorTitle": "Esta ola se detuvo sin una decisión, así que queda en tus manos.",
         "note": "Nota del conductor: {{note}}",
@@ -628,7 +622,8 @@
         "effortNotApplied": "El paso {{step}} ({{name}}) se ejecuta en {{model}} sin el esfuerzo de razonamiento «{{effort}}»: {{model}} no lo ofrece, así que el paso usa el valor predeterminado del modelo.",
         "fastNotApplied": "El paso {{step}} ({{name}}) se ejecuta en {{model}} sin modo rápido: {{model}} no tiene modo rápido.",
         "legacyEffortSplit": "El paso {{step}} ({{name}}) indicó su modelo como «{{requested}}», con el esfuerzo de razonamiento dentro del nombre del modelo. Se ejecuta en {{model}} con esfuerzo «{{effort}}»; los planes deben escribir \"model\" y \"effort\" como campos separados.",
-        "legacyEffortOverridden": "El paso {{step}} ({{name}}) indicó su modelo como «{{requested}}», con el esfuerzo «{{legacyEffort}}» dentro del nombre del modelo, pero el \"effort\" propio del paso es «{{effort}}», y ese prevalece. Se ejecuta en {{model}} con esfuerzo «{{effort}}»."
+        "legacyEffortOverridden": "El paso {{step}} ({{name}}) indicó su modelo como «{{requested}}», con el esfuerzo «{{legacyEffort}}» dentro del nombre del modelo, pero el \"effort\" propio del paso es «{{effort}}», y ese prevalece. Se ejecuta en {{model}} con esfuerzo «{{effort}}».",
+        "inventoryFallback": "El paso {{step}} ({{name}}) se ejecuta en {{model}}: el modelo que la selección de ejecutor había registrado ya no está en el inventario, así que el siguiente candidato tomó el paso. El resumen lo dice junto a su informe."
       },
       "group": {
         "first": "Brigada",
@@ -645,7 +640,32 @@
       "awaitingVerdict": "La brigada ha terminado; este chat espera el veredicto del conductor.",
       "spawning": "Este chat está poniendo en marcha su brigada.",
       "digestPending": "La brigada ha terminado; este chat está reuniendo sus informes.",
-      "dispatchingDigest": "Este chat está entregando los informes de la brigada al conductor."
+      "dispatchingDigest": "Este chat está entregando los informes de la brigada al conductor.",
+      "queued": {
+        "title": "Este chat ya ejecuta {{count}} olas a la vez, así que este plan quedó en cola detrás de ellas.",
+        "body": "No se perdió nada: el plan arranca solo cuando cierre una de las olas en curso. Es el número {{position}} en la cola de este chat.",
+        "started": "Un plan en cola arrancó como ola: una de las olas en curso cerró y liberó su sitio."
+      },
+      "resumed": {
+        "withStatus": "El paso {{step}} ({{name}}) se reanudó en una sesión nueva: la app se reinició bajo la anterior. El nuevo ejecutor recibió el último mensaje de esa sesión y el archivo de estado que nombró.",
+        "withoutStatus": "El paso {{step}} ({{name}}) se reanudó en una sesión nueva: la app se reinició bajo la anterior. El nuevo ejecutor recibió el último mensaje de esa sesión.",
+        "blind": "El paso {{step}} ({{name}}) se reanudó en una sesión nueva: la app se reinició bajo la anterior, que aún no había dicho nada, así que el nuevo ejecutor parte solo del encargo."
+      },
+      "adopted": "El paso {{step}} ({{name}}) ya tenía una sesión iniciada por otro proceso de Flock, así que se adoptó esa sesión en lugar de iniciar una segunda.",
+      "amended": "Al paso {{step}} de esta ola se le añadió texto al encargo antes de empezar.",
+      "stepSkipped": "El paso {{step}} de esta ola se omitió por orden del operador; los pasos posteriores lo tratan como no hecho.",
+      "roadmap": {
+        "updated": "Hoja de ruta: {{goal}} — {{done}} de {{total}} etapas hechas, estado {{status}}.",
+        "invalid": "El bloque de hoja de ruta del conductor no se pudo leer, así que la hoja de ruta no cambió: {{detail}}"
+      },
+      "goal": {
+        "continued": "Ola aceptada; la meta aún no se alcanzó, así que se pidió al conductor que siga hacia ella (turno {{turn}}).",
+        "reached": "El conductor informa que la meta se alcanzó. El bucle autónomo se detuvo.",
+        "needsOperator": "El conductor pausó la meta: te necesita. El bucle autónomo se detuvo.",
+        "paused": "El bucle autónomo se pausó: el conductor respondió a la petición de continuar sin un plan y sin cerrar la meta. Envíale un mensaje para reanudar.",
+        "capped": "El bucle autónomo se detuvo: gastó sus {{max}} turnos de continuación en esta meta. Envía un mensaje al conductor para reanudar.",
+        "undeliverable": "El bucle autónomo se detuvo: la petición de continuar no se pudo entregar al conductor. {{detail}}"
+      }
     },
     "spawnAcl": {
       "deniedTitle": "Una sesión pidió iniciar un agente que no tiene permitido iniciar, así que no se inició nada.",

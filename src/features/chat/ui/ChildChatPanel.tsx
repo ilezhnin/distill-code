@@ -21,6 +21,7 @@ import {
   flockConductorTranscript,
 } from "@/features/conductor/flockConductorTranscript";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
+import { OPERATOR_STOP_REASON } from "@/features/conductor/waveStop";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import type { RunStatus } from "@/features/conductor/types";
 import { BrigadeStatusGlyph } from "@/features/conductor/ui/BrigadeChip";
@@ -487,7 +488,10 @@ function ChildChatTranscript({
           });
         },
         onStopChild: (grandchildSessionId) => {
-          void stopOrchestratorSession(grandchildSessionId);
+          void stopOrchestratorSession(
+            grandchildSessionId,
+            OPERATOR_STOP_REASON,
+          );
         },
       };
     }, [
