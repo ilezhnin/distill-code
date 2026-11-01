@@ -181,9 +181,20 @@ export function parseFlockRoadmap(messageText: string): FlockRoadmapParse {
       `The ${ROADMAP_FENCE_TAG} block was opened but never closed.`,
     );
   }
+  return parseRoadmapBody(scan.body);
+}
+
+/**
+ * Parses the JSON inside one roadmap fence. Shared by the message scan and by
+ * the transcript renderer (`ui/RoadmapRecord.tsx`), which draws the block as
+ * the goal and its stages rather than as JSON.
+ */
+export function parseRoadmapBody(
+  body: string,
+): { kind: "roadmap"; roadmap: RoadmapBody } | RoadmapInvalid {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(scan.body);
+    parsed = JSON.parse(body);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return invalid(

@@ -656,7 +656,26 @@
       "stepSkipped": "El paso {{step}} de esta ola se omitió por orden del operador; los pasos posteriores lo tratan como no hecho.",
       "roadmap": {
         "updated": "Hoja de ruta: {{goal}} — {{done}} de {{total}} etapas hechas, estado {{status}}.",
-        "invalid": "El bloque de hoja de ruta del conductor no se pudo leer, así que la hoja de ruta no cambió: {{detail}}"
+        "invalid": "El bloque de hoja de ruta del conductor no se pudo leer, así que la hoja de ruta no cambió: {{detail}}",
+        "title": "Hoja de ruta",
+        "writing": "Escribiendo la hoja de ruta…",
+        "unreadable": "No se pudo leer la hoja de ruta",
+        "goal": "Meta",
+        "note": "Nota",
+        "progress": "{{done}} de {{total}} etapas hechas",
+        "status": {
+          "in-progress": "en curso",
+          "paused": "en pausa",
+          "reached": "alcanzada",
+          "needs-operator": "te necesita"
+        },
+        "stage": {
+          "pending": "pendiente",
+          "active": "en curso",
+          "done": "hecha",
+          "blocked": "bloqueada"
+        },
+        "evidence": "Evidencia"
       },
       "goal": {
         "continued": "Ola aceptada; la meta aún no se alcanzó, así que se pidió al conductor que siga hacia ella (turno {{turn}}).",

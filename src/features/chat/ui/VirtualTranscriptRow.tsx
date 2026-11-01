@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type ReactElement,
 } from "react";
+import { roadmapRenderer } from "@/features/conductor/ui/RoadmapRecord";
 import { wavePlanRenderer } from "@/features/conductor/ui/WavePlanRecord";
 import { waveReportRenderer } from "@/features/conductor/ui/WaveReportRecord";
 import { memoryFenceRenderer } from "@/features/memory/ui/MemoryFenceRecord";
@@ -286,10 +287,11 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
       sessionId && sourceMessageId
         ? [
             wavePlanRenderer,
+            roadmapRenderer,
             waveReportRenderer,
             memoryFenceRenderer(sessionId, sourceMessageId),
           ]
-        : [wavePlanRenderer, waveReportRenderer],
+        : [wavePlanRenderer, roadmapRenderer, waveReportRenderer],
     [sessionId, sourceMessageId],
   );
   let rowContent: ReactElement;

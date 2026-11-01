@@ -656,7 +656,26 @@
       "stepSkipped": "Step {{step}} of this wave was skipped on the operator's order; later steps treat it as not done.",
       "roadmap": {
         "updated": "Roadmap: {{goal}} — {{done}} of {{total}} stages done, status {{status}}.",
-        "invalid": "The conductor's roadmap block could not be read, so the roadmap was not changed: {{detail}}"
+        "invalid": "The conductor's roadmap block could not be read, so the roadmap was not changed: {{detail}}",
+        "title": "Roadmap",
+        "writing": "Writing the roadmap…",
+        "unreadable": "Roadmap could not be read",
+        "goal": "Goal",
+        "note": "Note",
+        "progress": "{{done}} of {{total}} stages done",
+        "status": {
+          "in-progress": "in progress",
+          "paused": "paused",
+          "reached": "reached",
+          "needs-operator": "needs you"
+        },
+        "stage": {
+          "pending": "pending",
+          "active": "in progress",
+          "done": "done",
+          "blocked": "blocked"
+        },
+        "evidence": "Evidence"
       },
       "goal": {
         "continued": "Wave accepted; the goal is not reached yet, so the conductor was asked to continue toward it (turn {{turn}}).",
