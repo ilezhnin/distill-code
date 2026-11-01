@@ -1197,6 +1197,28 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           step.runId === runId
         ) {
           adopted = true;
+          // The graph sync adopted the node before this ACK. The step is
+          // right about its session; what it still lacks are the dispatch
+          // facts only this caller knows — the journal key the outcome sync
+          // needs, and the note the digest prints.
+          const facts = stepDispatchFacts(
+            wave,
+            request,
+            prepared.requestKey,
+            prepared.fallbackNote,
+          );
+          if (
+            (facts.executorKey && !step.executorKey) ||
+            (facts.dispatchNote && !step.dispatchNote)
+          ) {
+            return withWave(
+              state,
+              withWaveStepPhase(current, request.stepIndex, {
+                phase: "spawned",
+                ...facts,
+              }),
+            );
+          }
           return state;
         }
         if (current.phase !== "running" || step.phase !== "spawning")

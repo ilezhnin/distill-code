@@ -524,6 +524,19 @@ describe("waveRunner", () => {
             ],
           } as unknown as ExecutorDecisionRecord),
     );
+    spawnConductorChildSession.mockImplementation(async (args) => {
+      const sessionId = `child-${args.stepIndex}`;
+      registerSpawnedChild({
+        sessionId,
+        waveId: args.waveId,
+        stepIndex: args.stepIndex,
+        runId: "run-1",
+      });
+      // The live graph sync ticks on the registration, adopting the node
+      // before this spawn's ACK reaches the runner.
+      runWaveEngineTick();
+      return { sessionId, runId: "run-1" };
+    });
     runWaveEngineTick();
     await vi.waitFor(() =>
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
