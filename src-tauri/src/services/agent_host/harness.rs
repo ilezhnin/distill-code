@@ -117,8 +117,8 @@ pub const HARNESSES: &[HarnessSpec] = &[
             ("smartApprove", "acceptEdits"),
             ("chat", "plan"),
         ],
-        // Claude Code's own model menu. The bridge lists four aliases
-        // (default, opus[1m], sonnet, haiku) and one Fable — whichever the
+        // Claude Code's own model menu. The bridge lists aliases (default,
+        // opus or opus[1m], sonnet, haiku) and one Fable — whichever the
         // operator's Claude Code is set to run, so on one machine that is
         // claude-fable-5[1m] and on the next claude-fable-5-1[1m]. Everything
         // it does not list it refuses in `session/set_config_option` but runs
@@ -140,6 +140,11 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(false),
             },
+            // Opus at its 1M context: the model Opus chats, judges and
+            // benchmark rows name. Claude Code 2.1.312 (bridge 0.99.1) gives
+            // Opus 5.5 a native 1M window and lists it as plain `opus`, so
+            // the bridge stopped listing this id but still runs it (10-31);
+            // unlisted, it wears the name the bridge gives `opus`.
             ModelDecl {
                 id: "opus[1m]",
                 name: None,
@@ -147,12 +152,25 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 group: ModelGroup::Main,
                 order: 20,
                 alias_of: None,
+                opens_on_model: true,
+                efforts: Some(CLAUDE_EFFORTS),
+                supports_fast: Some(true),
+            },
+            ModelDecl {
+                id: "default",
+                name: None,
+                description: None,
+                group: ModelGroup::Main,
+                order: 20,
+                alias_of: Some("opus[1m]"),
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
             },
+            // The same Opus under the id Claude Code lists once 1M is its
+            // native window.
             ModelDecl {
-                id: "default",
+                id: "opus",
                 name: None,
                 description: None,
                 group: ModelGroup::Main,
@@ -470,8 +488,21 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
             // A declaration only places and names a model the bridge lists;
             // it does not conjure one. The models Flock opens a session on
             // are the exception — no bridge ever lists those.
-            (found.is_some() || decl.opens_on_model)
-                .then(|| (decl.order, declared_row(decl, found)))
+            (found.is_some() || decl.opens_on_model).then(|| {
+                let mut row = declared_row(decl, found);
+                // An unlisted context lane is named as the bridge names its model.
+                if let Some(base) = lane_model(&probed, decl.id).filter(|_| found.is_none()) {
+                    for (key, declared) in [("name", decl.name), ("description", decl.description)]
+                    {
+                        if let Some(value) = base.get(key).filter(|value| value.is_string()) {
+                            if declared.is_none() {
+                                row[key] = value.clone();
+                            }
+                        }
+                    }
+                }
+                (decl.order, row)
+            })
         })
         .collect();
     for (index, row) in probed.iter().enumerate() {
@@ -525,6 +556,13 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
         }
     }
     rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// The probed row of the model a context lane asks for: Claude Code's `X[1m]`
+/// is X at its 1M context, one model under the release name the bridge gives X.
+fn lane_model<'a>(probed: &'a [Value], id: &str) -> Option<&'a Value> {
+    let base = id.strip_suffix("[1m]")?;
+    probed.iter().find(|row| row["id"] == base)
 }
 
 /// These harnesses publish versioned models but no current/older grouping.
@@ -830,6 +868,42 @@ mod tests {
     }
 
     #[test]
+    fn opus_keeps_its_1m_lane_when_the_bridge_lists_it_as_plain_opus() {
+        // 10-31: Claude Code 2.1.312 gives Opus 5.5 a native 1M window and
+        // lists `opus` without `opus[1m]`, and a benchmark row measured on
+        // Opus at 1M read as a model the account no longer offered.
+        let models = merge_inventory(
+            "claude-acp",
+            vec![
+                probed("default", "Default (recommended)", CLAUDE_EFFORTS, true),
+                probed("opus", "Opus 5.5", CLAUDE_EFFORTS, true),
+                probed("sonnet", "Sonnet 5.5", CLAUDE_EFFORTS, true),
+            ],
+        );
+        let row = |id: &str| models.iter().find(|row| row["id"] == id).unwrap();
+        let lane = row("opus[1m]");
+        assert_eq!(lane["name"], "Opus 5.5");
+        assert_eq!(lane["group"], "main");
+        assert_eq!(lane["opensOnModel"], true);
+        assert_eq!(lane["supportsFast"], true);
+        assert_eq!(
+            lane["efforts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|value| value["value"].as_str())
+                .collect::<Vec<_>>(),
+            CLAUDE_EFFORTS
+        );
+        // The listed id is the same Opus, which the picker folds into it.
+        assert_eq!(row("opus")["aliasOf"], "opus[1m]");
+        assert_eq!(row("opus")["opensOnModel"], false);
+        // A lane whose model the bridge does not list keeps its own name.
+        let fable = row("claude-fable-5-1[1m]");
+        assert_eq!(fable["name"], "Fable 5.1");
+    }
+
+    #[test]
     fn a_model_the_probe_cannot_select_carries_what_flock_declares() {
         let models = merge_inventory("claude-acp", claude_bridge_rows());
         let row = |id: &str| {
@@ -1038,7 +1112,7 @@ mod tests {
     fn a_declaration_places_a_bridge_row_rather_than_inventing_one() {
         // Only opus[1m] came back: a bridge that stops listing a model has
         // stopped serving it, and Flock does not list it on its behalf.
-        // The six it opens a session on are its own to offer.
+        // The models it opens a session on are its own to offer.
         let models = merge_inventory(
             "claude-acp",
             vec![probed(
@@ -1086,8 +1160,11 @@ mod tests {
         );
         // Both Fables: the bridge lists the one its operator's Claude Code
         // runs and refuses the other, and which is which differs by machine.
+        // And Opus's 1M lane, which a bridge that lists Opus as `opus` no
+        // longer lists.
         for id in [
             "claude-fable-5-1[1m]",
+            "opus[1m]",
             "claude-fable-5[1m]",
             "claude-opus-4-8",
             "claude-opus-4-7",
@@ -1096,9 +1173,8 @@ mod tests {
         ] {
             assert!(session_model_meta(claude, id).is_some(), "{id} opens on it");
         }
-        // The aliases every bridge lists are selected, not opened on —
-        // including the one that carries a context suffix in its id.
-        for id in ["default", "opus[1m]", "sonnet", "haiku"] {
+        // The aliases a bridge lists are selected, not opened on.
+        for id in ["default", "opus", "sonnet", "haiku"] {
             assert_eq!(
                 session_model_meta(claude, id),
                 None,
