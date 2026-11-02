@@ -2568,6 +2568,13 @@ impl Inner {
                     // an effort a model does not offer, and the SDK flips fast
                     // mode back after a cooldown. Until now the host watched
                     // the update go past and kept describing the old state.
+                    let mut stated = json!({ "configOptions": options });
+                    if let Some(held) = Self::current_model(&runtime.snapshot) {
+                        if Self::hold_declared_model(&runtime.harness, &held, &mut stated) {
+                            params["update"]["configOptions"] = stated["configOptions"].clone();
+                        }
+                    }
+                    let options = stated["configOptions"].take();
                     let selection = Self::selection_from(&options);
                     if runtime.execution_profile.is_some()
                         && selection != Self::selection_from(&runtime.snapshot["configOptions"])
@@ -3073,6 +3080,39 @@ impl Inner {
     fn is_model_option(option: &Value) -> bool {
         option.get("id").and_then(Value::as_str) == Some("model")
             || option.get("category").and_then(Value::as_str) == Some("model")
+    }
+
+    /// Keep a session that was put on `asked` named `asked` when its bridge
+    /// reports the model under the id the harness declares another name for
+    /// it. Claude Code 2.1.312 runs `opus[1m]` at Opus 5.5's native 1M window
+    /// and calls it `opus` (and `claude-fable-5-1[1m]` `fable`): read back
+    /// raw, a chat moved to Opus 5.5 took that for a substitution and fell
+    /// back to the model it came from (11-01), as benchmark rows did before
+    /// `acknowledge_lane`. Only a declared pairing is renamed; any other
+    /// model the bridge names stands. Whether anything was renamed.
+    fn hold_declared_model(harness_id: &str, asked: &str, snapshot: &mut Value) -> bool {
+        let Some(current) = Self::current_model(snapshot) else {
+            return false;
+        };
+        if current == asked || harness::alias_target(harness_id, &current) != Some(asked) {
+            return false;
+        }
+        if let Some(option) = snapshot["configOptions"]
+            .as_array_mut()
+            .and_then(|options| {
+                options
+                    .iter_mut()
+                    .find(|option| Self::is_model_option(option))
+            })
+        {
+            option["currentValue"] = json!(asked);
+        }
+        if let Some(models) = snapshot.get_mut("models").and_then(Value::as_object_mut) {
+            if models.get("currentModelId").and_then(Value::as_str) == Some(current.as_str()) {
+                models.insert("currentModelId".to_string(), json!(asked));
+            }
+        }
+        true
     }
 
     /// Whether the bridge offers `model_id` in the session's own model list.
@@ -4678,7 +4718,6 @@ impl Inner {
                             {
                                 models.insert("currentModelId".to_string(), json!(model_id));
                             }
-                            let applied = Self::current_model(snapshot);
                             // A stored id that still folds an effort into the
                             // model's name is applied as the two halves its
                             // bridge keeps apart (legacy inbound only — see
@@ -4688,6 +4727,8 @@ impl Inner {
                             let asked = Self::split_effort_model(snapshot, model_id)
                                 .map(|split| split.model)
                                 .unwrap_or_else(|| model_id.to_string());
+                            Self::hold_declared_model(harness_id, &asked, snapshot);
+                            let applied = Self::current_model(snapshot);
                             if applied.as_deref() != Some(asked.as_str()) {
                                 substitutions.push(Self::substitution(
                                     "model",
@@ -4821,6 +4862,11 @@ impl Inner {
                     }
                 }
             }
+        }
+        // The effort and fast answers restate the model under the bridge's
+        // own id again.
+        if let Some(model_id) = wanted.model.as_deref() {
+            Self::hold_declared_model(harness_id, model_id, snapshot);
         }
         substitutions
     }
@@ -5007,8 +5053,14 @@ impl Inner {
                 // shape; only what it means to this session is ours. An answer
                 // with no options at all states nothing, so nothing moves.
                 if let Some(options) = result.get("configOptions") {
-                    let acknowledged = Self::selection_from(options);
+                    let held = Self::current_model(&snapshot);
                     snapshot["configOptions"] = options.clone();
+                    // An effort or fast answer restates the model under the
+                    // bridge's own id; the session keeps the one it holds.
+                    if let Some(held) = held {
+                        Self::hold_declared_model(&record.harness, &held, &mut snapshot);
+                    }
+                    let acknowledged = Self::selection_from(&snapshot["configOptions"]);
                     // A bridge answers a write it cannot honour with the value
                     // it kept, not with an error.
                     let requested = params.get("value").unwrap_or(&Value::Null);
@@ -11096,6 +11148,81 @@ mod tests {
             Inner::substitutions_for(&fast, &observed)[0]["role"],
             "fast"
         );
+    }
+
+    #[tokio::test]
+    async fn a_lane_the_bridge_names_by_its_declared_alias_is_the_lane() {
+        // 11-01: a chat moved to Opus 5.5 opened on `opus[1m]`, Claude Code
+        // answered every write with `opus`, and the chat read a substitution
+        // and fell back to Default.
+        let mut snapshot = json!({
+            "models": Value::Null,
+            "configOptions": claude_answer("default", Some("high"), EVERY_EFFORT, Some(false))["configOptions"],
+        });
+        let wanted = Selection {
+            model: Some("opus[1m]".into()),
+            effort: Some("xhigh".into()),
+            fast: Some(false),
+        };
+        let substitutions =
+            Inner::apply_selection("claude-acp", &mut snapshot, &wanted, true, |role, _| {
+                let effort = if role == OptionRole::Model {
+                    "high"
+                } else {
+                    "xhigh"
+                };
+                async move {
+                    Ok(claude_answer(
+                        "opus",
+                        Some(effort),
+                        EVERY_EFFORT,
+                        Some(false),
+                    ))
+                }
+            })
+            .await;
+        assert!(substitutions.is_empty(), "{substitutions:?}");
+        assert_eq!(Inner::current_model(&snapshot).as_deref(), Some("opus[1m]"));
+        // What the bridge itself said stays the evidence.
+        assert_eq!(
+            ReportedSelection::read(&snapshot).model_id.as_deref(),
+            Some("opus")
+        );
+        // A bridge's own update later keeps the name too, and only for a
+        // declared pairing: `default` is no other name for anything, and
+        // Codex declares no `opus`.
+        let mut later = claude_answer("opus", Some("high"), EVERY_EFFORT, Some(false));
+        assert!(Inner::hold_declared_model(
+            "claude-acp",
+            "opus[1m]",
+            &mut later
+        ));
+        assert_eq!(Inner::current_model(&later).as_deref(), Some("opus[1m]"));
+        let mut moved = claude_answer("default", Some("high"), EVERY_EFFORT, None);
+        assert!(!Inner::hold_declared_model(
+            "claude-acp",
+            "opus[1m]",
+            &mut moved
+        ));
+        assert_eq!(Inner::current_model(&moved).as_deref(), Some("default"));
+        let mut other = claude_answer("sonnet", Some("high"), EVERY_EFFORT, None);
+        assert!(!Inner::hold_declared_model(
+            "claude-acp",
+            "opus[1m]",
+            &mut other
+        ));
+        let mut elsewhere = claude_answer("opus", Some("high"), EVERY_EFFORT, None);
+        assert!(!Inner::hold_declared_model(
+            "codex-acp",
+            "opus[1m]",
+            &mut elsewhere
+        ));
+        let mut fable = claude_answer("fable", Some("high"), EVERY_EFFORT, None);
+        assert!(Inner::hold_declared_model(
+            "claude-acp",
+            "claude-fable-5-1[1m]",
+            &mut fable
+        ));
     }
 
     #[tokio::test]

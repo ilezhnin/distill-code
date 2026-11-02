@@ -819,6 +819,7 @@
     "moreModels": "More models",
     "backToModels": "Back",
     "modelNeedsIdleSession": "Finish or stop the current turn to switch to {{model}}",
+    "defaultModelRow": "Default ({{model}})",
     "effortUnavailable": "{{model}} does not offer {{wanted}} — running at {{actual}}",
     "effortControlUnavailable": "{{model}} has no reasoning effort control",
     "fastUnavailable": "{{model}} has no fast mode",

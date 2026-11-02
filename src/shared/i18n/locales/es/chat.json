@@ -819,6 +819,7 @@
     "moreModels": "Más modelos",
     "backToModels": "Atrás",
     "modelNeedsIdleSession": "Termina o detén el turno actual para cambiar a {{model}}",
+    "defaultModelRow": "Predeterminado ({{model}})",
     "effortUnavailable": "{{model}} no ofrece {{wanted}}; se ejecuta con {{actual}}",
     "effortControlUnavailable": "{{model}} no tiene control de esfuerzo de razonamiento",
     "fastUnavailable": "{{model}} no tiene modo rápido",

@@ -1162,11 +1162,13 @@ mod tests {
         }]);
         let mut alias = config("low");
         alias.provider_id = "claude-acp".into();
-        alias.model_id = "default".into();
-        assert!(authored_by_candidate(&draft, &alias));
         // The model without its context window variant wrote it too.
         alias.model_id = "opus".into();
         assert!(authored_by_candidate(&draft, &alias));
+        // `default` moves with Claude Code's own setting (Fable 5.1 since
+        // 11-01): it is no other name for Opus.
+        alias.model_id = "default".into();
+        assert!(!authored_by_candidate(&draft, &alias));
         alias.model_id = "sonnet".into();
         assert!(!authored_by_candidate(&draft, &alias));
     }

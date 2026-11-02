@@ -12759,13 +12759,16 @@ mod tests {
         let mut draft = creative();
         draft.environment["authoredBy"] = json!([]);
         // A frozen panel's seats are checked by `frozen_seats` alone: one
-        // seat per model, the candidate's own model among them (the Opus
-        // alias `default` is Opus, so it is one seat).
+        // seat per model, the candidate's own model among them. `opus` is
+        // another name for Opus at 1M, so it is that seat; `default` moves
+        // with Claude Code's own setting (Opus until 10-31, Fable 5.1 since),
+        // so it is no seat, and a candidate on it has no frozen panel.
         let seated = ["opus[1m]", "claude-fable-5-1[1m]", "sonnet", "haiku"];
         let frozen = frozen_seats(&[&judge_row("sonnet")], &draft, offered());
         assert_eq!(ids(&frozen), seated);
-        let frozen = frozen_seats(&[&judge_row("default")], &draft, offered());
+        let frozen = frozen_seats(&[&judge_row("opus")], &draft, offered());
         assert_eq!(ids(&frozen), seated);
+        assert!(frozen_seats(&[&judge_row("default")], &draft, offered()).is_empty());
         // An author of the case never judges it, nor through its alias.
         draft.environment["authoredBy"] = json!([judge_row("sonnet")]);
         let panel = frozen_seats(&[&judge_row("haiku")], &draft, offered());
@@ -12837,7 +12840,7 @@ mod tests {
             ("opus[1m]", "opus"),
             ("OPUS[1M]", "opus"),
             ("opus", "opus"),
-            ("default", "opus"),
+            ("fable", "claude-fable-5-1"),
             ("claude-fable-5-1[1m]", "claude-fable-5-1"),
             ("sonnet", "sonnet"),
             ("[1m]", "[1m]"),
@@ -12849,6 +12852,9 @@ mod tests {
             );
         }
         assert_eq!(model_identity("claude-acp", "current"), None);
+        // `default` moves with Claude Code's own setting (Fable 5.1 since
+        // 11-01), so it names no one model.
+        assert_eq!(model_identity("claude-acp", "default"), None);
         // Only Claude Code's ids carry a context window suffix.
         assert_eq!(
             model_identity("codex-acp", "invented[1m]").as_deref(),
@@ -13174,7 +13180,7 @@ mod tests {
         // The ordinary panel orders its rows so, and seats the roomier
         // account's concrete row, not its alias of it.
         let mut alias = on("roomier");
-        alias.model_id = "default".into();
+        alias.model_id = "opus".into();
         let mut candidate = judge_row("invented-luna");
         candidate.provider_id = "codex-acp".into();
         let panel = ordinary_judges(

@@ -140,6 +140,19 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(false),
             },
+            // The same Fable 5.1 under the id Claude Code lists once 1M is
+            // its native window (11-01).
+            ModelDecl {
+                id: "fable",
+                name: None,
+                description: None,
+                group: ModelGroup::Main,
+                order: 10,
+                alias_of: Some("claude-fable-5-1[1m]"),
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+            },
             // Opus at its 1M context: the model Opus chats, judges and
             // benchmark rows name. Claude Code 2.1.312 (bridge 0.99.1) gives
             // Opus 5.5 a native 1M window and lists it as plain `opus`, so
@@ -156,13 +169,16 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(true),
             },
+            // Whatever Claude Code is set to run, which moves: Opus until
+            // 10-31, Fable 5.1 since 11-01. It is never declared another name
+            // for one model, so it is never read as that model.
             ModelDecl {
                 id: "default",
                 name: None,
                 description: None,
                 group: ModelGroup::Main,
                 order: 20,
-                alias_of: Some("opus[1m]"),
+                alias_of: None,
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
@@ -213,6 +229,43 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(false),
             },
+            // Claude Code lists the previous releases by their full ids since
+            // 11-01. Fable 5 runs at 1M natively, so its id is another name
+            // for the lane above; the others are filed with the older models
+            // rather than among the current ones.
+            ModelDecl {
+                id: "claude-fable-5",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 50,
+                alias_of: Some("claude-fable-5[1m]"),
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+            },
+            ModelDecl {
+                id: "claude-opus-5",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 52,
+                alias_of: None,
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+            },
+            ModelDecl {
+                id: "claude-sonnet-5",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 54,
+                alias_of: None,
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+            },
             ModelDecl {
                 id: "claude-opus-4-8",
                 name: Some("Opus 4.8"),
@@ -256,6 +309,17 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS_NO_XHIGH),
                 supports_fast: Some(false),
+            },
+            ModelDecl {
+                id: "claude-haiku-4-5-20251001",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 95,
+                alias_of: None,
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
             },
         ],
         session_model_meta: Some(claude_session_model_meta),
@@ -558,6 +622,18 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
     rows.into_iter().map(|(_, row)| row).collect()
 }
 
+/// The model `id` is declared another name for on `harness_id`, if any:
+/// Claude Code's `opus` for `opus[1m]` and `fable` for
+/// `claude-fable-5-1[1m]`, the ids it lists once 1M is a model's native
+/// window. A moving alias (`default`) declares none.
+pub fn alias_target(harness_id: &str, id: &str) -> Option<&'static str> {
+    harness(harness_id)?
+        .models
+        .iter()
+        .find(|model| model.id == id)?
+        .alias_of
+}
+
 /// The probed row of the model a context lane asks for: Claude Code's `X[1m]`
 /// is X at its 1M context, one model under the release name the bridge gives X.
 fn lane_model<'a>(probed: &'a [Value], id: &str) -> Option<&'a Value> {
@@ -834,7 +910,7 @@ mod tests {
             [
                 ("claude-fable-5-1[1m]", "main", 10, None, true),
                 ("opus[1m]", "main", 20, None, false),
-                ("default", "main", 20, Some("opus[1m]"), false),
+                ("default", "main", 20, None, false),
                 ("sonnet", "main", 30, None, false),
                 ("haiku", "main", 40, None, false),
                 ("claude-fable-5[1m]", "more", 50, None, false),
@@ -847,6 +923,62 @@ mod tests {
         // Moving aliases keep the bridge's current name, not a pinned release.
         assert_eq!(models[1]["name"], "Opus (1M context)");
         assert_eq!(models[2]["name"], "Default");
+    }
+
+    #[test]
+    fn claude_codes_full_id_menu_folds_into_one_row_per_model() {
+        // 11-01: Claude Code lists `fable` and `opus` as the current models,
+        // `default` as Fable 5.1, and the previous releases by full id.
+        let listed = [
+            ("default", "Default (recommended)"),
+            ("opus", "Opus 5.5"),
+            ("fable", "Fable 5.1"),
+            ("sonnet", "Sonnet 5.5"),
+            ("haiku", "Haiku 5.5"),
+            ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+            ("claude-sonnet-5", "Sonnet 5"),
+            ("claude-opus-5", "Opus 5"),
+            ("claude-fable-5", "Fable 5"),
+            ("claude-opus-4-8", "Opus 4.8"),
+            ("claude-opus-4-7", "Opus 4.7"),
+            ("claude-opus-4-6", "Opus 4.6"),
+            ("claude-sonnet-4-6", "Sonnet 4.6"),
+        ];
+        let models = merge_inventory(
+            "claude-acp",
+            listed
+                .iter()
+                .map(|(id, name)| probed(id, name, CLAUDE_EFFORTS, false))
+                .collect(),
+        );
+        let row = |id: &str| models.iter().find(|row| row["id"] == id).unwrap();
+        // Every listed id is a declared row; none is filed as unknown.
+        assert!(models
+            .iter()
+            .all(|row| row["order"].as_u64().unwrap() < 1000));
+        // The ids Claude Code lists for a lane are other names for it.
+        assert_eq!(row("fable")["aliasOf"], "claude-fable-5-1[1m]");
+        assert_eq!(row("opus")["aliasOf"], "opus[1m]");
+        assert_eq!(row("claude-fable-5")["aliasOf"], "claude-fable-5[1m]");
+        // `default` is Fable 5.1 today and was Opus yesterday: no alias.
+        assert_eq!(row("default")["aliasOf"], Value::Null);
+        // The previous releases are on the second page.
+        for id in [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5",
+        ] {
+            assert_eq!(row(id)["group"], "more", "{id}");
+        }
+        assert_eq!(row("opus[1m]")["name"], "Opus 5.5");
+        assert_eq!(row("claude-fable-5-1[1m]")["name"], "Fable 5.1");
+        assert_eq!(
+            alias_target("claude-acp", "fable"),
+            Some("claude-fable-5-1[1m]")
+        );
+        assert_eq!(alias_target("claude-acp", "default"), None);
+        assert_eq!(alias_target("codex-acp", "opus"), None);
     }
 
     #[test]

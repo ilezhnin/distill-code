@@ -20,6 +20,7 @@ import { SearchBar } from "@/shared/ui/SearchBar";
 import { Button } from "@/shared/ui/button";
 import { ScrollArea } from "@/shared/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { isModelAlias } from "../lib/modelAliases";
 import type { ModelOption } from "../types";
 import { PickerItem } from "./AgentModelPickerItem";
 
@@ -93,7 +94,13 @@ function ModelRow({
   onSelect,
 }: ModelRowProps) {
   const { t } = useTranslation("chat");
-  const name = getModelDisplayName(model);
+  // A moving alias labelled by the model it runs today ("Fable 5.1") would
+  // read as that model's own row; it reads as the alias it is.
+  const label = getModelDisplayName(model);
+  const name =
+    isModelAlias(model.id) && !label.toLowerCase().startsWith("default")
+      ? t("toolbar.defaultModelRow", { model: label })
+      : label;
   // Such a model runs only in a session opened on it, and the host refuses to
   // reopen a session mid-turn, so the click could only fail. The current row
   // stays enabled: choosing it again changes nothing.

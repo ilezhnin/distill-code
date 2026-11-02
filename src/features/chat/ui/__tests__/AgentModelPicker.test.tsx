@@ -192,6 +192,20 @@ describe("AgentModelPicker", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("names a selected Default by the model it runs without repeating that model's row", async () => {
+    // 11-01: Claude Code's Default runs Fable 5.1 and is labelled by it.
+    const user = userEvent.setup();
+    const models = claudeModels.map((model) =>
+      model.id === "default" ? { ...model, name: "Fable 5.1" } : model,
+    );
+    render(<PickerHarness models={models} initialModelId="default" />);
+    await openPicker(user);
+
+    expect(modelRow("model", "Default (Fable 5.1)")).toHaveAttribute(
+      "data-selected",
+    );
+  });
+
   it("hands onModelChange the row's base id from the main page, More models and search", async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();

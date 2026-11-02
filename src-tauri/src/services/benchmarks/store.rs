@@ -2637,8 +2637,10 @@ mod tests {
         assert!(!entries.iter().any(|e| e.id == "seed-anthropic-fable-5-1"));
         // Four kept Anthropic rows, fourteen vendor rows, two estimates, the
         // two Sonnet rows of the dated context correction and its three
-        // other context rows, plus Kimi K3.1 Pro and Highspeed.
-        assert_eq!(entries.len(), 4 + 14 + 2 + 2 + 3 + 2);
+        // other context rows, Kimi K3.1 Pro and Highspeed, and the 11-01
+        // window rows: eight OpenAI rows at the served window, six at the
+        // raised one and four Grok rows.
+        assert_eq!(entries.len(), 4 + 14 + 2 + 2 + 3 + 2 + 18);
         assert!(entries
             .iter()
             .any(|e| e.id == "seed-moonshot-k3.1-pro-2026-10-23"));
@@ -2658,7 +2660,7 @@ mod tests {
             .await
             .unwrap();
         let again = store.catalog_entries().await.unwrap();
-        assert_eq!(again.len(), 26);
+        assert_eq!(again.len(), 44);
         assert!(!again.iter().any(|e| e.id == "seed-xai-grok-4-5"));
         // A new catalog gets every set.
         let fresh_directory = crate::test_support::TempRoot::new();
@@ -2666,7 +2668,7 @@ mod tests {
         fresh_directory.register(&fresh.pool);
         assert_eq!(
             fresh.catalog_entries().await.unwrap().len(),
-            5 + 14 + 2 + 2 + 3 + 2
+            5 + 14 + 2 + 2 + 3 + 2 + 18
         );
         directory.close().await;
         fresh_directory.close().await;
