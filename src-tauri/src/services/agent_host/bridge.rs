@@ -1462,6 +1462,29 @@ impl Bridge {
         }
     }
 
+    /// End the turn `run_id` here, as cancelled, without the bridge's answer.
+    ///
+    /// For a turn the bridge was told to cancel and never ended: an agent
+    /// stuck retrying a provider whose quota is spent, or one that has
+    /// stopped reading, keeps `session/prompt` open forever, since a prompt
+    /// has no deadline. The host's prompt then returns the way a cancelled
+    /// turn does, and a late answer is logged as unknown. Reports whether the
+    /// turn was still waiting.
+    pub fn abandon_turn(&self, run_id: &str) -> bool {
+        let request = self.pending.lock().ok().and_then(|mut pending| {
+            let key = pending.iter().find_map(|(key, request)| {
+                let (_, run) = request.turn.as_ref()?;
+                (run == run_id).then_some(*key)
+            })?;
+            pending.remove(&key)
+        });
+        let Some(request) = request else {
+            return false;
+        };
+        let _ = request.reply.send(Ok(json!({ "stopReason": "cancelled" })));
+        true
+    }
+
     pub fn notify(&self, method: &str, params: Value) {
         if let Err(reason) = self.enqueue(json!({"jsonrpc":"2.0","method":method,"params":params}))
         {
@@ -1945,6 +1968,24 @@ pub(super) mod tests {
             Some("second")
         );
         assert_eq!(queued.as_deref(), Some("first"));
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_turn_ends_as_cancelled_and_leaves_other_turns_waiting() {
+        let (bridge, _written) = silent_bridge();
+        let (stuck_tx, stuck_rx) = oneshot::channel();
+        assert!(bridge.register_owned(1, stuck_tx, Some(("s".into(), "stuck".into())), None));
+        let (other_tx, mut other_rx) = oneshot::channel();
+        assert!(bridge.register_owned(2, other_tx, Some(("t".into(), "other".into())), None));
+
+        assert!(bridge.abandon_turn("stuck"));
+        assert_eq!(
+            stuck_rx.await.unwrap().unwrap(),
+            json!({ "stopReason": "cancelled" })
+        );
+        assert!(!bridge.abandon_turn("stuck"));
+        assert!(other_rx.try_recv().is_err());
+        assert_eq!(pending_count(&bridge), 1);
     }
 
     #[test]

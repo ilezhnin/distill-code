@@ -23,6 +23,7 @@ import {
   TOOL_CALL_ID_ATTRIBUTE,
 } from "@/features/chat/lib/harnessBrigadeFocus";
 import { ArtifactChips } from "./ArtifactChips";
+import { TurnAgentFooter } from "@/features/conductor/ui/TurnAgentFooter";
 import { HarnessBrigadeRow } from "./HarnessBrigadeRow";
 import { cn } from "@/shared/lib/cn";
 import { DisclosureLine } from "@/shared/ui/ai-elements/disclosure-line";
@@ -1009,6 +1010,18 @@ export function AgentWorkPanel({
         ) : null}
         {showsHarnessBrigade ? (
           <HarnessBrigadeRow entries={harnessBrigade} className="px-1 pb-1.5" />
+        ) : null}
+        {/*
+          The agents this turn started, while it has no answer to hang them
+          under: a turn still at work, or one that ended in tool calls. This
+          is when a chat that spawned agents from a tool call is most likely
+          to be watched, and the only place its operator can stop them.
+        */}
+        {payload.hostsTurnFooters ? (
+          <TurnAgentFooter
+            messageId={payload.messageId}
+            className="px-1 pb-1.5"
+          />
         ) : null}
         {/*
           A turn that failed with no words of its own has no answer row to

@@ -34,6 +34,15 @@ your chat shows it working, and its result is delivered back to your chat
 when its turn ends, so it does not need to be told to report back. Leave the
 flag out only when the user asks for an independent chat.
 
+To stop one of those sessions, run `flockctl session stop --session-id <id>`
+with `--from` and `--reason` saying who and why; its chip shows both. Do not
+try to stop it by sending it a message: a message to a running session waits
+in its queue until the turn ends, and a turn stuck on a provider out of quota
+never ends. The stop drops its queue and cancels its turn, and when the agent
+does not answer the cancel the app ends the turn itself shortly after. Its
+files and chat are kept. Only sessions started under another chat can be
+stopped this way.
+
 ## Model, effort and speed are separate choices
 
 A model id names a model and nothing else. Reasoning effort and fast mode

@@ -307,6 +307,7 @@ mod tests {
             ],
             ("session", "fork") => vec!["--session-id", "s"],
             ("session", "archive") => vec!["--session-id", "s"],
+            ("session", "stop") => vec!["--session-id", "s"],
             ("project", "create") => vec!["--name", "n"],
             ("project", "list") => vec![],
             ("project", "get") => vec!["--project-id", "p"],

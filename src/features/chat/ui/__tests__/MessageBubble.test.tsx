@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MessageBubble } from "../MessageBubble";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
@@ -425,5 +426,83 @@ describe("MessageBubble over a worker's brief", () => {
       screen.getByText("Sent by Flock from another session"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Started by Producer")).not.toBeInTheDocument();
+  });
+});
+
+describe("MessageBubble in an ordinary chat that started agents", () => {
+  const reply = assistantMessage([
+    { type: "text", text: "Started two workers." },
+  ]);
+  const child = (sessionId: string, status: SessionNode["status"]) =>
+    ({
+      sessionId,
+      projectId: "project",
+      role: "worker",
+      managedBy: "agent-cli",
+      parentSessionId: "plain-chat-1",
+      harnessId: "grok-acp",
+      displayName: `Worker ${sessionId}`,
+      status,
+      anchorMessageId: reply.id,
+    }) as SessionNode;
+  const running = child("child-running", "starting");
+  const done = child("child-done", "completed");
+  const renderInChat = (bubble: ReactNode, onStopChild = vi.fn()) =>
+    render(
+      <ConductorTranscriptProvider
+        value={{
+          enabled: true,
+          hostSessionId: "plain-chat-1",
+          children: [running, done],
+          reportsByRunId: {},
+          brigadeNodesByMessageId: new Map([[reply.id, [running, done]]]),
+          wavePlanStepsByMessageId: new Map(),
+          onOpenChild: vi.fn(),
+          onStopChild,
+        }}
+      >
+        {bubble}
+      </ConductorTranscriptProvider>,
+    );
+
+  it("shows each child as a chip and offers Stop on the one still working", async () => {
+    const onStopChild = vi.fn();
+    renderInChat(<MessageBubble message={reply} />, onStopChild);
+    expect(screen.getAllByTestId("conductor-agent-chip")).toHaveLength(2);
+    const [stopControl, ...others] = screen.getAllByTestId(
+      "conductor-agent-stop",
+    );
+    expect(others).toHaveLength(0);
+    await userEvent.click(stopControl);
+    expect(onStopChild).toHaveBeenCalledWith("child-running");
+  });
+
+  // A turn that spawned its agents from a tool call is drawn as work rows
+  // and an answer row with a derived id; the chips belong to the turn.
+  it("hangs the turn's children under its answer row", () => {
+    renderInChat(
+      <MessageBubble
+        message={{ ...reply, id: `${reply.id}:answer` }}
+        actionMessageId={reply.id}
+      />,
+    );
+    expect(screen.getAllByTestId("conductor-agent-chip")).toHaveLength(2);
+    expect(screen.getAllByTestId("conductor-agent-stop")).toHaveLength(1);
+  });
+
+  it("does not repeat them on a companion block of the same turn", () => {
+    renderInChat(
+      <MessageBubble
+        message={{
+          ...reply,
+          id: `${reply.id}:companion-image`,
+          content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
+        }}
+        actionMessageId={reply.id}
+      />,
+    );
+    expect(
+      screen.queryByTestId("conductor-agent-chip"),
+    ).not.toBeInTheDocument();
   });
 });

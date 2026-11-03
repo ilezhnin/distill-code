@@ -557,6 +557,7 @@ describe("action schemas", () => {
       "folders.list": { session_id: "s1" },
       "sessions.fork": { session_id: "s1" },
       "sessions.archive": { session_id: "s1" },
+      "sessions.stop": { session_id: "s1" },
       "projects.create": { name: "Project" },
       "projects.list": {},
       "projects.get": { project_id: "p1" },

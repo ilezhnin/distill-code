@@ -81,11 +81,7 @@ import {
 } from "@/features/conductor/waveDigest";
 import { ConductorDigestCard } from "@/features/conductor/ui/ConductorDigestCard";
 import { useConductorTranscript } from "@/features/conductor/ConductorTranscriptContext";
-import {
-  brigadeNodesForMessage,
-  NO_BRIGADE_NODES,
-} from "@/features/conductor/brigadeAnchors";
-import { ConductorAgentFooter } from "@/features/conductor/ui/ConductorAgentFooter";
+import { TurnAgentFooter } from "@/features/conductor/ui/TurnAgentFooter";
 import { WorkerBriefHeader } from "@/features/conductor/ui/WorkerBriefHeader";
 
 interface MessageAttachmentPreviewItem {
@@ -941,25 +937,6 @@ export const MessageBubble = memo(function MessageBubble({
   const canHostMessageActions =
     !fragmentRole || fragmentRole === "end" || fragmentRole === "single";
   const showMessageActions = !isStreaming && canHostMessageActions;
-  // Chips live under the message that owns them: children anchored to this
-  // message id, plus the unanchored fallback group on the latest host.
-  const conductorFooterNodes =
-    conductorTranscript.enabled && canHostMessageActions
-      ? brigadeNodesForMessage(
-          conductorTranscript.brigadeNodesByMessageId,
-          message.id,
-        )
-      : NO_BRIGADE_NODES;
-  // A plan with nothing spawned yet still has a row to draw: the placeholder
-  // chips are the operator's only view of what they just agreed to, and the
-  // window where none of it has started is exactly when they look.
-  const conductorFooterPlanSteps =
-    conductorTranscript.wavePlanStepsByMessageId.get(message.id);
-  const showConductorFooter =
-    conductorFooterNodes.length > 0 ||
-    (conductorTranscript.enabled &&
-      canHostMessageActions &&
-      (conductorFooterPlanSteps?.length ?? 0) > 0);
   // In-harness subagents of this turn. They have no session and no graph node,
   // so they are read straight off the tool calls; `renderingContext` is the
   // whole assistant message even when this bubble renders only its answer.
@@ -969,6 +946,14 @@ export const MessageBubble = memo(function MessageBubble({
     !isUser &&
     canHostMessageActions &&
     renderedContent.every((block) => block.type === "text");
+  // Chips live under the turn that owns them: children anchored to the turn's
+  // message id, plus the unanchored fallback group on the latest host. A
+  // bubble that renders a slice of a turn (its answer after the work rows)
+  // has a derived id of its own, so the turn's id is the action id; only the
+  // answer hosts them, never a companion block of the same turn.
+  const hostsAgentFooter =
+    canHostMessageActions &&
+    (message.id === actionMessageId || hostsTurnFooters);
   const harnessBrigade = hostsTurnFooters
     ? selectHarnessBrigade({
         content: renderingContext,
@@ -1350,15 +1335,8 @@ export const MessageBubble = memo(function MessageBubble({
         ) : null}
         {/* Below the actions/timestamp row: the chip row is a normal-flow
             sibling after the reserved action space, so nothing overlaps it. */}
-        {showConductorFooter ? (
-          <ConductorAgentFooter
-            hostSessionId={conductorTranscript.hostSessionId}
-            nodes={conductorFooterNodes}
-            reportsByRunId={conductorTranscript.reportsByRunId}
-            planSteps={conductorFooterPlanSteps}
-            onOpen={conductorTranscript.onOpenChild}
-            onStop={conductorTranscript.onStopChild}
-          />
+        {hostsAgentFooter ? (
+          <TurnAgentFooter messageId={actionMessageId} />
         ) : null}
         <HarnessBrigadeRow entries={harnessBrigade} className="pt-1" />
       </div>

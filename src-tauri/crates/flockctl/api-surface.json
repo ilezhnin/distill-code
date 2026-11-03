@@ -3,7 +3,7 @@
   "protocolVersion": 6,
   "groups": {
     "sessions": {
-      "description": "Manage the user's chat sessions: create (fire-and-forget, on any installed agent harness), send, open, list, get, rename, move, clear project, fork, archive.",
+      "description": "Manage the user's chat sessions: create (fire-and-forget, on any installed agent harness), send, open, list, get, rename, move, clear project, fork, archive, stop.",
       "actions": {
         "create": {
           "description": "Create a new chat session on any installed agent harness and send the prompt in it. Fire-and-forget: returns the session id immediately and the session runs in the background without changing what the user sees; the user can open it themselves. Model, reasoning effort and fast mode are separate choices, each checked against what `flockctl info models` reports for the chosen model. Use --from to give the delegating session or tool a concise visible label on the initial message. When the new session takes on part of your own work, pass your session id as --parent-session-id: it is shown under your chat rather than as a chat of its own, your chat shows it working, and its result is delivered back to your chat when its turn ends, so do not ask it to report back itself. Only check on it later (action \"get\") if the user asks.",
@@ -528,6 +528,61 @@
               "discard_changes": {
                 "description": "No effect; kept for compatibility. flockctl never discards local files or changes: when Git cleanup would, the command refuses and the user must confirm in the app.",
                 "type": "boolean"
+              }
+            },
+            "required": ["session_id"],
+            "additionalProperties": false
+          }
+        },
+        "stop": {
+          "description": "Stop a session that was started under another chat, the same way its chip's stop control does: its queued messages are dropped and its running turn is cancelled. A turn whose agent does not answer the cancel (a provider out of quota, an agent that stopped responding) is ended by the app shortly after. Its files and its chat are kept; the chip shows it stopped, by whom and why. Sessions not started under another chat are refused: stop those in the app.",
+          "fields": [
+            {
+              "name": "session_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the session to stop: one started under another chat (from `flockctl session create`).",
+              "max": 200
+            },
+            {
+              "name": "reason",
+              "required": false,
+              "kind": "string",
+              "description": "Optional reason shown on the stopped session's chip (1-300 chars).",
+              "min": 1,
+              "max": 300
+            },
+            {
+              "name": "from",
+              "required": false,
+              "kind": "string",
+              "description": "Optional visible name of who stopped it (1-120 chars).",
+              "min": 1,
+              "max": 120
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "session_id": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Id of the session to stop: one started under another chat (from `flockctl session create`)."
+              },
+              "reason": {
+                "description": "Optional reason shown on the stopped session's chip (1-300 chars).",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300,
+                "pattern": "^[^\\r\\n]*$"
+              },
+              "from": {
+                "description": "Optional visible name of who stopped it (1-120 chars).",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": "^[^\\r\\n]*$"
               }
             },
             "required": ["session_id"],

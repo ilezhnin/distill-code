@@ -253,6 +253,9 @@ const BRIDGE_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// the bridge itself was shut down meanwhile. Half an hour keeps a conversation
 /// with pauses attached; merely reading history never opens a bridge session.
 const SESSION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How long a bridge has to end a turn it was told to cancel before the host
+/// ends it itself (see `end_cancelled_turn_if_unanswered`).
+const CANCEL_ANSWER_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 const SNIPPET_CHARS: usize = 200;
 /// How much of a conversation goes with a chat that moved to another agent
 /// (`carryover_block`), in characters: roughly 30k tokens, which every model
@@ -1315,7 +1318,7 @@ impl Inner {
         }
     }
 
-    async fn handle_client_notification(&self, method: &str, params: Value) {
+    async fn handle_client_notification(self: &Arc<Self>, method: &str, params: Value) {
         if let Some(id) = protocol::session_id(&params) {
             if !matches!(self.store.execution_owner(&id).await, Ok(None)) {
                 return;
@@ -1323,13 +1326,16 @@ impl Inner {
         }
         if method == "session/cancel" {
             if let Some(session_id) = protocol::session_id(&params) {
-                let (dropped, ended_background) = self
+                let ((dropped, ended_background), cancelled_run) = self
                     .sessions
                     .lock()
                     .await
                     .get_mut(&session_id)
-                    .map(SessionRuntime::stop)
-                    .unwrap_or((0, false));
+                    .map(|runtime| {
+                        let run = runtime.run.as_ref().map(|run| run.run_id.clone());
+                        (runtime.stop(), run)
+                    })
+                    .unwrap_or(((0, false), None));
                 if ended_background {
                     self.notify_frontend("session/update", Self::run_settled_update(&session_id));
                 }
@@ -1342,9 +1348,44 @@ impl Inner {
                     let mut params = params.clone();
                     params["sessionId"] = json!(bridge_session_id);
                     bridge.notify(method, params);
+                    if let Some(run_id) = cancelled_run {
+                        self.end_cancelled_turn_if_unanswered(session_id, run_id, bridge);
+                    }
                 }
             }
         }
+    }
+
+    /// Stop must end the turn even when the agent will not. A bridge that
+    /// ignores `session/cancel` — Codex retrying against a spent quota, an
+    /// agent that stopped reading — would keep the turn running forever: the
+    /// chat could never be stopped, and the chat that started it waited on
+    /// it for good. After [`CANCEL_ANSWER_GRACE`] the host ends the turn
+    /// itself, as cancelled, if it is still the one that was stopped.
+    fn end_cancelled_turn_if_unanswered(
+        self: &Arc<Self>,
+        session_id: String,
+        run_id: String,
+        bridge: Arc<Bridge>,
+    ) {
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(CANCEL_ANSWER_GRACE).await;
+            let still_running = host
+                .sessions
+                .lock()
+                .await
+                .get(&session_id)
+                .and_then(|runtime| runtime.run.as_ref())
+                .is_some_and(|run| run.run_id == run_id);
+            if still_running && bridge.abandon_turn(&run_id) {
+                log::warn!(
+                    "[agent-host] {} did not end the cancelled turn of {session_id} within {} s; ended it as cancelled",
+                    bridge.harness,
+                    CANCEL_ANSWER_GRACE.as_secs()
+                );
+            }
+        });
     }
 
     async fn handle_client_response(&self, id: Value, result: Result<Value, Value>) {

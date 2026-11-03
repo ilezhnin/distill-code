@@ -2,6 +2,7 @@ import type { ZodError } from "zod/v4";
 
 import { archiveProjectCommand } from "./impl/archiveProject";
 import { archiveSessionCommand } from "./impl/archiveSession";
+import { stopSessionCommand } from "./impl/stopSession";
 import { attachSessionFolderCommand } from "./impl/attachSessionFolder";
 import { detachSessionFolderCommand } from "./impl/detachSessionFolder";
 import { listSessionFoldersCommand } from "./impl/listSessionFolders";
@@ -59,11 +60,11 @@ export const ALL_TOOL_GROUPS = {
     description:
       "Manage the user's chat sessions: create (fire-and-forget, on any " +
       "installed agent harness), send, open, list, get, rename, move, " +
-      "clear project, fork, archive.",
+      "clear project, fork, archive, stop.",
     cli: {
       noun: "session",
       about:
-        "Manage chat sessions: create, send, open, list, get, rename, move, clear project, fork, archive",
+        "Manage chat sessions: create, send, open, list, get, rename, move, clear project, fork, archive, stop",
       verbs: {
         create: "create",
         send: "send",
@@ -75,6 +76,7 @@ export const ALL_TOOL_GROUPS = {
         "clear-project": "clear_project",
         fork: "fork",
         archive: "archive",
+        stop: "stop",
       },
     },
     actions: {
@@ -88,6 +90,7 @@ export const ALL_TOOL_GROUPS = {
       clear_project: clearSessionProjectCommand,
       fork: forkSessionCommand,
       archive: archiveSessionCommand,
+      stop: stopSessionCommand,
     },
   },
   folders: {

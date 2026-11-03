@@ -3,7 +3,7 @@
   "nouns": {
     "session": {
       "group": "sessions",
-      "about": "Manage chat sessions: create, send, open, list, get, rename, move, clear project, fork, archive",
+      "about": "Manage chat sessions: create, send, open, list, get, rename, move, clear project, fork, archive, stop",
       "verbs": {
         "create": {
           "action": "create",
@@ -54,6 +54,11 @@
           "action": "archive",
           "about": "Archive a chat and clean up its Flock-managed Git resources",
           "afterHelp": "The command refuses to archive when Git cleanup would discard local files or changes,\nand flockctl cannot override that: only the user can confirm the loss, in the app.\nIt also refuses while the chat still has running terminals: archiving in the app\nstops that chat's shells, and flockctl will not end a dev server, a build or a\nmigration on its own. --discard-changes is accepted for compatibility and\nhas no effect. The command never opens an interactive prompt.\n\nExample:\n  flockctl session archive --session-id <session-id>\n\nResult:\n  {\"ok\": true} — the session was archived and eligible worktrees and branches were removed."
+        },
+        "stop": {
+          "action": "stop",
+          "about": "Stop a session another chat started: end its turn, drop its queue",
+          "afterHelp": "Example:\n  flockctl session stop --session-id <child-session-id> --from \"Parent chat\" --reason \"provider out of quota\"\n\nResult:\n  {\"ok\": true, \"session_id\": \"...\", \"outcome\": \"stopped\"|\"already_finished\"}\n  \"stopped\": the session was working or had queued messages; it was told to stop.\n  \"already_finished\": it had already finished, failed or been stopped; nothing changed."
         }
       }
     },
