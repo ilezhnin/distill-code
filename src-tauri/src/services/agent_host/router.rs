@@ -3872,7 +3872,39 @@ impl Inner {
         // The caller's copy may predate a move to another harness made while
         // it waited for the lock (an explicit preparation, say); attach
         // what the store holds now.
+        let current = self.adopt_default_account(current).await?;
         self.attach_session_locked(&current).await
+    }
+
+    /// A chat of a provider with saved accounts that names none — imported
+    /// from another tool, or older than saved accounts — runs on the
+    /// provider's default account from now on. Without one every attach and
+    /// prompt is refused ("Choose a signed-in account for this chat") before
+    /// anything reaches the chat, so its queued messages never leave the
+    /// queue. With no signed-in account at all, that is the error.
+    async fn adopt_default_account(&self, record: SessionRecord) -> Result<SessionRecord, Value> {
+        if record.account_id.is_some()
+            || record.archived_at.is_some()
+            || !provider_accounts::supports_managed_accounts(&record.harness)
+        {
+            return Ok(record);
+        }
+        let Some(account_id) = self.resolve_account_id(&record.harness, None)? else {
+            return Ok(record);
+        };
+        if self
+            .store
+            .adopt_account(&record.id, &account_id)
+            .await
+            .map_err(protocol::internal)?
+        {
+            log::info!(
+                "[agent-host] session {} had no {} account; it runs on {account_id} now",
+                record.id,
+                record.harness
+            );
+        }
+        self.session_record(&record.id).await
     }
 
     /// The live bridge behind a session, when it is already attached and the
@@ -6079,7 +6111,9 @@ impl Inner {
         check_owned_deadline(ids.owned_deadline)?;
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
-        let mut record = self.session_record(&session_id).await?;
+        let mut record = self
+            .adopt_default_account(self.session_record(&session_id).await?)
+            .await?;
         if self.active_run_id(&session_id).await.is_none() {
             self.route_account_for_dispatch(&record, ids.allow_credits)
                 .await?;

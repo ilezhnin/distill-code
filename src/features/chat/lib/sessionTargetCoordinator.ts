@@ -64,6 +64,17 @@ export type SessionTargetOutcome =
       fallback?: SessionExecutionTarget;
     };
 
+/**
+ * A send cannot go on after a failed preparation, and the reason belongs in
+ * the chat: the host's own error ("Choose a signed-in account for this
+ * chat"), not the generic "superseded" a plain `false` turns into.
+ */
+export function throwIfPreparationFailed(outcome: SessionTargetOutcome): void {
+  if (outcome.status === "failed") {
+    throw outcome.error;
+  }
+}
+
 interface PendingOperation {
   sequence: number;
   request: SessionTargetTransition;

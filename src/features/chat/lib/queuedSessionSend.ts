@@ -29,6 +29,7 @@ import {
 } from "@/features/chat/lib/sessionDispatchAcquisition";
 import {
   acquireSessionDispatchTarget,
+  throwIfPreparationFailed,
   transitionSessionTarget,
 } from "@/features/chat/lib/sessionTargetCoordinator";
 import { applyPendingSessionWorkspaceActivation } from "@/features/chat/lib/sessionWorkspaceActivation";
@@ -303,6 +304,7 @@ export async function prepareExistingSessionForBackgroundSend(
     workingDir,
     dispatchToken: options.dispatchToken,
   });
+  throwIfPreparationFailed(result);
   if (!result.applied) {
     throw new Error("Session preparation was superseded by a newer selection.");
   }

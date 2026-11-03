@@ -69,6 +69,7 @@ import {
 } from "../lib/modelPreferences";
 import {
   replaceSessionTargetAfterDispatch,
+  throwIfPreparationFailed,
   transitionSessionTarget,
 } from "../lib/sessionTargetCoordinator";
 import { applyPendingSessionWorkspaceActivation } from "../lib/sessionWorkspaceActivation";
@@ -1033,6 +1034,7 @@ export function useChatSessionController({
           workingDir,
           requestId: targetToApply.requestId,
         });
+        throwIfPreparationFailed(result);
         return result.applied;
       }
 
@@ -1067,6 +1069,7 @@ export function useChatSessionController({
         workingDir,
         requestId: targetToApply.requestId,
       });
+      throwIfPreparationFailed(result);
       if (!result.applied) {
         return result.applied;
       }
@@ -1549,6 +1552,7 @@ export function useChatSessionController({
           workingDir,
           dispatchToken: sessionSelectionToken,
         });
+        throwIfPreparationFailed(result);
         if (!result.applied || !selectionIsCurrent()) {
           return false;
         }

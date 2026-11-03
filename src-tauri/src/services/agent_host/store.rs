@@ -1367,6 +1367,26 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Give a chat that names no account — imported from another tool, or
+    /// older than saved accounts — the account it runs on from now on. A
+    /// native session it may carry belongs to whatever sign-in made it, so it
+    /// is never resumed: as with [`Self::switch_account`], the transcript goes
+    /// with the next prompt instead. Only a chat still without an account is
+    /// written; `false` when it already had one.
+    pub async fn adopt_account(&self, id: &str, account_id: &str) -> Result<bool, String> {
+        let result = sqlx::query(
+            "UPDATE sessions SET account_id = ?, bridge_session_id = NULL, \
+             carryover_pending = EXISTS(SELECT 1 FROM session_events WHERE session_id = sessions.id) \
+             WHERE id = ? AND account_id IS NULL",
+        )
+        .bind(account_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to adopt session account", error))?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Whether the agent behind a session has yet to be given the conversation
     /// it took over — see [`Self::rebind_session`].
     pub async fn carryover_pending(&self, id: &str) -> Result<bool, String> {
@@ -3284,6 +3304,34 @@ mod tests {
                 .account_id,
             None
         );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn adopting_an_account_hands_the_history_over_and_never_replaces_one() {
+        let (dir, store) = store_with_history().await;
+        store
+            .set_bridge_session_id("a", Some("imported-native"))
+            .await
+            .unwrap();
+        assert!(store.adopt_account("a", "account-one").await.unwrap());
+        let adopted = store.get_session("a").await.unwrap().unwrap();
+        assert_eq!(adopted.account_id.as_deref(), Some("account-one"));
+        assert_eq!(adopted.bridge_session_id, None);
+        assert!(store.carryover_pending("a").await.unwrap());
+
+        assert!(!store.adopt_account("a", "account-two").await.unwrap());
+        assert_eq!(
+            store
+                .get_session("a")
+                .await
+                .unwrap()
+                .unwrap()
+                .account_id
+                .as_deref(),
+            Some("account-one")
+        );
+        assert!(!store.adopt_account("missing", "account-one").await.unwrap());
         dir.close().await;
     }
 
