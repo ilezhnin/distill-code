@@ -256,6 +256,9 @@ const SESSION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// How long a bridge has to end a turn it was told to cancel before the host
 /// ends it itself (see `end_cancelled_turn_if_unanswered`).
 const CANCEL_ANSWER_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+/// How long a close that stops the active chats waits for their agents to end
+/// the cancelled turns before ending them itself (see `stop_chats_for_close`).
+const CLOSE_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 const SNIPPET_CHARS: usize = 200;
 /// How much of a conversation goes with a chat that moved to another agent
 /// (`carryover_block`), in characters: roughly 30k tokens, which every model
@@ -900,14 +903,36 @@ impl AgentHost {
     /// this before it pauses the benchmark runs, so a refused close pauses
     /// nothing.
     pub async fn chats_active(&self) -> bool {
-        let Some(inner) = self.inner.lock().await.clone() else {
-            return false;
-        };
-        let sessions = inner.sessions.lock().await;
-        active_turns(sessions.values()).0 > 0
+        self.active_chat_count().await > 0
     }
 
-    pub async fn prepare_shutdown(&self, prepared: bool) -> Result<(), String> {
+    /// Ordinary chats a close would cut: loading, running, or with steers
+    /// queued. The close asks the operator before stopping them.
+    pub async fn active_chat_count(&self) -> usize {
+        let Some(inner) = self.inner.lock().await.clone() else {
+            return 0;
+        };
+        let sessions = inner.sessions.lock().await;
+        active_turns(sessions.values()).0
+    }
+
+    /// Stop every ordinary chat a close would cut, for an operator who chose
+    /// to close anyway. See [`Inner::stop_chats_for_close`].
+    pub async fn stop_chats_for_close(&self) -> usize {
+        let Some(inner) = self.inner.lock().await.clone() else {
+            return 0;
+        };
+        inner.stop_chats_for_close().await
+    }
+
+    /// `chats_stopped`: the operator chose to close over active chats and
+    /// [`Self::stop_chats_for_close`] stopped them, so a chat still opening
+    /// its session no longer holds the close.
+    pub async fn prepare_shutdown(
+        &self,
+        prepared: bool,
+        chats_stopped: bool,
+    ) -> Result<(), String> {
         let inner = self.inner.lock().await.clone();
         let Some(inner) = inner else {
             return Ok(());
@@ -916,7 +941,7 @@ impl AgentHost {
             let sessions = inner.sessions.lock().await;
             if prepared {
                 let (chats, tests) = active_turns(sessions.values());
-                if chats > 0 {
+                if chats > 0 && !chats_stopped {
                     return Err(CHATS_ACTIVE.into());
                 }
                 if tests > 0 {
@@ -1354,6 +1379,77 @@ impl Inner {
                 }
             }
         }
+    }
+
+    /// Stop every ordinary chat a close would cut, for an operator who chose
+    /// to close anyway: each is stopped as its Stop button would, and a turn
+    /// its agent has not ended within [`CLOSE_STOP_GRACE`] is ended here, as
+    /// cancelled. Flock is about to exit, so a stuck agent — one retrying a
+    /// spent quota never answers a cancel — is not given the Stop grace and
+    /// cannot hold the window open. Benchmark and task turns are not chats;
+    /// the benchmark pause handles them. Answers how many chats were stopped.
+    async fn stop_chats_for_close(self: &Arc<Self>) -> usize {
+        let chats: Vec<String> = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, runtime)| {
+                runtime.execution_profile.is_none()
+                    && (runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty())
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for session_id in &chats {
+            self.handle_client_notification("session/cancel", json!({ "sessionId": session_id }))
+                .await;
+        }
+        let deadline = tokio::time::Instant::now() + CLOSE_STOP_GRACE;
+        loop {
+            let running = self.running_chat_turns().await;
+            if running.is_empty() {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                for (session_id, run_id) in running {
+                    if let Some((bridge, _)) = self.attached_route(&session_id).await {
+                        if bridge.abandon_turn(&run_id) {
+                            log::warn!(
+                                "[agent-host] {} did not end the turn of {session_id} for the close; ended it as cancelled",
+                                bridge.harness
+                            );
+                        }
+                    }
+                }
+                // Let the abandoned turns record their ends before the exit.
+                let settle = tokio::time::Instant::now() + CLOSE_STOP_GRACE;
+                while !self.running_chat_turns().await.is_empty()
+                    && tokio::time::Instant::now() < settle
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if !chats.is_empty() {
+            log::info!(
+                "[agent-host] stopped {} active chat(s) to close Flock",
+                chats.len()
+            );
+        }
+        chats.len()
+    }
+
+    /// The running turns of ordinary chats, as (session, run).
+    async fn running_chat_turns(&self) -> Vec<(String, String)> {
+        self.sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, runtime)| runtime.execution_profile.is_none())
+            .filter_map(|(id, runtime)| Some((id.clone(), runtime.run.as_ref()?.run_id.clone())))
+            .collect()
     }
 
     /// Stop must end the turn even when the agent will not. A bridge that

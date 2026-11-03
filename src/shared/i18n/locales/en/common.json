@@ -199,5 +199,12 @@
     "title": "This view stopped working.",
     "description": "The rest of the app is still running — try again, or open something else.",
     "retry": "Try again"
+  },
+  "closeFlock": {
+    "title": "Close Flock?",
+    "message_one": "{{count}} chat is still working. Closing stops it, and its unfinished work may be lost.",
+    "message_other": "{{count}} chats are still working. Closing stops them, and their unfinished work may be lost.",
+    "confirm": "Stop and close",
+    "cancel": "Keep working"
   }
 }
