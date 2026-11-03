@@ -628,7 +628,12 @@
       "group": {
         "first": "Brigade",
         "revision_one": "Revision",
-        "revision_other": "Revision {{count}}"
+        "revision_other": "Revision {{count}}",
+        "earlier_one": "{{count}} earlier wave",
+        "earlier_other": "{{count}} earlier waves",
+        "notDone": "{{count}} stopped or failed",
+        "workingBelow_one": "{{count}} more working, listed above the message box",
+        "workingBelow_other": "{{count}} more working, listed above the message box"
       },
       "budgetStop": {
         "body": "{{name}} was stopped: it reached the budget its step was given ({{spent}}). Nothing failed — the limit was reached. Raise it in the plan and ask again if the work was worth more.",

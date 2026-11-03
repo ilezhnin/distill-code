@@ -38,6 +38,7 @@ export function TurnAgentFooter({
       planSteps={planSteps}
       onOpen={transcript.onOpenChild}
       onStop={transcript.onStopChild}
+      workingListedBelow={transcript.workingListedBelow}
       className={className}
     />
   );

@@ -1,12 +1,16 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { useTranscriptRowStateAdapter } from "@/features/chat/transcript/row-state";
 import { cn } from "@/shared/lib/cn";
 import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
+import type { SessionChatRuntime } from "@/shared/types/chat";
+import { DisclosureLine } from "@/shared/ui/ai-elements/disclosure-line";
 
 import type { ConductorOpenChildIntent } from "../ConductorTranscriptContext";
-import { summarizeBrigadeActivity } from "../brigadeActivity";
+import { isWorkingStatus, summarizeBrigadeActivity } from "../brigadeActivity";
 import { formatTokenCount } from "../brigadeChipSummary";
 import { pendingStepName, waveFooterRow } from "../waveFooterChips";
 import { waveStepAccessKey } from "../flockConductorTranscript";
@@ -86,6 +90,7 @@ export function ConductorAgentFooter({
   planSteps,
   onOpen,
   onStop,
+  workingListedBelow = false,
   className,
 }: {
   /**
@@ -109,27 +114,19 @@ export function ConductorAgentFooter({
   planSteps?: readonly WaveStep[];
   onOpen?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStop?: (sessionId: string) => void;
+  /**
+   * The line above the composer is listing every working agent of this chat,
+   * with the same live words and controls. The row then draws only the
+   * finished ones and says how many it left to that list, instead of the
+   * same agents appearing twice one above the other.
+   */
+  workingListedBelow?: boolean;
   className?: string;
 }) {
   const { t } = useTranslation("chat");
   const sessionStateById = useChatStore((state) => state.sessionStateById);
-  const tokenTotals = useMemo(() => {
-    let accumulatedTotal = 0;
-    let accumulatedCost = 0;
-    let hasCost = false;
-    const add = (sessionId: string) => {
-      const tokenState = sessionStateById[sessionId]?.tokenState;
-      if (!tokenState) return;
-      accumulatedTotal += tokenState.accumulatedTotal;
-      if (typeof tokenState.accumulatedCost === "number") {
-        accumulatedCost += tokenState.accumulatedCost;
-        hasCost = true;
-      }
-    };
-    if (hostSessionId) add(hostSessionId);
-    for (const node of nodes) add(node.sessionId);
-    return { accumulatedTotal, accumulatedCost, hasCost };
-  }, [hostSessionId, nodes, sessionStateById]);
+  const { rowState, updateRowState, markRowInteracted, pinScrollAnchor } =
+    useTranscriptRowStateAdapter();
 
   const stats = useMemo(() => {
     const { working, done } = summarizeBrigadeActivity(nodes);
@@ -140,22 +137,11 @@ export function ConductorAgentFooter({
     if (done > 0) {
       parts.push(t("conductor.statsDone", { count: done }));
     }
-    if (tokenTotals.accumulatedTotal > 0) {
-      parts.push(
-        t("conductor.statsTokens", {
-          tokens: formatTokenCount(tokenTotals.accumulatedTotal),
-        }),
-      );
-    }
-    if (tokenTotals.hasCost && tokenTotals.accumulatedCost > 0) {
-      parts.push(
-        t("conductor.statsCost", {
-          cost: tokenTotals.accumulatedCost.toFixed(2),
-        }),
-      );
-    }
+    const sessionIds = nodes.map((node) => node.sessionId);
+    if (hostSessionId) sessionIds.unshift(hostSessionId);
+    parts.push(...spendParts(sumSpend(sessionStateById, sessionIds), t));
     return parts.join(" · ");
-  }, [nodes, t, tokenTotals]);
+  }, [hostSessionId, nodes, sessionStateById, t]);
 
   // Clicking a chip for a real session opens that child's transcript beside
   // the conversation instead of replacing it; full navigation is the explicit
@@ -245,9 +231,115 @@ export function ConductorAgentFooter({
     }));
   }, [nodes, onStop, openInTab, planSteps, reportsByRunId, t]);
 
+  // A conductor that keeps revising hangs every wave under the one plan
+  // message, and thirty revisions of five chips each was three screens of
+  // finished work between the operator and the conversation. Only the newest
+  // waves stay drawn; the older finished ones fold into one line that says
+  // how many there were, how they ended and what they cost. A wave with
+  // anything still working never folds, wherever it sits.
+  const fold = useMemo(() => {
+    if (groups.length <= VISIBLE_WAVE_GROUPS) return null;
+    const keepFrom = groups.length - VISIBLE_WAVE_GROUPS;
+    const folded: ChipGroup[] = [];
+    const shown: ChipGroup[] = [];
+    groups.forEach((group, index) => {
+      if (index >= keepFrom || groupIsActive(group)) shown.push(group);
+      else folded.push(group);
+    });
+    if (folded.length === 0) return null;
+    const foldedNodes = folded.flatMap((group) =>
+      group.chips.flatMap((chip) => (chip.node ? [chip.node] : [])),
+    );
+    const { done } = summarizeBrigadeActivity(foldedNodes);
+    const notDone = foldedNodes.length - done;
+    const parts = [t("conductor.wave.group.earlier", { count: folded.length })];
+    if (done > 0) parts.push(t("conductor.statsDone", { count: done }));
+    if (notDone > 0) {
+      parts.push(t("conductor.wave.group.notDone", { count: notDone }));
+    }
+    parts.push(
+      ...spendParts(
+        sumSpend(
+          sessionStateById,
+          foldedNodes.map((node) => node.sessionId),
+        ),
+        t,
+      ),
+    );
+    return { folded, shown, label: parts.join(" · ") };
+  }, [groups, sessionStateById, t]);
+
+  // Durable on the transcript row, so an opened fold stays open when the row
+  // scrolls out of the virtualized viewport and back.
+  const foldStateKey = `conductorEarlierWaves:${groups[0]?.waveId ?? "row"}`;
+  const [foldOpen, setFoldOpenState] = useState(
+    () => rowState?.custom?.[foldStateKey] === true,
+  );
+  const setFoldOpen = (open: boolean) => {
+    markRowInteracted("conductor-earlier-waves");
+    pinScrollAnchor();
+    setFoldOpenState(open);
+    updateRowState((current) => ({
+      ...current,
+      custom: { ...current.custom, [foldStateKey]: open },
+    }));
+  };
+
   if (groups.every((group) => group.chips.length === 0)) {
     return null;
   }
+
+  const renderGroup = (group: ChipGroup, index: number) => {
+    const chips = workingListedBelow
+      ? group.chips.filter(
+          (chip) => !(chip.node && isWorkingStatus(chip.node.status)),
+        )
+      : group.chips;
+    const listedBelow = group.chips.length - chips.length;
+    return (
+      <div
+        key={group.waveId ?? `group-${index}`}
+        data-testid="conductor-agent-footer-wave"
+        data-wave-id={group.waveId}
+        className="flex w-full min-w-0 flex-col items-start gap-0.5"
+      >
+        {typeof group.revisionIndex === "number" ? (
+          <p
+            className="text-[11px] text-muted-foreground"
+            data-testid="conductor-agent-footer-wave-label"
+          >
+            {group.revisionIndex === 0
+              ? t("conductor.wave.group.first")
+              : t("conductor.wave.group.revision", {
+                  count: group.revisionIndex,
+                })}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {chips.map(({ node, report, ...chip }) =>
+            node ? (
+              <GraphBrigadeChip
+                key={chip.id}
+                {...chip}
+                node={node}
+                report={report}
+              />
+            ) : (
+              <BrigadeChip key={chip.id} {...chip} />
+            ),
+          )}
+          {listedBelow > 0 ? (
+            <span
+              className="text-xs text-muted-foreground"
+              data-testid="conductor-working-listed-below"
+            >
+              {t("conductor.wave.group.workingBelow", { count: listedBelow })}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -265,43 +357,79 @@ export function ConductorAgentFooter({
           {stats}
         </p>
       ) : null}
-      {groups.map((group, index) => (
-        <div
-          key={group.waveId ?? `group-${index}`}
-          data-testid="conductor-agent-footer-wave"
-          data-wave-id={group.waveId}
-          className="flex w-full min-w-0 flex-col items-start gap-0.5"
-        >
-          {typeof group.revisionIndex === "number" ? (
-            <p
-              className="text-[11px] text-muted-foreground"
-              data-testid="conductor-agent-footer-wave-label"
-            >
-              {group.revisionIndex === 0
-                ? t("conductor.wave.group.first")
-                : t("conductor.wave.group.revision", {
-                    count: group.revisionIndex,
-                  })}
-            </p>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            {group.chips.map(({ node, report, ...chip }) =>
-              node ? (
-                <GraphBrigadeChip
-                  key={chip.id}
-                  {...chip}
-                  node={node}
-                  report={report}
-                />
-              ) : (
-                <BrigadeChip key={chip.id} {...chip} />
-              ),
-            )}
-          </div>
-        </div>
-      ))}
+      {fold ? (
+        <>
+          <DisclosureLine
+            open={foldOpen}
+            onOpenChange={setFoldOpen}
+            className="w-full min-w-0"
+            label={
+              <span
+                className="text-xs text-muted-foreground tabular-nums"
+                data-testid="conductor-earlier-waves"
+              >
+                {fold.label}
+              </span>
+            }
+          >
+            <div className="flex w-full min-w-0 flex-col items-start gap-1 pt-1">
+              {fold.folded.map(renderGroup)}
+            </div>
+          </DisclosureLine>
+          {fold.shown.map(renderGroup)}
+        </>
+      ) : (
+        groups.map(renderGroup)
+      )}
     </div>
   );
+}
+
+/** How many of the newest waves a footer always draws in full. */
+const VISIBLE_WAVE_GROUPS = 3;
+
+/** A wave the operator is still waiting on: a step not started or not done. */
+function groupIsActive(group: ChipGroup): boolean {
+  return group.chips.some(
+    (chip) => chip.pending || (chip.node && isWorkingStatus(chip.node.status)),
+  );
+}
+
+interface Spend {
+  tokens: number;
+  cost: number;
+  hasCost: boolean;
+}
+
+/** Tokens and cost the given sessions have run up, as their chats report. */
+function sumSpend(
+  sessionStateById: Readonly<Record<string, SessionChatRuntime | undefined>>,
+  sessionIds: readonly string[],
+): Spend {
+  const spend: Spend = { tokens: 0, cost: 0, hasCost: false };
+  for (const sessionId of sessionIds) {
+    const tokenState = sessionStateById[sessionId]?.tokenState;
+    if (!tokenState) continue;
+    spend.tokens += tokenState.accumulatedTotal;
+    if (typeof tokenState.accumulatedCost === "number") {
+      spend.cost += tokenState.accumulatedCost;
+      spend.hasCost = true;
+    }
+  }
+  return spend;
+}
+
+function spendParts(spend: Spend, t: TFunction<"chat">): string[] {
+  const parts: string[] = [];
+  if (spend.tokens > 0) {
+    parts.push(
+      t("conductor.statsTokens", { tokens: formatTokenCount(spend.tokens) }),
+    );
+  }
+  if (spend.hasCost && spend.cost > 0) {
+    parts.push(t("conductor.statsCost", { cost: spend.cost.toFixed(2) }));
+  }
+  return parts;
 }
 
 /** A chip in the row, with the worker behind it when one exists. */

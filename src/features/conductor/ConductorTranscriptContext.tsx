@@ -43,6 +43,12 @@ export interface ConductorTranscriptContextValue {
   onOpenChild?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStopChild?: (sessionId: string) => void;
   /**
+   * Whether the line above the composer is listing this chat's working
+   * agents right now (`brigadeWaitIndicator`). While it is, the chip rows in
+   * the transcript leave those agents to it rather than drawing them twice.
+   */
+  workingListedBelow?: boolean;
+  /**
    * The brief this chat was started with, when the chat is an agent another
    * chat started.
    *

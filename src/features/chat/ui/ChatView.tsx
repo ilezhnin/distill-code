@@ -120,6 +120,7 @@ import type { WorkerBrief } from "@/features/conductor/ConductorTranscriptContex
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { OPERATOR_STOP_REASON } from "@/features/conductor/waveStop";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
+import { brigadeWaitIndicator } from "@/features/conductor/brigadeActivity";
 import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
 import { ConductorBackBanner } from "@/features/conductor/ui/ConductorBackBanner";
 
@@ -847,6 +848,14 @@ export function ChatView({
         : undefined,
     [briefMessageId, conductorNode, handleOpenParent, parentConductor],
   );
+  // The same answer `BrigadeWaitIndicator` reaches above the composer, which
+  // only a chat with a composer draws.
+  const workingListedBelow =
+    !effectiveSession?.executionOwner &&
+    brigadeWaitIndicator({
+      chatState: controller.chatState,
+      children: conductorChildren,
+    }).visible;
   const conductorTranscriptValue = useMemo(
     () => ({
       enabled: showsNestedAgentFooter,
@@ -857,6 +866,7 @@ export function ChatView({
       wavePlanStepsByMessageId,
       onOpenChild: handleOpenChild,
       onStopChild: handleStopChild,
+      workingListedBelow,
       workerBrief,
     }),
     [
@@ -868,6 +878,7 @@ export function ChatView({
       sessionId,
       showsNestedAgentFooter,
       wavePlanStepsByMessageId,
+      workingListedBelow,
       workerBrief,
     ],
   );

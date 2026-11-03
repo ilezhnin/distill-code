@@ -216,3 +216,110 @@ describe("ConductorAgentFooter chips", () => {
     );
   });
 });
+
+describe("ConductorAgentFooter wave folding", () => {
+  beforeEach(() => {
+    useChatStore.setState({ messagesBySession: {}, sessionStateById: {} });
+  });
+
+  function waveNodes(
+    wave: number,
+    status: SessionNode["status"],
+  ): SessionNode[] {
+    return [0, 1].map((step) =>
+      node({
+        sessionId: `w${wave}-s${step}`,
+        runId: `run-${wave}-${step}`,
+        waveId: `wave-${wave}`,
+        stepIndex: step,
+        displayName: `Wave ${wave} step ${step}`,
+        status: step === 1 && status === "completed" ? "cancelled" : status,
+        createdAt: 1_000 + wave * 10 + step,
+      }),
+    );
+  }
+
+  const waveIds = () =>
+    screen
+      .getAllByTestId("conductor-agent-footer-wave")
+      .map((wave) => wave.getAttribute("data-wave-id"));
+
+  it("draws three waves in full without a fold", () => {
+    render(
+      <ConductorAgentFooter
+        nodes={[0, 1, 2].flatMap((wave) => waveNodes(wave, "completed"))}
+        reportsByRunId={NO_REPORTS}
+      />,
+    );
+    expect(waveIds()).toEqual(["wave-0", "wave-1", "wave-2"]);
+    expect(
+      screen.queryByTestId("conductor-earlier-waves"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("folds older finished waves into one line and keeps working ones out", () => {
+    render(
+      <ConductorAgentFooter
+        nodes={[
+          ...waveNodes(0, "completed"),
+          ...waveNodes(1, "running"),
+          ...waveNodes(2, "completed"),
+          ...waveNodes(3, "completed"),
+          ...waveNodes(4, "completed"),
+          ...waveNodes(5, "completed"),
+        ]}
+        reportsByRunId={NO_REPORTS}
+      />,
+    );
+    // Waves 0 and 2 are finished and older than the newest three; wave 1 is
+    // still working, so it stays drawn even though it is old.
+    expect(waveIds()).toEqual(["wave-1", "wave-3", "wave-4", "wave-5"]);
+    const fold = screen.getByTestId("conductor-earlier-waves");
+    expect(fold).toHaveTextContent("2 earlier waves");
+    expect(fold).toHaveTextContent("2 done");
+    expect(fold).toHaveTextContent("2 stopped or failed");
+
+    act(() => {
+      fold.click();
+    });
+    expect(waveIds()).toEqual([
+      "wave-0",
+      "wave-2",
+      "wave-1",
+      "wave-3",
+      "wave-4",
+      "wave-5",
+    ]);
+  });
+
+  it("leaves working agents to the list above the composer while it shows them", () => {
+    const nodes = [
+      node({ sessionId: "done", displayName: "Done", status: "completed" }),
+      node({ sessionId: "busy-1", displayName: "Busy one", status: "running" }),
+      node({ sessionId: "busy-2", displayName: "Busy two", status: "waiting" }),
+    ];
+    const { rerender } = render(
+      <ConductorAgentFooter
+        nodes={nodes}
+        reportsByRunId={NO_REPORTS}
+        workingListedBelow
+      />,
+    );
+    expect(screen.getAllByTestId("brigade-chip")).toHaveLength(1);
+    expect(
+      screen.getByTestId("conductor-working-listed-below"),
+    ).toHaveTextContent("2 more working");
+    // The totals still count everyone.
+    expect(screen.getByTestId("conductor-stats")).toHaveTextContent(
+      "2 working",
+    );
+
+    rerender(
+      <ConductorAgentFooter nodes={nodes} reportsByRunId={NO_REPORTS} />,
+    );
+    expect(screen.getAllByTestId("brigade-chip")).toHaveLength(3);
+    expect(
+      screen.queryByTestId("conductor-working-listed-below"),
+    ).not.toBeInTheDocument();
+  });
+});

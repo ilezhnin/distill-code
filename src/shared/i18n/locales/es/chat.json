@@ -628,7 +628,12 @@
       "group": {
         "first": "Brigada",
         "revision_one": "Revisión",
-        "revision_other": "Revisión {{count}}"
+        "revision_other": "Revisión {{count}}",
+        "earlier_one": "{{count}} ola anterior",
+        "earlier_other": "{{count}} olas anteriores",
+        "notDone": "{{count}} detenidos o fallidos",
+        "workingBelow_one": "{{count}} más en curso, en la lista sobre el cuadro de mensaje",
+        "workingBelow_other": "{{count}} más en curso, en la lista sobre el cuadro de mensaje"
       },
       "budgetStop": {
         "body": "{{name}} se detuvo: alcanzó el presupuesto asignado a su paso ({{spent}}). No falló nada: se llegó al límite. Súbelo en el plan y vuelve a pedirlo si el trabajo valía más.",
