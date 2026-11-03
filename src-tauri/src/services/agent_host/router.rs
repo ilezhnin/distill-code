@@ -5977,6 +5977,64 @@ impl Inner {
         )
     }
 
+    /// The account a chat cut off by its account's limit goes on with. Only a
+    /// turn that had begun counts (`prompt` itself retries a refusal that came
+    /// before any of it), only on a provider whose chats switch accounts
+    /// automatically, never for a session a benchmark owns, and only an
+    /// account other than the spent one that is ready now. The renderer queues
+    /// a message that continues the work; dispatching it moves the chat there.
+    async fn spare_account_after_quota(
+        &self,
+        record: &SessionRecord,
+        error: &Value,
+        credits: bool,
+    ) -> Option<String> {
+        if !Self::cut_off_by_quota(error) {
+            return None;
+        }
+        let spent = record.account_id.as_deref()?;
+        if !provider_accounts::supports_managed_accounts(&record.harness)
+            || !self.automatic_account_switching(&record.harness).ok()?
+            || self.store.execution_owner(&record.id).await.ok()?.is_some()
+        {
+            return None;
+        }
+        let selection = crate::services::provider_account_status::select_account(
+            &self.app,
+            &record.harness,
+            Some(spent),
+            true,
+            record.model_id.as_deref(),
+            credits,
+        )
+        .await
+        .ok()?;
+        Self::spare_from(spent, selection)
+    }
+
+    /// A turn that had begun and then failed on its account's limit.
+    fn cut_off_by_quota(error: &Value) -> bool {
+        error
+            .pointer("/data/dispatchStarted")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && crate::services::provider_account_status::is_quota_error(error)
+    }
+
+    fn spare_from(
+        spent: &str,
+        selection: crate::services::provider_account_status::AccountSelection,
+    ) -> Option<String> {
+        match selection {
+            crate::services::provider_account_status::AccountSelection::Ready { account_id }
+                if account_id != spent =>
+            {
+                Some(account_id)
+            }
+            _ => None,
+        }
+    }
+
     fn automatic_account_switching(&self, harness_id: &str) -> Result<bool, Value> {
         if !provider_accounts::supports_managed_accounts(harness_id) {
             return Ok(false);
@@ -6401,6 +6459,16 @@ impl Inner {
                         log::warn!(
                             "[agent-host] failed to record why the turn of {session_id} failed: {persist_error}"
                         );
+                    }
+                    if let Some(spare) = self
+                        .spare_account_after_quota(&record, error, ids.allow_credits)
+                        .await
+                    {
+                        log::info!(
+                            "[agent-host] {} ran out of its limit in the middle of a turn of {session_id}; {spare} is ready to go on",
+                            record.account_id.as_deref().unwrap_or("its account")
+                        );
+                        error["data"]["continueOnAccount"] = json!(spare);
                     }
                 }
                 if let (Some(link), Some(rejection)) = (
@@ -10245,6 +10313,49 @@ mod tests {
         partial = rejected;
         partial["data"]["errorKind"] = json!("rate_limit");
         assert!(Inner::rejected_quota_wait(&partial, None).is_none());
+    }
+
+    #[test]
+    fn a_turn_cut_off_by_its_accounts_limit_goes_on_only_under_another_ready_account() {
+        use crate::services::provider_account_status::AccountSelection;
+        // Claude Code's words when the account runs dry partway through.
+        let cut_off = json!({"code":-32603,"data":{
+            "accountId":"spent", "dispatchStarted":true, "promptNotAccepted":false,
+        },"message":"Internal error: Claude AI usage limit reached|1794070800"});
+        assert!(Inner::cut_off_by_quota(&cut_off));
+        // Codex names the kind.
+        assert!(Inner::cut_off_by_quota(&json!({"code":-32603,"data":{
+            "dispatchStarted":true, "codexErrorInfo":"usageLimitExceeded",
+        },"message":"Internal error: You've hit your usage limit."})));
+        // A refusal before the turn began is `prompt`'s own retry.
+        let mut refused = cut_off.clone();
+        refused["data"]["dispatchStarted"] = json!(false);
+        assert!(!Inner::cut_off_by_quota(&refused));
+        // Any other failure stops the chat as before.
+        assert!(!Inner::cut_off_by_quota(&json!({"code":-32603,
+            "data":{"dispatchStarted":true},"message":"Internal error: overloaded"})));
+
+        let ready = |id: &str| AccountSelection::Ready {
+            account_id: id.into(),
+        };
+        assert_eq!(
+            Inner::spare_from("spent", ready("spare")).as_deref(),
+            Some("spare")
+        );
+        // The spent account itself is no place to go on.
+        assert_eq!(Inner::spare_from("spent", ready("spent")), None);
+        // Nor is waiting for a reset.
+        assert_eq!(
+            Inner::spare_from(
+                "spent",
+                AccountSelection::Wait {
+                    account_id: "spare".into(),
+                    next_reset: Some(1_900_000_000_000),
+                    reset_tokens_available: false,
+                }
+            ),
+            None
+        );
     }
 
     #[test]

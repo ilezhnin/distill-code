@@ -2,6 +2,7 @@ import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRej
 import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
 import { chatWorkClass } from "./chatExecutorSuggestion";
 import { dispatchOwnedTaskInChat } from "./ownedTaskDispatch";
+import { queueSpareAccountContinuation } from "./spareAccountContinuation";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   appendAttachmentPaths,
@@ -593,6 +594,11 @@ export async function dispatchPrompt(
       setError(sessionId, errorMessage);
       if (isCurrent()) {
         setChatState(sessionId, "idle");
+      }
+      // A wave's own engine decides what a cut-off step does next; an
+      // ordinary chat goes on under the spare account the host found.
+      if (userMessageCommitted && !acpPromptMetadata?.executorSelection) {
+        queueSpareAccountContinuation(sessionId, err);
       }
     }
     if (!preCommitRejected && isCurrent()) {
