@@ -157,6 +157,8 @@ describe("loadSessionMessages", () => {
       messagesBySession: {},
       sessionStateById: {},
       loadingSessionIds: new Set(),
+      activeSessionId: null,
+      isViewingActiveSession: false,
     });
     useChatSessionStore.setState({
       sessions: [],
@@ -278,6 +280,62 @@ describe("loadSessionMessages", () => {
       role: "assistant",
       metadata: { completionStatus: "completed" },
     });
+  });
+
+  // The wave lifecycle reads conductor and worker transcripts in the
+  // background, and a chat pushed out of the message cache by opening others
+  // is read again that way. Reading history is not new work: a chat whose
+  // finished reply the operator has already seen must stay seen.
+  it("does not mark a chat unread when a load closes its last reply off screen", async () => {
+    const sessionId = "seen-chat";
+    seedSession({ id: sessionId, activeRunId: null });
+    ensureReplayAssistantMessage(sessionId, "assistant-1").content.push({
+      type: "text",
+      text: "Done",
+    });
+    useChatStore.setState({
+      activeSessionId: "another-chat",
+      isViewingActiveSession: true,
+    });
+
+    await expect(loadSessionMessages(sessionId)).resolves.toBe(true);
+
+    expect(messagesFor(sessionId).at(-1)).toMatchObject({
+      role: "assistant",
+      metadata: { completionStatus: "completed" },
+    });
+    expect(useChatStore.getState().sessionStateById[sessionId]?.hasUnread).toBe(
+      false,
+    );
+    expect(
+      window.localStorage.getItem("flock:unread-sessions") ?? "",
+    ).not.toContain(sessionId);
+  });
+
+  it("still marks a chat unread when a run it was loaded during ends off screen", async () => {
+    const sessionId = "running-chat";
+    seedSession({ id: sessionId }, { replay: false });
+    ensureReplayAssistantMessage(sessionId, "assistant-1").content.push({
+      type: "text",
+      text: "Still working",
+    });
+    useChatStore.setState({
+      activeSessionId: "another-chat",
+      isViewingActiveSession: true,
+    });
+
+    await expect(loadSessionMessages(sessionId)).resolves.toBe(true);
+    expect(
+      useChatStore.getState().sessionStateById[sessionId]?.hasUnread ?? false,
+    ).toBe(false);
+
+    handleSessionInfoUpdate(sessionId, {
+      sessionUpdate: "session_info_update",
+      _meta: { activeRunId: null },
+    } as never);
+    expect(useChatStore.getState().sessionStateById[sessionId]?.hasUnread).toBe(
+      true,
+    );
   });
 
   // The listed value can be a refresh interval old; a run this renderer

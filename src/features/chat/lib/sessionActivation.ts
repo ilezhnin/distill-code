@@ -558,7 +558,7 @@ async function performSessionMessagesLoad(
           ? undefined
           : latestSessionBeforeReplay?.activeRunId;
     if (knownActiveRunId === null && !taskBindingId(sessionId)) {
-      completeReplayAssistantMessage(sessionId);
+      completeReplayAssistantMessage(sessionId, { fromHistory: true });
       // Nothing is running, so a call the transcript leaves open belongs to a
       // turn that was cut short — most often by the app going away under it.
       chatStore.settleAbandonedToolCalls(sessionId);

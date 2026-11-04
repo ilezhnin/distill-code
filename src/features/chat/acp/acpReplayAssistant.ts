@@ -93,7 +93,16 @@ function mergeAssistantMetadata(
   };
 }
 
-export function completeReplayAssistantMessage(sessionId: string): boolean {
+/**
+ * Closes the reply a replay left open. `fromHistory` says the history itself
+ * shows the run over (a load that found no run going), so the reply in the
+ * store is one the chat already had and the chat is not marked unread for
+ * it; without it the close is live news that the run has just ended.
+ */
+export function completeReplayAssistantMessage(
+  sessionId: string,
+  { fromHistory = false }: { fromHistory?: boolean } = {},
+): boolean {
   const trackedMessageId = replayAssistantMessageIds.get(sessionId);
   if (!trackedMessageId) return false;
 
@@ -108,13 +117,16 @@ export function completeReplayAssistantMessage(sessionId: string): boolean {
   }
 
   let completedStoredMessage = false;
-  useChatStore
-    .getState()
-    .updateMessage(sessionId, trackedMessageId, (message) => {
+  useChatStore.getState().updateMessage(
+    sessionId,
+    trackedMessageId,
+    (message) => {
       const completed = completeAssistantMessage(message);
       completedStoredMessage = completed !== message;
       return completed;
-    });
+    },
+    { fromHistory },
+  );
   replayAssistantMessageIds.delete(sessionId);
   return completedStoredMessage;
 }

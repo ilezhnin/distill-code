@@ -38,36 +38,42 @@ export function loadHistoryToolResult(
         )
       )
         continue;
-      store.updateMessage(ref.sessionId, message.id, (current) => {
-        const hydrated = appendTerminalOutput(current, update);
-        const tool = hydrated.content.find(
-          (content) =>
-            content.type === "toolRequest" && content.id === update.toolCallId,
-        );
-        return {
-          ...hydrated,
-          content: [
-            ...hydrated.content.map((content) => {
-              if (
-                content.type !== "toolResponse" ||
-                content.historyResult?.eventId !== ref.eventId
-              )
-                return content;
-              const { historyResult: _, ...response } = content;
-              return {
-                ...response,
-                result:
-                  extractToolResultText(update) ||
-                  (tool?.type === "toolRequest"
-                    ? (tool.terminalOutput ?? "")
-                    : ""),
-                structuredContent: extractToolStructuredContent(update),
-              };
-            }),
-            ...images,
-          ],
-        };
-      });
+      store.updateMessage(
+        ref.sessionId,
+        message.id,
+        (current) => {
+          const hydrated = appendTerminalOutput(current, update);
+          const tool = hydrated.content.find(
+            (content) =>
+              content.type === "toolRequest" &&
+              content.id === update.toolCallId,
+          );
+          return {
+            ...hydrated,
+            content: [
+              ...hydrated.content.map((content) => {
+                if (
+                  content.type !== "toolResponse" ||
+                  content.historyResult?.eventId !== ref.eventId
+                )
+                  return content;
+                const { historyResult: _, ...response } = content;
+                return {
+                  ...response,
+                  result:
+                    extractToolResultText(update) ||
+                    (tool?.type === "toolRequest"
+                      ? (tool.terminalOutput ?? "")
+                      : ""),
+                  structuredContent: extractToolStructuredContent(update),
+                };
+              }),
+              ...images,
+            ],
+          };
+        },
+        { fromHistory: true },
+      );
     }
   })().finally(() => {
     inFlight.delete(key);

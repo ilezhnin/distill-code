@@ -535,6 +535,18 @@ export type StreamingMessageUpdate =
 
 export type StreamingMessageUpdateMode = "active-stream" | "settled-stream";
 
+export interface MessageUpdateOptions {
+  /**
+   * The change restores what the chat's history already holds — a load
+   * closing the reply it replayed, a tool result read back on demand — rather
+   * than carrying new work. It never marks the chat unread: such reads happen
+   * off screen (the wave lifecycle reads transcripts in the background, and a
+   * chat dropped from the message cache is read again), and a reply the
+   * operator has already seen would otherwise light the sidebar dot again.
+   */
+  fromHistory?: boolean;
+}
+
 interface ChatStoreState {
   messagesBySession: Record<string, Message[]>;
   sessionStateById: Record<string, SessionChatRuntime>;
@@ -560,6 +572,7 @@ interface ChatStoreActions {
     sessionId: string,
     messageId: string,
     updater: (msg: Message) => Message,
+    options?: MessageUpdateOptions,
   ) => void;
   replaceMessageId: (
     sessionId: string,
@@ -837,7 +850,7 @@ const createChatStore: StateCreator<
     );
   },
 
-  updateMessage: (sessionId, messageId, updater) => {
+  updateMessage: (sessionId, messageId, updater, options) => {
     const previousSessionStateById = get().sessionStateById;
     set((state) => {
       const messages = state.messagesBySession[sessionId];
@@ -850,6 +863,7 @@ const createChatStore: StateCreator<
         const updated = updater(message);
         shouldMarkUnread =
           updated !== message &&
+          !options?.fromHistory &&
           shouldMarkSessionUnread(state, sessionId, updated);
         return updated;
       });
