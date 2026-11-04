@@ -621,15 +621,101 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
             }
         }
     }
-    status.state = if status.limits.iter().any(|window| {
+    // Extra usage with room left keeps the account usable past spent plan
+    // windows, as it does in Claude's own apps.
+    if extra_usage(usage).is_some_and(|extra| extra.available) {
+        for window in &mut status.limits {
+            window.covered_by_credits = true;
+        }
+    }
+    let spent = |window: &AccountLimitWindow| {
         window.model_id.is_none() && window.used_percent.is_some_and(|used| used >= 100.0)
-    }) {
+    };
+    status.state = if status
+        .limits
+        .iter()
+        .any(|window| spent(window) && !window.covered_by_credits)
+    {
         AccountState::Limited
     } else if status.limits.is_empty() {
         AccountState::Unknown
     } else {
         AccountState::Ready
     };
+    status.on_credits = status.state == AccountState::Ready && status.limits.iter().any(spent);
+}
+
+/// Paid usage the account draws on once its plan windows are spent, up to the
+/// monthly limit its owner set. Amounts are in minor units of `currency`.
+struct ExtraUsage {
+    used: f64,
+    limit: Option<f64>,
+    exponent: u32,
+    currency: String,
+    available: bool,
+}
+
+fn extra_usage(usage: &Value) -> Option<ExtraUsage> {
+    let amount = |value: &Value| value.as_f64().filter(|n| n.is_finite() && *n >= 0.0);
+    let currency = |value: &Value| {
+        value
+            .as_str()
+            .filter(|s| s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase()))
+            .map(str::to_owned)
+    };
+    let exponent = |value: &Value| value.as_u64().filter(|e| *e <= 6).map(|e| e as u32);
+    let spend = &usage["spend"];
+    let legacy = &usage["extra_usage"];
+    let (used, limit, exponent, currency) = if spend.is_object() {
+        if spend["enabled"] != true {
+            return None;
+        }
+        let money = &spend["used"];
+        let (used, scale, unit) = (
+            amount(&money["amount_minor"])?,
+            exponent(&money["exponent"])?,
+            currency(&money["currency"])?,
+        );
+        let limit = &spend["limit"];
+        let limit = if limit.is_null() {
+            None
+        } else {
+            // A limit in another currency or scale cannot be compared.
+            if currency(&limit["currency"]).as_deref() != Some(unit.as_str())
+                || exponent(&limit["exponent"]) != Some(scale)
+            {
+                return None;
+            }
+            Some(amount(&limit["amount_minor"])?)
+        };
+        (used, limit, scale, unit)
+    } else {
+        if legacy["is_enabled"] != true {
+            return None;
+        }
+        let limit = &legacy["monthly_limit"];
+        (
+            amount(&legacy["used_credits"])?,
+            if limit.is_null() {
+                None
+            } else {
+                Some(amount(limit)?)
+            },
+            exponent(&legacy["decimal_places"])?,
+            currency(&legacy["currency"])?,
+        )
+    };
+    let stopped = legacy["spend_limit_reached"] == true
+        || !spend["disabled_reason"].is_null()
+        || !legacy["disabled_reason"].is_null()
+        || limit.is_some_and(|limit| used >= limit);
+    Some(ExtraUsage {
+        used,
+        limit,
+        exponent,
+        currency,
+        available: !stopped,
+    })
 }
 
 fn credit_balances(usage: &Value) -> Option<Vec<CreditBalance>> {
@@ -671,6 +757,20 @@ fn credit_balances(usage: &Value) -> Option<Vec<CreditBalance>> {
             currency: Some(currency.into()),
             expires_at: None,
             unlimited: false,
+        });
+    }
+    if let Some(extra) = extra_usage(usage) {
+        let major = |minor: f64| (minor / 10_f64.powi(extra.exponent as i32)).to_string();
+        balances.push(CreditBalance {
+            id: "extra_usage".into(),
+            label: "Extra usage".into(),
+            balance: extra
+                .limit
+                .map(|limit| major((limit - extra.used).max(0.0))),
+            total: extra.limit.map(major),
+            currency: Some(extra.currency),
+            expires_at: None,
+            unlimited: extra.limit.is_none(),
         });
     }
     (!balances.is_empty()).then_some(balances)
@@ -1372,6 +1472,83 @@ mod tests {
         ] {
             assert!(credit_balances(&value).is_none());
         }
+    }
+
+    fn spent_week(spend: Value, legacy: Value) -> ProviderAccountStatus {
+        let mut status = ProviderAccountStatus::empty("one", "claude-acp", 0);
+        map_usage(
+            &mut status,
+            &json!({
+                "limits":[
+                    {"kind":"weekly_all","percent":100,"resets_at":"2026-11-07T15:00:00Z","scope":null},
+                    {"kind":"weekly_scoped","percent":100,"resets_at":"2026-11-07T15:00:00Z","scope":{"model":{"display_name":"Fable"}}}
+                ],
+                "spend":spend,
+                "extra_usage":legacy
+            }),
+        );
+        status
+    }
+
+    #[test]
+    fn extra_usage_with_room_is_shown_and_keeps_a_spent_account_running_on_credits() {
+        let status = spent_week(
+            json!({"used":{"amount_minor":443,"currency":"USD","exponent":2},"limit":{"amount_minor":4000,"currency":"USD","exponent":2},"enabled":true,"disabled_reason":null,"balance":null}),
+            json!({"is_enabled":true,"monthly_limit":4000,"used_credits":443,"currency":"USD","decimal_places":2,"spend_limit_reached":false}),
+        );
+        assert_eq!(status.state, AccountState::Ready);
+        assert!(status.on_credits);
+        assert!(status.limits.iter().all(|window| window.covered_by_credits));
+        let credits = status.credits.unwrap();
+        assert_eq!(credits.len(), 1);
+        assert_eq!(credits[0].id, "extra_usage");
+        assert_eq!(credits[0].balance.as_deref(), Some("35.57"));
+        assert_eq!(credits[0].total.as_deref(), Some("40"));
+        assert_eq!(credits[0].currency.as_deref(), Some("USD"));
+
+        // Older CLIs report only the extra_usage record.
+        let legacy = spent_week(
+            Value::Null,
+            json!({"is_enabled":true,"monthly_limit":4000,"used_credits":443,"currency":"USD","decimal_places":2}),
+        );
+        assert!(legacy.on_credits);
+        assert_eq!(legacy.credits.unwrap()[0].balance.as_deref(), Some("35.57"));
+    }
+
+    #[test]
+    fn spent_or_disabled_extra_usage_leaves_the_account_limited() {
+        let money = |minor: u32| json!({"amount_minor":minor,"currency":"USD","exponent":2});
+        for (spend, legacy) in [
+            // Switched off by its owner: nothing to show.
+            (
+                json!({"used":money(0),"limit":null,"enabled":false}),
+                json!({"is_enabled":false}),
+            ),
+            // The monthly limit is spent.
+            (
+                json!({"used":money(4000),"limit":money(4000),"enabled":true}),
+                json!({"is_enabled":true,"spend_limit_reached":true}),
+            ),
+            // Suspended by the provider.
+            (
+                json!({"used":money(10),"limit":money(4000),"enabled":true,"disabled_reason":"billing"}),
+                Value::Null,
+            ),
+        ] {
+            let status = spent_week(spend, legacy);
+            assert_eq!(status.state, AccountState::Limited);
+            assert!(!status.on_credits);
+            assert!(status
+                .limits
+                .iter()
+                .all(|window| !window.covered_by_credits));
+        }
+        let unlimited = spent_week(
+            json!({"used":money(443),"limit":null,"enabled":true}),
+            Value::Null,
+        );
+        assert!(unlimited.on_credits);
+        assert!(unlimited.credits.unwrap()[0].unlimited);
     }
 
     #[test]
