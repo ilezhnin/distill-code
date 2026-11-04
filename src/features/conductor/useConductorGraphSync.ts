@@ -397,6 +397,15 @@ function runSyncPass(): void {
     // one nobody opens. Before a stand-in is written for a run that ended,
     // the transcript is read from the host; a stand-in goes in only for a
     // session that stays empty after the bounded retries.
+    //
+    // A run that already has its report needs no second reading: the report
+    // was written from the transcript, and a cache that has since dropped it
+    // says nothing new. Reading it again anyway turned every stopped step of
+    // a long conductor into a replay every five seconds — the pass runs on
+    // every streamed token, the cache holds ten chats, and eighteen stopped
+    // steps evicted each other forever (2026-11-04), until the renderer was
+    // too busy to answer `flockctl` at all.
+    if (!summary && existing?.status === reportStatus) continue;
     if (!summary && node.managedBy === "wave") {
       const transcript = readWorkerTranscript(node.sessionId, () => undefined);
       if (transcript.kind === "unknown") continue;
