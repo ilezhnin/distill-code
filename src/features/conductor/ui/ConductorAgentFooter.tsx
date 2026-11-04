@@ -247,43 +247,36 @@ export function ConductorAgentFooter({
       else folded.push(group);
     });
     if (folded.length === 0) return null;
-    const foldedNodes = folded.flatMap((group) =>
-      group.chips.flatMap((chip) => (chip.node ? [chip.node] : [])),
-    );
-    const { done } = summarizeBrigadeActivity(foldedNodes);
-    const notDone = foldedNodes.length - done;
-    const parts = [t("conductor.wave.group.earlier", { count: folded.length })];
-    if (done > 0) parts.push(t("conductor.statsDone", { count: done }));
-    if (notDone > 0) {
-      parts.push(t("conductor.wave.group.notDone", { count: notDone }));
-    }
-    parts.push(
-      ...spendParts(
-        sumSpend(
-          sessionStateById,
-          foldedNodes.map((node) => node.sessionId),
-        ),
+    const label = [
+      t("conductor.wave.group.earlier", { count: folded.length }),
+      ...outcomeParts(
+        folded.flatMap((group) => group.chips),
+        sessionStateById,
         t,
       ),
-    );
-    return { folded, shown, label: parts.join(" · ") };
+    ].join(" · ");
+    return { folded, shown, label };
   }, [groups, sessionStateById, t]);
 
-  // Durable on the transcript row, so an opened fold stays open when the row
-  // scrolls out of the virtualized viewport and back.
-  const foldStateKey = `conductorEarlierWaves:${groups[0]?.waveId ?? "row"}`;
-  const [foldOpen, setFoldOpenState] = useState(
-    () => rowState?.custom?.[foldStateKey] === true,
-  );
-  const setFoldOpen = (open: boolean) => {
-    markRowInteracted("conductor-earlier-waves");
+  // Which folds are open, durable on the transcript row so an opened fold
+  // stays open when the row scrolls out of the virtualized viewport and back.
+  const [openFolds, setOpenFolds] = useState<Record<string, boolean>>(() => {
+    const stored = rowState?.custom?.[FOLD_STATE_KEY];
+    return stored && typeof stored === "object"
+      ? (stored as Record<string, boolean>)
+      : {};
+  });
+  const setFoldOpen = (key: string, open: boolean) => {
+    markRowInteracted("conductor-footer-fold");
     pinScrollAnchor();
-    setFoldOpenState(open);
+    const next = { ...openFolds, [key]: open };
+    setOpenFolds(next);
     updateRowState((current) => ({
       ...current,
-      custom: { ...current.custom, [foldStateKey]: open },
+      custom: { ...current.custom, [FOLD_STATE_KEY]: next },
     }));
   };
+  const wavesFoldKey = `waves:${groups[0]?.waveId ?? "row"}`;
 
   if (groups.every((group) => group.chips.length === 0)) {
     return null;
@@ -296,6 +289,26 @@ export function ConductorAgentFooter({
         )
       : group.chips;
     const listedBelow = group.chips.length - chips.length;
+    // The agents a plain chat started, or a conductor's hand-started ones,
+    // belong to no wave, so nothing above folds them, and one message can
+    // carry dozens. The older finished ones fold the same way old waves do.
+    const finished = group.waveId
+      ? []
+      : chips.filter((chip) => chip.node && !isWorkingStatus(chip.node.status));
+    const foldedChips =
+      finished.length > VISIBLE_FINISHED_AGENTS
+        ? new Set(finished.slice(0, finished.length - VISIBLE_FINISHED_AGENTS))
+        : null;
+    const shownChips = foldedChips
+      ? chips.filter((chip) => !foldedChips.has(chip))
+      : chips;
+    const agentsFoldKey = `agents:${group.waveId ?? index}`;
+    const renderChip = ({ node, report, ...chip }: FooterChip) =>
+      node ? (
+        <GraphBrigadeChip key={chip.id} {...chip} node={node} report={report} />
+      ) : (
+        <BrigadeChip key={chip.id} {...chip} />
+      );
     return (
       <div
         key={group.waveId ?? `group-${index}`}
@@ -315,19 +328,32 @@ export function ConductorAgentFooter({
                 })}
           </p>
         ) : null}
+        {foldedChips ? (
+          <DisclosureLine
+            open={openFolds[agentsFoldKey] === true}
+            onOpenChange={(open) => setFoldOpen(agentsFoldKey, open)}
+            className="w-full min-w-0"
+            label={
+              <span
+                className="text-xs text-muted-foreground tabular-nums"
+                data-testid="conductor-earlier-agents"
+              >
+                {[
+                  t("conductor.wave.group.earlierAgents", {
+                    count: foldedChips.size,
+                  }),
+                  ...outcomeParts([...foldedChips], sessionStateById, t),
+                ].join(" · ")}
+              </span>
+            }
+          >
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1">
+              {[...foldedChips].map(renderChip)}
+            </div>
+          </DisclosureLine>
+        ) : null}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          {chips.map(({ node, report, ...chip }) =>
-            node ? (
-              <GraphBrigadeChip
-                key={chip.id}
-                {...chip}
-                node={node}
-                report={report}
-              />
-            ) : (
-              <BrigadeChip key={chip.id} {...chip} />
-            ),
-          )}
+          {shownChips.map(renderChip)}
           {listedBelow > 0 ? (
             <span
               className="text-xs text-muted-foreground"
@@ -360,8 +386,8 @@ export function ConductorAgentFooter({
       {fold ? (
         <>
           <DisclosureLine
-            open={foldOpen}
-            onOpenChange={setFoldOpen}
+            open={openFolds[wavesFoldKey] === true}
+            onOpenChange={(open) => setFoldOpen(wavesFoldKey, open)}
             className="w-full min-w-0"
             label={
               <span
@@ -387,6 +413,38 @@ export function ConductorAgentFooter({
 
 /** How many of the newest waves a footer always draws in full. */
 const VISIBLE_WAVE_GROUPS = 3;
+
+/** How many of the newest finished agents outside a wave stay drawn. */
+const VISIBLE_FINISHED_AGENTS = 3;
+
+/** The transcript row state that remembers which folds are open. */
+const FOLD_STATE_KEY = "conductorFooterFolds";
+
+/** How the folded chips' runs ended and what they cost, as fold-line words. */
+function outcomeParts(
+  chips: readonly FooterChip[],
+  sessionStateById: Readonly<Record<string, SessionChatRuntime | undefined>>,
+  t: TFunction<"chat">,
+): string[] {
+  const nodes = chips.flatMap((chip) => (chip.node ? [chip.node] : []));
+  const { done } = summarizeBrigadeActivity(nodes);
+  const notDone = nodes.length - done;
+  const parts: string[] = [];
+  if (done > 0) parts.push(t("conductor.statsDone", { count: done }));
+  if (notDone > 0) {
+    parts.push(t("conductor.wave.group.notDone", { count: notDone }));
+  }
+  parts.push(
+    ...spendParts(
+      sumSpend(
+        sessionStateById,
+        nodes.map((node) => node.sessionId),
+      ),
+      t,
+    ),
+  );
+  return parts;
+}
 
 /** A wave the operator is still waiting on: a step not started or not done. */
 function groupIsActive(group: ChipGroup): boolean {

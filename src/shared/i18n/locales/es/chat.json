@@ -632,6 +632,8 @@
         "earlier_one": "{{count}} ola anterior",
         "earlier_other": "{{count}} olas anteriores",
         "notDone": "{{count}} detenidos o fallidos",
+        "earlierAgents_one": "{{count}} agente anterior",
+        "earlierAgents_other": "{{count}} agentes anteriores",
         "workingBelow_one": "{{count}} más en curso, en la lista sobre el cuadro de mensaje",
         "workingBelow_other": "{{count}} más en curso, en la lista sobre el cuadro de mensaje"
       },

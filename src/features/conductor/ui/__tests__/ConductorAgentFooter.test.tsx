@@ -292,6 +292,41 @@ describe("ConductorAgentFooter wave folding", () => {
     ]);
   });
 
+  it("folds a plain chat's older finished agents, never its working ones", () => {
+    const agents = [0, 1, 2, 3, 4, 5].map((index) =>
+      node({
+        sessionId: `agent-${index}`,
+        runId: `agent-run-${index}`,
+        managedBy: "ui",
+        displayName: `Agent ${index}`,
+        status: index === 1 ? "failed" : "completed",
+        createdAt: 1_000 + index,
+      }),
+    );
+    agents.push(
+      node({
+        sessionId: "agent-busy",
+        runId: "agent-run-busy",
+        managedBy: "ui",
+        displayName: "Agent busy",
+        status: "running",
+        createdAt: 900,
+      }),
+    );
+    render(<ConductorAgentFooter nodes={agents} reportsByRunId={NO_REPORTS} />);
+    const fold = screen.getByTestId("conductor-earlier-agents");
+    expect(fold).toHaveTextContent("3 earlier agents");
+    expect(fold).toHaveTextContent("2 done");
+    expect(fold).toHaveTextContent("1 stopped or failed");
+    // The three newest finished agents and the working one stay drawn.
+    expect(screen.getAllByTestId("brigade-chip")).toHaveLength(4);
+
+    act(() => {
+      fold.click();
+    });
+    expect(screen.getAllByTestId("brigade-chip")).toHaveLength(7);
+  });
+
   it("leaves working agents to the list above the composer while it shows them", () => {
     const nodes = [
       node({ sessionId: "done", displayName: "Done", status: "completed" }),

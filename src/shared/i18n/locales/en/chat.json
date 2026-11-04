@@ -632,6 +632,8 @@
         "earlier_one": "{{count}} earlier wave",
         "earlier_other": "{{count}} earlier waves",
         "notDone": "{{count}} stopped or failed",
+        "earlierAgents_one": "{{count}} earlier agent",
+        "earlierAgents_other": "{{count}} earlier agents",
         "workingBelow_one": "{{count}} more working, listed above the message box",
         "workingBelow_other": "{{count}} more working, listed above the message box"
       },
