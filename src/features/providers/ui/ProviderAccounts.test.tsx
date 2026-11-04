@@ -178,7 +178,7 @@ describe("account plan and credit display", () => {
   ])("formats the reported credit balance %s", (balance, expected) => {
     const snapshot = {
       ...status("personal"),
-      subscription: "ChatGPT Pro 200",
+      subscription: "Pro 200",
       credits: [
         {
           id: "credits",
@@ -198,7 +198,7 @@ describe("account plan and credit display", () => {
         now={now}
       />,
     );
-    expect(screen.getByText("Plan: ChatGPT Pro 200")).toBeInTheDocument();
+    expect(screen.getByText("Plan: Pro 200")).toBeInTheDocument();
     expect(screen.getByText(`Credits: ${expected}`)).toBeInTheDocument();
     expect(snapshot.credits[0].balance).toBe(balance);
   });
@@ -958,7 +958,7 @@ describe("account surfaces", () => {
           ...status("glm"),
           providerId: "zai-acp",
           accountLabel: "person@example.test",
-          subscription: "GLM Coding Plan Lite",
+          subscription: "Lite",
           limits: [
             {
               id: "zai:TOKENS_LIMIT:0",
@@ -1055,7 +1055,7 @@ describe("account surfaces", () => {
     expect(glmRow.getByText("person@example.test")).toBeInTheDocument();
     expect(glmRow.getByText("API key")).toBeInTheDocument();
     expect(glmRow.getByText("Default")).toBeInTheDocument();
-    expect(glmRow.getByText("Plan: GLM Coding Plan Lite")).toBeInTheDocument();
+    expect(glmRow.getByText("Plan: Lite")).toBeInTheDocument();
     expect(glmRow.getByText("5 hours")).toBeInTheDocument();
     expect(glmRow.getByRole("button", { name: "Sign out" })).toBeEnabled();
     // A CLI provider: one row for its sign-in, the toggle and Add disabled

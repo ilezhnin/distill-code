@@ -114,13 +114,14 @@ pub(super) fn map_usage(
         .as_array()
         .ok_or("Z.ai returned no quota data; check Coding Plan access")?;
     let mut status = ProviderAccountStatus::empty(account_id, "zai-acp", now);
+    // The provider row already names Z.ai; the plan reads as its level.
     let level = match data["level"].as_str() {
-        Some("lite") => " Lite",
-        Some("pro") => " Pro",
-        Some("max") => " Max",
-        _ => "",
+        Some("lite") => "Lite",
+        Some("pro") => "Pro",
+        Some("max") => "Max",
+        _ => "Coding Plan",
     };
-    status.subscription = Some(format!("GLM Coding Plan{level}"));
+    status.subscription = Some(level.into());
     let mut credits = Vec::new();
     for (index, limit) in limits.iter().enumerate() {
         let kind = limit["type"].as_str().unwrap_or("");

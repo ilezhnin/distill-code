@@ -95,7 +95,7 @@ it("shows a refused account as refused, not by its untouched usage windows", () 
           resetDescription: null,
         },
         weekly: null,
-        planType: "GLM Coding Plan Lite",
+        planType: "Lite",
         updatedAt: 1,
         status: "error",
         configured: true,

@@ -93,7 +93,14 @@ pub(super) fn map_usage(
         .or_else(|| profile_text("nickname"))
         .or_else(|| profile_text("username"))
         .map(str::to_owned);
-    status.subscription = profile_text("userLevelName").map(str::to_owned);
+    // The provider row already names Kimi; `Kimi Moderato` reads as Moderato.
+    status.subscription = profile_text("userLevelName").map(|name| {
+        name.strip_prefix("Kimi ")
+            .map(str::trim)
+            .filter(|level| !level.is_empty())
+            .unwrap_or(name)
+            .to_owned()
+    });
     let extra = &data["quota"]["extraUsage"];
     let cents = |key: &str| extra[key].as_f64().filter(|n| n.is_finite() && *n >= 0.0);
     if let (Some(balance), Some(currency)) = (
@@ -301,7 +308,7 @@ mod tests {
             "balanceCents":750, "totalCents":2000, "currency":"USD"
         }}}));
         assert_eq!(status.account_label.as_deref(), Some("kimi@example.test"));
-        assert_eq!(status.subscription.as_deref(), Some("Kimi Moderato"));
+        assert_eq!(status.subscription.as_deref(), Some("Moderato"));
         let credits = status.credits.unwrap();
         assert_eq!(credits[0].balance.as_deref(), Some("7.5"));
         assert_eq!(credits[0].total.as_deref(), Some("20"));

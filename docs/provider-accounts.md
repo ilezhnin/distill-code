@@ -91,16 +91,22 @@ leaves reset credits unknown without discarding valid quota. Saved quota values
 remain explicitly stale until a successful update.
 Telemetry failures do not change a connected account into a signed-out account.
 
-Plan labels use public product names instead of internal provider codes. Codex
-`prolite`, `pro`, and `promax` map to ChatGPT Pro 100, 200, and 500; a reported
-usage plan takes precedence over the cached token's plan. Claude uses the native
-profile's organization type and individual/organization rate-limit tier for the
-same signed-in email: the 20x tier shows as Claude Ultra and the 5x tier as
-Claude Max, the names Anthropic gave those plans in October 2026, although the
-profile still reports both as Max with the old tier codes. This profile takes
-precedence over the credential's subscription type, which can retain the old
-plan after an upgrade. Missing tier metadata falls back to the reported plan
-family without guessing a multiplier. These names are not invoice amounts or
+Plan labels use public product names instead of internal provider codes, and
+leave out the brand the provider row already shows: the row reads Codex · Pro
+100, not ChatGPT Pro 100. Codex `prolite`, `pro`, and `promax` map to Pro 100,
+200, and 500; a reported usage plan takes precedence over the cached token's
+plan. Claude uses the native profile's organization type and
+individual/organization rate-limit tier for the same signed-in email: the 20x
+tier shows as Ultra and the 5x tier as Max, the names Anthropic gave those
+plans in October 2026, although the profile still reports both as Max with the
+old tier codes. This profile takes precedence over the credential's
+subscription type, which can retain the old plan after an upgrade. Missing tier
+metadata falls back to the reported plan family without guessing a multiplier.
+Z.ai shows its Coding Plan level (Lite, Pro or Max), Kimi its profile's level
+name without the Kimi prefix, and Grok the tier its profile reports when asked
+to include the subscription, as the Grok CLI asks (`SuperGrokPlus` reads as
+Plus, plain SuperGrok as itself); Grok's billing endpoint does not name the
+plan. These names are not invoice amounts or
 renewal prices. Credit balances are rounded and grouped for display while the
 original provider value remains unchanged.
 
@@ -135,7 +141,7 @@ quotas, and reset actions appear only where a provider supports them.
 One account monitor reads every account's status, whether Flock stores the
 account or the provider's CLI keeps it: Claude and Codex through their native
 account protocols, Z.ai through its quota endpoint, Grok through its CLI's
-billing endpoint, Kimi through the CLI's authenticated local API. The status
+billing endpoint and profile, Kimi through the CLI's authenticated local API. The status
 bar shows each provider's default account from that same read. One refresh
 action updates everything, with one last-checked timestamp beside it. No
 provider section starts another poller, and an isolated E2E run never
@@ -226,7 +232,7 @@ and benchmarks can key configurations, bridge routes and account activity by
 it. The identity is never stored and has no home or key file of its own: the
 account environment for it is the shell environment unchanged. Its status
 comes from the provider's own usage source where one exists (Grok's billing
-endpoint, Kimi's local API); Copilot and Amp have none, so their row reports
+endpoint and profile, Kimi's local API); Copilot and Amp have none, so their row reports
 no usage and takes its sign-in state from the harness probe in the doctor
 report. Chats keep running on the CLI without an account, and their activity
 counts as the identity's activity, since both share one sign-in and one

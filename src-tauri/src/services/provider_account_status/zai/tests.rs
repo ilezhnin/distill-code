@@ -17,7 +17,7 @@ fn quota() -> Value {
 fn credit_windows_keep_precise_usage_balances_and_reported_resets() {
     let status = map_usage("fixture", &quota(), NOW).unwrap();
     assert_eq!(status.state, AccountState::Ready);
-    assert_eq!(status.subscription.as_deref(), Some("GLM Coding Plan Lite"));
+    assert_eq!(status.subscription.as_deref(), Some("Lite"));
     assert_eq!(status.limits[0].used_percent, Some(25.0));
     assert_eq!(status.limits[0].window_minutes, Some(300));
     assert_eq!(status.limits[0].resets_at, None);

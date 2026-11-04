@@ -424,42 +424,78 @@ pub(super) async fn fetch(
             let credits =
                 fetch_billing_json(&client, &format!("{base}/billing?format=credits"), &session)
                     .await?;
-            let Some(config) = billing_config(&credits).cloned() else {
-                return Ok(BillingUsage::default());
+            let windows = match billing_config(&credits).and_then(map_weekly_credits) {
+                Some(weekly) => vec![weekly],
+                None if billing_config(&credits).is_none() => Vec::new(),
+                None => {
+                    let fallback =
+                        fetch_billing_json(&client, &format!("{base}/billing"), &session).await?;
+                    map_monthly_usage(billing_config(&fallback).unwrap_or(&fallback))
+                        .into_iter()
+                        .collect()
+                }
             };
-            if let Some(weekly) = map_weekly_credits(&config) {
-                return Ok(BillingUsage {
-                    windows: vec![weekly],
-                    tier: tier(&config),
-                });
-            }
-            let fallback =
-                fetch_billing_json(&client, &format!("{base}/billing"), &session).await?;
-            let monthly = map_monthly_usage(billing_config(&fallback).unwrap_or(&fallback));
-            Ok(BillingUsage {
-                windows: monthly.into_iter().collect(),
-                tier: tier(&config),
-            })
+            // Billing never names the plan; the profile does when asked to
+            // include it, as the Grok CLI does. A failed profile read only
+            // leaves the plan unreported.
+            let tier = fetch_billing_json(
+                &client,
+                &format!("{base}/user?include=subscription"),
+                &session,
+            )
+            .await
+            .ok()
+            .and_then(|profile| plan_label(&profile));
+            Ok(BillingUsage { windows, tier })
         })
         .await,
     )
 }
 
-/// What the billing endpoint reported: the usage windows it names and the
-/// subscription tier, either of which it may leave out.
+/// What Grok reported: the usage windows its billing endpoint names and the
+/// subscription tier from the profile, either of which it may leave out.
 #[derive(Default)]
 struct BillingUsage {
     windows: Vec<AccountLimitWindow>,
     tier: Option<String>,
 }
 
-fn tier(config: &Value) -> Option<String> {
-    config
+/// The plan's name as the provider row shows it, beside the Grok name: the
+/// profile's `SuperGrokPlus` reads as Plus, plain `SuperGrok` stays itself.
+fn plan_label(profile: &Value) -> Option<String> {
+    let code = profile
         .get("subscriptionTier")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+        .filter(|value| !value.is_empty())?;
+    let level = code
+        .strip_prefix("SuperGrok")
+        .map(|level| level.trim_start_matches([' ', '_', '-']))
+        .unwrap_or(code);
+    if level.is_empty() {
+        return Some("SuperGrok".into());
+    }
+    let mut words = String::new();
+    let chars: Vec<char> = level.chars().collect();
+    for (index, &ch) in chars.iter().enumerate() {
+        if ch == '_' || ch == '-' {
+            words.push(' ');
+            continue;
+        }
+        let previous = index.checked_sub(1).map(|i| chars[i]);
+        let next = chars.get(index + 1);
+        let starts_word = ch.is_uppercase()
+            && previous.is_some_and(|previous| {
+                previous.is_lowercase()
+                    || previous.is_ascii_digit()
+                    || (previous.is_uppercase() && next.is_some_and(|next| next.is_lowercase()))
+            });
+        if starts_word && !words.ends_with(' ') {
+            words.push(' ');
+        }
+        words.push(ch);
+    }
+    Some(words.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 async fn fetch_with<F, Fut>(
@@ -656,6 +692,20 @@ mod tests {
         .await;
         assert_eq!(failed.state, AccountState::Error);
         assert!(failed.stale);
+    }
+
+    #[test]
+    fn the_profile_tier_reads_as_the_plan_name_without_the_brand() {
+        let label = |tier: &str| plan_label(&serde_json::json!({ "subscriptionTier": tier }));
+        assert_eq!(label("SuperGrokPlus").as_deref(), Some("Plus"));
+        assert_eq!(label("SuperGrokHeavy").as_deref(), Some("Heavy"));
+        assert_eq!(label("SuperGrok").as_deref(), Some("SuperGrok"));
+        assert_eq!(label("XPremiumPlus").as_deref(), Some("X Premium Plus"));
+        assert_eq!(label(" "), None);
+        assert_eq!(
+            plan_label(&serde_json::json!({ "email": "dev@example.com" })),
+            None
+        );
     }
 
     #[test]

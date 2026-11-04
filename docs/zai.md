@@ -34,7 +34,7 @@ Auto mode allows tools, approval mode asks for tools, smart approval allows file
 reads and edits while asking for other tools, and chat mode uses OpenCode's plan
 agent. Sign out clears the saved key while retaining account identity and chats.
 
-The account row names the plan as GLM Coding Plan (Lite, Pro or Max, as
+The account row names the plan by its Coding Plan level (Lite, Pro or Max, as
 reported). Saving a key does not purchase a subscription. Flock reads account quota from Z.ai's
 `/api/monitor/usage/quota/limit` endpoint with the saved key, following the
 [official usage plugin](https://docs.z.ai/devpack/extension/usage-query-plugin).

@@ -480,7 +480,7 @@ fn zai_insufficient_balance_is_a_quota_refusal_no_reset_lifts() {
 fn zai_ready(id: &str) -> ProviderAccountStatus {
     let mut ready = fresh_status(id);
     ready.provider_id = "zai-acp".into();
-    ready.subscription = Some("GLM Coding Plan Lite".into());
+    ready.subscription = Some("Lite".into());
     ready.limits[0].used_percent = Some(0.0);
     ready
 }
@@ -512,7 +512,7 @@ async fn a_refusal_outlasts_usage_reads_that_show_room_until_a_turn_is_served() 
         .as_deref()
         .is_some_and(|error| error.contains("Insufficient balance")
             && error.contains("Top up the balance or use a Coding Plan key")));
-    assert_eq!(read.subscription.as_deref(), Some("GLM Coding Plan Lite"));
+    assert_eq!(read.subscription.as_deref(), Some("Lite"));
     assert_eq!(read.limits[0].used_percent, Some(0.0));
     // A failed read keeps it too, with the last windows.
     let mut failed = ProviderAccountStatus::empty("zai", "zai-acp", now_ms());
@@ -893,7 +893,7 @@ fn codex_preserves_all_buckets_and_authoritative_reset_count() {
     assert_eq!(result.state, AccountState::Limited);
     assert_eq!(result.limits.len(), 3);
     assert_eq!(result.limits[0].resets_at, Some(1_800_000_000_000));
-    assert_eq!(result.subscription.as_deref(), Some("ChatGPT Pro 200"));
+    assert_eq!(result.subscription.as_deref(), Some("Pro 200"));
     let tokens = result.reset_tokens.unwrap();
     assert_eq!(tokens.available, 3);
     assert_eq!(tokens.credits.unwrap().len(), 1);

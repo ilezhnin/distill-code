@@ -429,22 +429,23 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
 }
 
 fn plan_label(plan: &str) -> Option<String> {
-    // Match the consumer tier names in the Codex app, not internal plan codes.
+    // Match the consumer tier names in the Codex app, not internal plan codes,
+    // without the ChatGPT name the provider row already shows.
     let label = match plan {
-        "free" => "ChatGPT Free",
-        "go" => "ChatGPT Go",
-        "plus" => "ChatGPT Plus",
-        "prolite" => "ChatGPT Pro 100",
-        "pro" => "ChatGPT Pro 200",
-        "promax" => "ChatGPT Pro 500",
-        "team" | "business" | "self_serve_business_usage_based" => "ChatGPT Business",
-        "self_serve_business_prolite" => "ChatGPT Business Premium",
+        "free" => "Free",
+        "go" => "Go",
+        "plus" => "Plus",
+        "prolite" => "Pro 100",
+        "pro" => "Pro 200",
+        "promax" => "Pro 500",
+        "team" | "business" | "self_serve_business_usage_based" => "Business",
+        "self_serve_business_prolite" => "Business Premium",
         "enterprise" | "ent26" | "enterprise_cbp_automation" | "enterprise_cbp_usage_based" => {
-            "ChatGPT Enterprise"
+            "Enterprise"
         }
-        "edu" => "ChatGPT Edu",
-        "edu_plus" => "ChatGPT Edu Plus",
-        "edu_pro" => "ChatGPT Edu Pro",
+        "edu" => "Edu",
+        "edu_plus" => "Edu Plus",
+        "edu_pro" => "Edu Pro",
         _ => return None,
     };
     Some(label.into())
@@ -514,10 +515,10 @@ mod tests {
     #[test]
     fn consumer_plans_have_their_public_tier_names() {
         for (code, label) in [
-            ("prolite", "ChatGPT Pro 100"),
-            ("pro", "ChatGPT Pro 200"),
-            ("promax", "ChatGPT Pro 500"),
-            ("plus", "ChatGPT Plus"),
+            ("prolite", "Pro 100"),
+            ("pro", "Pro 200"),
+            ("promax", "Pro 500"),
+            ("plus", "Plus"),
         ] {
             let status = map_usage(
                 "one",
@@ -539,7 +540,7 @@ mod tests {
             &json!({"rateLimits":{"planType":"pro","primary":{"usedPercent":20}}}),
             0,
         );
-        assert_eq!(status.subscription.as_deref(), Some("ChatGPT Pro 200"));
+        assert_eq!(status.subscription.as_deref(), Some("Pro 200"));
     }
 
     #[test]
