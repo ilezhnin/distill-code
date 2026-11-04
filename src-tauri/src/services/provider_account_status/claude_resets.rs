@@ -246,8 +246,28 @@ pub(super) async fn fetch_usage(
     let result = client
         .send(client.http.get(format!("{ORIGIN}{USAGE_PATH}")))
         .await;
-    record_usage_result(&account.id, now_ms(), result)
+    let mut usage = record_usage_result(&account.id, now_ms(), result)?;
+    // The usage reply leaves purchased credits out; the native CLI reads their
+    // balance separately. A failed balance read only leaves it unknown.
+    if let (Some(organization), Some(fields)) = (&client.organization, usage.as_object_mut()) {
+        let request = client
+            .http
+            .get(format!(
+                "{ORIGIN}/api/oauth/organizations/{organization}/prepaid/credits"
+            ))
+            .header("x-organization-uuid", organization);
+        match client.send(request).await {
+            Ok(credits) => {
+                fields.insert(PREPAID_CREDITS.into(), credits);
+            }
+            Err(error) => log::warn!("Claude credit balance unavailable: {error}"),
+        }
+    }
+    Ok(usage)
 }
+
+/// Where [`fetch_usage`] puts the purchased credit balance in its reply.
+pub(super) const PREPAID_CREDITS: &str = "flock_prepaid_credits";
 
 pub(super) async fn consume(
     app: &AppHandle,

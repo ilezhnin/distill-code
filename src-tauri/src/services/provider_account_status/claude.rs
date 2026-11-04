@@ -621,9 +621,9 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
             }
         }
     }
-    // Extra usage with room left keeps the account usable past spent plan
-    // windows, as it does in Claude's own apps.
-    if extra_usage(usage).is_some_and(|extra| extra.available) {
+    // Purchased credits keep the account usable past spent plan windows while
+    // extra usage is on and has room, as they do in Claude's own apps.
+    if credits_cover_plan_limits(usage) {
         for window in &mut status.limits {
             window.covered_by_credits = true;
         }
@@ -645,77 +645,93 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
     status.on_credits = status.state == AccountState::Ready && status.limits.iter().any(spent);
 }
 
-/// Paid usage the account draws on once its plan windows are spent, up to the
-/// monthly limit its owner set. Amounts are in minor units of `currency`.
-struct ExtraUsage {
-    used: f64,
-    limit: Option<f64>,
-    exponent: u32,
-    currency: String,
-    available: bool,
+fn money_amount(value: &Value) -> Option<f64> {
+    value.as_f64().filter(|n| n.is_finite() && *n >= 0.0)
 }
 
-fn extra_usage(usage: &Value) -> Option<ExtraUsage> {
-    let amount = |value: &Value| value.as_f64().filter(|n| n.is_finite() && *n >= 0.0);
-    let currency = |value: &Value| {
-        value
-            .as_str()
-            .filter(|s| s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase()))
-            .map(str::to_owned)
+fn money_currency(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .filter(|s| s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase()))
+}
+
+fn money_exponent(value: &Value) -> Option<i32> {
+    value.as_u64().filter(|e| *e <= 6).map(|e| e as i32)
+}
+
+/// The purchased credit balance in major units, its currency, and whether
+/// auto-reload tops it up, from the reply [`claude_resets::fetch_usage`]
+/// attaches; older replies carried the balance in `spend`.
+fn purchased_credits(usage: &Value) -> Option<(f64, String, bool)> {
+    let prepaid = &usage[claude_resets::PREPAID_CREDITS];
+    let (money, currency) = if prepaid.is_object() {
+        let balance = &prepaid["balance"];
+        let money = if balance["money"].is_object() {
+            &balance["money"]
+        } else {
+            &balance["credits"]
+        };
+        let currency = money_currency(&money["currency"]).or(money_currency(&prepaid["currency"]));
+        (money, currency)
+    } else {
+        let money = &usage["spend"]["balance"];
+        (money, money_currency(&money["currency"]))
     };
-    let exponent = |value: &Value| value.as_u64().filter(|e| *e <= 6).map(|e| e as u32);
+    let amount = money_amount(&money["amount_minor"])?;
+    let exponent = money_exponent(&money["exponent"])?;
+    Some((
+        amount / 10_f64.powi(exponent),
+        currency?.to_owned(),
+        prepaid["auto_reload_settings"]["enabled"] == true,
+    ))
+}
+
+/// Whether extra usage is on, below its monthly spend limit and has credits
+/// to spend. An unread balance does not stop it: the provider decides.
+fn credits_cover_plan_limits(usage: &Value) -> bool {
     let spend = &usage["spend"];
     let legacy = &usage["extra_usage"];
-    let (used, limit, exponent, currency) = if spend.is_object() {
-        if spend["enabled"] != true {
-            return None;
-        }
-        let money = &spend["used"];
-        let (used, scale, unit) = (
-            amount(&money["amount_minor"])?,
-            exponent(&money["exponent"])?,
-            currency(&money["currency"])?,
-        );
-        let limit = &spend["limit"];
-        let limit = if limit.is_null() {
-            None
-        } else {
-            // A limit in another currency or scale cannot be compared.
-            if currency(&limit["currency"]).as_deref() != Some(unit.as_str())
-                || exponent(&limit["exponent"]) != Some(scale)
+    // The limit is `Some(None)` when there is none and `None` when it cannot
+    // be read; an unreadable limit is not evidence of room under it.
+    let (enabled, used, limit) = if spend.is_object() {
+        let (used, limit) = (&spend["used"], &spend["limit"]);
+        (
+            spend["enabled"] == true,
+            money_amount(&used["amount_minor"]),
+            if limit.is_null() {
+                Some(None)
+            } else if limit["currency"] == used["currency"] && limit["exponent"] == used["exponent"]
             {
-                return None;
-            }
-            Some(amount(&limit["amount_minor"])?)
-        };
-        (used, limit, scale, unit)
+                money_amount(&limit["amount_minor"]).map(Some)
+            } else {
+                None
+            },
+        )
     } else {
-        if legacy["is_enabled"] != true {
-            return None;
-        }
         let limit = &legacy["monthly_limit"];
         (
-            amount(&legacy["used_credits"])?,
+            legacy["is_enabled"] == true,
+            money_amount(&legacy["used_credits"]),
             if limit.is_null() {
-                None
+                Some(None)
             } else {
-                Some(amount(limit)?)
+                money_amount(limit).map(Some)
             },
-            exponent(&legacy["decimal_places"])?,
-            currency(&legacy["currency"])?,
         )
     };
-    let stopped = legacy["spend_limit_reached"] == true
-        || !spend["disabled_reason"].is_null()
-        || !legacy["disabled_reason"].is_null()
-        || limit.is_some_and(|limit| used >= limit);
-    Some(ExtraUsage {
-        used,
-        limit,
-        exponent,
-        currency,
-        available: !stopped,
-    })
+    let capped = match (used, limit) {
+        (_, Some(None)) => false,
+        (Some(used), Some(Some(limit))) => used >= limit,
+        _ => true,
+    };
+    let empty = purchased_credits(usage)
+        .is_some_and(|(balance, _, auto_reload)| balance <= 0.0 && !auto_reload);
+    enabled
+        && !capped
+        && !empty
+        && legacy["spend_limit_reached"] != true
+        && spend["disabled_reason"].is_null()
+        && legacy["disabled_reason"].is_null()
 }
 
 fn credit_balances(usage: &Value) -> Option<Vec<CreditBalance>> {
@@ -739,38 +755,15 @@ fn credit_balances(usage: &Value) -> Option<Vec<CreditBalance>> {
             unlimited: false,
         });
     }
-    let money = &usage["spend"]["balance"];
-    if let (Some(amount), Some(currency), Some(exponent)) = (
-        money["amount_minor"]
-            .as_f64()
-            .filter(|n| n.is_finite() && *n >= 0.0),
-        money["currency"]
-            .as_str()
-            .filter(|s| s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase())),
-        money["exponent"].as_u64().filter(|e| *e <= 6),
-    ) {
+    if let Some((balance, currency, _)) = purchased_credits(usage) {
         balances.push(CreditBalance {
             id: "usage_credits".into(),
             label: "Usage credits".into(),
-            balance: Some((amount / 10_f64.powi(exponent as i32)).to_string()),
+            balance: Some(balance.to_string()),
             total: None,
-            currency: Some(currency.into()),
+            currency: Some(currency),
             expires_at: None,
             unlimited: false,
-        });
-    }
-    if let Some(extra) = extra_usage(usage) {
-        let major = |minor: f64| (minor / 10_f64.powi(extra.exponent as i32)).to_string();
-        balances.push(CreditBalance {
-            id: "extra_usage".into(),
-            label: "Extra usage".into(),
-            balance: extra
-                .limit
-                .map(|limit| major((limit - extra.used).max(0.0))),
-            total: extra.limit.map(major),
-            currency: Some(extra.currency),
-            expires_at: None,
-            unlimited: extra.limit.is_none(),
         });
     }
     (!balances.is_empty()).then_some(balances)
@@ -1474,7 +1467,7 @@ mod tests {
         }
     }
 
-    fn spent_week(spend: Value, legacy: Value) -> ProviderAccountStatus {
+    fn spent_week(spend: Value, legacy: Value, prepaid: Value) -> ProviderAccountStatus {
         let mut status = ProviderAccountStatus::empty("one", "claude-acp", 0);
         map_usage(
             &mut status,
@@ -1484,71 +1477,100 @@ mod tests {
                     {"kind":"weekly_scoped","percent":100,"resets_at":"2026-11-07T15:00:00Z","scope":{"model":{"display_name":"Fable"}}}
                 ],
                 "spend":spend,
-                "extra_usage":legacy
+                "extra_usage":legacy,
+                (claude_resets::PREPAID_CREDITS):prepaid
             }),
         );
         status
     }
 
+    fn money(minor: u32) -> Value {
+        json!({"amount_minor":minor,"currency":"USD","exponent":2})
+    }
+
+    fn prepaid(minor: u32) -> Value {
+        json!({"amount":minor,"currency":"USD","balance":{"money":null,"credits":{"amount_minor":minor,"exponent":2}},"auto_reload_settings":null})
+    }
+
     #[test]
-    fn extra_usage_with_room_is_shown_and_keeps_a_spent_account_running_on_credits() {
+    fn purchased_credits_show_their_balance_and_keep_a_spent_account_running() {
         let status = spent_week(
-            json!({"used":{"amount_minor":443,"currency":"USD","exponent":2},"limit":{"amount_minor":4000,"currency":"USD","exponent":2},"enabled":true,"disabled_reason":null,"balance":null}),
-            json!({"is_enabled":true,"monthly_limit":4000,"used_credits":443,"currency":"USD","decimal_places":2,"spend_limit_reached":false}),
+            json!({"used":money(729),"limit":money(4000),"enabled":true,"disabled_reason":null,"balance":null}),
+            json!({"is_enabled":true,"monthly_limit":4000,"used_credits":729,"currency":"USD","decimal_places":2,"spend_limit_reached":false}),
+            prepaid(9153),
         );
         assert_eq!(status.state, AccountState::Ready);
         assert!(status.on_credits);
         assert!(status.limits.iter().all(|window| window.covered_by_credits));
+        // One balance, as the provider's app shows it; the monthly spend
+        // limit only decides whether the credits may be spent.
         let credits = status.credits.unwrap();
         assert_eq!(credits.len(), 1);
-        assert_eq!(credits[0].id, "extra_usage");
-        assert_eq!(credits[0].balance.as_deref(), Some("35.57"));
-        assert_eq!(credits[0].total.as_deref(), Some("40"));
+        assert_eq!(credits[0].id, "usage_credits");
+        assert_eq!(credits[0].balance.as_deref(), Some("91.53"));
+        assert_eq!(credits[0].total, None);
         assert_eq!(credits[0].currency.as_deref(), Some("USD"));
 
-        // Older CLIs report only the extra_usage record.
+        // Older CLIs report only the extra_usage record; an unread balance
+        // leaves the decision to the provider.
         let legacy = spent_week(
             Value::Null,
             json!({"is_enabled":true,"monthly_limit":4000,"used_credits":443,"currency":"USD","decimal_places":2}),
+            Value::Null,
         );
         assert!(legacy.on_credits);
-        assert_eq!(legacy.credits.unwrap()[0].balance.as_deref(), Some("35.57"));
+        assert!(legacy.credits.is_none());
     }
 
     #[test]
-    fn spent_or_disabled_extra_usage_leaves_the_account_limited() {
-        let money = |minor: u32| json!({"amount_minor":minor,"currency":"USD","exponent":2});
-        for (spend, legacy) in [
-            // Switched off by its owner: nothing to show.
+    fn credits_that_cannot_be_spent_leave_the_account_limited() {
+        for (spend, legacy, balance) in [
+            // Switched off by its owner: the balance is shown, not spent.
             (
                 json!({"used":money(0),"limit":null,"enabled":false}),
                 json!({"is_enabled":false}),
+                prepaid(841),
             ),
-            // The monthly limit is spent.
+            // The monthly spend limit is reached.
             (
                 json!({"used":money(4000),"limit":money(4000),"enabled":true}),
                 json!({"is_enabled":true,"spend_limit_reached":true}),
+                prepaid(9153),
             ),
             // Suspended by the provider.
             (
                 json!({"used":money(10),"limit":money(4000),"enabled":true,"disabled_reason":"billing"}),
                 Value::Null,
+                prepaid(9153),
+            ),
+            // Nothing left to spend.
+            (
+                json!({"used":money(10),"limit":null,"enabled":true}),
+                Value::Null,
+                prepaid(0),
+            ),
+            // A limit that cannot be compared.
+            (
+                json!({"used":money(10),"limit":{"amount_minor":4000,"currency":"EUR","exponent":2},"enabled":true}),
+                Value::Null,
+                prepaid(9153),
             ),
         ] {
-            let status = spent_week(spend, legacy);
+            let status = spent_week(spend, legacy, balance);
             assert_eq!(status.state, AccountState::Limited);
             assert!(!status.on_credits);
             assert!(status
                 .limits
                 .iter()
                 .all(|window| !window.covered_by_credits));
+            assert_eq!(status.credits.unwrap()[0].id, "usage_credits");
         }
-        let unlimited = spent_week(
-            json!({"used":money(443),"limit":null,"enabled":true}),
+        let reloading = spent_week(
+            json!({"used":money(10),"limit":null,"enabled":true}),
             Value::Null,
+            json!({"balance":{"credits":{"amount_minor":0,"exponent":2}},"currency":"USD","auto_reload_settings":{"enabled":true}}),
         );
-        assert!(unlimited.on_credits);
-        assert!(unlimited.credits.unwrap()[0].unlimited);
+        assert!(reloading.on_credits);
     }
 
     #[test]
