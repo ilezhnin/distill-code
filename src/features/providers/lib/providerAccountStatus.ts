@@ -4,6 +4,12 @@ import type {
   ProviderAccountStatus,
 } from "../api/providerAccounts";
 
+/**
+ * The host reads every account's usage once every five minutes; a status is
+ * out of date once two of those reads are missing, as the host itself judges.
+ */
+export const ACCOUNT_STATUS_STALE_MS = 10 * 60_000;
+
 export function accountStatusIsStale(
   status: ProviderAccountStatus | undefined,
   now = Date.now(),
@@ -12,7 +18,7 @@ export function accountStatusIsStale(
     !status ||
     status.stale ||
     status.lastUpdatedAt <= 0 ||
-    now - status.lastUpdatedAt > 120_000
+    now - status.lastUpdatedAt > ACCOUNT_STATUS_STALE_MS
   );
 }
 

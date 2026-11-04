@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCOUNT_STATUS_STALE_MS,
   accountStatusIsStale,
   canUseAccountReset,
   earliestAccountReset,
@@ -116,7 +117,11 @@ describe("provider account status", () => {
       false,
     );
     expect(canUseAccountReset(available, now + 1001)).toBe(false);
-    expect(accountStatusIsStale(status, now + 120_001)).toBe(true);
+    // A status read on the host's five-minute schedule stays current.
+    expect(accountStatusIsStale(status, now + 5 * 60_000)).toBe(false);
+    expect(
+      accountStatusIsStale(status, now + ACCOUNT_STATUS_STALE_MS + 1),
+    ).toBe(true);
   });
 
   it("checks individual reset expiry without letting an old grant hide a usable one", () => {
