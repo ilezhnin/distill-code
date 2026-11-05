@@ -455,7 +455,8 @@
     "quotaWaitReset": "{{subject}} is out of quota until the reset at {{time}} ({{countdown}}).",
     "quotaWaitSubjectAccount": "{{provider}} account {{account}}",
     "quotaWaitCountdown": "in {{duration}}",
-    "quotaWaitCountdownNow": "any moment now"
+    "quotaWaitCountdownNow": "any moment now",
+    "rateLimitWait": "{{subject}} refused the request as rate-limited (429). It stays queued and is sent again at {{time}}."
   },
   "globalPill": {
     "ariaLabel": "Quick compose",
@@ -743,7 +744,9 @@
     "chip": {
       "tools_one": "{{count}} tool",
       "tools_other": "{{count}} tools",
-      "rateLimited": "Rate-limited by the provider (429)"
+      "rateLimited": "Rate-limited by the provider (429)",
+      "rateLimitWait": "Waiting for the provider (429), next try at {{time}}",
+      "quotaWait": "Waiting for the provider's quota, next try at {{time}}"
     },
     "report": {
       "title": "Report · {{status}}",

@@ -455,7 +455,8 @@
     "quotaWaitReset": "{{subject}} ha agotado su cuota hasta el reinicio a las {{time}} ({{countdown}}).",
     "quotaWaitSubjectAccount": "La cuenta {{account}} de {{provider}}",
     "quotaWaitCountdown": "en {{duration}}",
-    "quotaWaitCountdownNow": "en cualquier momento"
+    "quotaWaitCountdownNow": "en cualquier momento",
+    "rateLimitWait": "{{subject}} rechazó la solicitud por límite de solicitudes (429). Sigue en la cola y se enviará de nuevo a las {{time}}."
   },
   "globalPill": {
     "ariaLabel": "Redacción rápida",
@@ -743,7 +744,9 @@
     "chip": {
       "tools_one": "{{count}} herramienta",
       "tools_other": "{{count}} herramientas",
-      "rateLimited": "El proveedor limitó las solicitudes (429)"
+      "rateLimited": "El proveedor limitó las solicitudes (429)",
+      "rateLimitWait": "Esperando al proveedor (429), próximo intento a las {{time}}",
+      "quotaWait": "Esperando la cuota del proveedor, próximo intento a las {{time}}"
     },
     "report": {
       "title": "Informe · {{status}}",

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBrigadeChipReason } from "../useBrigadeChipSummary";
+import {
+  formatBrigadeChipReason,
+  formatProviderWait,
+} from "../useBrigadeChipSummary";
 
 const t = (key: string) => key;
 
@@ -25,5 +28,23 @@ describe("formatBrigadeChipReason", () => {
       "Wrote 4290 rows",
     );
     expect(formatBrigadeChipReason(undefined, t)).toBeUndefined();
+  });
+});
+
+describe("formatProviderWait", () => {
+  const time = (at: number) => `at:${at}`;
+  const tWith = (key: string, options?: Record<string, unknown>) =>
+    `${key}|${String(options?.time)}`;
+
+  it("says an agent the provider rate-limited waits, and until when", () => {
+    expect(
+      formatProviderWait({ reason: "rate_limit", retryAt: 42 }, tWith, time),
+    ).toBe("conductor.chip.rateLimitWait|at:42");
+  });
+
+  it("says the same of a spent quota in its own words", () => {
+    expect(
+      formatProviderWait({ reason: "quota", retryAt: 7 }, tWith, time),
+    ).toBe("conductor.chip.quotaWait|at:7");
   });
 });

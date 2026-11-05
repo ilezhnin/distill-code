@@ -67,6 +67,9 @@ expectations all have to agree on the same words.
 - The app MUST NOT substitute a model for the one a step named without saying
   so where that step is shown.
 - The app MUST NOT retry a failed step without the operator asking for it.
+- A step whose prompt the provider refused as rate-limited before its agent did
+  anything is not a failed step: it MUST be shown as waiting for the provider,
+  not as failed.
 - A step whose executor the app itself ended — a restart under a running
   session — is not a failed step: the app MUST resume it once in a new
   session, MUST hand that session what the ended one last said, and MUST say

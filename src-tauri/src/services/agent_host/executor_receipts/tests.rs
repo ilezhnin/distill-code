@@ -556,3 +556,70 @@ async fn a_proof_the_store_could_not_take_is_kept_for_a_repeat() {
         .is_err_and(refused));
     dir.close().await;
 }
+
+fn rate_limit_error() -> Value {
+    json!({"code":-32603,"message":"exceeded retry limit, last status: 429 Too Many Requests","data":{
+        "accountId":"account-a", "dispatchStarted":false, "promptNotAccepted":true,
+    }})
+}
+
+#[test]
+fn a_rate_limit_proof_requires_the_withdrawal_gate_and_a_rate_limit() {
+    assert!(ReceiptRejection::rate_limit_not_accepted(&rate_limit_error(), false).is_some());
+    // A spent quota has its own proof, never this one.
+    assert!(ReceiptRejection::rate_limit_not_accepted(&quota_error(), false).is_none());
+    assert!(ReceiptRejection::quota_not_accepted(&rate_limit_error(), false).is_none());
+    for (field, value) in [
+        ("dispatchStarted", json!(true)),
+        ("dispatchStarted", Value::Null),
+        ("promptNotAccepted", json!(false)),
+        ("promptNotAccepted", Value::Null),
+        ("accountId", Value::Null),
+    ] {
+        let mut error = rate_limit_error();
+        error["data"][field] = value;
+        assert!(
+            ReceiptRejection::rate_limit_not_accepted(&error, false).is_none(),
+            "{field}"
+        );
+    }
+    let mut other = rate_limit_error();
+    other["message"] = json!("Internal error: overloaded");
+    assert!(ReceiptRejection::rate_limit_not_accepted(&other, false).is_none());
+}
+
+#[tokio::test]
+async fn a_prompt_refused_as_rate_limited_lets_the_same_decision_run_again() {
+    let dir = crate::test_support::TempRoot::new();
+    let store = SessionStore::open(&dir.path().join("host.sqlite"))
+        .await
+        .unwrap();
+    dir.register(&store.pool);
+    let mut start = start();
+    start.account_id = Some("account-a".into());
+    assert!(store.claim_executor_receipt(&start).await.unwrap());
+    let mut failed = finish();
+    failed.status = "failed".into();
+    store
+        .finish_executor_receipt(&start, &failed)
+        .await
+        .unwrap();
+    let proof = ReceiptRejection::rate_limit_not_accepted(&rate_limit_error(), false).unwrap();
+    store
+        .mark_executor_prompt_unaccepted(&start.link, &start.session_id, &start.host_run_id, &proof)
+        .await
+        .unwrap();
+    // The proof reads back intact, and the send after the wait is admitted once.
+    assert!(store
+        .executor_receipt(&start.link.decision_key)
+        .await
+        .unwrap()
+        .is_some_and(|receipt| receipt.rejection == Some(proof.clone())));
+    let mut next = start.clone();
+    next.host_run_id = "after-the-wait".into();
+    assert!(store.claim_executor_receipt(&next).await.unwrap());
+    let mut again = start.clone();
+    again.host_run_id = "a-second-copy".into();
+    assert!(!store.claim_executor_receipt(&again).await.unwrap());
+    dir.close().await;
+}

@@ -153,6 +153,15 @@ function statusFromRuntime(
   ) {
     return persisted;
   }
+  // The provider refused the message before the turn began (a 429, a spent
+  // quota) and it waits first in the queue to be sent again: the agent waits
+  // for the provider and has not run, whatever the refused attempt looked
+  // like for a moment (LAWS/WAVES.md). Without this the idle chat read as a
+  // run that had finished.
+  if (chatState.accountQuotaWaitUntil != null) {
+    seenRunningBySession.delete(sessionId);
+    return "waiting";
+  }
   if (hasAssistantOutput || seenRunningBySession.has(sessionId)) {
     return "completed";
   }

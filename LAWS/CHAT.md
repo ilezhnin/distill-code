@@ -18,6 +18,8 @@
 - A failed dispatch from a chat's queue to its session MUST leave the message first in that queue.
 - A chat's queue MUST NOT dispatch a second copy of a message to that chat's session while the first dispatch is unresolved.
 - A dispatch outcome from a chat's queue to its session MUST NOT change any other message in that queue.
+- A message the provider refused as rate-limited before its turn produced anything MUST be sent again from its queue after a wait, without the operator asking.
+- While a message waits in a chat's queue for a provider that refused it as rate-limited, the app MUST show that it is waiting for the provider and when it will be sent next.
 
 ## Queue editing and removal
 

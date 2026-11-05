@@ -10,6 +10,10 @@ import {
   clearAccountQuotaWait,
   deferForAccountQuota,
   isAccountQuotaWaiting,
+  RATE_LIMIT_ACCOUNT_SPACING_MS,
+  RATE_LIMIT_FIRST_WAIT_MS,
+  RATE_LIMIT_MAX_WAIT_MS,
+  resetRateLimitPacingForTesting,
   useAccountQuotaWaitStore,
 } from "./accountQuotaWait";
 import { isQueuedSessionReady } from "./queuedMessageReadiness";
@@ -45,6 +49,7 @@ describe("account quota waiting", () => {
   });
 
   afterEach(() => {
+    resetRateLimitPacingForTesting();
     for (const id of Object.keys(useAccountQuotaWaitStore.getState().waits))
       clearAccountQuotaWait(id);
     vi.useRealTimers();
@@ -157,5 +162,130 @@ describe("account quota waiting", () => {
   it("does not treat ordinary errors or textual quota mentions as deferrals", () => {
     expect(accountQuotaWaitData(new Error("account_quota_wait"))).toBeNull();
     expect(deferForAccountQuota("s1", { data: "quota exceeded" })).toBe(false);
+  });
+
+  describe("a rate-limit refusal before the turn began", () => {
+    const refused = (accountId = "a1") => ({
+      code: -32011,
+      data: {
+        kind: "provider_rate_limit_wait",
+        accountId,
+        dispatchStarted: false,
+        promptNotAccepted: true,
+        refused: "exceeded retry limit, last status: 429 Too Many Requests",
+      },
+    });
+
+    beforeEach(() => {
+      useChatSessionStore.setState({
+        sessions: ["s1", "s2", "s3"].map((id) => ({
+          id,
+          title: "Invented worker",
+          executionTarget: { harnessId: "codex-acp" },
+          accountId: "a1",
+          createdAt: "now",
+          updatedAt: "now",
+          messageCount: 0,
+        })),
+      });
+    });
+
+    it("parks the message like a quota wait and sends it again after the first wait", async () => {
+      expect(accountQuotaWaitData(refused())?.promptNotAccepted).toBe(true);
+      expect(deferForAccountQuota("s1", refused())).toBe(true);
+      const wait = useAccountQuotaWaitStore.getState().waits.s1;
+      expect(wait?.reason).toBe("rate_limit");
+      expect(wait?.retryAt).toBe(Date.now() + RATE_LIMIT_FIRST_WAIT_MS);
+      expect(
+        isQueuedSessionReady(useChatStore.getState().getSessionRuntime("s1")),
+      ).toBe(false);
+      await vi.advanceTimersByTimeAsync(RATE_LIMIT_FIRST_WAIT_MS - 1);
+      expect(isAccountQuotaWaiting("s1")).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(isAccountQuotaWaiting("s1")).toBe(false);
+      expect(
+        isQueuedSessionReady(useChatStore.getState().getSessionRuntime("s1")),
+      ).toBe(true);
+    });
+
+    it("waits longer with each refusal in a row, up to five minutes", async () => {
+      const waits: number[] = [];
+      for (let refusal = 0; refusal < 7; refusal += 1) {
+        deferForAccountQuota("s1", refused());
+        const wait = useAccountQuotaWaitStore.getState().waits.s1;
+        waits.push((wait?.retryAt ?? 0) - Date.now());
+        await vi.advanceTimersByTimeAsync(wait ? wait.retryAt - Date.now() : 0);
+      }
+      expect(waits).toEqual([
+        15_000,
+        30_000,
+        60_000,
+        120_000,
+        240_000,
+        RATE_LIMIT_MAX_WAIT_MS,
+        RATE_LIMIT_MAX_WAIT_MS,
+      ]);
+      // A refusal long after the last starts the count over.
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      deferForAccountQuota("s1", refused());
+      expect(
+        (useAccountQuotaWaitStore.getState().waits.s1?.retryAt ?? 0) -
+          Date.now(),
+      ).toBe(RATE_LIMIT_FIRST_WAIT_MS);
+    });
+
+    it("sends a burst refused on one account back one at a time", () => {
+      for (const id of ["s1", "s2", "s3"]) deferForAccountQuota(id, refused());
+      const retryAts = ["s1", "s2", "s3"].map(
+        (id) => useAccountQuotaWaitStore.getState().waits[id]?.retryAt ?? 0,
+      );
+      const start = Date.now() + RATE_LIMIT_FIRST_WAIT_MS;
+      expect(retryAts).toEqual([
+        start,
+        start + RATE_LIMIT_ACCOUNT_SPACING_MS,
+        start + 2 * RATE_LIMIT_ACCOUNT_SPACING_MS,
+      ]);
+      // Another account is not held back by this one's burst.
+      deferForAccountQuota("s4", refused("a2"));
+      expect(useAccountQuotaWaitStore.getState().waits.s4?.retryAt).toBe(start);
+    });
+
+    it("is not lifted by a fresh account status, which said ready before the refusal too", async () => {
+      useProviderAccountsStore.setState({
+        accounts: [
+          {
+            id: "a1",
+            providerId: "codex-acp",
+            label: "Work",
+            authMethod: "oauth",
+            enabled: true,
+            autoSwitch: true,
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        ],
+      });
+      deferForAccountQuota("s1", refused());
+      await vi.advanceTimersByTimeAsync(0);
+      useProviderAccountsStore.setState({
+        statuses: {
+          a1: {
+            accountId: "a1",
+            providerId: "codex-acp",
+            state: "ready",
+            subscription: null,
+            accountLabel: null,
+            limits: [],
+            resetTokens: null,
+            credits: null,
+            lastUpdatedAt: Date.now() + 1,
+            lastAttemptAt: Date.now() + 1,
+            stale: false,
+            error: null,
+          },
+        },
+      });
+      expect(isAccountQuotaWaiting("s1")).toBe(true);
+    });
   });
 });

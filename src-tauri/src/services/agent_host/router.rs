@@ -3085,6 +3085,7 @@ impl Inner {
                 if runtime.execution_profile.is_none()
                     && (Self::is_command_list_update(&params)
                         || Self::is_failure_state_update(&params)
+                        || Self::is_thread_status_update(&params)
                         || Self::is_zero_usage_update(&params)
                         || params
                             .pointer("/update/sessionUpdate")
@@ -3490,6 +3491,35 @@ impl Inner {
                 .get("_meta")
                 .and_then(Self::air_session_failure)
                 .is_some()
+    }
+
+    /// Codex's word on its own thread (`_meta.codex.threadStatus`: active,
+    /// idle, systemError) is provider state, not model output. It arrives at
+    /// the start of every turn, before the model has said anything, so
+    /// counting it as the turn's work made every Codex turn look started: a
+    /// prompt the provider refused at once (a 429 on a burst of agents,
+    /// 2026-11-05) was kept and failed instead of being withdrawn. Extra
+    /// fields make the update substantive.
+    fn is_thread_status_update(params: &Value) -> bool {
+        let Some(update) = params.get("update").and_then(Value::as_object) else {
+            return false;
+        };
+        update.get("sessionUpdate").and_then(Value::as_str) == Some("session_info_update")
+            && update
+                .keys()
+                .all(|key| key == "sessionUpdate" || key == "_meta")
+            && update
+                .get("_meta")
+                .and_then(Value::as_object)
+                .is_some_and(|meta| {
+                    meta.keys().all(|key| key == "codex")
+                        && meta
+                            .get("codex")
+                            .and_then(Value::as_object)
+                            .is_some_and(|codex| {
+                                !codex.is_empty() && codex.keys().all(|key| key == "threadStatus")
+                            })
+                })
     }
 
     fn is_zero_usage_update(params: &Value) -> bool {
@@ -6397,6 +6427,22 @@ impl Inner {
             {
                 return result;
             }
+            let session_id = protocol::session_id(&params)
+                .ok_or_else(|| invalid_params("sessionId required"))?;
+            // Whatever comes of the refusal, the chat holds none of it now. One
+            // left with no message starts over on a fresh bridge session, so
+            // the message sent again is the only copy the agent's own thread
+            // ever holds.
+            self.start_over_empty_session(&session_id).await;
+            // Too many requests at once passes by itself: the renderer keeps
+            // the message first in its queue, says it waits for the provider
+            // and sends it again (LAWS/CHAT.md).
+            if let Some(wait) = Self::rate_limit_wait(error) {
+                log::info!(
+                    "[agent-host] the provider refused the prompt of {session_id} as rate-limited before the turn began; it waits in the queue"
+                );
+                return Err(wait);
+            }
             let Some(account_id) = error.pointer("/data/accountId").and_then(Value::as_str) else {
                 return result;
             };
@@ -6406,8 +6452,6 @@ impl Inner {
                     None => result,
                 };
             }
-            let session_id = protocol::session_id(&params)
-                .ok_or_else(|| invalid_params("sessionId required"))?;
             let record = self.session_record(&session_id).await?;
             if !crate::services::provider_account_status::record_quota_error(
                 &self.app, account_id, error,
@@ -6460,6 +6504,79 @@ impl Inner {
                 "promptNotAccepted":true, "unavailableAccounts":unavailable,
             }),
         )
+    }
+
+    /// The provider refused a prompt as rate-limited (HTTP 429, too many
+    /// requests) before the turn began, and the host withdrew it: the answer
+    /// the renderer parks the message on (`provider_rate_limit_wait`), first
+    /// in its queue and shown as waiting for the provider, until it sends it
+    /// again. A burst of agents started on one account at once meets this
+    /// (2026-11-05: eight of eleven Codex agents in nine seconds). `None` for
+    /// anything else, a spent quota included, which has its own wait.
+    fn rate_limit_wait(error: &Value) -> Option<Value> {
+        if error
+            .pointer("/data/dispatchStarted")
+            .and_then(Value::as_bool)
+            != Some(false)
+            || error
+                .pointer("/data/promptNotAccepted")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || !crate::services::provider_account_status::is_rate_limit_error(error)
+        {
+            return None;
+        }
+        let refused = crate::services::provider_account_status::refusal_words(error);
+        Some(protocol::error_with_data(
+            -32011,
+            "The provider refused the request as rate-limited; the message remains queued",
+            json!({
+                "kind":"provider_rate_limit_wait", "type":"provider_rate_limit_wait",
+                "accountId":error.pointer("/data/accountId").cloned().unwrap_or(Value::Null),
+                "dispatchStarted":false, "promptNotAccepted":true, "refused":refused,
+            }),
+        ))
+    }
+
+    /// A chat whose withdrawn prompt left it with no message lets go of its
+    /// bridge session, so the next prompt opens a fresh one
+    /// (`resumable_bridge_session`). The agent's own thread may still hold
+    /// the refused message — Codex records it before it asks the model — and
+    /// the same message sent again into that thread would be its second copy
+    /// there. A chat with history keeps its bridge session: starting it over
+    /// would lose the agent's context.
+    async fn start_over_empty_session(&self, session_id: &str) {
+        let lock = self.attach_lock(session_id).await;
+        let _releasing = lock.lock().await;
+        if !self
+            .session_record(session_id)
+            .await
+            .is_ok_and(|record| record.message_count == 0)
+        {
+            return;
+        }
+        let released = {
+            let mut sessions = self.sessions.lock().await;
+            let idle = sessions.get(session_id).is_some_and(|runtime| {
+                runtime.execution_profile.is_none()
+                    && !runtime.loading
+                    && runtime.run.is_none()
+                    && !runtime.background.is_busy()
+                    && runtime.steer_queue.is_empty()
+            });
+            if idle {
+                sessions.remove(session_id)
+            } else {
+                None
+            }
+        };
+        if let Some(runtime) = released {
+            log::info!(
+                "[agent-host] session {session_id} holds no message after a withdrawn prompt; its next prompt opens a fresh {} bridge session",
+                runtime.harness
+            );
+            self.let_go_of(&runtime).await;
+        }
     }
 
     /// A refusal no usage reset lifts says so in the operator's words for
@@ -7008,13 +7125,14 @@ impl Inner {
                         error["data"]["continueOnAccount"] = json!(spare);
                     }
                 }
+                let automatic_routing = self
+                    .automatic_account_switching(&record.harness)
+                    .unwrap_or(false);
                 if let (Some(link), Some(rejection)) = (
                     executor_link.as_ref(),
-                    ReceiptRejection::quota_not_accepted(
-                        error,
-                        self.automatic_account_switching(&record.harness)
-                            .unwrap_or(false),
-                    ),
+                    ReceiptRejection::quota_not_accepted(error, automatic_routing).or_else(|| {
+                        ReceiptRejection::rate_limit_not_accepted(error, automatic_routing)
+                    }),
                 ) {
                     // Keep the claim until the host's withdrawal proof is durable.
                     // Neither a renderer error flag nor a failed receipt permits retry.
@@ -10846,6 +10964,66 @@ mod tests {
         let mut with_content = metadata;
         with_content["update"]["content"] = json!({"type":"text","text":"actual content"});
         assert!(!Inner::is_failure_state_update(&with_content));
+    }
+
+    #[test]
+    fn codex_thread_status_is_provider_state_not_the_turn_starting() {
+        // What codex-acp sends at the start of every turn, before the model
+        // says anything, and when the provider then refuses it.
+        for status in ["active", "systemError", "idle"] {
+            let update = json!({"sessionId":"bridge-1","update":{
+                "sessionUpdate":"session_info_update",
+                "_meta":{"codex":{"threadStatus":{"type":status,"activeFlags":[]}}}
+            }});
+            assert!(Inner::is_thread_status_update(&update), "{status}");
+        }
+        // A title, any other provider field, or another update kind is
+        // substantive and keeps the turn's ordinary bookkeeping.
+        let mut titled = json!({"update":{"sessionUpdate":"session_info_update","title":"Plan",
+            "_meta":{"codex":{"threadStatus":{"type":"active"}}}}});
+        assert!(!Inner::is_thread_status_update(&titled));
+        titled["update"].as_object_mut().unwrap().remove("title");
+        titled["update"]["_meta"]["codex"]["tokenUsage"] = json!({"total":1});
+        assert!(!Inner::is_thread_status_update(&titled));
+        assert!(!Inner::is_thread_status_update(&json!({"update":{
+            "sessionUpdate":"session_info_update","_meta":{"codex":{}}}})));
+        assert!(!Inner::is_thread_status_update(&json!({"update":{
+            "sessionUpdate":"session_info_update","_meta":{"codex":{"threadStatus":{}},"other":1}}})));
+        assert!(!Inner::is_thread_status_update(&json!({"update":{
+            "sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"},
+            "_meta":{"codex":{"threadStatus":{"type":"active"}}}}})));
+    }
+
+    #[test]
+    fn a_rate_limited_refusal_before_the_turn_waits_in_the_queue() {
+        // Codex's words after it gave up retrying a 429, withdrawn by the host.
+        let refused = json!({"code":-32603,"message":"exceeded retry limit, last status: 429 Too Many Requests",
+            "data":{"accountId":"account-a","dispatchStarted":false,"promptNotAccepted":true}});
+        let wait = Inner::rate_limit_wait(&refused).expect("a wait");
+        assert_eq!(wait["code"], -32011);
+        assert_eq!(wait["data"]["kind"], "provider_rate_limit_wait");
+        assert_eq!(wait["data"]["accountId"], "account-a");
+        assert_eq!(wait["data"]["promptNotAccepted"], true);
+        assert_eq!(wait["data"]["dispatchStarted"], false);
+        assert_eq!(
+            wait["data"]["refused"],
+            "exceeded retry limit, last status: 429 Too Many Requests"
+        );
+        // Not for a quota rejection: it has its own wait.
+        let mut quota = refused.clone();
+        quota["message"] = json!("You've hit your usage limit.");
+        assert!(Inner::rate_limit_wait(&quota).is_none());
+        // Not once the turn began, nor while the chat still holds the prompt.
+        let mut started = refused.clone();
+        started["data"]["dispatchStarted"] = json!(true);
+        assert!(Inner::rate_limit_wait(&started).is_none());
+        let mut kept = refused.clone();
+        kept["data"]["promptNotAccepted"] = json!(false);
+        assert!(Inner::rate_limit_wait(&kept).is_none());
+        // Any other refusal fails as before.
+        let mut other = refused;
+        other["message"] = json!("Internal error: overloaded");
+        assert!(Inner::rate_limit_wait(&other).is_none());
     }
 
     #[test]

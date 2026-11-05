@@ -81,13 +81,27 @@ export function QueuedAccountQuotaWait({
     duration === null || duration === "now"
       ? t("queue.quotaWaitCountdownNow")
       : t("queue.quotaWaitCountdown", { duration });
-  // A wait with a reset time holds until the provider's window turns over; one
-  // without is a blind re-check a minute later, before the status refresh has
-  // said when the window resets.
-  const text = t(
-    wait?.resetAt != null ? "queue.quotaWaitReset" : "queue.quotaWaitRecheck",
-    { subject, time, countdown },
-  );
+  // A rate-limit refusal is sent again within seconds to minutes, so its time
+  // carries the seconds and needs no countdown. A wait with a reset time holds
+  // until the provider's window turns over; one without is a blind re-check a
+  // minute later, before the status refresh has said when the window resets.
+  const text =
+    wait?.reason === "rate_limit"
+      ? t("queue.rateLimitWait", {
+          subject,
+          time: formatDate(
+            until,
+            sameDay
+              ? { timeStyle: "medium" }
+              : { dateStyle: "short", timeStyle: "medium" },
+          ),
+        })
+      : t(
+          wait?.resetAt != null
+            ? "queue.quotaWaitReset"
+            : "queue.quotaWaitRecheck",
+          { subject, time, countdown },
+        );
   return (
     <p
       role="status"

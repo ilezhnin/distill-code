@@ -423,6 +423,45 @@ fn typed_quota_errors_are_distinct_from_temporary_rate_and_context_limits() {
 }
 
 #[test]
+fn a_refusal_of_too_many_requests_is_a_rate_limit_not_a_spent_quota() {
+    // Codex after it gave up retrying (2026-11-05, a burst of agents).
+    assert!(is_rate_limit_error(&json!({
+        "code":-32603,"message":"exceeded retry limit, last status: 429 Too Many Requests"
+    })));
+    // Typed: Codex's error info, either shape, and a kind or an HTTP status.
+    assert!(is_rate_limit_error(&json!({"data":{"codexErrorInfo":{
+        "responseTooManyFailedAttempts":{"httpStatusCode":429}}}})));
+    assert!(is_rate_limit_error(&json!({"data":{"codexErrorInfo":{
+        "response_too_many_failed_attempts":{"http_status_code":429}}}})));
+    assert!(is_rate_limit_error(
+        &json!({"code":429,"data":{"codexErrorInfo":"rateLimitExceeded"}})
+    ));
+    assert!(is_rate_limit_error(
+        &json!({"data":{"errorKind":"rate_limit"}})
+    ));
+    assert!(is_rate_limit_error(&json!({"data":{"http_status":429}})));
+    assert!(is_rate_limit_error(&json!({
+        "message":"Internal error: Rate limit reached for requests"
+    })));
+    // A spent quota is not one, whatever else it says.
+    assert!(!is_rate_limit_error(&json!({
+        "message":"Internal error: You've hit your usage limit (429)"
+    })));
+    assert!(!is_rate_limit_error(
+        &json!({"data":{"codexErrorInfo":"usageLimitExceeded","http_status":429}})
+    ));
+    // Nor is another failure that happens to carry the digits.
+    assert!(!is_rate_limit_error(
+        &json!({"message":"Internal error: overloaded"})
+    ));
+    assert!(!is_rate_limit_error(
+        &json!({"message":"request 14290 failed"})
+    ));
+    assert!(!is_rate_limit_error(&json!({"data":{"codexErrorInfo":{
+        "responseTooManyFailedAttempts":{"httpStatusCode":503}}}})));
+}
+
+#[test]
 fn zai_exhausted_subscription_window_is_quota_not_a_temporary_rate_limit() {
     let mut error = json!({"code":-32603,"data":{
         "errorName":"APIError","dispatchStarted":true,"promptNotAccepted":false

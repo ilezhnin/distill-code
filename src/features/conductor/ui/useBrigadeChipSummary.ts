@@ -14,8 +14,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { toolCallLabel } from "@/features/chat/ui/ToolCallAdapter";
+import {
+  type AccountQuotaWait,
+  useAccountQuotaWaitStore,
+} from "@/features/chat/lib/accountQuotaWait";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { useLocaleFormatting } from "@/shared/i18n";
 
+import { isWorkingStatus } from "../brigadeActivity";
 import {
   CHIP_SUMMARY_THROTTLE_MS,
   brigadeChipFacts,
@@ -76,6 +82,24 @@ export function formatBrigadeChipReason(
     : reason;
 }
 
+/**
+ * The chip's line for an agent whose message waits for its provider: why,
+ * and when it is sent again. A burst of agents the provider refused with a
+ * 429 reads as waiting, not as failed rows (LAWS/WAVES.md).
+ */
+export function formatProviderWait(
+  wait: Pick<AccountQuotaWait, "reason" | "retryAt">,
+  t: (key: string, options?: Record<string, unknown>) => string,
+  formatTime: (at: number) => string,
+): string {
+  return t(
+    wait.reason === "rate_limit"
+      ? "conductor.chip.rateLimitWait"
+      : "conductor.chip.quotaWait",
+    { time: formatTime(wait.retryAt) },
+  );
+}
+
 /** The chip's words for one set of facts. */
 export function formatBrigadeChipSummary(
   facts: BrigadeChipFacts,
@@ -103,8 +127,12 @@ export function useBrigadeChipSummary(
   report: StructuredReport | undefined,
 ): BrigadeChipSummary {
   const { t } = useTranslation("chat");
+  const { formatDate } = useLocaleFormatting();
   const runtime = useChatStore(
     (state) => state.sessionStateById[node.sessionId],
+  );
+  const providerWait = useAccountQuotaWaitStore(
+    (state) => state.waits[node.sessionId],
   );
   const messages = useChatStore(
     (state) => state.messagesBySession[node.sessionId],
@@ -120,6 +148,21 @@ export function useBrigadeChipSummary(
   // Only the live words are throttled. A finished run's summary is settled,
   // and the status and reason must change the moment the chat does.
   const throttled = useThrottledValue(summaryLabel, CHIP_SUMMARY_THROTTLE_MS);
+  // Said the moment the queue parks the message, before the graph's own
+  // pass has moved the node to waiting.
+  if (
+    providerWait &&
+    facts.status !== "blocked" &&
+    isWorkingStatus(facts.status)
+  ) {
+    return {
+      status: "waiting",
+      summaryLabel: facts.lastStep ? throttled : summaryLabel,
+      reasonLabel: formatProviderWait(providerWait, t, (at) =>
+        formatDate(at, { timeStyle: "medium" }),
+      ),
+    };
+  }
   return {
     status: facts.status,
     summaryLabel: facts.lastStep ? throttled : summaryLabel,

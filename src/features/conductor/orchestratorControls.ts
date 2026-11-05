@@ -9,6 +9,7 @@
  */
 
 import { acpCancelSession } from "@/shared/api/acp";
+import { clearAccountQuotaWait } from "@/features/chat/lib/accountQuotaWait";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { taskBindingId } from "@/features/chat/lib/executionOwnership";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
@@ -43,6 +44,9 @@ export async function stopOrchestratorSession(
   for (const record of chat.queuedMessageBySession[sessionId] ?? []) {
     chat.dismissQueuedMessage(sessionId, record.recordId);
   }
+  // A message that waited for its provider went with the queue; nothing is
+  // left to wait for.
+  clearAccountQuotaWait(sessionId);
   const bindingId = taskBindingId(sessionId);
   const terminal = ["completed", "failed", "cancelled", "stopped"].includes(
     node.status,

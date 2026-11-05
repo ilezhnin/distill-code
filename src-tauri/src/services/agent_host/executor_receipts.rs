@@ -116,13 +116,45 @@ impl ReceiptRejection {
             return None;
         }
         Some(Self {
-            reason: "quota_not_accepted".into(),
+            reason: QUOTA_NOT_ACCEPTED.into(),
+            confirmed_at: super::protocol::now_iso(),
+            account_id: error.pointer("/data/accountId")?.as_str()?.to_string(),
+            automatic_account_routing,
+        })
+    }
+
+    /// The same proof for a prompt the provider refused as rate-limited (HTTP
+    /// 429) before the turn began, which the renderer sends again once the
+    /// wait is over (LAWS/CHAT.md). Called only after the host has withdrawn
+    /// this turn's recorded prompt.
+    pub(super) fn rate_limit_not_accepted(
+        error: &Value,
+        automatic_account_routing: bool,
+    ) -> Option<Self> {
+        if error
+            .pointer("/data/dispatchStarted")
+            .and_then(Value::as_bool)
+            != Some(false)
+            || error
+                .pointer("/data/promptNotAccepted")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || !crate::services::provider_account_status::is_rate_limit_error(error)
+        {
+            return None;
+        }
+        Some(Self {
+            reason: RATE_LIMIT_NOT_ACCEPTED.into(),
             confirmed_at: super::protocol::now_iso(),
             account_id: error.pointer("/data/accountId")?.as_str()?.to_string(),
             automatic_account_routing,
         })
     }
 }
+
+/// The refusals before a turn began that let the same decision run again.
+const QUOTA_NOT_ACCEPTED: &str = "quota_not_accepted";
+const RATE_LIMIT_NOT_ACCEPTED: &str = "rate_limit_not_accepted";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,7 +449,7 @@ fn decode_attempt(row: &SqliteRow, key: &str) -> Result<ExecutorAttempt, String>
             let finish = finish
                 .as_ref()
                 .ok_or("An unaccepted attempt must be terminal")?;
-            if rejection.reason != "quota_not_accepted"
+            if ![QUOTA_NOT_ACCEPTED, RATE_LIMIT_NOT_ACCEPTED].contains(&rejection.reason.as_str())
                 || finish.status != "failed"
                 || start.account_id.as_deref() != Some(rejection.account_id.as_str())
             {

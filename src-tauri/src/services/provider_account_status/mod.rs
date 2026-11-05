@@ -1127,6 +1127,83 @@ pub(crate) fn is_quota_error(error: &Value) -> bool {
     })
 }
 
+/// A provider's refusal of too many requests at once — HTTP 429, or the
+/// provider's own words for it — that is not a spent quota (see
+/// [`is_quota_error`]). It passes by itself and says nothing about the
+/// account. Codex reports one it gave up retrying as "exceeded retry limit,
+/// last status: 429 Too Many Requests".
+pub(crate) fn is_rate_limit_error(error: &Value) -> bool {
+    if is_quota_error(error) {
+        return false;
+    }
+    let rate_kind = |kind: &str| {
+        matches!(
+            kind.to_ascii_lowercase().as_str(),
+            "rate_limit"
+                | "ratelimitexceeded"
+                | "rate_limit_exceeded"
+                | "rate_limit_error"
+                | "too_many_requests"
+        )
+    };
+    let typed = [
+        "/data/errorKind",
+        "/errorKind",
+        "/data/codexErrorInfo",
+        "/codexErrorInfo",
+        "/data/error/type",
+        "/error/type",
+    ]
+    .iter()
+    .filter_map(|path| error.pointer(path).and_then(Value::as_str))
+    .any(rate_kind);
+    let status_429 = [
+        "/data/http_status",
+        "/data/httpStatus",
+        "/data/httpStatusCode",
+        "/data/status",
+    ]
+    .iter()
+    .any(|path| error.pointer(path).and_then(Value::as_u64) == Some(429))
+        || ["/data/codexErrorInfo", "/codexErrorInfo"]
+            .iter()
+            .filter_map(|path| error.pointer(path).and_then(Value::as_object))
+            .flat_map(|info| info.values())
+            .any(|detail| {
+                ["httpStatusCode", "http_status_code"]
+                    .iter()
+                    .any(|key| detail.get(key).and_then(Value::as_u64) == Some(429))
+            });
+    let said = [
+        error.as_str(),
+        error.pointer("/message").and_then(Value::as_str),
+        error.pointer("/data/message").and_then(Value::as_str),
+        error.pointer("/data/refused").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|text| {
+        let text = text.to_ascii_lowercase();
+        text.contains("too many requests")
+            || text.contains("rate limit")
+            || text.contains("rate-limit")
+            || names_status_429(&text)
+    });
+    typed || status_429 || said
+}
+
+/// Whether `text` names the status 429 as a number of its own, not as part
+/// of a longer one.
+fn names_status_429(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices("429").any(|(at, _)| {
+        let before = at.checked_sub(1).map(|index| bytes[index]);
+        let after = bytes.get(at + 3).copied();
+        !before.is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && !after.is_some_and(|byte| byte.is_ascii_alphanumeric())
+    })
+}
+
 /// The quota kinds of an account that no usage reset brings back: billing,
 /// an account on hold, no credit left. A change with the provider (a top-up,
 /// a plan) does, so they are never waited out, only reported.

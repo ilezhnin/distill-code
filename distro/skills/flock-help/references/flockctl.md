@@ -34,6 +34,14 @@ your chat shows it working, and its result is delivered back to your chat
 when its turn ends, so it does not need to be told to report back. Leave the
 flag out only when the user asks for an independent chat.
 
+Several sessions started on one account at once can meet the provider's
+rate limit (HTTP 429). A session whose first message the provider refused
+that way has not failed: the message waits first in its queue, your chat
+shows the agent waiting for the provider and when it tries next, and the
+app sends the message again on its own, a little later after each refusal.
+Do not start that agent again yourself; a second one would do the work
+twice.
+
 To stop one of those sessions, run `flockctl session stop --session-id <id>`
 with `--from` and `--reason` saying who and why; its chip shows both. Do not
 try to stop it by sending it a message: a message to a running session waits

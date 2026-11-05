@@ -59,6 +59,7 @@ function parkOnQuota(
       [SESSION_ID]: {
         startedAt: Date.now(),
         message: "Waiting",
+        reason: "quota",
         accountId: "work",
         providerId: "claude-acp",
         resetTokensAvailable: false,
@@ -147,4 +148,18 @@ it("drops the line as soon as the wait clears and keeps the queued pill", () => 
 
   expect(waitLine()).toBeNull();
   expect(screen.getByText("queued msg")).toBeInTheDocument();
+});
+
+it("says a rate-limited message stays queued and when it is sent again", () => {
+  const retryAt = Date.now() + 15_000;
+  parkOnQuota({ retryAt, resetAt: null, reason: "rate_limit" });
+
+  renderQueuedComposer();
+
+  expect(screen.getByText("queued msg")).toBeInTheDocument();
+  const line = waitLine();
+  expect(line).toHaveTextContent(
+    /^Claude Code account Work refused the request as rate-limited \(429\)\. It stays queued and is sent again at .+\.$/,
+  );
+  expect(line).toHaveTextContent(formatDate(retryAt, { timeStyle: "medium" }));
 });
