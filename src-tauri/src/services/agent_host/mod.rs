@@ -14,6 +14,7 @@ mod ext;
 pub mod harness;
 mod harness_env;
 pub(crate) mod kimi;
+mod kimi_relay;
 mod legacy_import;
 pub mod protocol;
 pub(crate) mod replay;

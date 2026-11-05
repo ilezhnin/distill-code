@@ -280,13 +280,46 @@ fn last_turn_outcome(wire_tail: &str, since_ms: i64) -> TurnOutcome {
 /// How the Kimi session `session_id` under `home` ended its last turn, for a
 /// prompt the host sent at `since_ms` (Unix milliseconds).
 pub(super) fn turn_outcome(home: &Path, session_id: &str, since_ms: i64) -> TurnOutcome {
-    let Some(dir) = session_dir(home, session_id) else {
-        return TurnOutcome::Unknown;
-    };
-    let Some(tail) = read_tail(&dir.join("agents").join("main").join("wire.jsonl")) else {
+    let Some(tail) = wire_path(home, session_id).and_then(|path| read_tail(&path)) else {
         return TurnOutcome::Unknown;
     };
     last_turn_outcome(&tail, since_ms)
+}
+
+/// The record of the Kimi session `session_id`'s main agent, if the session
+/// has one yet.
+pub(super) fn wire_path(home: &Path, session_id: &str) -> Option<PathBuf> {
+    session_dir(home, session_id).map(|dir| dir.join("agents").join("main").join("wire.jsonl"))
+}
+
+/// Whether a turn a prompt began at or after `since_ms` has run to its end
+/// among `lines` of a session record. The CLI answers a prompt it ran as the
+/// turn ends, but one it queued behind a running turn at once, before any
+/// turn of it begins (see `kimi_relay`).
+pub(super) fn ran_prompt_turn_since<'a>(
+    lines: impl Iterator<Item = &'a str>,
+    since_ms: i64,
+) -> bool {
+    let mut begun = std::collections::HashSet::new();
+    for event in lines
+        .filter(|line| line.contains("\"turn."))
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+    {
+        let turn = || event["turnId"].as_i64();
+        match event["type"].as_str() {
+            Some("turn.prompt")
+                if event["origin"]["kind"].as_str() == Some("user")
+                    && event["time"].as_i64().is_some_and(|time| time >= since_ms) =>
+            {
+                begun.extend(turn());
+            }
+            Some("turn.ended") if turn().is_some_and(|turn| begun.contains(&turn)) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 pub(super) fn annotate_models(rows: &mut [Value], catalog: &Value) {
@@ -643,6 +676,38 @@ mod tests {
             last_turn_outcome(&wire(&[untimed]), 0),
             TurnOutcome::Unknown
         );
+    }
+
+    #[test]
+    fn a_prompt_answered_before_its_turn_ran_was_queued() {
+        let goal = r#"{"type":"turn.prompt","agentId":"main","origin":{"kind":"system_trigger","name":"goal_continuation"},"turnId":20,"time":1000}"#;
+        let goal_ended = r#"{"type":"turn.ended","agentId":"main","turnId":20,"reason":"completed","time":5000}"#;
+        let asked = r#"{"type":"turn.prompt","agentId":"main","origin":{"kind":"user"},"promptId":"msg_a","turnId":21,"time":5001}"#;
+        let answered = r#"{"type":"turn.ended","agentId":"main","turnId":21,"reason":"completed","time":9000}"#;
+        // Sent at 2000 while the goal's turn ran: answered at once, queued.
+        assert!(!ran_prompt_turn_since(wire(&[goal]).lines(), 2000));
+        // Its turn has begun but not ended when the answer came: still queued.
+        assert!(!ran_prompt_turn_since(
+            wire(&[goal, goal_ended, asked]).lines(),
+            2000
+        ));
+        // Sent at 5000 to an idle session, run, and answered as it ended.
+        assert!(ran_prompt_turn_since(
+            wire(&[goal, goal_ended, asked, answered]).lines(),
+            5000
+        ));
+        // The agent's own turns are no prompt's.
+        let goal_again = r#"{"type":"turn.prompt","agentId":"main","origin":{"kind":"system_trigger","name":"goal_continuation"},"turnId":22,"time":9001}"#;
+        let goal_again_ended = r#"{"type":"turn.ended","agentId":"main","turnId":22,"reason":"completed","time":9500}"#;
+        assert!(!ran_prompt_turn_since(
+            wire(&[goal_again, goal_again_ended]).lines(),
+            9000
+        ));
+        // A turn begun before the prompt went out is an earlier prompt's.
+        assert!(!ran_prompt_turn_since(
+            wire(&[asked, answered]).lines(),
+            6000
+        ));
     }
 
     #[test]

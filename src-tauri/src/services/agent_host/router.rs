@@ -253,6 +253,15 @@ const BRIDGE_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// the bridge itself was shut down meanwhile. Half an hour keeps a conversation
 /// with pauses attached; merely reading history never opens a bridge session.
 const SESSION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How often the host reads the session records of ordinary Kimi chats for
+/// the turns the Kimi ACP adapter never forwards (`kimi_relay`).
+const KIMI_FOLLOW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// How often the host looks again for a Kimi session record it has not found:
+/// a new session has none until its first prompt.
+const KIMI_RECORD_LOOK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// A record the CLI created this close to when the host began to follow the
+/// chat, or later, is a new session's: all of it is new.
+const KIMI_NEW_RECORD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a bridge has to end a turn it was told to cancel before the host
 /// ends it itself (see `end_cancelled_turn_if_unanswered`).
 const CANCEL_ANSWER_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
@@ -849,6 +858,10 @@ pub struct Inner {
     next_client_request_id: AtomicU64,
     events_tx: mpsc::UnboundedSender<BridgeEvent>,
     spawn_env: Mutex<Option<Arc<SpawnEnv>>>,
+    /// What the host follows of each ordinary Kimi chat's session record, by
+    /// host session id: the turns the Kimi ACP adapter never forwards (see
+    /// `kimi_relay`). Taken before `sessions` whenever both are held.
+    kimi_follows: Mutex<HashMap<String, super::kimi_relay::KimiFollow>>,
     /// One lock per session so an explicit configuration and a prompt
     /// arriving together never race to attach twice; the
     /// second caller waits and then takes the already-attached fast path.
@@ -1107,6 +1120,7 @@ impl Inner {
             next_client_request_id: AtomicU64::new(1_000_000),
             events_tx,
             spawn_env: Mutex::new(None),
+            kimi_follows: Mutex::new(HashMap::new()),
             attach_locks: Mutex::new(HashMap::new()),
             naming_replies: StdMutex::new(HashMap::new()),
             selection_split: AtomicU8::new(0),
@@ -1121,6 +1135,9 @@ impl Inner {
         tokio::spawn(Arc::clone(&inner).bridge_event_loop(events_rx));
         tokio::spawn(Self::reap_idle_bridges_periodically(Arc::downgrade(&inner)));
         tokio::spawn(Self::compact_history_in_background(Arc::downgrade(&inner)));
+        tokio::spawn(Self::follow_kimi_records_periodically(Arc::downgrade(
+            &inner,
+        )));
         if inner
             .app
             .try_state::<crate::services::e2e_mode::E2eMode>()
@@ -1306,7 +1323,7 @@ impl Inner {
     /// as running (it adopted the host's updates), so it is told the turn is
     /// over the way a steer's own background turn is: `activeRunId: null`.
     async fn settle_orphaned_turn(&self, session_id: &str) {
-        if self.active_run_id(session_id).await.is_some() {
+        if self.reported_run_id(session_id).await.is_some() {
             return;
         }
         log::info!(
@@ -1363,6 +1380,9 @@ impl Inner {
                     .unwrap_or(((0, false), None));
                 if ended_background {
                     self.notify_frontend("session/update", Self::run_settled_update(&session_id));
+                }
+                if cancelled_run.is_none() {
+                    self.stop_kimi_own_turn(&session_id).await;
                 }
                 if dropped > 0 {
                     log::info!(
@@ -2099,7 +2119,7 @@ impl Inner {
             let host = Arc::clone(&host);
             move |session_id: String| {
                 let host = Arc::clone(&host);
-                async move { host.active_run_id(&session_id).await.is_some() }
+                async move { host.reported_run_id(&session_id).await.is_some() }
             }
         };
         let mut sessions = 0usize;
@@ -2240,6 +2260,369 @@ impl Inner {
             .is_some_and(|entry| Arc::ptr_eq(entry, &lock) && Arc::strong_count(&lock) == 2)
         {
             locks.remove(session_id);
+        }
+    }
+
+    /// Read every ordinary Kimi chat's session record twice a second for the
+    /// turns the Kimi ACP adapter never forwards (see `kimi_relay`).
+    async fn follow_kimi_records_periodically(host: Weak<Inner>) {
+        loop {
+            tokio::time::sleep(KIMI_FOLLOW_INTERVAL).await;
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            host.follow_kimi_records().await;
+        }
+    }
+
+    /// Read what each attached Kimi chat's record gained since the last look
+    /// and show the turns of it the bridge does not: those the agent began by
+    /// itself and those of prompts the CLI queued. They go through the bridge
+    /// event queue, stored and ordered like every other update of the chat.
+    async fn follow_kimi_records(&self) {
+        let (attached, live) = {
+            let sessions = self.sessions.lock().await;
+            let attached: std::collections::HashSet<String> =
+                sessions.iter().map(|(id, _)| id.clone()).collect();
+            let live: Vec<(String, String, u64, String)> = sessions
+                .iter()
+                .filter(|(_, runtime)| {
+                    runtime.harness == "kimi-acp"
+                        && runtime.execution_profile.is_none()
+                        && !runtime.loading
+                })
+                .map(|(id, runtime)| {
+                    (
+                        id.clone(),
+                        runtime.bridge_session_id.clone(),
+                        runtime.generation,
+                        runtime.route_key(),
+                    )
+                })
+                .collect();
+            (attached, live)
+        };
+        let mut follows = self.kimi_follows.lock().await;
+        // A chat let go of takes its follower along; the next attach follows
+        // the record from its end again. A reply it was showing ends there:
+        // the CLI closed the session and its turn with it.
+        let mut abandoned = Vec::new();
+        follows.retain(|session_id, follow| {
+            let keep = attached.contains(session_id);
+            if !keep {
+                abandoned.extend(
+                    follow
+                        .stop_shown(&now_iso())
+                        .map(|closing| (session_id.clone(), closing)),
+                );
+            }
+            keep
+        });
+        for (session_id, bridge_session_id, generation, route) in live {
+            let (follow, closing) =
+                Self::kimi_follow_for(&mut follows, &session_id, &bridge_session_id, generation);
+            abandoned.extend(closing.map(|closing| (session_id.clone(), closing)));
+            self.read_kimi_record(follow).await;
+            let prompt_running = {
+                let mut sessions = self.sessions.lock().await;
+                let Some(runtime) = sessions.get_mut(&session_id).filter(|runtime| {
+                    runtime.generation == generation
+                        && runtime.bridge_session_id == bridge_session_id
+                }) else {
+                    continue;
+                };
+                // The agent at work is the chat in use, shown or not: a chat
+                // let go of as idle mid-goal would pause the goal.
+                if follow.in_turn() {
+                    runtime.touch();
+                }
+                runtime.run.is_some()
+            };
+            for update in follow.advance(prompt_running) {
+                let _ = self.events_tx.send(BridgeEvent::Relayed {
+                    harness: route.clone(),
+                    generation,
+                    params: json!({ "sessionId": bridge_session_id, "update": update }),
+                });
+            }
+        }
+        drop(follows);
+        self.close_abandoned_kimi_replies(abandoned).await;
+    }
+
+    /// End the replies of Kimi turns the chat stopped following because it
+    /// let go of the CLI session (another agent or account, a bridge that
+    /// exited): no runtime routes an update to the chat any more, so they are
+    /// stored and sent here, after everything the event queue still holds.
+    async fn close_abandoned_kimi_replies(&self, closings: Vec<(String, Value)>) {
+        if closings.is_empty() {
+            return;
+        }
+        if let Err(error) = self.drain_bridge_events().await {
+            log::warn!(
+                "[agent-host] closing abandoned Kimi replies before their history is durable: {}",
+                error_text(&error)
+            );
+        }
+        let mut pending: Vec<(String, Value)> = closings
+            .into_iter()
+            .map(|(session_id, update)| {
+                let params = json!({ "sessionId": session_id, "update": update });
+                (session_id, params)
+            })
+            .collect();
+        if let Err(error) =
+            Self::persist_pending_events(&self.store, &mut pending, |payload, id| {
+                if let Some(payload) = Self::frontend_event(payload, id) {
+                    self.notify_frontend("session/update", payload);
+                }
+            })
+            .await
+        {
+            log::warn!("[agent-host] could not close abandoned Kimi replies: {error}");
+        }
+    }
+
+    /// The follower of `session_id`'s record, begun anew for another CLI
+    /// session or process: what an old process queued went with it, and so
+    /// did a turn it was running, whose reply's closing comes second.
+    fn kimi_follow_for<'a>(
+        follows: &'a mut HashMap<String, super::kimi_relay::KimiFollow>,
+        session_id: &str,
+        bridge_session_id: &str,
+        generation: u64,
+    ) -> (&'a mut super::kimi_relay::KimiFollow, Option<Value>) {
+        let follow = follows.entry(session_id.to_string()).or_insert_with(|| {
+            super::kimi_relay::KimiFollow::new(bridge_session_id.to_string(), generation)
+        });
+        let mut closing = None;
+        if follow.bridge_session_id != bridge_session_id || follow.generation != generation {
+            closing = follow.stop_shown(&now_iso());
+            *follow = super::kimi_relay::KimiFollow::new(bridge_session_id.to_string(), generation);
+        }
+        (follow, closing)
+    }
+
+    /// Read what a Kimi chat's record gained into its follower, finding the
+    /// record first if need be: from its end, unless the CLI created it since
+    /// the host began to follow the chat (a new session's first prompt does),
+    /// when all of it is new.
+    async fn read_kimi_record(&self, follow: &mut super::kimi_relay::KimiFollow) {
+        if follow.reader.is_none() {
+            if follow
+                .looked_for
+                .is_some_and(|looked| looked.elapsed() < KIMI_RECORD_LOOK_INTERVAL)
+            {
+                return;
+            }
+            follow.looked_for = Some(std::time::Instant::now());
+            let env = self.spawn_env().await;
+            let Some(home) = super::kimi::home(&env.shell_env) else {
+                return;
+            };
+            let (session, since) = (follow.bridge_session_id.clone(), follow.since);
+            follow.reader = tokio::task::spawn_blocking(move || {
+                let path = super::kimi::wire_path(&home, &session)?;
+                let new = std::fs::metadata(&path)
+                    .and_then(|meta| meta.created())
+                    .is_ok_and(|created| created + KIMI_NEW_RECORD_GRACE >= since);
+                Some(if new {
+                    super::kimi_relay::WireReader::new(path, 0)
+                } else {
+                    super::kimi_relay::WireReader::at_end(path)
+                })
+            })
+            .await
+            .ok()
+            .flatten();
+        }
+        let Some(mut reader) = follow.reader.take() else {
+            return;
+        };
+        let path = reader.path().to_path_buf();
+        match tokio::task::spawn_blocking(move || {
+            let lines = reader.read_lines();
+            (reader, lines)
+        })
+        .await
+        {
+            Ok((reader, lines)) => {
+                follow.reader = Some(reader);
+                follow.push_lines(lines);
+            }
+            Err(error) => {
+                log::warn!(
+                    "[agent-host] could not read Kimi session record {}: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// Follow a Kimi chat's record from before a prompt goes out, so the turn
+    /// the prompt begins is read as that prompt's, and note the message the
+    /// agent's later turns follow.
+    async fn follow_kimi_prompt(
+        &self,
+        session_id: &str,
+        bridge_session_id: &str,
+        generation: u64,
+        message_id: &str,
+    ) {
+        let closing = {
+            let mut follows = self.kimi_follows.lock().await;
+            let (follow, closing) =
+                Self::kimi_follow_for(&mut follows, session_id, bridge_session_id, generation);
+            follow.latest_message = Some(message_id.to_string());
+            if follow.reader.is_none() {
+                follow.looked_for = None;
+            }
+            self.read_kimi_record(follow).await;
+            closing
+        };
+        self.close_abandoned_kimi_replies(
+            closing
+                .map(|closing| (session_id.to_string(), closing))
+                .into_iter()
+                .collect(),
+        )
+        .await;
+    }
+
+    /// After a Kimi prompt sent at `sent_at_ms` was answered with an empty
+    /// `end_turn`: whether the CLI queued it behind a turn it was running
+    /// rather than ran it. A queued prompt's answer is shown under its message
+    /// when the CLI runs it (`kimi_relay`), and the chat is told it waits.
+    async fn settle_kimi_prompt(
+        &self,
+        session_id: &str,
+        bridge_session_id: &str,
+        generation: u64,
+        message_id: &str,
+        sent_at_ms: i64,
+    ) {
+        let queued = {
+            let mut follows = self.kimi_follows.lock().await;
+            // The follower was begun before the prompt went out, for this
+            // very process and session; a newer one is not this prompt's.
+            let Some(follow) = follows.get_mut(session_id).filter(|follow| {
+                follow.bridge_session_id == bridge_session_id && follow.generation == generation
+            }) else {
+                return;
+            };
+            if follow.reader.is_none() {
+                follow.looked_for = None;
+            }
+            self.read_kimi_record(follow).await;
+            let queued = follow.reader.is_some() && !follow.prompt_turn_ran(sent_at_ms);
+            if queued {
+                follow.queued.push_back(message_id.to_string());
+            }
+            queued
+        };
+        if !queued {
+            return;
+        }
+        log::info!(
+            "[agent-host] Kimi queued message {message_id} of {session_id} behind the turn it is running; its answer is shown from the session record"
+        );
+        self.notify_frontend(
+            "session/update",
+            json!({
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "notice",
+                    "severity": "info",
+                    "title": "Kimi will answer after its current turn",
+                    "description": "Kimi was busy with a turn of its own, so it queued this message. Its answer appears here when Kimi gets to it.",
+                },
+            }),
+        );
+    }
+
+    /// Stop the turn a Kimi agent began by itself, as the chat's Stop asks.
+    /// Kimi's ACP adapter cancels only a turn a prompt of its own began, so
+    /// the host closes the chat's Kimi session instead: the CLI cancels the
+    /// turn and pauses the goal driving it. The chat keeps its session id,
+    /// and its next message resumes the session.
+    async fn stop_kimi_own_turn(&self, session_id: &str) {
+        let stopped = {
+            let mut follows = self.kimi_follows.lock().await;
+            follows.get_mut(session_id).and_then(|follow| {
+                let closing = follow.stop_shown(&now_iso())?;
+                Some((closing, follow.bridge_session_id.clone(), follow.generation))
+            })
+        };
+        let Some((closing, bridge_session_id, generation)) = stopped else {
+            return;
+        };
+        let route = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .filter(|runtime| runtime.generation == generation)
+            .map(SessionRuntime::route_key);
+        let Some(route) = route else {
+            return;
+        };
+        let _ = self.events_tx.send(BridgeEvent::Relayed {
+            harness: route.clone(),
+            generation,
+            params: json!({ "sessionId": bridge_session_id, "update": closing }),
+        });
+        if let Err(error) = self.drain_bridge_events().await {
+            log::warn!(
+                "[agent-host] the stopped Kimi turn of {session_id} is not stored yet: {}",
+                error_text(&error)
+            );
+        }
+        let Some(bridge) = self
+            .live_bridge(&route)
+            .await
+            .filter(|bridge| bridge.generation() == generation)
+        else {
+            return;
+        };
+        if !bridge.supports_load_session() {
+            log::warn!(
+                "[agent-host] Kimi cannot resume sessions here, so the turn it began by itself in {session_id} runs on"
+            );
+            self.notify_frontend(
+                "session/update",
+                json!({
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "notice",
+                        "severity": "warning",
+                        "title": "Kimi keeps working",
+                        "description": "This Kimi setup cannot reopen a session, so its own turn could not be stopped without losing the conversation.",
+                    },
+                }),
+            );
+            return;
+        }
+        let lock = self.attach_lock(session_id).await;
+        let _stopping = lock.lock().await;
+        let released = {
+            let mut sessions = self.sessions.lock().await;
+            let idle = sessions.get(session_id).is_some_and(|runtime| {
+                runtime.generation == generation
+                    && runtime.bridge_session_id == bridge_session_id
+                    && runtime.run.is_none()
+                    && !runtime.loading
+            });
+            if idle {
+                sessions.remove(session_id)
+            } else {
+                None
+            }
+        };
+        if released.is_some() {
+            log::info!(
+                "[agent-host] stopped the turn Kimi began by itself in {session_id}: closed its Kimi session, which pauses its goal"
+            );
+            bridge.close_session(&bridge_session_id).await;
         }
     }
 
@@ -2393,6 +2776,29 @@ impl Inner {
                             run_id.as_deref(),
                             &method,
                             params,
+                            false,
+                        )
+                        .await
+                    {
+                        pending.push(event);
+                        if pending.len() >= APPEND_BATCH_LIMIT {
+                            let _ = self.flush_pending_events(&mut pending).await;
+                        }
+                    }
+                }
+                BridgeEvent::Relayed {
+                    harness,
+                    generation,
+                    params,
+                } => {
+                    if let Some(event) = self
+                        .on_bridge_notification(
+                            &harness,
+                            generation,
+                            None,
+                            "session/update",
+                            params,
+                            true,
                         )
                         .await
                     {
@@ -2584,6 +2990,10 @@ impl Inner {
     /// there is nothing to store: a notification that is not a session update,
     /// one of a session nobody is watching, or a replay of history the session
     /// already has.
+    /// `relayed` marks an update the host read from a Kimi session's own
+    /// record ([`BridgeEvent::Relayed`]): the turn it belongs to never reaches
+    /// the bridge's prompt, and it arrives already stamped as the agent's own
+    /// reply.
     async fn on_bridge_notification(
         &self,
         harness: &str,
@@ -2591,6 +3001,7 @@ impl Inner {
         received_run: Option<&str>,
         method: &str,
         mut params: Value,
+        relayed: bool,
     ) -> Option<(String, Value)> {
         // Drain notifications already queued before Exited even if stdout has
         // closed. Liveness is not ownership; a replacement generation is.
@@ -2668,8 +3079,7 @@ impl Inner {
                 if runtime.loading || runtime.generation != generation {
                     return None;
                 }
-                steering::acknowledge_echo(&mut runtime.native_steers, received_run, &mut params);
-                if !Self::accept_turn_update(runtime, received_run, &mut params) {
+                if !Self::accept_update(runtime, received_run, &mut params, relayed) {
                     return None;
                 }
                 if runtime.execution_profile.is_none()
@@ -2806,6 +3216,22 @@ impl Inner {
             matches!(kind, "tool_call" | "tool_call_update" | "plan")
                 || kind.starts_with("async_task")
         })
+    }
+
+    /// Whether a chat keeps an update: one the bridge sent (see
+    /// [`Self::accept_turn_update`]), or one the host read from an ordinary
+    /// Kimi chat's own session record (`relayed`), which only the host queues.
+    fn accept_update(
+        runtime: &mut SessionRuntime,
+        received_run: Option<&str>,
+        params: &mut Value,
+        relayed: bool,
+    ) -> bool {
+        if relayed {
+            return runtime.harness == "kimi-acp" && runtime.execution_profile.is_none();
+        }
+        steering::acknowledge_echo(&mut runtime.native_steers, received_run, params);
+        Self::accept_turn_update(runtime, received_run, params)
     }
 
     fn accept_turn_update(
@@ -4378,7 +4804,7 @@ impl Inner {
         // renderer applies it after its replay, the way it applies every
         // update that arrives during a load.
         if !owned {
-            if let Some(run_id) = self.active_run_id(&session_id).await {
+            if let Some(run_id) = self.reported_run_id(&session_id).await {
                 response["_meta"]["activeRunId"] = json!(run_id);
                 self.notify_frontend(
                     "session/update",
@@ -4452,6 +4878,21 @@ impl Inner {
             })
     }
 
+    /// The run a chat is busy with as the renderer is to see it: a prompt's or
+    /// a background reply's ([`Self::active_run_id`]), or the turn a Kimi
+    /// agent began by itself and the chat is shown (`kimi_relay`). Sends are
+    /// never refused for the last: Kimi queues them itself.
+    async fn reported_run_id(&self, session_id: &str) -> Option<String> {
+        if let Some(run_id) = self.active_run_id(session_id).await {
+            return Some(run_id);
+        }
+        self.kimi_follows
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|follow| follow.running_reply().map(str::to_string))
+    }
+
     async fn list_sessions(&self, params: Value) -> Result<Value, Value> {
         let offset: i64 = params
             .get("cursor")
@@ -4470,7 +4911,7 @@ impl Inner {
         };
         let mut sessions = Vec::with_capacity(records.len());
         for record in &records {
-            let active = self.active_run_id(&record.id).await;
+            let active = self.reported_run_id(&record.id).await;
             sessions.push(Self::session_info(record, active.as_deref()));
         }
         Ok(json!({ "sessions": sessions, "nextCursor": next_cursor }))
@@ -6685,6 +7126,16 @@ impl Inner {
         result
     }
 
+    /// Whether the run `run_id` of a chat has had any of the agent's reply.
+    async fn run_saw_agent_message(&self, session_id: &str, run_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|runtime| runtime.run.as_ref())
+            .is_some_and(|run| run.run_id == run_id && run.saw_agent_message)
+    }
+
     /// The failure a Kimi session recorded for the turn the host sent at
     /// `sent_at_ms`, if it recorded one (see `kimi::turn_outcome`). The CLI
     /// writes the record as the turn ends, a moment before it answers the
@@ -6839,9 +7290,18 @@ impl Inner {
             // Kimi answers a failed turn with a plain `end_turn`; an ordinary
             // chat reads its session record afterwards (`kimi_turn_failure`).
             // An owned run has its record in the sandbox, out of reach.
-            let kimi_record = runtime.harness == "kimi-acp" && runtime.execution_profile.is_none();
+            // Kimi also queues a prompt that arrives while a turn of its own
+            // runs, and shows that prompt's answer only on its record
+            // (`kimi_relay`), so the record is followed from before the send.
+            let kimi_record = (runtime.harness == "kimi-acp"
+                && runtime.execution_profile.is_none())
+            .then(|| (runtime.generation, run.message_id.clone()));
             (run.run_id.clone(), receipt, kimi_record)
         };
+        if let Some((generation, message_id)) = &kimi_record {
+            self.follow_kimi_prompt(session_id, bridge_session_id, *generation, message_id)
+                .await;
+        }
         let mut prompt_admission = task_admission;
         if let Some(start) = &receipt_start {
             check_owned_deadline(owned_deadline)?;
@@ -6924,11 +7384,11 @@ impl Inner {
             );
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        if kimi_record
-            && result
+        if let Some((generation, message_id)) = kimi_record.as_ref().filter(|_| {
+            result
                 .as_ref()
                 .is_ok_and(|response| response["stopReason"].as_str() == Some("end_turn"))
-        {
+        }) {
             if let Some(failure) = self.kimi_turn_failure(bridge_session_id, sent_at_ms).await {
                 log::warn!(
                     "[agent-host] kimi-acp turn of {session_id} failed out of band ({}): {}",
@@ -6940,6 +7400,15 @@ impl Inner {
                     failure.message
                 );
                 result = Err(failure.prompt_error());
+            } else if !self.run_saw_agent_message(session_id, &run_id).await {
+                self.settle_kimi_prompt(
+                    session_id,
+                    bridge_session_id,
+                    *generation,
+                    message_id,
+                    sent_at_ms,
+                )
+                .await;
             }
         }
         if let Some(start) = &receipt_start {
@@ -12184,6 +12653,21 @@ mod tests {
         let mut idle = runtime("claude-acp", "a", 1);
         idle.last_active = last_active;
         idle
+    }
+
+    #[test]
+    fn only_an_ordinary_kimi_chat_keeps_turns_read_from_its_session_record() {
+        let chunk = || json!({"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Next step"}}});
+        let mut kimi = runtime("kimi-acp", "session_example", 3);
+        // The bridge sending a turn no prompt of the chat runs is refused...
+        assert!(!Inner::accept_update(&mut kimi, None, &mut chunk(), false));
+        // ...while the host's reading of the record is the chat's.
+        assert!(Inner::accept_update(&mut kimi, None, &mut chunk(), true));
+        let mut owned = runtime("kimi-acp", "session_owned", 3);
+        owned.execution_profile = Some("text".into());
+        assert!(!Inner::accept_update(&mut owned, None, &mut chunk(), true));
+        let mut claude = runtime("claude-acp", "example", 3);
+        assert!(!Inner::accept_update(&mut claude, None, &mut chunk(), true));
     }
 
     #[test]

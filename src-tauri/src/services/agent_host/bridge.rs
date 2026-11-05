@@ -220,6 +220,15 @@ pub enum BridgeEvent {
         method: String,
         params: Value,
     },
+    /// A `session/update` the host read from the provider's own record of a
+    /// session rather than from the bridge (see `kimi_relay`): a turn the
+    /// bridge never forwards. Only the host queues one, so the router can
+    /// trust the reply identity it is stamped with.
+    Relayed {
+        harness: String,
+        generation: u64,
+        params: Value,
+    },
     Exited {
         harness: String,
         /// Which bridge process for that harness died — see
