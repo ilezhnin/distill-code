@@ -429,6 +429,7 @@
     "edit": "Edit queued message",
     "sendAnyway": "Send anyway",
     "backgroundSendFailed": "The queued message could not be sent. Retry it or edit the message.",
+    "backgroundSendFailedWithReason": "The queued message could not be sent: {{reason}}",
     "backgroundSendFailedTitle": "Queued message failed",
     "configureWorktree": "Configure your new worktree?",
     "configureWorkspaces": "Configure new project workspaces?",

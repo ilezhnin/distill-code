@@ -4,7 +4,10 @@ import {
   assertQueuedSessionReady,
   isQueuedSessionReady,
 } from "@/features/chat/lib/queuedMessageReadiness";
-import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import {
+  PreCommitSendRejectedError,
+  QueuedMessageAlreadyAcceptedError,
+} from "@/features/chat/lib/preCommitSendRejection";
 import {
   assertQueuedMessageAttemptOwned,
   becameQueuedMessageTargetAttemptable,
@@ -23,7 +26,10 @@ import {
   sendPromptToExistingSessionInBackground,
 } from "@/features/flockctl/commands/runtime/sessionSend";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
-import { parkFailedQueuedMessage } from "@/features/chat/lib/queuedMessageFailure";
+import {
+  letGoOfAcceptedQueuedMessage,
+  parkFailedQueuedMessage,
+} from "@/features/chat/lib/queuedMessageFailure";
 import { accountQuotaWaitData } from "@/features/chat/lib/accountQuotaWait";
 
 const drainingSessionIds = new Set<string>();
@@ -191,6 +197,11 @@ function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
         });
         return;
       }
+      if (error instanceof QueuedMessageAlreadyAcceptedError) {
+        letGoOfAcceptedQueuedMessage(queuedSessionId, queuedMessage, error);
+        shouldResumeDrain = true;
+        return;
+      }
       if (error instanceof PreCommitSendRejectedError) {
         shouldResumeDrain = true;
         return;
@@ -199,7 +210,7 @@ function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
         `[flockctl-queue] failed to send queued prompt for session ${queuedSessionId}`,
         error,
       );
-      parkFailedQueuedMessage(queuedSessionId, queuedMessage);
+      parkFailedQueuedMessage(queuedSessionId, queuedMessage, error);
     })
     .finally(() => {
       drainingSessionIds.delete(queuedSessionId);

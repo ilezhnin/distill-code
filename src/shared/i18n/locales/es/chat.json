@@ -429,6 +429,7 @@
     "edit": "Editar mensaje en cola",
     "sendAnyway": "Enviar de todos modos",
     "backgroundSendFailed": "No se pudo enviar el mensaje en cola. Reinténtalo o edita el mensaje.",
+    "backgroundSendFailedWithReason": "No se pudo enviar el mensaje en cola: {{reason}}",
     "backgroundSendFailedTitle": "No se pudo enviar el mensaje en cola",
     "configureWorktree": "¿Configurar un worktree nuevo?",
     "configureWorkspaces": "¿Configurar espacios de trabajo nuevos para el proyecto?",

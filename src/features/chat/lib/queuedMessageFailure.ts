@@ -1,6 +1,8 @@
 import { toast } from "sonner";
 import { i18n } from "@/shared/i18n";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+import { logRendererEvent } from "@/shared/api/rendererLog";
+import type { QueuedMessageAlreadyAcceptedError } from "@/features/chat/lib/preCommitSendRejection";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   type QueuedMessageRecord,
@@ -23,16 +25,25 @@ function notifyParkedSend(sessionId: string, message: string): void {
  * (LAWS/CHAT.md), parked as failed so no drain attempts it again, and the
  * operator is told once. Left as it was, a prompt whose target cannot be
  * resolved (its project was archived, say) failed again on every start and
- * only ever reached the console.
+ * only ever reached the console. The parked record, the notice and the app
+ * log carry the reason, so the operator can tell what to change.
  */
 export function parkFailedQueuedMessage(
   sessionId: string,
   queuedMessage: QueuedMessageRecord,
+  error?: unknown,
 ): void {
   const current =
     useChatStore.getState().queuedMessageBySession[sessionId]?.[0];
   if (current !== queuedMessage) return;
-  const message = i18n.t("chat:queue.backgroundSendFailed");
+  const reason = error === undefined ? "" : formatAcpErrorMessage(error, "");
+  const message = reason
+    ? i18n.t("chat:queue.backgroundSendFailedWithReason", { reason })
+    : i18n.t("chat:queue.backgroundSendFailed");
+  void logRendererEvent(
+    "warn",
+    `[queue] parked a queued message for session ${sessionId}: ${reason || "no reason given"}`,
+  );
   useChatStore
     .getState()
     .deferTransportReadyMessage(sessionId, queuedMessage.recordId, {
@@ -43,6 +54,27 @@ export function parkFailedQueuedMessage(
   // Background drains only claim chats nobody is viewing, so a parked failure
   // would otherwise stay invisible until the chat is opened.
   notifyParkedSend(sessionId, message);
+}
+
+/**
+ * A queued record whose message the host already took into the session (the
+ * app stopped before the queue let the record go) is let go now: the message
+ * is in the conversation, and sending the copy would make a second user turn.
+ * The app log says so, since the queue changes without a send.
+ */
+export function letGoOfAcceptedQueuedMessage(
+  sessionId: string,
+  queuedMessage: QueuedMessageRecord,
+  error: QueuedMessageAlreadyAcceptedError,
+): void {
+  const current =
+    useChatStore.getState().queuedMessageBySession[sessionId]?.[0];
+  if (current?.recordId !== queuedMessage.recordId || current.editing) return;
+  void logRendererEvent(
+    "info",
+    `[queue] session ${sessionId} already holds queued message ${queuedMessage.recordId} (${error.requestKey}); letting go of the stale copy`,
+  );
+  useChatStore.getState().dismissQueuedMessage(sessionId, queuedMessage.recordId);
 }
 
 /**

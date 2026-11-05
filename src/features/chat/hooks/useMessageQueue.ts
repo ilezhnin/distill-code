@@ -2,7 +2,11 @@ import { useEffect, useCallback, useMemo, useRef } from "react";
 import type { ChatState } from "@/shared/types/chat";
 import { isPromiseLike } from "@/shared/lib/isPromiseLike";
 import { isAccountQuotaWaiting } from "../lib/accountQuotaWait";
-import { parkWithdrawnQueuedMessage } from "../lib/queuedMessageFailure";
+import {
+  letGoOfAcceptedQueuedMessage,
+  parkWithdrawnQueuedMessage,
+} from "../lib/queuedMessageFailure";
+import { QueuedMessageAlreadyAcceptedError } from "../lib/preCommitSendRejection";
 import {
   needsInitialChatExecutor,
   prepareQueuedInitialChatExecutor,
@@ -247,6 +251,13 @@ export function useMessageQueue(
             if (head?.payload !== payload) {
               lastAttemptRef.current = null;
               tryDrainQueuedMessage(head);
+            } else if (error instanceof QueuedMessageAlreadyAcceptedError) {
+              // The session already holds this message; the copy is stale.
+              lastAttemptRef.current = null;
+              letGoOfAcceptedQueuedMessage(sessionId, queuedMsg, error);
+              tryDrainQueuedMessage(
+                useChatStore.getState().queuedMessageBySession[sessionId]?.[0],
+              );
             } else {
               state.setError(sessionId, formatAcpErrorMessage(error));
             }

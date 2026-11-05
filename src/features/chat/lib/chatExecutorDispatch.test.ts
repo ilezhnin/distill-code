@@ -18,6 +18,7 @@ import {
   needsInitialChatExecutor,
 } from "./chatExecutorDispatch";
 import { dispatchPrompt } from "./sendCore";
+import { QueuedMessageAlreadyAcceptedError } from "./preCommitSendRejection";
 
 const mocks = vi.hoisted(() => ({ send: vi.fn() }));
 vi.mock("@/shared/api/acp", async (original) => ({
@@ -237,11 +238,14 @@ it("routes the accepted first task and preserves learned provenance through the 
   ).toBe(record);
   expect(mocks.send).not.toHaveBeenCalled();
   if (!saved) throw new Error("Missing committed selection");
-  vi.mocked(executorSelection.get).mockResolvedValue({
+  const savedRecord = {
     decision: saved,
     hostExecution: null,
     observations: [],
-  });
+  };
+  vi.mocked(executorSelection.get).mockImplementation(async (key) =>
+    key === record.payload.executorRequestKey ? savedRecord : null,
+  );
   vi.mocked(executorSelection.prepare).mockResolvedValue(saved);
   const input = {
     sessionId: "example-chat",
@@ -249,10 +253,26 @@ it("routes the accepted first task and preserves learned provenance through the 
     prompt: record.payload.text,
     personaId: "accepted-role",
   };
-  await expect(prepareChatExecutorDispatch(input)).rejects.toThrow(
-    "prepared executor decision",
+  // The bridge still runs other settings than the saved decision chose. The
+  // message is not held to that decision: it goes out under the next target
+  // key, pinned to what the session runs now.
+  vi.mocked(executorSelection.select).mockImplementation(async (request) =>
+    decision(request),
   );
-  // Only a matching host model/effort acknowledgement permits dispatch.
+  await expect(prepareChatExecutorDispatch(input)).resolves.toMatchObject({
+    metadata: {
+      decisionKey: `${record.payload.executorRequestKey}:target:1`,
+      logicalRunId: `${record.payload.executorRequestKey}:target:1`,
+    },
+  });
+  expect(executorSelection.select).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      requestKey: `${record.payload.executorRequestKey}:target:1`,
+      hardCandidateId: expect.stringContaining("task-model"),
+    }),
+    true,
+  );
+  // A host model/effort acknowledgement matching the saved decision runs it.
   useChatSessionStore.getState().patchSession("example-chat", {
     reasoningEffort: {
       configId: "effort",
@@ -635,7 +655,7 @@ it("reuses the original immutable preparation when only live history and compose
   );
 });
 
-it("refuses a prepared retry on a changed account before ACP with an actionable recovery error", async () => {
+it("sends a message prepared for a spent account under the account the chat runs now", async () => {
   const input = {
     sessionId: "example-chat",
     requestKey: "chat:prepared-account",
@@ -643,19 +663,99 @@ it("refuses a prepared retry on a changed account before ACP with an actionable 
   };
   await prepareChatExecutorDispatch(input);
   const saved = decision(vi.mocked(executorSelection.select).mock.calls[0][0]);
-  vi.mocked(executorSelection.get).mockResolvedValue({
-    decision: saved,
-    hostExecution: null,
-    observations: [],
-  });
+  vi.mocked(executorSelection.get).mockImplementation(async (key) =>
+    key === input.requestKey
+      ? { decision: saved, hostExecution: null, observations: [] }
+      : null,
+  );
   useChatSessionStore
     .getState()
     .patchSession("example-chat", { accountId: "new-account" });
+  await dispatchPrompt("example-chat", input.prompt, {
+    executorRequestKey: input.requestKey,
+  });
+  expect(executorSelection.select).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      requestKey: "chat:prepared-account:target:1",
+      candidates: [
+        expect.objectContaining({
+          configuration: expect.objectContaining({ accountId: "new-account" }),
+        }),
+      ],
+    }),
+    true,
+  );
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+  expect(mocks.send.mock.calls[0][2].promptMeta.executorSelection).toEqual({
+    decisionKey: "chat:prepared-account:target:1",
+    logicalRunId: "chat:prepared-account:target:1",
+  });
+});
+
+it("sends a message prepared for another provider to the provider the chat was switched to", async () => {
+  const input = {
+    sessionId: "example-chat",
+    requestKey: "chat:switched-provider",
+    prompt: "Accepted example",
+  };
+  await prepareChatExecutorDispatch(input);
+  const spent = decision(vi.mocked(executorSelection.select).mock.calls[0][0]);
+  // The operator moved the chat to another provider and model after the
+  // first provider ran out; the message never ran anywhere.
+  useChatSessionStore.getState().replaceSessionExecutionTarget("example-chat", {
+    harnessId: "claude-acp",
+    modelProviderId: "claude-acp",
+    modelId: "other-model",
+    modelName: "Other model",
+  });
+  vi.mocked(executorSelection.get).mockImplementation(async (key) =>
+    key === input.requestKey
+      ? { decision: spent, hostExecution: null, observations: [] }
+      : null,
+  );
+  await dispatchPrompt("example-chat", input.prompt, {
+    executorRequestKey: input.requestKey,
+  });
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+  expect(mocks.send.mock.calls[0][2].promptMeta.executorSelection).toEqual({
+    decisionKey: "chat:switched-provider:target:1",
+    logicalRunId: "chat:switched-provider:target:1",
+  });
+  expect(executorSelection.select).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      requestKey: "chat:switched-provider:target:1",
+      hardCandidateId: expect.stringContaining("claude-acp"),
+    }),
+    true,
+  );
+});
+
+it("finds the target a crashed dispatch ran under instead of sending the message again", async () => {
+  const input = {
+    sessionId: "example-chat",
+    requestKey: "chat:retargeted",
+    prompt: "Accepted example",
+  };
+  await prepareChatExecutorDispatch(input);
+  const first = decision(vi.mocked(executorSelection.select).mock.calls[0][0]);
+  useChatSessionStore
+    .getState()
+    .patchSession("example-chat", { accountId: "new-account" });
+  vi.mocked(executorSelection.get).mockImplementation(async (key) => {
+    if (key === input.requestKey)
+      return { decision: first, hostExecution: null, observations: [] };
+    if (key === `${input.requestKey}:target:1`)
+      return {
+        hostExecution: { start: {}, finish: { status: "completed" } },
+        observations: [],
+      } as never;
+    return null;
+  });
   await expect(
     dispatchPrompt("example-chat", input.prompt, {
       executorRequestKey: input.requestKey,
     }),
-  ).rejects.toThrow(/restore|edit/i);
+  ).rejects.toBeInstanceOf(QueuedMessageAlreadyAcceptedError);
   expect(mocks.send).not.toHaveBeenCalled();
 });
 
@@ -668,7 +768,7 @@ it("refuses a restored or unknown-outcome dispatch when the host already recorde
     dispatchPrompt("example-chat", "Do not duplicate.", {
       executorRequestKey: "chat:already-started",
     }),
-  ).rejects.toThrow("already has a recorded execution");
+  ).rejects.toBeInstanceOf(QueuedMessageAlreadyAcceptedError);
   expect(executorSelection.select).not.toHaveBeenCalled();
   expect(mocks.send).not.toHaveBeenCalled();
   expect(

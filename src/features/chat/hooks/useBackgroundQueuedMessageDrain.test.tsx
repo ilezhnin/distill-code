@@ -2,6 +2,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
+import { QueuedMessageAlreadyAcceptedError } from "@/features/chat/lib/preCommitSendRejection";
 import type { SessionDispatchReleaseWaiter } from "@/features/chat/lib/sessionTargetCoordinator";
 import {
   registerForegroundQueueOwner,
@@ -538,14 +539,44 @@ describe("useBackgroundQueuedMessageDrain", () => {
         state: {
           type: "workspace-first-send",
           status: "failed",
-          error: expect.any(String),
+          // The operator sees why, not only that it failed.
+          error: expect.stringContaining("preparation rejected"),
         },
       });
     });
     expect(mocks.toastError).toHaveBeenCalledWith(
       "Session",
-      expect.objectContaining({ description: expect.any(String) }),
+      expect.objectContaining({
+        description: expect.stringContaining("preparation rejected"),
+      }),
     );
+  });
+
+  it("lets go of a head its session already accepted and sends the next one", async () => {
+    const accepted = ordinaryRecord();
+    const next = {
+      ...ordinaryRecord(),
+      recordId: "record-next",
+      payload: { ...ordinaryRecord().payload, text: "next prompt" },
+    };
+    mocks.sendQueuedPromptToExistingSessionInBackground.mockRejectedValueOnce(
+      new QueuedMessageAlreadyAcceptedError("chat:accepted-before-restart"),
+    );
+    useChatStore.setState({
+      queuedMessageBySession: { "session-1": [accepted, next] },
+    });
+
+    render(<DrainHarness />);
+
+    await waitFor(() =>
+      expect(
+        mocks.sendQueuedPromptToExistingSessionInBackground,
+      ).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      mocks.sendQueuedPromptToExistingSessionInBackground.mock.calls[1][1],
+    ).toMatchObject({ recordId: "record-next" });
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("drains an ordinary queued head when no foreground chat owns the session", async () => {

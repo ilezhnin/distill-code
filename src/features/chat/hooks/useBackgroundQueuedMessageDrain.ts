@@ -5,7 +5,10 @@ import {
   isQueuedSessionReady,
   QueuedSessionNotReadyError,
 } from "@/features/chat/lib/queuedMessageReadiness";
-import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import {
+  PreCommitSendRejectedError,
+  QueuedMessageAlreadyAcceptedError,
+} from "@/features/chat/lib/preCommitSendRejection";
 import {
   assertQueuedMessageAttemptOwned,
   becameQueuedMessageTargetAttemptable,
@@ -25,6 +28,7 @@ import {
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import { sendQueuedPromptToExistingSessionInBackground } from "@/features/chat/lib/queuedSessionSend";
 import {
+  letGoOfAcceptedQueuedMessage,
   parkFailedQueuedMessage,
   parkWithdrawnQueuedMessage,
 } from "@/features/chat/lib/queuedMessageFailure";
@@ -319,12 +323,16 @@ function drainQueuedMessage(sessionId: string, ownerId: string): void {
         });
         return;
       }
+      if (error instanceof QueuedMessageAlreadyAcceptedError) {
+        letGoOfAcceptedQueuedMessage(sessionId, queuedMessage, error);
+        return;
+      }
       if (error instanceof PreCommitSendRejectedError) return;
       console.error(
         `[background-queue] failed to send queued prompt for session ${sessionId}`,
         error,
       );
-      parkFailedQueuedMessage(sessionId, queuedMessage);
+      parkFailedQueuedMessage(sessionId, queuedMessage, error);
     })
     .finally(() => {
       drainingSessionIds.delete(sessionId);

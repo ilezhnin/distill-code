@@ -36,6 +36,8 @@ import {
 import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepository";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import { accountQuotaWaitData } from "../lib/accountQuotaWait";
+import { QueuedMessageAlreadyAcceptedError } from "../lib/preCommitSendRejection";
+import { logRendererEvent } from "@/shared/api/rendererLog";
 
 // TODO: Remove this fallback once goose2 has first-class /-commands.
 const MANUAL_COMPACT_TRIGGER = "/compact";
@@ -249,6 +251,16 @@ export function useChat(
           },
         })
           .catch((error) => {
+            if (error instanceof QueuedMessageAlreadyAcceptedError) {
+              // The session already holds this message: the queue lets its
+              // stale copy go instead of sending it a second time.
+              void logRendererEvent(
+                "info",
+                `[queue] session ${sessionId} already holds the message for ${error.requestKey}; letting go of the stale copy`,
+              );
+              if (!accepted) resolve(true);
+              return;
+            }
             if (accountQuotaWaitData(error)?.promptNotAccepted === true) {
               if (userMessageCommitted) sendOptions?.onPromptNotAccepted?.();
               userMessageCommitted = false;

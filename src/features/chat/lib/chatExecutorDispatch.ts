@@ -11,7 +11,10 @@ import {
   type ApplicationExecutorOption,
 } from "@/features/benchmarks/lib/applicationExecutor";
 import { executorSelection } from "@/features/benchmarks/lib/executorSelection";
-import type { ExecutorHostReceipt } from "@/features/benchmarks/lib/executorSelection";
+import type {
+  ExecutorDecisionRecord,
+  ExecutorHostReceipt,
+} from "@/features/benchmarks/lib/executorSelection";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { useChatStore } from "../stores/chatStore";
 import type { QueuedMessageRecord } from "../stores/chatStore";
@@ -21,7 +24,10 @@ import {
 } from "@/features/providers/stores/providerModelCacheStore";
 import { assertQueuedMessageAttemptOwned } from "./queuedMessageAttemptOwnership";
 import { getSessionDispatchTarget } from "./sessionTargetCoordinator";
-import { PreCommitSendRejectedError } from "./preCommitSendRejection";
+import {
+  PreCommitSendRejectedError,
+  QueuedMessageAlreadyAcceptedError,
+} from "./preCommitSendRejection";
 import { normalizeSessionRunSettings } from "./sessionRunSettings";
 import { appendAttachmentPaths } from "./attachments";
 import type { Persona } from "@/shared/types/agents";
@@ -195,9 +201,7 @@ export async function prepareQueuedInitialChatExecutor(
         !isProvenUnaccepted(previous.hostExecution, sessionId, requestKey)) ||
       previous?.observations.length
     )
-      throw new Error(
-        "This accepted chat task already has a recorded execution",
-      );
+      throw new QueuedMessageAlreadyAcceptedError(requestKey);
     if (
       previous &&
       (previous.decision.request.contextId !== sessionId ||
@@ -363,6 +367,14 @@ function sessionConfiguration(sessionId: string) {
   return configuration;
 }
 
+/** Bound on targets one message may be prepared for without running. */
+const MAX_CHAT_EXECUTOR_TARGETS = 16;
+
+/** The journal key of a message's dispatch to its `n`th later target. */
+export function chatExecutorTargetKey(baseKey: string, target: number): string {
+  return target === 0 ? baseKey : `${baseKey}:target:${target}`;
+}
+
 /** Shared native journal precedes the accepted prompt's irreversible boundary. */
 export async function prepareChatExecutorDispatch(input: {
   sessionId: string;
@@ -377,57 +389,28 @@ export async function prepareChatExecutorDispatch(input: {
 }) {
   const session = useChatSessionStore.getState().getSession(input.sessionId);
   const configuration = sessionConfiguration(input.sessionId);
-  const previous = await executorSelection.get(input.requestKey);
-  const receipt = previous?.hostExecution;
-  const provenUnaccepted = isProvenUnaccepted(
-    receipt,
-    input.sessionId,
-    input.requestKey,
-  );
-  // The decision remains immutable. Only host-proven quota withdrawal permits
-  // another attempt; the host rechecks account routing when it claims that attempt.
-  const canRerouteAccount =
-    provenUnaccepted && receipt?.rejection?.automaticAccountRouting === true;
-  if ((receipt && !provenUnaccepted) || previous?.observations.length)
-    throw new Error(
-      "This accepted chat task already has a recorded execution; refusing another dispatch",
-    );
   const history =
     useChatStore.getState().messagesBySession[input.sessionId] ?? [];
-  let task = applicationExecutorTask({
+  const ordinaryTask = applicationExecutorTask({
     prompt: [input.assistantPrompt, input.prompt].filter(Boolean).join("\n\n"),
     workClassId: input.workClassId ?? "general",
     roleId: input.personaId ?? null,
     // The actual execution context, never the foreground active agent's role.
     rolePrompt: input.systemPrompt ?? "",
   });
-  task.facets.inputBytes = new TextEncoder().encode(task.prompt).length;
+  ordinaryTask.facets.inputBytes = new TextEncoder().encode(
+    ordinaryTask.prompt,
+  ).length;
   // File bytes and image semantics are unknown to this text-only contract.
   // Record attachment references, without manufacturing loaded fixtures.
-  task.permissions.context += ` Attachments: ${JSON.stringify((input.attachments ?? []).map((a) => ({ kind: a.kind, name: a.name, path: a.path ?? null, ...(a.kind === "image" ? { mimeType: a.mimeType, base64Characters: a.base64.length } : {}) })))}`;
+  ordinaryTask.permissions.context += ` Attachments: ${JSON.stringify((input.attachments ?? []).map((a) => ({ kind: a.kind, name: a.name, path: a.path ?? null, ...(a.kind === "image" ? { mimeType: a.mimeType, base64Characters: a.base64.length } : {}) })))}`;
   const head =
     useChatStore.getState().queuedMessageBySession[input.sessionId]?.[0];
-  const initial = Boolean(
-    previous &&
-      head &&
-      initialRequestKey(input.sessionId, head) === input.requestKey &&
-      isUnboundAutomaticTask(input.sessionId, head) &&
-      previous.decision.request.prediction.hardCandidateKey === null,
-  );
-  if (initial && head) {
-    const acceptedTask = initialTask(head);
-    if (
-      !acceptedTask ||
-      (input.acceptedPrompt ?? input.prompt) !== head.payload.text ||
-      (input.personaId ?? null) !== acceptedTask.roleId ||
-      input.assistantPrompt !== head.payload.sendOptions?.assistantPrompt
-    )
-      throw new Error(
-        "Initial executor decision does not match the accepted chat prompt and role",
-      );
-    task = acceptedTask;
-  }
-  const matchesConfiguration = (chosen: typeof configuration) =>
+  const matchesConfiguration = (
+    chosen: typeof configuration,
+    initial: boolean,
+    canRerouteAccount: boolean,
+  ) =>
     configuration &&
     chosen &&
     Object.keys(configuration).every((key) => {
@@ -455,23 +438,74 @@ export async function prepareChatExecutorDispatch(input: {
         configuration[key as keyof typeof configuration]
       );
     });
-  if (previous) {
-    const saved = previous.decision;
+  // A message is not bound to the target it was first prepared for. A saved
+  // decision that never ran belongs to a target the operator has since
+  // changed (a spent account, another provider or model, other settings, an
+  // edited role): it stays in the journal as it was, and the message runs
+  // under the next target key with a decision for the session as it is now.
+  // The keys are numbered, so a retry after a crash finds the attempt that
+  // did run. Only a recorded execution refuses another dispatch: that would
+  // be a second user turn.
+  let requestKey = input.requestKey;
+  let previous: ExecutorDecisionRecord | null = null;
+  let task = ordinaryTask;
+  let initial = false;
+  let canRerouteAccount = false;
+  for (let target = 0; ; target += 1) {
+    const record = await executorSelection.get(requestKey);
+    if (!record) break;
+    const receipt = record.hostExecution;
+    const provenUnaccepted = isProvenUnaccepted(
+      receipt,
+      input.sessionId,
+      requestKey,
+    );
+    if ((receipt && !provenUnaccepted) || record.observations.length)
+      throw new QueuedMessageAlreadyAcceptedError(requestKey);
+    const keyInitial = Boolean(
+      target === 0 &&
+        head &&
+        initialRequestKey(input.sessionId, head) === input.requestKey &&
+        isUnboundAutomaticTask(input.sessionId, head) &&
+        record.decision.request.prediction.hardCandidateKey === null,
+    );
+    const acceptedTask = keyInitial && head ? initialTask(head) : null;
+    const keyTask = acceptedTask ?? ordinaryTask;
+    // Only host-proven quota withdrawal lets the same decision run again; the
+    // host rechecks account routing when it claims that attempt.
+    const keyRerouteAccount =
+      provenUnaccepted && receipt?.rejection?.automaticAccountRouting === true;
+    const saved = record.decision;
     const savedTask = saved.request.prediction.task;
+    const acceptedMatches =
+      !keyInitial ||
+      (acceptedTask !== null &&
+        (input.acceptedPrompt ?? input.prompt) === head?.payload.text &&
+        (input.personaId ?? null) === acceptedTask.roleId &&
+        input.assistantPrompt === head?.payload.sendOptions?.assistantPrompt);
     const sameConfiguration = configuration
-      ? matchesConfiguration(saved.chosen)
+      ? matchesConfiguration(saved.chosen, keyInitial, keyRerouteAccount)
       : saved.chosen === null;
     if (
-      !sameConfiguration ||
-      saved.request.surface !== "chat" ||
-      saved.request.contextId !== input.sessionId ||
-      savedTask.prompt !== task.prompt ||
-      savedTask.roleId !== task.roleId ||
-      savedTask.permissions.context !== task.permissions.context
-    )
+      acceptedMatches &&
+      sameConfiguration &&
+      saved.request.surface === "chat" &&
+      saved.request.contextId === input.sessionId &&
+      savedTask.prompt === keyTask.prompt &&
+      savedTask.roleId === keyTask.roleId &&
+      savedTask.permissions.context === keyTask.permissions.context
+    ) {
+      previous = record;
+      task = keyTask;
+      initial = keyInitial;
+      canRerouteAccount = keyRerouteAccount;
+      break;
+    }
+    if (target >= MAX_CHAT_EXECUTOR_TARGETS)
       throw new Error(
-        "This queued message has a prepared executor decision. Restore its saved model, account and settings, or explicitly edit and save the queued message before retrying.",
+        `This message was prepared for ${MAX_CHAT_EXECUTOR_TARGETS + 1} other models or settings without running. Edit and save it to send it as a new message.`,
       );
+    requestKey = chatExecutorTargetKey(input.requestKey, target + 1);
   }
   if (!previous && ((session?.messageCount ?? 0) > 0 || history.length > 0)) {
     const textHistory = JSON.stringify(
@@ -499,7 +533,7 @@ export async function prepareChatExecutorDispatch(input: {
     ? await executorSelection.prepare(previous.decision.request)
     : await executorSelection.select(
         {
-          requestKey: input.requestKey,
+          requestKey,
           surface: "chat",
           contextId: input.sessionId,
           task,
@@ -530,7 +564,7 @@ export async function prepareChatExecutorDispatch(input: {
         (!["prior", "learned"].includes(decision.source) ||
           (decision.source === "learned" &&
             !decision.learnedDispatchAllowed))) ||
-      !matchesConfiguration(decision.chosen))
+      !matchesConfiguration(decision.chosen, initial, canRerouteAccount))
   )
     throw new Error(
       "Executor selection did not preserve the prepared chat target",
@@ -547,6 +581,6 @@ export async function prepareChatExecutorDispatch(input: {
   assertCurrent();
   return {
     assertCurrent,
-    metadata: { decisionKey: input.requestKey, logicalRunId: input.requestKey },
+    metadata: { decisionKey: requestKey, logicalRunId: requestKey },
   };
 }
