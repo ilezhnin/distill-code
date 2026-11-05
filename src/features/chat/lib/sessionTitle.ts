@@ -65,16 +65,48 @@ function preferRequestFromPrompt(raw: string, collapsed: string): string {
   return collapsed;
 }
 
+/**
+ * A request too long for a name is named by its first sentence when that
+ * says enough on its own, and is otherwise cut between words and marked as
+ * cut. A cut never ends on the comma or colon it fell after: an agent started
+ * from "Do X. Read a, b, c" was named "Do X. Read a," and its sisters
+ * "Do X. Read a, 2", which reads as a broken name rather than a short one.
+ */
 function clipTitle(text: string): string {
   if (text.length <= MAX_DRAFT_TITLE_LENGTH) {
     return text;
   }
+  const sentence = firstSentence(text);
+  if (sentence) {
+    return sentence;
+  }
   const slice = text.slice(0, MAX_DRAFT_TITLE_LENGTH);
   const lastSpace = slice.lastIndexOf(" ");
-  if (lastSpace >= MIN_WORD_BREAK_LENGTH) {
-    return slice.slice(0, lastSpace).trimEnd();
+  const cut =
+    lastSpace >= MIN_WORD_BREAK_LENGTH ? slice.slice(0, lastSpace) : slice;
+  const kept = cut.replace(DANGLING_TAIL, "");
+  return `${kept || cut.trimEnd()}…`;
+}
+
+/** Punctuation a cut may leave hanging at its end. */
+const DANGLING_TAIL = /[\s,;:\-–—/\\([{«"']+$/u;
+
+/**
+ * The text's first sentence without its full stop, if it has at least a few
+ * words and fits a name. A sentence ends at `.`, `!` or `?` followed by a
+ * space and a capital or a digit, so `index.md, …` or `e.g. the` do not end
+ * one.
+ */
+function firstSentence(text: string): string | null {
+  const end = /[.!?](?=\s+[\p{Lu}\p{N}])/u.exec(text);
+  if (!end || end.index + 1 > MAX_DRAFT_TITLE_LENGTH) {
+    return null;
   }
-  return slice.trimEnd();
+  const sentence = text
+    .slice(0, end.index + 1)
+    .replace(/\.$/, "")
+    .trim();
+  return sentence.split(" ").length >= MIN_LAST_LINE_WORDS ? sentence : null;
 }
 
 export function getSessionTitleFromDraft(

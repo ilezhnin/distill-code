@@ -493,8 +493,8 @@
     "statsDone": "{{count}} listos",
     "statsTokens": "{{tokens}} tokens",
     "statsCost": "${{cost}}",
-    "waitingOnChildren_one": "1 ejecutor está trabajando: el resultado llegará como mensaje",
-    "waitingOnChildren_other": "{{count}} ejecutores están trabajando: el resultado llegará como mensaje",
+    "waitingOnChildren_one": "1 ejecutor está trabajando",
+    "waitingOnChildren_other": "{{count}} ejecutores están trabajando",
     "stopChild": "Detener {{name}}",
     "persist": {
       "title": "Esta app ya no puede guardar en disco el estado del conductor.",
@@ -742,7 +742,8 @@
     },
     "chip": {
       "tools_one": "{{count}} herramienta",
-      "tools_other": "{{count}} herramientas"
+      "tools_other": "{{count}} herramientas",
+      "rateLimited": "El proveedor limitó las solicitudes (429)"
     },
     "report": {
       "title": "Informe · {{status}}",
@@ -1013,7 +1014,7 @@
     "hideChat": "Ocultar chat"
   },
   "interruptedTurn": {
-    "notice": "Este mensaje nunca recibió respuesta: la ejecución se interrumpió antes de que el agente contestara. No se reenvió por su cuenta, porque el agente pudo haber terminado trabajo real antes de detenerse.",
+    "notice": "Este mensaje nunca recibió respuesta.",
     "resend": "Enviarlo de nuevo"
   },
   "permissionRequest": {

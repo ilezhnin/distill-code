@@ -59,6 +59,23 @@ export function useThrottledValue<T>(value: T, intervalMs: number): T {
   return shown;
 }
 
+/**
+ * The chip's line for why a run ended. A provider's refusal of too many
+ * requests arrives in each bridge's own words ("exceeded retry limit, last
+ * status: 429 Too Many Requests"), which the chip cut off before the part
+ * that says what happened; it reads as what it is. The agent's chat keeps
+ * the provider's words.
+ */
+export function formatBrigadeChipReason(
+  reason: string | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string | undefined {
+  if (!reason) return undefined;
+  return /\b429\b|too many requests/i.test(reason)
+    ? t("conductor.chip.rateLimited")
+    : reason;
+}
+
 /** The chip's words for one set of facts. */
 export function formatBrigadeChipSummary(
   facts: BrigadeChipFacts,
@@ -106,6 +123,6 @@ export function useBrigadeChipSummary(
   return {
     status: facts.status,
     summaryLabel: facts.lastStep ? throttled : summaryLabel,
-    reasonLabel: facts.reason,
+    reasonLabel: formatBrigadeChipReason(facts.reason, t),
   };
 }
