@@ -2323,7 +2323,8 @@ impl Inner {
                 Self::kimi_follow_for(&mut follows, &session_id, &bridge_session_id, generation);
             abandoned.extend(closing.map(|closing| (session_id.clone(), closing)));
             self.read_kimi_record(follow).await;
-            let prompt_running = {
+            Self::read_kimi_subagents(follow).await;
+            let running_prompt = {
                 let mut sessions = self.sessions.lock().await;
                 let Some(runtime) = sessions.get_mut(&session_id).filter(|runtime| {
                     runtime.generation == generation
@@ -2333,21 +2334,84 @@ impl Inner {
                 };
                 // The agent at work is the chat in use, shown or not: a chat
                 // let go of as idle mid-goal would pause the goal.
-                if follow.in_turn() {
+                if follow.in_turn() || follow.subagents_at_work() {
                     runtime.touch();
                 }
-                runtime.run.is_some()
+                runtime.run.as_ref().map(|run| run.run_id.clone())
             };
-            for update in follow.advance(prompt_running) {
+            for update in follow.advance(running_prompt.is_some()) {
                 let _ = self.events_tx.send(BridgeEvent::Relayed {
                     harness: route.clone(),
                     generation,
                     params: json!({ "sessionId": bridge_session_id, "update": update }),
                 });
             }
+            self.show_kimi_subagent_activity(
+                follow,
+                &route,
+                generation,
+                &bridge_session_id,
+                running_prompt,
+            );
         }
         drop(follows);
         self.close_abandoned_kimi_replies(abandoned).await;
+    }
+
+    /// Read what the records of a Kimi chat's subagents gained.
+    async fn read_kimi_subagents(follow: &mut super::kimi_relay::KimiFollow) {
+        let mut subagents = follow.take_subagents();
+        if subagents.is_empty() {
+            return;
+        }
+        match tokio::task::spawn_blocking(move || {
+            let read = subagents.read();
+            (subagents, read)
+        })
+        .await
+        {
+            Ok((subagents, read)) => follow.subagents_read(subagents, read),
+            Err(error) => {
+                log::warn!("[agent-host] could not read Kimi subagent records: {error}");
+            }
+        }
+    }
+
+    /// Show a Kimi chat what its subagents did, as part of the reply whose
+    /// call started them: the running prompt's, which the bridge's own
+    /// updates belong to, or the agent's own turn the chat is shown. Work no
+    /// reply is running for (a subagent left in the background after its
+    /// turn ended) has nowhere to go, and its result reaches the agent itself.
+    fn show_kimi_subagent_activity(
+        &self,
+        follow: &mut super::kimi_relay::KimiFollow,
+        route: &str,
+        generation: u64,
+        bridge_session_id: &str,
+        running_prompt: Option<String>,
+    ) {
+        let activity = follow.take_subagent_activity();
+        if activity.is_empty() {
+            return;
+        }
+        let created = now_iso();
+        for mut update in activity {
+            if follow.stamp_shown(&mut update, &created) {
+                let _ = self.events_tx.send(BridgeEvent::Relayed {
+                    harness: route.to_string(),
+                    generation,
+                    params: json!({ "sessionId": bridge_session_id, "update": update }),
+                });
+            } else if let Some(run_id) = &running_prompt {
+                let _ = self.events_tx.send(BridgeEvent::Notification {
+                    harness: route.to_string(),
+                    generation,
+                    run_id: Some(run_id.clone()),
+                    method: "session/update".to_string(),
+                    params: json!({ "sessionId": bridge_session_id, "update": update }),
+                });
+            }
+        }
     }
 
     /// End the replies of Kimi turns the chat stopped following because it

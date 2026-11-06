@@ -45,6 +45,28 @@ describe("getToolCallIdentity", () => {
     ).toEqual({ toolName: "spawn_agent" });
   });
 
+  it("reads the Kimi Code subagent call the host names", () => {
+    expect(
+      getToolCallIdentity(
+        toolCallUpdate({
+          distill: { runId: "run-1" },
+          kimiCode: {
+            toolName: "Agent",
+            subagent: { id: "agent-1", name: "explore", task: "Audit" },
+          },
+        }),
+      ),
+    ).toEqual({ toolName: "Agent" });
+    // A subagent's own call carries its subagent, not a tool name.
+    expect(
+      getToolCallIdentity(
+        toolCallUpdate({
+          kimiCode: { parentToolCallId: "3:tool_a", subagent: { id: "agent-1" } },
+        }),
+      ),
+    ).toEqual({});
+  });
+
   it("returns empty for malformed vendor metadata", () => {
     expect(
       getToolCallIdentity(

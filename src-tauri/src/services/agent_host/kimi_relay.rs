@@ -14,6 +14,14 @@
 //! The CLI writes every turn to its session record (`wire.jsonl`). The host
 //! follows the record of each ordinary Kimi chat and shows those turns as the
 //! agent's own continued work, the way it shows Claude's background results.
+//!
+//! The adapter forwards nothing a subagent does either: an `Agent` call shows
+//! as one card until the subagent's answer comes back, however long it works.
+//! Each subagent keeps a record of its own beside the main one
+//! (`agents/<id>/wire.jsonl`), which the main record announces
+//! (`subagent.spawned`). The host follows those too, and shows the tool calls
+//! a subagent makes under the call that started it, as Claude Code's adapter
+//! shows a subagent's.
 //! This module reads the record, translates its events into the ACP updates
 //! the adapter sends for the turns it does forward, and decides which turns
 //! to show; the router supplies what only it knows (whether a prompt of the
@@ -31,6 +39,15 @@ const READ_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
 const LINE_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 /// Lines read but not yet handled, which pile up only while a prompt runs.
 const PENDING_LIMIT: usize = 200_000;
+/// The agent a chat talks to; every other agent of a session is a subagent.
+const MAIN_AGENT: &str = "main";
+/// The tool through which a Kimi agent starts a subagent.
+const AGENT_TOOL: &str = "Agent";
+/// Subagent calls remembered until their subagent is announced: more than a
+/// turn ever starts at once.
+const AGENT_CALL_LIMIT: usize = 256;
+/// Subagents followed at once in one chat.
+const SUBAGENT_LIMIT: usize = 64;
 
 /// Reads what the CLI appends to a session record, one complete line at a
 /// time.
@@ -227,18 +244,34 @@ fn text_content(text: String) -> Value {
 /// Turns session record lines into [`WireEvent`]s. It remembers which turn
 /// each running tool call belongs to, since the CLI's result record names
 /// the call but not its turn.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Translator {
+    /// The agent whose record this is: `main`, or a subagent's id.
+    agent: String,
     tool_turns: HashMap<String, String>,
 }
 
+impl Default for Translator {
+    fn default() -> Self {
+        Self::of(MAIN_AGENT)
+    }
+}
+
 impl Translator {
+    pub(super) fn of(agent: &str) -> Self {
+        Self {
+            agent: agent.to_string(),
+            tool_turns: HashMap::new(),
+        }
+    }
+
     pub(super) fn events(&mut self, record: &Value) -> Vec<WireEvent> {
-        // The record of the main agent; a subagent keeps its own.
+        // Each agent keeps its own record; what another agent wrote is not
+        // this one's.
         if record
             .get("agentId")
             .and_then(Value::as_str)
-            .is_some_and(|agent| agent != "main")
+            .is_some_and(|agent| agent != self.agent)
         {
             return Vec::new();
         }
@@ -360,6 +393,73 @@ impl Translator {
     }
 }
 
+/// The ACP id of a tool call: the adapter's own `turn:call` for the main
+/// agent's, and the same under the subagent's id for a subagent's, whose turn
+/// numbers start over.
+fn acp_tool_call_id(agent: &str, turn: &str, call: &str) -> String {
+    if agent == MAIN_AGENT {
+        format!("{turn}:{call}")
+    } else {
+        format!("{agent}:{turn}:{call}")
+    }
+}
+
+/// Whether `id` can name a subagent's folder under the session's `agents`.
+fn is_agent_folder(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id != MAIN_AGENT
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A subagent of the chat's agent, followed through its own record while it
+/// works. Kimi's ACP adapter forwards none of a subagent's work, so a chat
+/// whose agent waited on one showed only the call that started it, for as
+/// long as the subagent ran (2026-11-06: 36 minutes of an explore subagent
+/// hashing asset bundles, with no sign of it in the chat).
+#[derive(Debug)]
+struct Subagent {
+    /// The ACP id of the call that started it.
+    parent: String,
+    /// The kind of subagent the CLI started (`explore`, `coder`, ...).
+    name: Option<String>,
+    /// The task it was given, as the call that started it describes it.
+    task: Option<String>,
+    reader: WireReader,
+    translator: Translator,
+    /// Its parent's record has said it is over: what remains of its own
+    /// record is read once more, and then it is let go of.
+    over: bool,
+}
+
+impl Subagent {
+    fn identity(&self, id: &str) -> Value {
+        json!({ "id": id, "name": self.name, "task": self.task })
+    }
+}
+
+/// The subagents a chat's agent has at work, by id. Moved out of the follower
+/// while their records are read off the async runtime.
+#[derive(Debug, Default)]
+pub(super) struct Subagents(HashMap<String, Subagent>);
+
+impl Subagents {
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// What each subagent's record gained since the last look.
+    pub(super) fn read(&mut self) -> Vec<(String, Vec<String>)> {
+        self.0
+            .iter_mut()
+            .map(|(id, subagent)| (id.clone(), subagent.reader.read_lines()))
+            .filter(|(_, lines)| !lines.is_empty())
+            .collect()
+    }
+}
+
 /// A turn the chat shows as the agent's own: its reply's run and message, and
 /// the user message it answers or follows.
 #[derive(Debug, Clone, PartialEq)]
@@ -404,6 +504,12 @@ pub(super) struct KimiFollow {
     /// The chat's latest user message, which a turn the agent starts by
     /// itself follows.
     pub latest_message: Option<String>,
+    /// `Agent` calls whose subagent the record has not announced yet: the
+    /// ACP id of each, by the agent that made the call and the call's id.
+    agent_calls: HashMap<(String, String), String>,
+    subagents: Subagents,
+    /// What the subagents did since the chat was last shown it, in order.
+    activity: Vec<Value>,
 }
 
 impl KimiFollow {
@@ -419,11 +525,19 @@ impl KimiFollow {
             reading: None,
             queued: VecDeque::new(),
             latest_message: None,
+            agent_calls: HashMap::new(),
+            subagents: Subagents::default(),
+            activity: Vec::new(),
         }
     }
 
-    /// Lines the reader returned, to be handled in order.
+    /// Lines the reader returned, to be handled in order. What they say of
+    /// subagents is noted at once: a subagent works while the prompt that
+    /// started it runs, when the turns themselves wait.
     pub(super) fn push_lines(&mut self, lines: Vec<String>) {
+        for line in &lines {
+            self.note_subagent_line(line);
+        }
         self.pending.extend(lines);
         if self.pending.len() > PENDING_LIMIT {
             // Only a prompt running for very long holds lines back, and then
@@ -435,6 +549,192 @@ impl KimiFollow {
             );
             self.pending.drain(..excess);
         }
+    }
+
+    fn note_subagent_line(&mut self, line: &str) {
+        // Most lines are neither; spare them the parse.
+        if !(line.contains("\"subagent.") || line.contains("\"Agent\"")) {
+            return;
+        }
+        if let Ok(record) = serde_json::from_str::<Value>(line) {
+            self.note_subagent_record(&record);
+        }
+    }
+
+    /// Note what a record says of subagents: an `Agent` call, the subagent
+    /// the CLI started for one, a subagent that is over.
+    fn note_subagent_record(&mut self, record: &Value) {
+        match record["type"].as_str() {
+            Some("context.append_loop_event") => {
+                let event = &record["event"];
+                if event["type"].as_str() != Some("tool.call")
+                    || event["name"].as_str() != Some(AGENT_TOOL)
+                {
+                    return;
+                }
+                let (Some(turn), Some(call)) =
+                    (turn_id(&event["turnId"]), event["toolCallId"].as_str())
+                else {
+                    return;
+                };
+                let agent = record["agentId"].as_str().unwrap_or(MAIN_AGENT);
+                if self.agent_calls.len() >= AGENT_CALL_LIMIT {
+                    // Calls whose subagent never came (a refused call) are
+                    // all that can pile up.
+                    self.agent_calls.clear();
+                }
+                self.agent_calls.insert(
+                    (agent.to_string(), call.to_string()),
+                    acp_tool_call_id(agent, &turn, call),
+                );
+            }
+            Some("subagent.spawned") => self.subagent_started(record),
+            Some("subagent.completed" | "subagent.failed" | "subagent.cancelled") => {
+                if let Some(subagent) = record["subagentId"]
+                    .as_str()
+                    .and_then(|id| self.subagents.0.get_mut(id))
+                {
+                    subagent.over = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Follow a subagent the CLI started for an `Agent` call the chat is
+    /// shown, and say on that call which subagent it started and for what.
+    fn subagent_started(&mut self, record: &Value) {
+        let Some(id) = record["subagentId"]
+            .as_str()
+            .filter(|id| is_agent_folder(id))
+        else {
+            return;
+        };
+        let caller = record["parentAgentId"]
+            .as_str()
+            .or_else(|| record["callerAgentId"].as_str())
+            .unwrap_or(MAIN_AGENT);
+        let Some(call) = record["parentToolCallId"].as_str() else {
+            return;
+        };
+        // A call made before the host began to follow the record is not
+        // known, and neither is the place its work would be shown.
+        let Some(parent) = self
+            .agent_calls
+            .remove(&(caller.to_string(), call.to_string()))
+        else {
+            return;
+        };
+        // The main record is `<session>/agents/main/wire.jsonl`; each
+        // subagent keeps `<session>/agents/<id>/wire.jsonl` beside it.
+        let Some(agents) = self
+            .reader
+            .as_ref()
+            .and_then(|reader| reader.path().parent()?.parent())
+        else {
+            return;
+        };
+        if self.subagents.0.contains_key(id) || self.subagents.0.len() >= SUBAGENT_LIMIT {
+            return;
+        }
+        let text = |key: &str| {
+            record[key]
+                .as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        };
+        let subagent = Subagent {
+            parent,
+            name: text("subagentName"),
+            task: text("description"),
+            // A subagent's record is new: all of it is its work.
+            reader: WireReader::new(agents.join(id).join("wire.jsonl"), 0),
+            translator: Translator::of(id),
+            over: false,
+        };
+        self.activity.push(json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": subagent.parent,
+            "_meta": { "kimiCode": {
+                "toolName": AGENT_TOOL,
+                "subagent": subagent.identity(id),
+            } },
+        }));
+        self.subagents.0.insert(id.to_string(), subagent);
+    }
+
+    /// Whether a subagent of the chat's agent is at work.
+    pub(super) fn subagents_at_work(&self) -> bool {
+        !self.subagents.is_empty()
+    }
+
+    /// The subagents at work, for their records to be read off the async
+    /// runtime; they come back through [`Self::subagents_read`].
+    pub(super) fn take_subagents(&mut self) -> Subagents {
+        std::mem::take(&mut self.subagents)
+    }
+
+    /// Take back the subagents [`Self::take_subagents`] lent out, with what
+    /// their records gained: each tool call a subagent made becomes one of
+    /// the chat's, under the call that started the subagent. What a subagent
+    /// says or thinks stays out, as Claude Code's adapter leaves it out: its
+    /// answer is the result of that call.
+    pub(super) fn subagents_read(
+        &mut self,
+        subagents: Subagents,
+        read: Vec<(String, Vec<String>)>,
+    ) {
+        for (id, subagent) in subagents.0 {
+            self.subagents.0.entry(id).or_insert(subagent);
+        }
+        for (id, lines) in read {
+            for line in lines {
+                let Ok(record) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                // A subagent may start subagents of its own.
+                self.note_subagent_record(&record);
+                let Some(subagent) = self.subagents.0.get_mut(&id) else {
+                    break;
+                };
+                for event in subagent.translator.events(&record) {
+                    let WireEvent::Update { mut update, .. } = event else {
+                        continue;
+                    };
+                    if !matches!(
+                        update["sessionUpdate"].as_str(),
+                        Some("tool_call" | "tool_call_update")
+                    ) {
+                        continue;
+                    }
+                    let call = update["toolCallId"].as_str().unwrap_or_default();
+                    update["toolCallId"] = json!(format!("{id}:{call}"));
+                    update["_meta"]["kimiCode"] = json!({
+                        "parentToolCallId": subagent.parent,
+                        "subagent": subagent.identity(&id),
+                    });
+                    self.activity.push(update);
+                }
+            }
+        }
+        self.subagents.0.retain(|_, subagent| !subagent.over);
+    }
+
+    /// What the subagents did since the last call, in order, for the chat.
+    pub(super) fn take_subagent_activity(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.activity)
+    }
+
+    /// Make `update` a part of the turn the chat is shown as the agent's own,
+    /// if it is shown one: the reply a subagent of that turn works for.
+    pub(super) fn stamp_shown(&mut self, update: &mut Value, created: &str) -> bool {
+        let Some(Reading::Shown(_, open)) = self.reading.as_mut() else {
+            return false;
+        };
+        open.started = true;
+        update["_meta"]["distill"] = Self::stamp(open, created, false);
+        true
     }
 
     /// Whether a turn a prompt began at or after `since_ms` has ended on the
@@ -831,6 +1131,129 @@ mod tests {
         )
         .unwrap();
         assert!(translator.events(&other).is_empty());
+    }
+
+    fn append(path: &Path, lines: &[&str]) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+    }
+
+    fn read_subagents(state: &mut KimiFollow) {
+        let mut subagents = state.take_subagents();
+        let read = subagents.read();
+        state.subagents_read(subagents, read);
+    }
+
+    const AGENT_CALL: &str = r#"{"type":"context.append_loop_event","agentId":"main","event":{"type":"tool.call","turnId":"3","step":3,"toolCallId":"tool_a","name":"Agent","args":{"description":"Audit the backups","subagent_type":"explore","prompt":"Read-only audit."}},"time":1800000000100}"#;
+    const SPAWNED: &str = r#"{"type":"subagent.spawned","subagentId":"agent-1","subagentName":"explore","parentToolCallId":"tool_a","parentAgentId":"main","callerAgentId":"main","description":"Audit the backups","runInBackground":false,"time":1800000000200}"#;
+
+    #[test]
+    fn a_subagents_tool_calls_are_shown_under_the_call_that_started_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir_all(agents.join("main")).unwrap();
+        std::fs::create_dir_all(agents.join("agent-1")).unwrap();
+        let mut state = KimiFollow::new("session_example".into(), 1);
+        state.reader = Some(WireReader::new(agents.join("main").join("wire.jsonl"), 0));
+        // The prompt's own turn waits while the prompt runs; its subagent
+        // does not.
+        follow(
+            &[user_turn(3), AGENT_CALL.into(), SPAWNED.into()],
+            true,
+            &mut state,
+        );
+        assert!(state.subagents_at_work());
+        let named = state.take_subagent_activity();
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0]["sessionUpdate"], "tool_call_update");
+        assert_eq!(named[0]["toolCallId"], "3:tool_a");
+        let kimi = &named[0]["_meta"]["kimiCode"];
+        assert_eq!(kimi["toolName"], "Agent");
+        assert_eq!(kimi["subagent"]["name"], "explore");
+        assert_eq!(kimi["subagent"]["task"], "Audit the backups");
+
+        let record = agents.join("agent-1").join("wire.jsonl");
+        append(
+            &record,
+            &[
+                r#"{"type":"turn.prompt","agentId":"agent-1","origin":{"kind":"user"},"turnId":0,"time":1800000000300}"#,
+                r#"{"type":"context.append_loop_event","agentId":"agent-1","event":{"type":"content.part","turnId":"0","step":1,"part":{"type":"think","think":"Hash the bundles."}},"time":1800000000400}"#,
+                r#"{"type":"context.append_loop_event","agentId":"agent-1","event":{"type":"tool.call","turnId":"0","step":1,"toolCallId":"tool_b","name":"Bash","args":{"command":"python hash.py"}},"time":1800000000500}"#,
+            ],
+        );
+        read_subagents(&mut state);
+        let started = state.take_subagent_activity();
+        assert_eq!(started.len(), 1, "thoughts stay with the subagent");
+        assert_eq!(started[0]["sessionUpdate"], "tool_call");
+        assert_eq!(started[0]["toolCallId"], "agent-1:0:tool_b");
+        assert_eq!(started[0]["kind"], "execute");
+        assert_eq!(started[0]["status"], "in_progress");
+        let kimi = &started[0]["_meta"]["kimiCode"];
+        assert_eq!(kimi["parentToolCallId"], "3:tool_a");
+        assert_eq!(kimi["subagent"]["id"], "agent-1");
+        assert!(kimi.get("toolName").is_none());
+
+        // It ends: the rest of its record is shown, then it is let go of.
+        append(
+            &record,
+            &[
+                r#"{"type":"context.append_loop_event","agentId":"agent-1","event":{"type":"tool.result","toolCallId":"tool_b","result":{"output":"hashed 5000"}},"time":1800000000600}"#,
+                r#"{"type":"context.append_loop_event","agentId":"agent-1","event":{"type":"content.part","turnId":"0","step":2,"part":{"type":"text","text":"Done."}},"time":1800000000700}"#,
+            ],
+        );
+        follow(
+            &[
+                r#"{"type":"subagent.completed","subagentId":"agent-1","time":1800000000800}"#
+                    .into(),
+            ],
+            true,
+            &mut state,
+        );
+        read_subagents(&mut state);
+        let finished = state.take_subagent_activity();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0]["toolCallId"], "agent-1:0:tool_b");
+        assert_eq!(finished[0]["status"], "completed");
+        assert!(!state.subagents_at_work());
+    }
+
+    #[test]
+    fn a_subagent_of_an_unseen_call_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = KimiFollow::new("session_example".into(), 1);
+        state.reader = Some(WireReader::new(
+            dir.path().join("agents").join("main").join("wire.jsonl"),
+            0,
+        ));
+        // Its call came before the host began to follow the record.
+        follow(&[SPAWNED.into()], false, &mut state);
+        assert!(!state.subagents_at_work());
+        assert!(state.take_subagent_activity().is_empty());
+        // A subagent id that is no folder name is never a path.
+        let escape = SPAWNED.replace("agent-1", "../main");
+        follow(&[AGENT_CALL.into(), escape], false, &mut state);
+        assert!(!state.subagents_at_work());
+    }
+
+    #[test]
+    fn subagent_work_joins_the_agents_own_shown_turn() {
+        let mut state = KimiFollow::new("session_example".into(), 1);
+        state.latest_message = Some("user-1".into());
+        let mut update = json!({ "sessionUpdate": "tool_call", "toolCallId": "agent-1:0:t" });
+        assert!(!state.stamp_shown(&mut update, "now"));
+        follow(&[GOAL.into()], false, &mut state);
+        assert!(state.stamp_shown(&mut update, "now"));
+        assert_eq!(update["_meta"]["distill"]["messageId"], "user-1");
+        assert_eq!(update["_meta"]["distill"]["autonomous"], true);
+        // Having shown something, the turn is closed when it ends.
+        assert!(state.running_reply().is_some());
     }
 
     #[test]
