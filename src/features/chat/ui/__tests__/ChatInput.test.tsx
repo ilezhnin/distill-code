@@ -158,6 +158,34 @@ describe("ChatInput", () => {
     expect(input).toHaveValue("follow up");
   });
 
+  it("tells how to send a queued message now when the agent cannot be steered", async () => {
+    const onStop = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ChatInput
+        onSend={vi.fn()}
+        onStop={onStop}
+        isStreaming
+        queuedMessages={[
+          {
+            recordId: "head",
+            payload: { persona: { kind: "none" }, text: "how far along?" },
+          },
+        ]}
+        onEditQueue={vi.fn(() => true)}
+        onDismissQueue={vi.fn()}
+      />,
+    );
+
+    const notice = screen.getByText(/gets this message when its current turn ends/);
+    expect(notice).toHaveTextContent("Press Esc to stop the turn and send it now.");
+    expect(notice).not.toHaveTextContent("cannot be interrupted");
+
+    await user.click(screen.getByRole("textbox"));
+    await user.keyboard("{Escape}");
+    expect(onStop).toHaveBeenCalledOnce();
+  });
+
   it("pauses a tail record while editing and updates it in place", async () => {
     const onEditQueue = vi.fn(() => true);
     const onCancelQueueEdit = vi.fn(() => true);

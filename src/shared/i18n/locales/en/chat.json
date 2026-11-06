@@ -450,7 +450,7 @@
     "createWorktree": "Save",
     "preparingWorkspaceTitle": "Preparing your project workspace.",
     "preparingWorkspaceBody": "Your messages will send when it’s ready.",
-    "noSteeringHere": "This agent picks the message up when its current turn ends — it cannot be interrupted mid-turn.",
+    "noSteeringHere": "{{agent}} gets this message when its current turn ends. Press Esc to stop the turn and send it now.",
     "quotaWaitRecheck": "{{subject}} is out of quota. Checking again at {{time}} ({{countdown}}).",
     "quotaWaitReset": "{{subject}} is out of quota until the reset at {{time}} ({{countdown}}).",
     "quotaWaitSubjectAccount": "{{provider}} account {{account}}",
