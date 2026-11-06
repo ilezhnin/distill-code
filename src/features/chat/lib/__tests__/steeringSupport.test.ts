@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { supportsSteeringHarness } from "../steeringSupport";
 
 describe("native steering availability", () => {
-  it("exposes the adapter with a host-owned idle fallback", () => {
-    expect(supportsSteeringHarness("claude-acp")).toBe(true);
+  it.each([
+    "claude-acp",
+    "kimi-acp",
+  ])("exposes %s, whose adapter has a host-owned idle fallback", (harness) => {
+    expect(supportsSteeringHarness(harness)).toBe(true);
   });
   it.each([
     "codex-acp",

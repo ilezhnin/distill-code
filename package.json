@@ -30,7 +30,7 @@
     "test:transcript-virtualization:ci": "node ./scripts/transcript-virtualization.mjs ci",
     "test:agent-driver": "node --test scripts/agent-driver/relay.test.mjs",
     "test:hooks": "node scripts/hooks/tests/run.mjs",
-    "test:scripts": "node --test scripts/check-i18n-strings.test.mjs scripts/update-acp-tools-lock.test.mjs scripts/validate-bundled-agents.test.mjs scripts/benchmark-host-gate.test.mjs scripts/benchmark-sandbox-python.test.mjs",
+    "test:scripts": "node --test scripts/check-i18n-strings.test.mjs scripts/update-acp-tools-lock.test.mjs scripts/validate-bundled-agents.test.mjs scripts/benchmark-host-gate.test.mjs scripts/benchmark-sandbox-python.test.mjs scripts/kimi-acp-steering.test.mjs",
     "validate:bundled-agents": "tsx scripts/validate-bundled-agents.ts"
   },
   "dependencies": {

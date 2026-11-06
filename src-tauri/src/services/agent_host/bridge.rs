@@ -692,6 +692,9 @@ impl Bridge {
         if route_key.contains("\u{1f}benchmark:") && owned.is_none() {
             return Err("capability_missing: benchmark execution requires an owned launch".into());
         }
+        // A chat's Kimi Code bridge loads the preload that lets the host steer
+        // it (see `kimi_steering`); a benchmark's owned launch never does.
+        let mut node_options = None;
         let (program, args, executable_fingerprint) = match owned {
             Some(launch) => (
                 launch.program.clone(),
@@ -716,6 +719,12 @@ impl Bridge {
                 // paths must keep being launched the way `cmd.exe` reads it,
                 // arguments and all.
                 let fingerprint = fingerprint_of(spec.id, &executable);
+                if spec.id == "kimi-acp" {
+                    node_options = super::kimi_steering::bridge_node_options(&executable, env);
+                    if node_options.is_some() {
+                        log::info!("[agent-host] the Kimi Code bridge loads the steering preload");
+                    }
+                }
                 let mut args = Vec::new();
                 let program = match managed_launcher(spec.id, &executable) {
                     Some((node, entrypoint)) => {
@@ -730,6 +739,9 @@ impl Bridge {
         };
         let mut command = Command::new(&program);
         apply_env(command.as_std_mut(), spec, env, owned.is_some());
+        if let Some(options) = &node_options {
+            command.env("NODE_OPTIONS", options);
+        }
         command.args(&args);
         crate::services::process::apply_no_window_async(&mut command);
         command

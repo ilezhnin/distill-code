@@ -54,7 +54,38 @@ pub(super) fn acknowledge_echo(
     None
 }
 
+/// The harnesses whose steering extension answers `promptRequired` instead of
+/// starting a turn of its own when no prompt runs.
+fn steers_natively(harness: &str) -> bool {
+    matches!(harness, "claude-acp" | "kimi-acp")
+}
+
 impl Inner {
+    /// Tell a Kimi chat's record follower about a message steered into its
+    /// session: the chat's latest message, which a turn Kimi starts by itself
+    /// follows, and with `own_turn`, a message Kimi answers in a turn of its
+    /// own. False when the chat has no follower for this session.
+    async fn note_kimi_steer(
+        &self,
+        session_id: &str,
+        bridge_session_id: &str,
+        generation: u64,
+        message_id: &str,
+        own_turn: bool,
+    ) -> bool {
+        let mut follows = self.kimi_follows.lock().await;
+        let Some(follow) = follows.get_mut(session_id).filter(|follow| {
+            follow.bridge_session_id == bridge_session_id && follow.generation == generation
+        }) else {
+            return false;
+        };
+        follow.latest_message = Some(message_id.to_string());
+        if own_turn {
+            follow.queued.push_back(message_id.to_string());
+        }
+        true
+    }
+
     pub async fn steer(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
@@ -108,10 +139,12 @@ impl Inner {
             return Ok(queued());
         };
         // Claude's extension can refuse idle injection without starting an
-        // unowned turn. The installed Codex bridge cannot: its startedNewTurn
-        // outcome has no completion response. Keep that input in the durable
-        // renderer queue until this lifecycle is supported by its adapter.
-        if harness != "claude-acp"
+        // unowned turn, and so can the one Flock adds to Kimi Code
+        // (`kimi_steering`). The installed Codex bridge cannot: its
+        // startedNewTurn outcome has no completion response. Keep that input
+        // in the durable renderer queue until this lifecycle is supported by
+        // its adapter.
+        if !steers_natively(&harness)
             || !bridge.supports_steering()
             || bridge.generation() != generation
         {
@@ -173,13 +206,32 @@ impl Inner {
             }
             return Ok(queued());
         }
-        let delivery = if delivered.load(Ordering::SeqCst) || outcome == Some("injected") {
-            "steer"
-        } else if outcome == Some("failed") {
-            "steer_failed"
-        } else {
-            "steer_unconfirmed"
-        };
+        // Kimi steers into a prompt's turn only while it runs. A turn that
+        // ended as the message arrived leaves it a turn of its own, which
+        // Kimi's adapter does not forward: the record follower shows it under
+        // the message, as it shows a prompt Kimi queued.
+        let mut own_turn_shown = false;
+        if harness == "kimi-acp" && matches!(outcome, Some("injected" | "startedNewTurn")) {
+            let own_turn = outcome == Some("startedNewTurn");
+            let followed = self
+                .note_kimi_steer(
+                    &session_id,
+                    &bridge_session_id,
+                    generation,
+                    &ids.message_id,
+                    own_turn,
+                )
+                .await;
+            own_turn_shown = own_turn && followed;
+        }
+        let delivery =
+            if delivered.load(Ordering::SeqCst) || outcome == Some("injected") || own_turn_shown {
+                "steer"
+            } else if outcome == Some("failed") {
+                "steer_failed"
+            } else {
+                "steer_unconfirmed"
+            };
         let update = delivery_update(&session_id, &ids.message_id, delivery);
         if let Err(error) = self
             .store
@@ -211,6 +263,15 @@ mod tests {
             }],
             delivered,
         )
+    }
+
+    #[test]
+    fn only_adapters_that_refuse_idle_injection_are_steered() {
+        assert!(steers_natively("claude-acp"));
+        assert!(steers_natively("kimi-acp"));
+        for harness in ["codex-acp", "grok-acp", "zai-acp", "goose", ""] {
+            assert!(!steers_natively(harness), "{harness}");
+        }
     }
 
     #[test]
