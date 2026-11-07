@@ -160,7 +160,11 @@ Result:
   "deprecated" appears when --model-id folded an effort in and says what to
   pass instead. The session runs in the background; the user's view does not
   change. Check progress later with
-  \`flockctl session get --session-id <session_id>\`.`,
+  \`flockctl session get --session-id <session_id>\`.
+  When every account the session could run on has used up its allowance,
+  no session is created and the call fails with provider_limit_reached,
+  naming the reset time; \`flockctl info models\` shows each harness's
+  "allowance".`,
   schema: createSessionSchema,
   // Backend session create is a real round-trip; everything after it is
   // fire-and-forget.
@@ -200,7 +204,9 @@ Result:
       { findPersonaOrThrow },
       { findProjectOrThrow },
       {
+        allowanceSpentError,
         findReadyHarnessOrThrow,
+        harnessAllowance,
         harnessModelOptions,
         resolveRequestedModelSelection,
       },
@@ -276,6 +282,14 @@ Result:
       effort: args.effort,
       fastMode: args.fast_mode,
     });
+    // A chat whose every account has spent its allowance would hold its
+    // first message until a reset, possibly hours away, while the caller was
+    // told it runs. Refused before anything exists, so the caller picks a
+    // harness or model that can run now.
+    const allowance = await harnessAllowance(harnessId, selection.modelId);
+    if (allowance.state === "spent") {
+      throw allowanceSpentError(harnessId, selection.modelId, allowance);
+    }
     const executionTarget = selection.modelId
       ? targetFromAgentModelSelection(harnessId, {
           modelProviderId: harnessId,

@@ -9,6 +9,10 @@ import {
 } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
+  accountQuotaWaitData,
+  useAccountQuotaWaitStore,
+} from "@/features/chat/lib/accountQuotaWait";
+import {
   acpGetSessionInfo,
   acpListSessionsPage,
   type AcpSessionInfo,
@@ -16,6 +20,7 @@ import {
 } from "@/shared/api/acp";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { sessionNotFoundMessage } from "../helpers";
+import { resetTimeIso } from "./providers";
 import { CommandError } from "../types";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
@@ -187,11 +192,57 @@ export async function refuseChatWithLiveTerminals(
   );
 }
 
+/**
+ * Why a session's queue is held for its provider, or null when it is not:
+ * "allowance_spent" until its account's allowance resets at `until` (null
+ * when the provider gave no time), or "rate_limited" until the app sends the
+ * message again at `until`. A message in that queue does not run before then.
+ */
+export interface ProviderWait {
+  reason: "allowance_spent" | "rate_limited";
+  until: string | null;
+}
+
+export function sessionProviderWait(sessionId: string): ProviderWait | null {
+  const wait = useAccountQuotaWaitStore.getState().waits[sessionId];
+  if (!wait) return null;
+  if (wait.reason === "rate_limit") {
+    return {
+      reason: "rate_limited",
+      until: new Date(wait.retryAt).toISOString(),
+    };
+  }
+  return {
+    reason: "allowance_spent",
+    until: wait.resetAt ? new Date(wait.resetAt).toISOString() : null,
+  };
+}
+
+/**
+ * The wait a session's queue is held for, from the app's record of it, or
+ * from the host's refusal `error` when the record is not there.
+ */
+export function providerWaitAfter(
+  sessionId: string,
+  error?: unknown,
+): ProviderWait | null {
+  const recorded = sessionProviderWait(sessionId);
+  if (recorded) return recorded;
+  const data = accountQuotaWaitData(error);
+  if (!data) return null;
+  if (data.kind === "provider_rate_limit_wait") {
+    return { reason: "rate_limited", until: null };
+  }
+  return { reason: "allowance_spent", until: resetTimeIso(data.nextReset) };
+}
+
 export function sessionMetadata(
   session: ChatSession,
   hostSession?: AcpSessionInfo,
 ) {
   const runtime = useChatStore.getState().getSessionRuntime(session.id);
+  const queuedMessages =
+    useChatStore.getState().queuedMessageBySession[session.id]?.length ?? 0;
   const node = useConductorGraphStore.getState().getNode(session.id);
   return {
     session_id: session.id,
@@ -225,5 +276,9 @@ export function sessionMetadata(
     is_open_in_window: false,
     chat_state: runtime.chatState,
     message_count: session.messageCount,
+    // An idle chat with messages waiting is not finished: its queue may be
+    // held for its provider (`provider_wait`) or about to send.
+    queued_messages: queuedMessages,
+    provider_wait: sessionProviderWait(session.id),
   };
 }

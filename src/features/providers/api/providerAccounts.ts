@@ -131,6 +131,31 @@ export async function listProviderAccounts(): Promise<ProviderAccountsSnapshot> 
   return invoke("list_provider_accounts");
 }
 
+/**
+ * The host's account choice for the first prompt of a new chat, made as its
+ * dispatch would make it now. `wait` means every account the chat could use
+ * has spent its allowance; `nextReset` is when the first one resets, when the
+ * provider says. Null when Flock reads no allowance for the provider.
+ */
+export type NewChatAccountSelection =
+  | { state: "ready"; accountId: string }
+  | {
+      state: "wait";
+      accountId: string;
+      nextReset: number | null;
+      resetTokensAvailable: boolean;
+    };
+
+export function getNewChatAccountSelection(
+  providerId: string,
+  modelId?: string | null,
+): Promise<NewChatAccountSelection | null> {
+  return invoke("new_chat_account_selection", {
+    providerId,
+    modelId: modelId ?? null,
+  });
+}
+
 export async function getProviderAccountStatuses(
   force = false,
 ): Promise<ProviderAccountStatuses> {

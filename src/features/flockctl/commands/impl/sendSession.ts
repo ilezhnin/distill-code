@@ -72,6 +72,11 @@ interface SendSessionResult {
     | "deduplicated"
     | "delivery_unconfirmed"
     | "not_delivered";
+  /** Set when the queued message is held for the target's provider. */
+  provider_wait?: {
+    reason: "allowance_spent" | "rate_limited";
+    until: string | null;
+  };
 }
 
 function runningTargetMessage(sessionId: string): string {
@@ -97,7 +102,14 @@ export const sendSessionCommand = defineCommand({
     --from "the Flock session handling CI" --delivery-id <stable-id> --json
 
 Result:
-  {"session_id": "...", "send_status": "dispatched"|"steered"|"queued"|"deduplicated"|"delivery_unconfirmed"|"not_delivered"}
+  {"session_id": "...", "send_status": "dispatched"|"steered"|"queued"|"deduplicated"|"delivery_unconfirmed"|"not_delivered",
+   "provider_wait": {"reason": "allowance_spent"|"rate_limited", "until": "..."|null}?}
+  "provider_wait" appears when the message is queued behind the target's
+  provider: "allowance_spent" holds it until the target's account resets at
+  "until" (null when the provider gives no time), "rate_limited" until the
+  app sends it again at "until". It does not run before then; to have the
+  work done sooner, start a session on a harness whose allowance is
+  available (\`flockctl info models\`).
   Unconfirmed input is saved for inspection and is not retried automatically.
   The user's current view does not change.`,
   schema: sendSessionSchema,
@@ -105,7 +117,7 @@ Result:
   execute: async (args): Promise<SendSessionResult> => {
     const [
       { acceptFirstSend },
-      { loadSessionForFlockctl, requireSession },
+      { loadSessionForFlockctl, providerWaitAfter, requireSession },
       { findProjectOrThrow },
       { accountQuotaWaitData, isAccountQuotaWaiting },
       {
@@ -140,6 +152,16 @@ Result:
 
     await loadSessionForFlockctl(args.session_id);
     const session = requireSession(args.session_id);
+    // A queued message held for its provider (a spent allowance, a rate
+    // limit) does not run before the wait ends; the caller is told so.
+    const queued = (error?: unknown): SendSessionResult => {
+      const wait = providerWaitAfter(session.id, error);
+      return {
+        session_id: session.id,
+        send_status: "queued",
+        ...(wait ? { provider_wait: wait } : {}),
+      };
+    };
 
     const releaseDeliveryReservation = args.delivery_id
       ? reserveFlockctlDelivery(args.session_id, args.delivery_id)
@@ -163,7 +185,7 @@ Result:
       }
       if (isAccountQuotaWaiting(args.session_id)) {
         chatStore.enqueueTransportReadyMessage(args.session_id, sendPayload);
-        return { session_id: session.id, send_status: "queued" };
+        return queued();
       }
       if (!isQueuedSessionReady(runtime)) {
         switch (args.if_running) {
@@ -174,7 +196,8 @@ Result:
             );
 
           case "steer": {
-            let sendStatus: SendSessionResult["send_status"] = "steered";
+            // Set in onDelivery; the cast keeps the whole union in view.
+            let sendStatus = "steered" as SendSessionResult["send_status"];
             if (runtime.isRunCancellationPending) {
               throw new CommandError(
                 "target_session_running",
@@ -201,7 +224,9 @@ Result:
                 },
               },
             );
-            return { session_id: session.id, send_status: sendStatus };
+            return sendStatus === "queued"
+              ? queued()
+              : { session_id: session.id, send_status: sendStatus };
           }
 
           case "queue":
@@ -209,7 +234,7 @@ Result:
               args.session_id,
               sendPayload,
             );
-            return { session_id: session.id, send_status: "queued" };
+            return queued();
 
           default:
             throw new Error(
@@ -233,13 +258,13 @@ Result:
         );
       }
       if (firstSend.accepted) {
-        return { session_id: session.id, send_status: "queued" };
+        return queued();
       }
       if (
         (chatStore.queuedMessageBySession[args.session_id]?.length ?? 0) > 0
       ) {
         chatStore.enqueueTransportReadyMessage(args.session_id, sendPayload);
-        return { session_id: session.id, send_status: "queued" };
+        return queued();
       }
 
       const retryRecord = {
@@ -282,7 +307,7 @@ Result:
           useChatStore
             .getState()
             .restoreUnacceptedQueuedMessage(args.session_id, retryRecord);
-          return { session_id: session.id, send_status: "queued" };
+          return queued(error);
         }
         if (error instanceof FlockctlDeliveryAlreadyAcceptedError) {
           return { session_id: session.id, send_status: "deduplicated" };
@@ -292,7 +317,7 @@ Result:
             useChatStore
               .getState()
               .enqueueTransportReadyMessage(args.session_id, sendPayload);
-            return { session_id: session.id, send_status: "queued" };
+            return queued();
           }
           throw new CommandError(
             "target_session_running",
@@ -307,7 +332,7 @@ Result:
             useChatStore
               .getState()
               .enqueueTransportReadyMessage(args.session_id, sendPayload);
-            return { session_id: session.id, send_status: "queued" };
+            return queued();
           }
           throw new CommandError(
             "target_session_running",

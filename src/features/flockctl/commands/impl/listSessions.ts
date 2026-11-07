@@ -47,6 +47,10 @@ interface ListSessionsResult {
       | "compacting"
       | "error";
     message_count: number;
+    provider_wait: {
+      reason: "allowance_spent" | "rate_limited";
+      until: string | null;
+    } | null;
   }>;
 }
 
@@ -66,13 +70,16 @@ Result:
                  "wave_id": "..."|null, "wave_step": 1|null,
                  "effort": "..."|null, "fast_mode": true|false|null,
                  "updated_at": "...", "is_running": false,
-                 "chat_state": "idle", "message_count": 12}, ...]}
+                 "chat_state": "idle", "message_count": 12,
+                 "provider_wait": {"reason": "...", "until": "..."|null}|null},
+                ...]}
   Most recent first; archived sessions are excluded. "parent_session_id"
   is the chat the session was started under (a conductor, or the session
   that passed --parent-session-id); "wave_id" and "wave_step" are set for a
   wave's executors. "effort" and "fast_mode" are what each session's model
   last acknowledged; null means none was recorded and the model runs at its
-  own default.`,
+  own default. "provider_wait" is set while a session's queue is held for
+  its provider (see \`flockctl session get --help\`).`,
   schema: listSessionsSchema,
   execute: async (args): Promise<ListSessionsResult> => {
     const [
@@ -127,6 +134,7 @@ Result:
           is_running: metadata.is_running,
           chat_state: metadata.chat_state,
           message_count: session.messageCount,
+          provider_wait: metadata.provider_wait,
         };
       });
     return { sessions };

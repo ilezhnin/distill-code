@@ -31,6 +31,11 @@ interface ListModelsResult {
   harnesses: Array<{
     harness_id: string;
     models: ModelEntry[];
+    /** Whether a new session on this harness could run now. */
+    allowance: {
+      state: "available" | "spent" | "unknown";
+      resets_at: string | null;
+    };
     /** Present when a stale cached list was served (the last refresh failed)
      *  or when the harness manages its model outside the app. */
     warning?: string;
@@ -58,6 +63,8 @@ Result:
                               "efforts": ["low", "high", ...]|null,
                               "default_effort": "..."|null,
                               "supports_fast": true|false|null}],
+                  "allowance": {"state": "available"|"spent"|"unknown",
+                                "resets_at": "..."|null},
                   "warning": "..."?}]}
   Model, effort and fast mode are separate choices: a model_id never carries
   an effort. Pass a model_id (with its harness) as --model-id when creating a
@@ -67,13 +74,24 @@ Result:
   learned what the model offers. "group" is the picker page the model is
   filed under ("more" is the More models page). "warning" appears when a
   stale cached list was served or when the harness manages its model outside
-  the app.`,
+  the app. "allowance" says whether a new session on the harness could run
+  now: "spent" means every account it could use has used up its allowance
+  until "resets_at" (null when the provider gives no time), and
+  \`flockctl session create\` refuses it with provider_limit_reached;
+  "unknown" means Flock reads no allowance for the harness. A model with a
+  limit of its own can still be spent while its harness shows "available";
+  session create checks the model too.`,
   schema: listModelsSchema,
   execute: async (args): Promise<ListModelsResult> => {
     const [
       { getProviderModelSelectionHint },
       { useProviderModelCacheStore },
-      { findReadyHarnessOrThrow, listHarnessStatuses, harnessModelOptions },
+      {
+        findReadyHarnessOrThrow,
+        harnessAllowance,
+        listHarnessStatuses,
+        harnessModelOptions,
+      },
     ] = await Promise.all([
       import("@/features/providers/modelSelectionHints"),
       import("@/features/providers/stores/providerModelCacheStore"),
@@ -86,7 +104,10 @@ Result:
         );
     const harnesses = await Promise.all(
       targets.map(async (harness) => {
-        const models = await harnessModelOptions(harness.id);
+        const [models, allowance] = await Promise.all([
+          harnessModelOptions(harness.id),
+          harnessAllowance(harness.id),
+        ]);
         const hint = getProviderModelSelectionHint(harness.id);
         // A failed refresh keeps serving the previous cache; tell the
         // caller the list may be stale instead of silently masking it.
@@ -98,6 +119,7 @@ Result:
         return {
           harness_id: harness.id,
           models,
+          allowance,
           ...(warning ? { warning } : {}),
         };
       }),

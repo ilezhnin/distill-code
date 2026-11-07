@@ -51,6 +51,11 @@ interface SessionMetadataResult {
     | "compacting"
     | "error";
   message_count: number;
+  queued_messages: number;
+  provider_wait: {
+    reason: "allowance_spent" | "rate_limited";
+    until: string | null;
+  } | null;
 }
 
 type GetSessionResult = SessionMetadataResult & {
@@ -77,13 +82,19 @@ Result:
    "project_id": "..."|null, "working_dir": "..."|null,
    "created_at": "...", "updated_at": "...", "archived": false,
    "is_running": false, "is_open_in_window": false,
-   "chat_state": "idle", "message_count": 12,
+   "chat_state": "idle", "message_count": 12, "queued_messages": 0,
+   "provider_wait": {"reason": "allowance_spent"|"rate_limited",
+                     "until": "..."|null}|null,
    "messages": [{"role": "user"|"assistant"|null, "text": "..."}, ...]}
   "effort" and "fast_mode" are the reasoning effort and fast mode the
   session's model last acknowledged, in the harness's own words; null means
   none was recorded and the model runs at its own default. "messages" is
   present only when --messages > 0; each message text is truncated to 2000
-  chars.`,
+  chars. "queued_messages" counts the messages waiting in its queue.
+  "provider_wait" says its queue is held for its provider: "allowance_spent"
+  until its account's allowance resets at "until" (null when the provider
+  gives no time), or "rate_limited" until the app sends again at "until".
+  An idle session with a provider_wait has not run its queued messages.`,
   schema: getSessionSchema,
   execute: async (args): Promise<GetSessionResult> => {
     const [

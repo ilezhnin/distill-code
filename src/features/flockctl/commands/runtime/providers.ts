@@ -4,6 +4,7 @@ import {
   type AgentProviderReadiness,
 } from "@/features/providers/hooks/useAgentProviderStatus";
 import { getProviderModelSelectionHint } from "@/features/providers/modelSelectionHints";
+import { getNewChatAccountSelection } from "@/features/providers/api/providerAccounts";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { discoverAcpProviders } from "@/shared/api/acp";
 import { runDoctor, type DoctorReport } from "@/shared/api/doctor";
@@ -81,6 +82,64 @@ export async function findReadyHarnessOrThrow(
     );
   }
   return match;
+}
+
+/**
+ * Whether a new chat on a harness could run now. "spent" means every account
+ * the chat could use has used up its allowance: its message would only wait
+ * for `resets_at` (null when the provider gives no time). "unknown" means
+ * Flock reads no allowance for the harness, or could not read it now.
+ */
+export interface HarnessAllowance {
+  state: "available" | "spent" | "unknown";
+  resets_at: string | null;
+}
+
+/** A reset time the host gives in seconds or milliseconds, as an ISO string. */
+export function resetTimeIso(reset: number | null | undefined): string | null {
+  if (typeof reset !== "number" || !Number.isFinite(reset) || reset <= 0)
+    return null;
+  return new Date(
+    reset < 1_000_000_000_000 ? reset * 1000 : reset,
+  ).toISOString();
+}
+
+/**
+ * The allowance a new chat on `harnessId` running `modelId` would meet, as
+ * the host's dispatch would judge it now.
+ */
+export async function harnessAllowance(
+  harnessId: string,
+  modelId?: string | null,
+): Promise<HarnessAllowance> {
+  const selection = await getNewChatAccountSelection(harnessId, modelId).catch(
+    () => null,
+  );
+  if (!selection) return { state: "unknown", resets_at: null };
+  if (selection.state === "ready")
+    return { state: "available", resets_at: null };
+  return { state: "spent", resets_at: resetTimeIso(selection.nextReset) };
+}
+
+/**
+ * The refusal of a new chat whose message would only wait for an allowance
+ * reset: the caller learns it before any session exists and picks another
+ * harness or model.
+ */
+export function allowanceSpentError(
+  harnessId: string,
+  modelId: string | null | undefined,
+  allowance: HarnessAllowance,
+): CommandError {
+  const target = modelId ? `"${harnessId}" (${modelId})` : `"${harnessId}"`;
+  const reset = allowance.resets_at
+    ? `It resets at ${allowance.resets_at}.`
+    : "The provider gives no reset time.";
+  return new CommandError(
+    "provider_limit_reached",
+    `No session was created: every account ${target} could run on has used up its allowance, so its first message would only wait. ${reset} ` +
+      'Pick a harness and model whose "allowance" is "available" in `flockctl info models`.',
+  );
 }
 
 export function modelEntryFromOption(model: ModelOption): ModelEntry {

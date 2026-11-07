@@ -42,6 +42,20 @@ app sends the message again on its own, a little later after each refusal.
 Do not start that agent again yourself; a second one would do the work
 twice.
 
+A spent allowance is different: it lasts until the account resets, often
+hours. `flockctl info models` and `flockctl info harnesses` give each
+harness an `allowance` — `available`, `spent` with its `resets_at`, or
+`unknown` when Flock reads none — so choose a harness that can run before
+you start a session on it. `flockctl session create` checks the chosen
+harness and model again and refuses a spent one with
+`provider_limit_reached`, naming the reset time; no session is created, so
+pick another harness or model. A message sent to an existing session whose
+provider waits is answered `queued` with a `provider_wait` (`reason`
+`allowance_spent` or `rate_limited`, and `until`): it does not run before
+then. `flockctl session get` reports the same `provider_wait` and its
+`queued_messages`, so an idle session with messages waiting is not read as
+finished.
+
 To stop one of those sessions, run `flockctl session stop --session-id <id>`
 with `--from` and `--reason` saying who and why; its chip shows both. Do not
 try to stop it by sending it a message: a message to a running session waits

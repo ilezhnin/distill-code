@@ -518,6 +518,7 @@ pub fn run() {
             commands::provider_accounts::sign_out_provider_account,
             commands::provider_account_status::get_provider_account_statuses,
             commands::provider_account_status::consume_provider_account_reset,
+            commands::provider_account_status::new_chat_account_selection,
             commands::path_resolver::resolve_path,
             commands::path_resolver::canonicalize_authorized_workspace_directory,
             commands::path_resolver::check_directories_exist,

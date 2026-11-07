@@ -649,6 +649,10 @@ Result:
   pass instead. The session runs in the background; the user's view does not
   change. Check progress later with
   `flockctl session get --session-id <session_id>`.
+  When every account the session could run on has used up its allowance,
+  no session is created and the call fails with provider_limit_reached,
+  naming the reset time; `flockctl info models` shows each harness's
+  "allowance".
 "#;
 
     const EXPECTED_SESSION_MOVE_HELP: &str = r#"Move a chat session into a project; the session list in the app regroups

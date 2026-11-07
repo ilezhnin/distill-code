@@ -810,6 +810,37 @@ pub(crate) async fn select_owned_account(
     .map(|(selection, _)| selection)
 }
 
+/// The choice the first prompt of a new chat of `provider_id` on `model_id`
+/// would meet now, made as its dispatch makes it (`prepare_session_account`):
+/// the provider's default account, or its CLI sign-in, and the spares
+/// automatic switching allows. `None` when Flock reads no allowance for the
+/// provider or cannot read it now; the dispatch then lets the bridge answer.
+/// A caller starting a chat for an agent learns here, before the chat exists,
+/// that its message would only wait for a reset.
+pub async fn new_chat_selection(
+    app: &AppHandle,
+    provider_id: &str,
+    model_id: Option<&str>,
+) -> Option<AccountSelection> {
+    if let Some(identity) = provider_accounts::cli_login_account_id(provider_id) {
+        return select_owned_account(app, provider_id, &identity, model_id, true)
+            .await
+            .ok();
+    }
+    if !provider_accounts::supports_managed_accounts(provider_id) {
+        return None;
+    }
+    let automatic = provider_accounts::snapshot(app)
+        .ok()?
+        .automatic_switching
+        .get(provider_id)
+        .copied()
+        .unwrap_or(false);
+    select_account(app, provider_id, None, automatic, model_id, true)
+        .await
+        .ok()
+}
+
 fn api_billed(account: &ProviderAccount, status: Option<&ProviderAccountStatus>) -> bool {
     if provider_accounts::spec(&account.provider_id)
         .is_some_and(|spec| spec.connection == ConnectionFlow::ApiKey)

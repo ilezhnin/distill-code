@@ -1,4 +1,18 @@
-use crate::services::provider_account_status::{self, ProviderAccountStatusSnapshot, ResetResult};
+use crate::services::provider_account_status::{
+    self, AccountSelection, ProviderAccountStatusSnapshot, ResetResult,
+};
+
+/// Whether a new chat of `provider_id` on `model_id` could run its first
+/// prompt now, or would wait for an allowance reset; null when Flock reads
+/// no allowance for the provider.
+#[tauri::command]
+pub async fn new_chat_account_selection(
+    app: tauri::AppHandle,
+    provider_id: String,
+    model_id: Option<String>,
+) -> Result<Option<AccountSelection>, String> {
+    Ok(provider_account_status::new_chat_selection(&app, &provider_id, model_id.as_deref()).await)
+}
 
 #[tauri::command]
 pub async fn get_provider_account_statuses(

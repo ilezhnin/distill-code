@@ -35,7 +35,10 @@ import { useProviderModelCacheStore } from "@/features/providers/stores/provider
 import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import type { AcpSessionInfo, AcpSessionsPage } from "@/shared/api/acp";
 import { createUserMessage } from "@/shared/types/messages";
-import { clearAccountQuotaWait } from "@/features/chat/lib/accountQuotaWait";
+import {
+  clearAccountQuotaWait,
+  useAccountQuotaWaitStore,
+} from "@/features/chat/lib/accountQuotaWait";
 import type { ApplicationExecutorRequest } from "@/features/benchmarks/lib/executorSelection";
 
 const mocks = vi.hoisted(() => ({
@@ -50,6 +53,7 @@ const mocks = vi.hoisted(() => ({
   loadSessionMessages: vi.fn(),
   acpSteerMessage: vi.fn(),
   discoverAcpProviders: vi.fn(),
+  getNewChatAccountSelection: vi.fn(),
   runDoctor: vi.fn(),
   readinessFromReport: vi.fn(),
   lastSessionMessages: vi.fn(),
@@ -162,6 +166,15 @@ vi.mock("@/shared/api/sessionSearch", () => ({
 vi.mock("@/shared/api/doctor", () => ({
   runDoctor: (...args: unknown[]) => mocks.runDoctor(...args),
 }));
+
+vi.mock(
+  "@/features/providers/api/providerAccounts",
+  async (importOriginal) => ({
+    ...(await importOriginal<object>()),
+    getNewChatAccountSelection: (...args: unknown[]) =>
+      mocks.getNewChatAccountSelection(...args),
+  }),
+);
 
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
   readinessFromReport: (...args: unknown[]) =>
@@ -438,6 +451,8 @@ beforeEach(() => {
     { id: "codex-acp", label: "Codex" },
   ]);
   mocks.runDoctor.mockResolvedValue({ checks: [] });
+  // No allowance read unless a test gives one: "unknown" never blocks.
+  mocks.getNewChatAccountSelection.mockResolvedValue(null);
   mocks.readinessFromReport.mockReturnValue(
     new Map([
       ["claude-acp", "ready"],
@@ -628,6 +643,65 @@ describe("command safety metadata", () => {
 });
 
 describe("sessions.create", () => {
+  it("refuses a harness whose every account has spent its allowance before any session exists", async () => {
+    mocks.getNewChatAccountSelection.mockResolvedValue({
+      state: "wait",
+      accountId: "cli-login-codex-acp",
+      nextReset: 1_900_000_000,
+      resetTokensAvailable: false,
+    });
+
+    const error = await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        {
+          action: "create",
+          prompt: "continue the index recovery",
+          harness_id: "codex-acp",
+        },
+        ctx,
+      ),
+      "provider_limit_reached",
+    );
+
+    expect(error.message).toContain(new Date(1_900_000_000_000).toISOString());
+    expect(error.message).toContain("No session was created");
+    expect(mocks.getNewChatAccountSelection).toHaveBeenCalledWith(
+      "codex-acp",
+      undefined,
+    );
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+    expect(useChatSessionStore.getState().sessions).toEqual([]);
+  });
+
+  it("checks the allowance of the model the session will run and creates it when it can run", async () => {
+    seedModelCache("claude-acp", ["model-9"]);
+    mocks.getNewChatAccountSelection.mockResolvedValue({
+      state: "ready",
+      accountId: "account-1",
+    });
+
+    const result = await dispatchCommand(
+      "sessions",
+      {
+        action: "create",
+        prompt: "review the change",
+        harness_id: "claude-acp",
+        model_id: "model-9",
+      },
+      ctx,
+    );
+
+    expect(mocks.getNewChatAccountSelection).toHaveBeenCalledWith(
+      "claude-acp",
+      "model-9",
+    );
+    expect(result).toMatchObject({
+      session_id: "session-new",
+      send_status: "dispatched",
+    });
+  });
+
   it("creates the session and leaves the accepted first prompt in the shared queue", async () => {
     seedModelCache("databricks_v2", ["model-9"]);
     mocks.listPersonas.mockResolvedValue([
@@ -1073,7 +1147,11 @@ describe("sessions.send", () => {
   it("queues an idle direct send when account preflight proves that all quotas are exhausted", async () => {
     mockSessionFound({ providerId: "codex-acp" });
     const error = {
-      data: { kind: "account_quota_wait", promptNotAccepted: true },
+      data: {
+        kind: "account_quota_wait",
+        promptNotAccepted: true,
+        nextReset: 1_900_000_000,
+      },
     };
     mocks.acpSendMessage.mockImplementationOnce(() => {
       throw error;
@@ -1088,7 +1166,15 @@ describe("sessions.send", () => {
       },
       ctx,
     );
-    expect(result).toMatchObject({ send_status: "queued" });
+    // The sender learns the message waits for the reset, not that it runs.
+    expect(result).toEqual({
+      session_id: "session-1",
+      send_status: "queued",
+      provider_wait: {
+        reason: "allowance_spent",
+        until: new Date(1_900_000_000_000).toISOString(),
+      },
+    });
     const head = useChatStore.getState().queuedMessageBySession["session-1"][0];
     expect(head.payload.text).toBe("retry after reset");
     expect(head.payload.executorRequestKey).toMatch(/^chat:/);
@@ -1495,6 +1581,50 @@ describe("sessions.list", () => {
 });
 
 describe("sessions.get", () => {
+  it("reports an idle session's queue held for its spent allowance", async () => {
+    mockSessionFound();
+    const resetAt = Date.parse("2030-03-17T17:46:40.000Z");
+    useChatStore.setState({
+      queuedMessageBySession: {
+        "session-1": [
+          {
+            kind: "transport-ready",
+            recordId: "record-1",
+            payload: { text: "start the assigned recovery" },
+          },
+        ],
+      },
+    } as never);
+    useAccountQuotaWaitStore.setState({
+      waits: {
+        "session-1": {
+          retryAt: resetAt + 1000,
+          startedAt: resetAt - 60_000,
+          message: "Waiting for an account quota reset.",
+          reason: "quota",
+          resetAt,
+          resetTokensAvailable: false,
+        },
+      },
+    });
+
+    const result = await dispatchCommand(
+      "sessions",
+      { action: "get", session_id: "session-1" },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      is_running: false,
+      queued_messages: 1,
+      provider_wait: {
+        reason: "allowance_spent",
+        until: "2030-03-17T17:46:40.000Z",
+      },
+    });
+    clearAccountQuotaWait("session-1");
+  });
+
   it("does not validate a target from stale cache unless the targeted read confirms it", async () => {
     seedSessions(makeSession({ id: "session-1", title: "Stale Session" }));
 
@@ -2004,7 +2134,50 @@ describe("info", () => {
         {
           harness_id: "amp-acp",
           models: [],
+          allowance: { state: "unknown", resets_at: null },
           warning: "Use the Amp CLI to configure the model.",
+        },
+      ],
+    });
+  });
+
+  it("list_harnesses says which ready harness has spent its allowance and until when", async () => {
+    mocks.getNewChatAccountSelection.mockImplementation(
+      async (providerId: string) =>
+        providerId === "codex-acp"
+          ? {
+              state: "wait",
+              accountId: "account-2",
+              nextReset: 1_900_000_000_000,
+              resetTokensAvailable: false,
+            }
+          : { state: "ready", accountId: "account-1" },
+    );
+
+    const result = await dispatchCommand(
+      "info",
+      { action: "list_harnesses" },
+      ctx,
+    );
+
+    expect(result).toEqual({
+      harnesses: [
+        {
+          harness_id: "claude-acp",
+          name: "Claude Code",
+          is_default: true,
+          status: "ready",
+          allowance: { state: "available", resets_at: null },
+        },
+        {
+          harness_id: "codex-acp",
+          name: "Codex",
+          is_default: false,
+          status: "ready",
+          allowance: {
+            state: "spent",
+            resets_at: new Date(1_900_000_000_000).toISOString(),
+          },
         },
       ],
     });

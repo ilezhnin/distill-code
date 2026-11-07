@@ -80,6 +80,7 @@ export const COMMAND_ERROR_CODES = [
   "skill_not_found",
   "harness_not_found",
   "harness_not_ready",
+  "provider_limit_reached",
   "model_not_found",
   "effort_not_available",
   "fast_not_supported",
