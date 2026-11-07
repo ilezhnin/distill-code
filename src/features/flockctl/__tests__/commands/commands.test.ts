@@ -89,6 +89,7 @@ vi.mock("@/features/terminal/lib/terminalSessionManager", () => ({
 }));
 
 vi.mock("@/shared/api/acp", () => ({
+  acpPrepareSessionAccount: vi.fn(async () => undefined),
   acpCreateSession: (...args: unknown[]) => mocks.acpCreateSession(...args),
   acpDuplicateSession: (...args: unknown[]) =>
     mocks.acpDuplicateSession(...args),

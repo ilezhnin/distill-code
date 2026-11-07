@@ -21,6 +21,7 @@ vi.mock("../../lib/chatExecutorDispatch", () => ({
 }));
 
 vi.mock("@/shared/api/acp", () => ({
+  acpPrepareSessionAccount: vi.fn(async () => undefined),
   acpSendMessage: (...args: unknown[]) => {
     const result = mockAcpSendMessage(...args);
     const options = args[2] as

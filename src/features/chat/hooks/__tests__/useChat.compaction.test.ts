@@ -12,6 +12,7 @@ vi.mock("../../lib/chatExecutorDispatch", () => ({
 }));
 
 vi.mock("@/shared/api/acp", () => ({
+  acpPrepareSessionAccount: vi.fn(async () => undefined),
   acpSendMessage: (...args: unknown[]) => mockAcpSendMessage(...args),
   acpCancelSession: vi.fn(),
   acpLoadSession: (...args: unknown[]) => mockAcpLoadSession(...args),

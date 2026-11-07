@@ -62,6 +62,7 @@ vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
 }));
 
 vi.mock("@/shared/api/acp", () => ({
+  acpPrepareSessionAccount: vi.fn(async () => undefined),
   acpGetSessionInfo: (...args: unknown[]) => mocks.acpGetSessionInfo(...args),
   acpLoadSession: (...args: unknown[]) => mocks.acpLoadSession(...args),
   acpPrepareSession: (...args: unknown[]) => {

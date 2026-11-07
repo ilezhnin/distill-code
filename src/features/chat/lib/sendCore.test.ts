@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   acpSendMessage: vi.fn(),
   acpSteerMessage: vi.fn(),
   acpPrepareSession: vi.fn(),
+  acpPrepareSessionAccount: vi.fn(),
 }));
 vi.mock("./chatExecutorDispatch", () => ({
   prepareChatExecutorDispatch: vi.fn(async () => undefined),
@@ -244,6 +245,8 @@ vi.mock("@/shared/api/acp", () => ({
   acpSendMessage: (...args: unknown[]) => mocks.acpSendMessage(...args),
   acpSteerMessage: (...args: unknown[]) => mocks.acpSteerMessage(...args),
   acpPrepareSession: (...args: unknown[]) => mocks.acpPrepareSession(...args),
+  acpPrepareSessionAccount: (...args: unknown[]) =>
+    mocks.acpPrepareSessionAccount(...args),
 }));
 
 function deferred<T = void>() {

@@ -314,6 +314,13 @@ export async function acpSteerMessage(
   );
 }
 
+/** Move a chat to the account its next prompt will run on; see `prepareSessionAccount`. */
+export function acpPrepareSessionAccount(
+  sessionId: string,
+): Promise<string | null | undefined> {
+  return directAcp.prepareSessionAccount(sessionId);
+}
+
 /** Prepare or warm an ACP session ahead of the first prompt. */
 export async function acpPrepareSession(
   sessionId: string,

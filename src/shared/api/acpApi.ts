@@ -600,6 +600,23 @@ export async function loadSession(
   return response;
 }
 
+/**
+ * Let the host move a chat to the account its next prompt will run on (it
+ * moves one whose account has no allowance left). Returns that account, `null`
+ * when the provider has no accounts to choose from, and `undefined` when the
+ * host did not say.
+ */
+export async function prepareSessionAccount(
+  sessionId: string,
+): Promise<string | null | undefined> {
+  const client = await getClient();
+  const response = await client.host.sessionPrepareAccount({ sessionId });
+  const accountId = response?.accountId;
+  return typeof accountId === "string" || accountId === null
+    ? accountId
+    : undefined;
+}
+
 export async function prompt(
   sessionId: string,
   content: ContentBlock[],

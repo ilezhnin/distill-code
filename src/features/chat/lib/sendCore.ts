@@ -32,7 +32,7 @@ import {
 } from "@/features/conductor/conductorGraphStore";
 import { syncConductorDisplayNameFromTitle } from "@/features/conductor/syncConductorDisplayName";
 import { composeConductorSystemPrompt } from "@/features/conductor/wavePrompts";
-import { acpSendMessage } from "@/shared/api/acp";
+import { acpPrepareSessionAccount, acpSendMessage } from "@/shared/api/acp";
 import {
   formatAcpErrorMessage,
   isPromptWithdrawnError,
@@ -390,6 +390,19 @@ export async function dispatchPrompt(
     // Wave sends already carry the shared decision prepared by their owner.
     // Ordinary accepted chat tasks use this same native boundary here.
     if (!acpPromptMetadata?.executorSelection) {
+      // Before each prompt the host moves a chat whose account has no
+      // allowance left to one that has. Let it move first, so the decision
+      // names the account the turn runs on: a move made at dispatch would
+      // read as a superseded preparation and park the message.
+      const accountId = await acpPrepareSessionAccount(sessionId);
+      throwIfAborted(signal);
+      if (
+        accountId !== undefined &&
+        accountId !==
+          useChatSessionStore.getState().getSession(sessionId)?.accountId
+      ) {
+        useChatSessionStore.getState().patchSession(sessionId, { accountId });
+      }
       preparedExecutor = await prepareChatExecutorDispatch({
         sessionId,
         acceptedPrompt: text,

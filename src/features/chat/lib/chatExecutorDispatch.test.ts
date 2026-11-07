@@ -20,10 +20,11 @@ import {
 import { dispatchPrompt } from "./sendCore";
 import { QueuedMessageAlreadyAcceptedError } from "./preCommitSendRejection";
 
-const mocks = vi.hoisted(() => ({ send: vi.fn() }));
+const mocks = vi.hoisted(() => ({ send: vi.fn(), prepareAccount: vi.fn() }));
 vi.mock("@/shared/api/acp", async (original) => ({
   ...(await original<typeof import("@/shared/api/acp")>()),
   acpSendMessage: mocks.send,
+  acpPrepareSessionAccount: mocks.prepareAccount,
 }));
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
   executorSelection: { get: vi.fn(), select: vi.fn(), prepare: vi.fn() },
@@ -144,6 +145,51 @@ beforeEach(() => {
     options.onPromptDispatching();
     options.onPromptDispatched?.();
   });
+  mocks.prepareAccount.mockResolvedValue(undefined);
+});
+
+it("lets the host move a chat off a spent account before the decision names one", async () => {
+  // The host moves a chat whose account has no allowance left, tells the
+  // renderer, and is asked again right before the prompt is dispatched.
+  const hostRoutesAccount = (sessionId: string) => {
+    const store = useChatSessionStore.getState();
+    if (store.getSession(sessionId)?.accountId === "example-account")
+      store.patchSession(sessionId, { accountId: "spare-account" });
+    return "spare-account";
+  };
+  mocks.prepareAccount.mockImplementation(async (sessionId: string) =>
+    hostRoutesAccount(sessionId),
+  );
+  mocks.send.mockImplementation(async (sessionId, _text, options) => {
+    hostRoutesAccount(sessionId);
+    options.onPromptDispatching();
+    options.onPromptDispatched?.();
+  });
+  await dispatchPrompt("example-chat", "Example", {
+    executorRequestKey: "chat:spent-account",
+  });
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+  expect(
+    vi.mocked(executorSelection.select).mock.calls[0][0].candidates[0]
+      ?.configuration.accountId,
+  ).toBe("spare-account");
+  expect(
+    useChatStore.getState().messagesBySession["example-chat"]?.[0]?.role,
+  ).toBe("user");
+});
+
+it("takes the account the host names even before its notice arrives", async () => {
+  mocks.prepareAccount.mockResolvedValue("spare-account");
+  await dispatchPrompt("example-chat", "Example", {
+    executorRequestKey: "chat:named-account",
+  });
+  expect(
+    useChatSessionStore.getState().getSession("example-chat")?.accountId,
+  ).toBe("spare-account");
+  expect(
+    vi.mocked(executorSelection.select).mock.calls[0][0].candidates[0]
+      ?.configuration.accountId,
+  ).toBe("spare-account");
 });
 
 function seedAutomaticFirstTask() {

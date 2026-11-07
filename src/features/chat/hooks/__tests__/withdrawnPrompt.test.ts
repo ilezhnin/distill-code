@@ -30,6 +30,7 @@ vi.mock("../../lib/ownedTaskDispatch", () => ({
 }));
 
 vi.mock("@/shared/api/acp", () => ({
+  acpPrepareSessionAccount: vi.fn(async () => undefined),
   acpSendMessage: (...args: unknown[]) => mocks.acpSendMessage(...args),
   acpGetSessionInfo: (...args: unknown[]) => mocks.acpGetSessionInfo(...args),
   acpLoadSession: (...args: unknown[]) => mocks.acpLoadSession(...args),
