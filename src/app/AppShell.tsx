@@ -149,6 +149,7 @@ import {
   setStoredModelPreference,
 } from "@/features/chat/lib/modelPreferences";
 import { settleCreatedSessionOnHarnessModel } from "@/features/chat/lib/rejectedCreationModel";
+import { settleDraftWorkingDir } from "@/features/chat/lib/workspaceAttachments";
 import { setDraftSessionRetryHandler } from "@/features/chat/lib/draftSessionRetry";
 import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 import { archiveSession as archiveSessionApi } from "@/shared/api/acpApi";
@@ -1671,10 +1672,15 @@ function AppShellView({ children }: { children?: React.ReactNode }) {
             promoteDraftSession(session.id, sessionId, {
               ...(accountId !== undefined ? { accountId } : {}),
               executionTarget: promotedTarget,
-              workingDir: latestSessionAfterReady.workingDir ?? workingDir,
-              workspaceAttachments:
-                latestSessionAfterReady.workspaceAttachments,
-              activeWorkspaceId: latestSessionAfterReady.activeWorkspaceId,
+              // The chat was created in the resolved folder. A draft still on
+              // the folder it was drawn with moves there; otherwise the next
+              // prepare would hand the host the placeholder, which it expands
+              // against the user's home, outside a custom Flock root.
+              ...settleDraftWorkingDir(
+                latestSessionAfterReady,
+                session.workingDir,
+                workingDir,
+              ),
               ...latestSessionPatch,
               ...(resolvedConfigOptionsSnapshot?.reasoningEffort
                 ? {

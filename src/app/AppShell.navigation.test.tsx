@@ -35,6 +35,11 @@ import type { NavigationPanesViewProps } from "@/app/views/NavigationPanesView";
 import type { AppShellContent as AppShellContentType } from "./ui/AppShellContent";
 
 const mockAcpCreateSession = vi.hoisted(() => vi.fn());
+// The folder a new chat is created in, when a test resolves it to something
+// other than the placeholder the draft is drawn with.
+const resolvedSessionCwd = vi.hoisted(() => ({
+  value: null as string | null,
+}));
 const mockAcpPrepareSession = vi.hoisted(() => vi.fn());
 const mockAcpSetSessionConfigOption = vi.hoisted(() => vi.fn());
 const mockAcpListSessionsPage = vi.hoisted(() => vi.fn());
@@ -331,6 +336,25 @@ vi.mock("@/shared/api/agents", () => ({
   promotePersonaSource: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock(
+  "@/features/projects/lib/sessionCwdSelection",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/projects/lib/sessionCwdSelection")
+      >();
+    return {
+      ...actual,
+      resolveSessionCwd: (
+        ...args: Parameters<typeof actual.resolveSessionCwd>
+      ) =>
+        resolvedSessionCwd.value === null
+          ? actual.resolveSessionCwd(...args)
+          : Promise.resolve(resolvedSessionCwd.value),
+    };
+  },
+);
+
 vi.mock("@/shared/api/pathResolver", () => ({
   resolvePath: async ({ parts }: { parts: string[] }) => ({
     path: parts.join("/") || "/tmp",
@@ -543,6 +567,7 @@ describe("AppShell global navigation", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
+    resolvedSessionCwd.value = null;
     mockRepairManagedGooseModelSelection.mockReset();
     mockRepairManagedGooseModelSelection.mockImplementation(
       async (selection: unknown) => selection,
@@ -1279,6 +1304,52 @@ describe("AppShell global navigation", () => {
       },
     });
     expect(getModelSelectionIntent("created-session")).toBeUndefined();
+  });
+
+  it("moves a new chat from the placeholder folder to the folder it was created in", async () => {
+    // An isolated or custom Flock root: the default folder is not ~/.flock.
+    resolvedSessionCwd.value = "/run/home/.flock/artifacts";
+    const pendingSession = deferred<{ sessionId: string }>();
+    mockAcpCreateSession.mockReturnValueOnce(pendingSession.promise);
+    const user = userEvent.setup();
+    renderAppShell();
+
+    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
+    await waitFor(() => expect(mockAcpCreateSession).toHaveBeenCalled());
+    const draftSessionId = useChatSessionStore.getState().activeSessionId ?? "";
+    expect(
+      useChatSessionStore.getState().getSession(draftSessionId)?.workingDir,
+    ).toBe("~/.flock/artifacts");
+    expect(mockAcpCreateSession.mock.calls[0]?.[1]).toBe(
+      "/run/home/.flock/artifacts",
+    );
+
+    act(() => {
+      pendingSession.resolve({ sessionId: "created-session" });
+    });
+
+    await waitFor(() => {
+      expect(useChatSessionStore.getState().activeSessionId).toBe(
+        "created-session",
+      );
+    });
+    // Every later prepare reads the chat's folder from here; the placeholder
+    // would reach the host, which expands it against the real home.
+    const created = useChatSessionStore
+      .getState()
+      .getSession("created-session");
+    expect(created?.workingDir).toBe("/run/home/.flock/artifacts");
+    expect(created?.workspaceAttachments?.map(({ path }) => path)).toEqual([
+      "/run/home/.flock/artifacts",
+    ]);
+    expect(
+      created?.workspaceAttachments?.find(
+        ({ id }) => id === created.activeWorkspaceId,
+      )?.path,
+    ).toBe("/run/home/.flock/artifacts");
+    expect(
+      mockAcpPrepareSession.mock.calls.map(([, , workingDir]) => workingDir),
+    ).not.toContain("~/.flock/artifacts");
   });
 
   it("archives the backend session when post-creation reconciliation fails", async () => {

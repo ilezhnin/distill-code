@@ -756,6 +756,59 @@ export function withWorkspaceBackfill<T extends WorkspaceSessionFields>(
   };
 }
 
+interface SettledDraftWorkspace {
+  workingDir: string;
+  workspaceAttachments?: WorkspaceAttachment[];
+  activeWorkspaceId?: string | null;
+}
+
+/**
+ * The folder a draft keeps when it becomes the created chat.
+ *
+ * A draft is drawn on a provisional folder (the default artifacts folder as a
+ * placeholder, or a project folder as written) while the host resolves the one
+ * the chat is created in. A draft that still names the folder it was drawn
+ * with is on the resolved one, and its attachment for the provisional folder
+ * moves there. A folder chosen while creation ran is kept as it is.
+ */
+export function settleDraftWorkingDir(
+  draft: WorkspaceSessionFields,
+  drawnWorkingDir: string | null | undefined,
+  createdWorkingDir: string,
+): SettledDraftWorkspace {
+  const kept: SettledDraftWorkspace = {
+    workingDir: draft.workingDir ?? createdWorkingDir,
+    workspaceAttachments: draft.workspaceAttachments,
+    activeWorkspaceId: draft.activeWorkspaceId,
+  };
+  const provisional = normalizeWorkspacePath(draft.workingDir);
+  if (
+    !provisional ||
+    provisional !== normalizeWorkspacePath(drawnWorkingDir) ||
+    isSameWorkspacePath(provisional, createdWorkingDir)
+  ) {
+    return kept;
+  }
+
+  const provisionalKey = toIdentityKey(provisional);
+  let activeWorkspaceId = draft.activeWorkspaceId;
+  const workspaceAttachments = draft.workspaceAttachments?.map((attachment) => {
+    if (toIdentityKey(attachment.path) !== provisionalKey) {
+      return attachment;
+    }
+    const id = workspaceAttachmentIdForPath(createdWorkingDir);
+    if (activeWorkspaceId === attachment.id) {
+      activeWorkspaceId = id;
+    }
+    return { ...attachment, id, path: createdWorkingDir };
+  });
+  return {
+    workingDir: createdWorkingDir,
+    workspaceAttachments,
+    activeWorkspaceId,
+  };
+}
+
 export function ensureWorkspaceAttachment<T extends WorkspaceSessionFields>(
   session: T,
   options: EnsureWorkspaceAttachmentOptions,

@@ -16,6 +16,7 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { getMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import {
   getOptimisticArtifactCwd,
+  isArtifactRootPlaceholder,
   resolveArtifactRootPath,
 } from "@/shared/artifacts/sessionArtifactLocation";
 import {
@@ -146,6 +147,7 @@ function isImplicitDefaultCwd(
   const session = useChatSessionStore.getState().getSession(sessionId);
   if (!session?.workingDir) return true;
   return (
+    isArtifactRootPlaceholder(session.workingDir) ||
     isSameWorkspacePathWithHome(session.workingDir, artifactRoot, homeDir) ||
     isSameWorkspacePathWithHome(
       session.workingDir,

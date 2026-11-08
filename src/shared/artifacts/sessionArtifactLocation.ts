@@ -28,8 +28,30 @@ function hasTauriRuntime(): boolean {
   );
 }
 
+const ARTIFACT_ROOT_PLACEHOLDER = `~/${FALLBACK_FLOCK_ROOT_FOLDER_NAME}/${DEFAULT_ARTIFACT_ROOT_FOLDER_NAME}`;
+
+/**
+ * The default folder as the host last resolved it under the running Flock
+ * root. A new chat is drawn on a folder before the host answers; once one
+ * answer is in, it is drawn on this one rather than on the placeholder, which
+ * names the wrong folder under a custom root, an isolated test root or an
+ * upgraded `~/.distill`.
+ */
+let lastResolvedDefaultArtifactRoot: string | null = null;
+
 function fallbackDefaultArtifactRootPath(): string {
-  return `~/${FALLBACK_FLOCK_ROOT_FOLDER_NAME}/${DEFAULT_ARTIFACT_ROOT_FOLDER_NAME}`;
+  return ARTIFACT_ROOT_PLACEHOLDER;
+}
+
+/**
+ * True for the placeholder a chat is drawn with before the default folder
+ * has resolved. It stands for the default folder, not a folder of its own:
+ * the host expands `~` against the user's home, outside a custom Flock root.
+ */
+export function isArtifactRootPlaceholder(
+  path: string | null | undefined,
+): boolean {
+  return trimValue(path) === ARTIFACT_ROOT_PLACEHOLDER;
 }
 
 export async function defaultArtifactRootPath(): Promise<string> {
@@ -39,17 +61,19 @@ export async function defaultArtifactRootPath(): Promise<string> {
 
   try {
     const flockRoot = (await getFlockRoot())?.root?.trim();
-    return (
-      await resolvePath({
-        parts: flockRoot
-          ? [flockRoot, DEFAULT_ARTIFACT_ROOT_FOLDER_NAME]
-          : [
-              "~",
-              FALLBACK_FLOCK_ROOT_FOLDER_NAME,
-              DEFAULT_ARTIFACT_ROOT_FOLDER_NAME,
-            ],
-      })
-    ).path;
+    const { path } = await resolvePath({
+      parts: flockRoot
+        ? [flockRoot, DEFAULT_ARTIFACT_ROOT_FOLDER_NAME]
+        : [
+            "~",
+            FALLBACK_FLOCK_ROOT_FOLDER_NAME,
+            DEFAULT_ARTIFACT_ROOT_FOLDER_NAME,
+          ],
+    });
+    if (flockRoot) {
+      lastResolvedDefaultArtifactRoot = path;
+    }
+    return path;
   } catch {
     return fallbackDefaultArtifactRootPath();
   }
@@ -112,6 +136,7 @@ export function getOptimisticArtifactCwd({
   return (
     trimValue(artifactRootOverride) ??
     getArtifactRootPreference() ??
+    lastResolvedDefaultArtifactRoot ??
     fallbackDefaultArtifactRootPath()
   );
 }
