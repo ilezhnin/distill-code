@@ -195,6 +195,13 @@ export interface SteerSessionResponse {
   assistantMessageId?: string;
 }
 
+/** Whether a chat's agent may operate apps on this PC in the background. */
+export interface ComputerUseState {
+  enabled: boolean;
+  /** The Cua Driver version Flock runs for it. */
+  driverVersion: string;
+}
+
 export interface HostSessionInfo {
   sessionId: string;
   cwd: string;

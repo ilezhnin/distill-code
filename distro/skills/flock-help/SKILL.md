@@ -97,8 +97,8 @@ be a provider problem needs both):
 - `references/agents.md` — agents/personas
 - `references/skills.md` — skills, source kinds, precedence
 - `references/projects.md` — projects and workspaces
-- `references/sessions.md` — sessions ("chat"), the right rail, files,
-  worktrees, terminal
+- `references/sessions.md` — sessions ("chat"), computer use, the right
+  rail, files, worktrees, terminal
 - `references/ai-providers.md` — provider connections and error causes
 - `references/settings.md` — settings structure and gotchas
 

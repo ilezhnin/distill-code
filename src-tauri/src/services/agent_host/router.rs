@@ -40,6 +40,7 @@ use super::session_title;
 use super::sources::SourceRoots;
 use super::store::{ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo};
 use super::text_execution;
+use crate::services::computer_use;
 use crate::services::credential_lease;
 use crate::services::managed_acp_tools;
 use crate::services::provider_account_status::grok;
@@ -4268,7 +4269,11 @@ impl Inner {
         out
     }
 
-    async fn mcp_servers(&self, requested: &Value) -> Vec<Value> {
+    /// The tool servers a bridge session is opened with: the ones the request
+    /// names, the user's enabled servers, and, for a chat with computer use
+    /// on, Flock's own computer use server, which takes the place of any
+    /// other server of that name.
+    async fn mcp_servers(&self, requested: &Value, session_id: Option<&str>) -> Vec<Value> {
         let mut servers: Vec<Value> = requested.as_array().cloned().unwrap_or_default();
         match self.store.mcp_list().await {
             Ok(records) => {
@@ -4280,7 +4285,144 @@ impl Inner {
             }
             Err(error) => log::warn!("[agent-host] failed to read MCP servers: {error}"),
         }
+        if let Some(session_id) = session_id {
+            if self.computer_use_on(session_id).await {
+                match computer_use::server_for(&self.app) {
+                    Some(server) => {
+                        servers.retain(|server| {
+                            server.get("name").and_then(Value::as_str)
+                                != Some(computer_use::SERVER_NAME)
+                        });
+                        servers.push(server);
+                    }
+                    None => log::warn!(
+                        "[agent-host] session {session_id} has computer use on but its driver is not installed; opening it without computer use"
+                    ),
+                }
+            }
+        }
         servers
+    }
+
+    /// Whether a chat has computer use on. Off unless the chat turned it on.
+    pub(super) async fn computer_use_on(&self, session_id: &str) -> bool {
+        let stored = self
+            .store
+            .kv_get(computer_use::KV_SCOPE, session_id)
+            .await
+            .unwrap_or_else(|error| {
+                log::warn!("[agent-host] failed to read computer use for {session_id}: {error}");
+                None
+            });
+        computer_use::is_on(stored.as_ref())
+    }
+
+    pub(super) async fn computer_use_state(&self, session_id: &str) -> Value {
+        json!({
+            "enabled": self.computer_use_on(session_id).await,
+            "driverVersion": computer_use::driver_version(),
+        })
+    }
+
+    /// Turn computer use on or off for a chat.
+    ///
+    /// Turning it on installs the pinned driver first, outside the chat's
+    /// attach lock, so a download never holds the chat up. The tool server
+    /// belongs to the agent session, so an attached chat lets go of its bridge
+    /// session the way an idle one is let go of (`release_idle_session`): the
+    /// next turn resumes it with the server added or taken away. Refused while
+    /// the chat is busy, while a wave owns it, and for an agent that could not
+    /// resume the conversation it has.
+    pub(super) async fn set_computer_use(
+        &self,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<Value, Value> {
+        let record = self.session_record(session_id).await?;
+        if enabled {
+            computer_use::ensure_driver(&self.app)
+                .await
+                .map_err(invalid_params)?;
+        }
+        let lock = self.attach_lock(session_id).await;
+        let _changing = lock.lock().await;
+        if self.computer_use_on(session_id).await == enabled {
+            return Ok(self.computer_use_state(session_id).await);
+        }
+        if self
+            .store
+            .execution_owner(session_id)
+            .await
+            .map_err(protocol::internal)?
+            .is_some()
+        {
+            return Err(invalid_params(
+                "A wave runs this chat; computer use can change once the wave is done",
+            ));
+        }
+        let attached = {
+            let sessions = self.sessions.lock().await;
+            match sessions.get(session_id) {
+                None => None,
+                Some(runtime)
+                    if runtime.loading
+                        || runtime.run.is_some()
+                        || runtime.background.is_busy()
+                        || !runtime.steer_queue.is_empty() =>
+                {
+                    return Err(invalid_params(
+                        "Wait for the turn to finish before turning computer use on or off",
+                    ));
+                }
+                Some(runtime) => Some((
+                    runtime.route_key(),
+                    runtime.generation,
+                    runtime.bridge_session_id.clone(),
+                )),
+            }
+        };
+        let bridge = match &attached {
+            Some((route, generation, _)) => self
+                .live_bridge(route)
+                .await
+                .filter(|bridge| bridge.generation() == *generation),
+            None => None,
+        };
+        if bridge
+            .as_ref()
+            .is_some_and(|bridge| !bridge.supports_load_session())
+            && record.message_count > 0
+        {
+            return Err(invalid_params(
+                "This agent cannot reopen its conversation, so computer use can change only in a new chat",
+            ));
+        }
+        if enabled {
+            self.store
+                .kv_set(
+                    computer_use::KV_SCOPE,
+                    session_id,
+                    &json!({ "enabled": true }),
+                )
+                .await
+        } else {
+            self.store
+                .kv_delete(computer_use::KV_SCOPE, session_id)
+                .await
+        }
+        .map_err(protocol::internal)?;
+        if let Some((_, _, bridge_session_id)) = attached {
+            self.drain_bridge_events().await?;
+            self.sessions.lock().await.remove(session_id);
+            if let Some(bridge) = bridge {
+                bridge.close_session(&bridge_session_id).await;
+            }
+            log::info!(
+                "[agent-host] session {session_id} turned computer use {}; its next turn reopens the agent session",
+                if enabled { "on" } else { "off" }
+            );
+        }
+        Ok(self.computer_use_state(session_id).await)
     }
 
     async fn agent_mode(&self) -> String {
@@ -4349,7 +4491,7 @@ impl Inner {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| invalid_params("session/new requires cwd"))?;
-        let mcp_servers = self.mcp_servers(&params["mcpServers"]).await;
+        let mcp_servers = self.mcp_servers(&params["mcpServers"], None).await;
         // A model this harness runs only in a session opened on it decides how
         // the session is opened; every other one is written afterwards.
         let wanted = Self::wanted_from_meta(&params);
@@ -4675,7 +4817,7 @@ impl Inner {
         stored_bridge_id: String,
         mut snapshot: Value,
     ) -> Result<(Arc<Bridge>, String), Value> {
-        let mcp_servers = self.mcp_servers(&Value::Null).await;
+        let mcp_servers = self.mcp_servers(&Value::Null, Some(&record.id)).await;
         let mut bridge_session_id = stored_bridge_id.clone();
         let mut resumed = false;
         // A model the bridge runs only when a session is opened on it, over
@@ -5031,6 +5173,13 @@ impl Inner {
             .delete_session(&session_id)
             .await
             .map_err(protocol::internal)?;
+        if let Err(error) = self
+            .store
+            .kv_delete(computer_use::KV_SCOPE, &session_id)
+            .await
+        {
+            log::warn!("[agent-host] failed to forget computer use for {session_id}: {error}");
+        }
         Ok(json!({}))
     }
 
@@ -5856,7 +6005,7 @@ impl Inner {
         if self.active_run_id(session_id).await.is_some() {
             return Err(running());
         }
-        let mcp_servers = self.mcp_servers(&Value::Null).await;
+        let mcp_servers = self.mcp_servers(&Value::Null, Some(session_id)).await;
         let (bridge, bridge_session_id, snapshot) = self
             .open_bridge_session(spec, account_id.as_deref(), &record.cwd, mcp_servers, None)
             .await?;
@@ -6010,7 +6159,7 @@ impl Inner {
                 spec,
                 Some(&selected.id),
                 &record.cwd,
-                self.mcp_servers(&Value::Null).await,
+                self.mcp_servers(&Value::Null, Some(session_id)).await,
                 open_meta.as_ref(),
             )
             .await?;

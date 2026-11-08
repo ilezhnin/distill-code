@@ -9,6 +9,7 @@ import type { MessagePart } from "@/shared/types/messageParts";
 import type { HistoryPage } from "./acpHistory";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 import type {
+  ComputerUseState,
   CreateSourceRequest,
   HostSessionInfo,
   ListSourcesRequest,
@@ -75,6 +76,12 @@ export class HostExt {
   }
   sessionWorkingDirUpdate(params: { sessionId: string; workingDir: string }) {
     return this.call<Params>("session/working_dir/update", params);
+  }
+  sessionComputerUseRead(params: { sessionId: string }) {
+    return this.call<ComputerUseState>("session/computer_use/read", params);
+  }
+  sessionComputerUseUpdate(params: { sessionId: string; enabled: boolean }) {
+    return this.call<ComputerUseState>("session/computer_use/update", params);
   }
   sessionSteer(params: Params) {
     return this.call<SteerSessionResponse>("session/steer", params);

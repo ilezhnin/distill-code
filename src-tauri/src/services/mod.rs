@@ -8,6 +8,7 @@ pub(crate) mod benchmark_sandbox_sign_in;
 pub mod benchmarks;
 pub mod bundled_agents;
 pub mod bundled_skills;
+pub(crate) mod computer_use;
 pub(crate) mod credential_lease;
 pub(crate) mod diagnostic_log;
 pub(crate) mod dir_env;

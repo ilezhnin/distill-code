@@ -63,6 +63,14 @@ fn focus_main_window_when_foreground_exists(config: &mut tauri::Config) -> bool 
     true
 }
 
+/// Run as a helper process when the arguments ask for one, returning its exit
+/// code; `None` for a normal app start. `main` calls this before [`run`], so
+/// a helper never reaches the single-instance check that would hand the launch
+/// to the running app.
+pub fn run_helper_if_requested() -> Option<i32> {
+    services::computer_use::run_proxy_if_requested()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_logging_hook();

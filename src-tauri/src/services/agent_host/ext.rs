@@ -116,6 +116,19 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             host.update_working_dir(&id, cwd).await?;
             Ok(json!({}))
         }
+        "session/computer_use/read" => {
+            let id = session_id(&params)?;
+            host.session_record(&id).await?;
+            Ok(host.computer_use_state(&id).await)
+        }
+        "session/computer_use/update" => {
+            let id = session_id(&params)?;
+            let enabled = params
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| invalid_params("enabled must be true or false"))?;
+            host.set_computer_use(&id, enabled).await
+        }
         "session/steer" => host.steer(params).await,
         "session/extensions/list" => {
             let records = host.store.mcp_list().await.map_err(protocol::internal)?;

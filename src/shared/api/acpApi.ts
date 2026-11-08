@@ -18,6 +18,7 @@ import {
   type AcpSessionConfigSnapshots,
 } from "./acpSessionConfigSnapshots";
 import type {
+  ComputerUseState,
   SessionMessageRemoveResponse,
   SessionMessageUpdateResponse,
   SessionTranscript,
@@ -435,6 +436,26 @@ export async function updateWorkingDir(
   // without exposing the ACP client or duplicating the wire operation.
   beforeUpdate?.();
   await client.host.sessionWorkingDirUpdate({ sessionId, workingDir });
+}
+
+export async function readComputerUse(
+  sessionId: string,
+): Promise<ComputerUseState> {
+  const client = await getClient();
+  return client.host.sessionComputerUseRead({ sessionId });
+}
+
+/**
+ * Turn computer use on or off for a chat. Turning it on can take a while the
+ * first time: the host downloads and checks the pinned driver before it
+ * answers.
+ */
+export async function setComputerUse(
+  sessionId: string,
+  enabled: boolean,
+): Promise<ComputerUseState> {
+  const client = await getClient();
+  return client.host.sessionComputerUseUpdate({ sessionId, enabled });
 }
 
 export async function updateSessionProject(

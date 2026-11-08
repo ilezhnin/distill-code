@@ -19,6 +19,25 @@ artifact viewer), `src/shared/i18n/locales/en/sessions.json` for session
 history/archive/fork/import behavior, or the live UI before answering
 anything specific.
 
+## Computer use
+
+A chat can let its agent operate Windows apps in the background — find a
+window, read its controls, click, type, scroll — without taking the user's
+mouse, keyboard or focus. It is off for every chat until the user turns it on
+with the composer's computer switch, and benchmark runs never have it. The
+first time, Flock downloads the Cua Driver release it pins and checks its
+checksum; the driver's telemetry and update checks are turned off. The change
+applies from the chat's next turn, so the switch waits while a turn runs.
+
+Flock gives the agent a short set of window tools and refuses foreground
+input, desktop-wide input, and the driver's other tools (scripts, clipboard,
+recordings, closing apps). Apps that only accept foreground input — many
+Chromium and Electron windows — answer `background_unavailable`; the agent is
+told to try another route or ask the user. Several chats with computer use on
+share one desktop, so they can still interfere with each other's windows.
+Verify specifics against `src-tauri/src/services/computer_use/` before
+answering.
+
 ## The right rail (files, worktrees, terminal)
 
 A session's right rail is scoped to whatever workspace(s) (folders, repos,

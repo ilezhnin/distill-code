@@ -20,6 +20,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { ReasoningEffortPill } from "./ReasoningEffortPill";
 import { FastModePill } from "./FastModePill";
+import { ComputerUsePill } from "./ComputerUsePill";
 import { modelMatchesSelection } from "./AgentModelPickerLists";
 import { resolveEffectiveReasoningEffort } from "../lib/effectiveReasoningEffort";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
@@ -390,6 +391,14 @@ export function ChatInputToolbar({
           <FastModePill
             fastMode={fastMode}
             supportsFast={selectedModel?.supportsFast === true}
+            disabled={disabled}
+          />
+        ) : null}
+
+        {agentModelPickerEnabled ? (
+          <ComputerUsePill
+            sessionId={agentModelPicker.accountSessionId}
+            runActive={isStreaming}
             disabled={disabled}
           />
         ) : null}
