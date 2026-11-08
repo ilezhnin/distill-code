@@ -874,7 +874,7 @@ impl BenchmarkService {
                         window_closed_message(&run),
                     ));
                 }
-                self.refresh_run_runtime(&run).await?;
+                self.refresh_run_runtime_renewing(&run).await?;
                 let unfinished = self.restart_unfinished_cells(&run).await?;
                 if !unfinished && !run.request.automatic_retry() {
                     return Err(BenchmarkError::new(
@@ -913,6 +913,37 @@ impl BenchmarkService {
         self.wake.notify_one();
         self.changed().await;
         self.store.run(id).await
+    }
+    /// [`Self::refresh_run_runtime`], renewing first the sandbox check of a
+    /// model that only lacks a current one, as each update of the app leaves
+    /// it, so a Resume needs no separate Update sandbox check. A renewal that
+    /// fails keeps the refusal, with why, for the operator.
+    async fn refresh_run_runtime_renewing(&self, run: &BenchmarkRun) -> Result<()> {
+        let error = match self.refresh_run_runtime(run).await {
+            Err(error) if runner::stale_policy_check(&error) => error,
+            refreshed => return refreshed,
+        };
+        let mut providers = run
+            .request
+            .configurations
+            .iter()
+            .filter(|c| c.execution_profile == "native_text")
+            .map(|c| c.provider_id.as_str())
+            .collect::<Vec<_>>();
+        providers.sort_unstable();
+        providers.dedup();
+        for provider in providers {
+            if let Err(renewal) = self.backend.renew_stale_policy_check(provider).await {
+                return Err(BenchmarkError::new(
+                    &error.code,
+                    format!(
+                        "{}; the sandbox check could not be renewed: {}",
+                        error.message, renewal.message
+                    ),
+                ));
+            }
+        }
+        self.refresh_run_runtime(run).await
     }
     /// Explicit resume may adopt an installed runtime for work not yet done.
     /// Model, account, options and paid evidence retain their original identity.
@@ -1205,7 +1236,7 @@ impl BenchmarkService {
             self.store.set_run_request(id, &request).await?;
         }
         let run = self.store.run(id).await?;
-        self.refresh_run_runtime(&run).await?;
+        self.refresh_run_runtime_renewing(&run).await?;
         let unfinished = self.restart_unfinished_cells(&run).await?;
         if !unfinished && matches!(run.state.as_str(), "completed" | "cancelled") {
             return Err(BenchmarkError::new(

@@ -189,7 +189,7 @@ it("keeps existing result dots while a changed standing loads", async () => {
   client.clear();
 });
 
-it("renews a stale sandbox check and enables continuation without starting work or losing saved results", async () => {
+it("renews a stale sandbox check by itself and enables continuation without starting work or losing saved results", async () => {
   const user = userEvent.setup();
   const previous = stoppedRun("completed", [
     { versionId: "version-1", outcome: "pending_review", score: null },
@@ -207,6 +207,13 @@ it("renews a stale sandbox check and enables continuation without starting work 
   const failure =
     "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe";
   vi.mocked(benchmarkApi.getInventory).mockRejectedValue(failure);
+  let finishCheck: (() => void) | undefined;
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finishCheck = resolve;
+      }),
+  );
   show({
     runId: "run-2",
     measured: {
@@ -222,6 +229,14 @@ it("renews a stale sandbox check and enables continuation without starting work 
       "The sandbox check must be renewed for this version of Flock.",
     ),
   ).toBeInTheDocument();
+  // No press: the dialog starts the check itself, once.
+  expect(
+    await screen.findByRole("button", { name: "Updating sandbox check…" }),
+  ).toBeDisabled();
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledTimes(1);
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledWith(
+    configuration.providerId,
+  );
   expect(
     await screen.findByText("Previous judging errors"),
   ).toBeInTheDocument();
@@ -250,22 +265,6 @@ it("renews a stale sandbox check and enables continuation without starting work 
       reason: null,
     },
   ]);
-  let finishCheck: (() => void) | undefined;
-  vi.mocked(benchmarkApi.renewPolicyCheck).mockImplementation(
-    () =>
-      new Promise<void>((resolve) => {
-        finishCheck = resolve;
-      }),
-  );
-  await user.click(
-    screen.getByRole("button", { name: "Update sandbox check" }),
-  );
-  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledWith(
-    configuration.providerId,
-  );
-  expect(
-    screen.getByRole("button", { name: "Updating sandbox check…" }),
-  ).toBeDisabled();
   expect(screen.getByRole("button", { name: "Start run" })).toBeDisabled();
   expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
   await act(async () => finishCheck?.());
@@ -287,22 +286,26 @@ it("keeps continuation blocked after a failed renewal and lets the operator retr
   );
   const user = userEvent.setup();
   show();
-  await user.click(
-    await screen.findByRole("button", { name: "Update sandbox check" }),
-  );
   expect(
     await screen.findByText("Sandbox check failed: offline suite failed"),
   ).toBeInTheDocument();
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledTimes(1);
   expect(
     screen.getByRole("button", { name: "Update sandbox check" }),
   ).toBeEnabled();
   expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
   expect(benchmarkApi.getInventory).toHaveBeenCalledTimes(1);
+  await user.click(
+    screen.getByRole("button", { name: "Update sandbox check" }),
+  );
+  await waitFor(() =>
+    expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledTimes(2),
+  );
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   expect(benchmarkApi.extendRun).not.toHaveBeenCalled();
 });
 
-it("offers renewal when inventory lists the model with a stale proof instead of throwing", async () => {
+it("renews by itself when inventory lists the model with a stale proof instead of throwing", async () => {
   vi.mocked(benchmarkApi.getInventory).mockResolvedValue([
     {
       configuration,
@@ -314,10 +317,18 @@ it("offers renewal when inventory lists the model with a stale proof instead of 
         "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe",
     },
   ]);
+  vi.mocked(benchmarkApi.renewPolicyCheck).mockResolvedValue(undefined);
   show();
+  await waitFor(() =>
+    expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledWith(
+      configuration.providerId,
+    ),
+  );
+  // Still stale after it: the operator may try again; it is not repeated.
   expect(
     await screen.findByRole("button", { name: "Update sandbox check" }),
   ).toBeEnabled();
+  expect(benchmarkApi.renewPolicyCheck).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
 });
 

@@ -180,19 +180,7 @@ pub(crate) fn renew_automatically(provider: NativeProvider) -> Automatic {
         state.insert(provider.key(), None);
     }
     tauri::async_runtime::spawn(async move {
-        let result = async {
-            let _lock = CHECK.lock().await;
-            let status = sandbox::observe_now().await.map_err(|e| e.to_string())?;
-            // An operator's check may have renewed it while this one queued.
-            if text_execution::require_proof(provider, &status)
-                .await
-                .is_ok()
-            {
-                return Ok(());
-            }
-            check(provider, status).await
-        }
-        .await;
+        let result = renew_if_stale(provider).await;
         let mut state = AUTOMATIC
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -225,6 +213,35 @@ pub(crate) fn renew_automatically(provider: NativeProvider) -> Automatic {
     Automatic::Running
 }
 
+/// Renews `provider`'s check unless it is current, for the app's own
+/// renewals: a Resume, or judging. It waits for a check already running,
+/// the operator's or an automatic one, rather than refusing.
+pub(crate) async fn renew_if_stale(provider: NativeProvider) -> Result<(), String> {
+    let _lock = CHECK.lock().await;
+    let status = sandbox::observe_now().await.map_err(|e| e.to_string())?;
+    if text_execution::require_proof(provider, &status)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+    let result = check(provider, status).await;
+    if result.is_ok() {
+        forget_automatic_failure(provider);
+    }
+    result
+}
+
+/// A check that passed ends an automatic one's failure wait.
+fn forget_automatic_failure(provider: NativeProvider) {
+    let mut state = AUTOMATIC
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if matches!(state.get(provider.key()), Some(Some(_))) {
+        state.remove(provider.key());
+    }
+}
+
 pub(crate) async fn renew(provider: NativeProvider) -> Result<(), String> {
     let _lock = CHECK
         .try_lock()
@@ -232,13 +249,7 @@ pub(crate) async fn renew(provider: NativeProvider) -> Result<(), String> {
     let status = sandbox::observe_now().await.map_err(|e| e.to_string())?;
     let result = check(provider, status).await;
     if result.is_ok() {
-        // The operator's check also ends an automatic one's failure wait.
-        let mut state = AUTOMATIC
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(state.get(provider.key()), Some(Some(_))) {
-            state.remove(provider.key());
-        }
+        forget_automatic_failure(provider);
     }
     result
 }

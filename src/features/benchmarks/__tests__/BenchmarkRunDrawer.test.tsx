@@ -1,4 +1,11 @@
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -493,7 +500,7 @@ it("keeps Resume for a paused run on today's runtime", async () => {
   expect(screen.queryByText(/made for an older sandbox/)).toBeNull();
 });
 
-it("offers the sandbox check when resume needs it renewed, then lets the run resume", async () => {
+it("offers the sandbox check again when resume could not renew it, then lets the run resume", async () => {
   const user = userEvent.setup();
   vi.mocked(benchmarkApi.resumeRun).mockRejectedValue(
     "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe",
@@ -509,7 +516,7 @@ it("offers the sandbox check when resume needs it renewed, then lets the run res
   await user.click(await screen.findByRole("button", { name: "Resume" }));
   expect(
     await screen.findByText(
-      "The sandbox check must be renewed for this version of Flock.",
+      "Resume could not renew the sandbox check for this version of Flock. Try the check again here; the technical details say why it failed.",
     ),
   ).toBeInTheDocument();
   await user.click(
@@ -526,6 +533,36 @@ it("offers the sandbox check when resume needs it renewed, then lets the run res
   await act(async () => finishCheck?.());
   expect(screen.queryByText("Cannot start or continue")).toBeNull();
   expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+});
+
+it("says that Resume checks the sandbox first while a slow resume runs", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    let finishResume: (() => void) | undefined;
+    vi.mocked(benchmarkApi.resumeRun).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishResume = () => resolve(undefined as never);
+        }),
+    );
+    show({ ...run, id: "run-slow", state: "paused", attempts: attempts() });
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    expect(screen.getByRole("button", { name: "Resuming…" })).toBeDisabled();
+    expect(screen.queryByRole("status")).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Checking the sandbox for this version of Flock first. This can take a few minutes.",
+    );
+    await act(async () => finishResume?.());
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(
+      await screen.findByRole("button", { name: "Resume" }),
+    ).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("shares one account inventory across profiles while detecting a stale second profile", async () => {

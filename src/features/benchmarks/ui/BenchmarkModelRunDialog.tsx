@@ -701,20 +701,31 @@ export function BenchmarkModelRunDialog({
   const [busy, setBusy] = useState(false);
   const [renewingPolicy, setRenewingPolicy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const renewPolicy = async () => {
+  const providerId = configuration.providerId;
+  const refetchInventory = inventory.refetch;
+  const renewPolicy = useCallback(async () => {
     setBusy(true);
     setRenewingPolicy(true);
     setError(null);
     try {
-      await benchmarkApi.renewPolicyCheck(configuration.providerId);
-      await inventory.refetch();
+      await benchmarkApi.renewPolicyCheck(providerId);
+      await refetchInventory();
     } catch (failure) {
       setError(benchmarkErrorMessage(failure));
     } finally {
       setRenewingPolicy(false);
       setBusy(false);
     }
-  };
+  }, [providerId, refetchInventory]);
+  // Each update of Flock leaves a model's sandbox check stale. The check is
+  // local and uses no model, so the dialog starts it once by itself; one that
+  // fails stays here, with Update sandbox check to try again.
+  const policyRenewalStarted = useRef(false);
+  useEffect(() => {
+    if (!policyCheckMissing || busy || policyRenewalStarted.current) return;
+    policyRenewalStarted.current = true;
+    void renewPolicy();
+  }, [policyCheckMissing, busy, renewPolicy]);
   const start = async (all = false) => {
     if (inventoryUnready) return;
     // The checked tests in list order, so the plan order stays the queue.

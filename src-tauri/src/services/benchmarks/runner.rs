@@ -162,6 +162,12 @@ struct JudgeOffers {
     diagnostics: Vec<JudgeDiscoveryIssue>,
 }
 
+/// Whether `error` is the sandbox's own refusal of a model whose offline
+/// policy check is absent or stale, which the app can renew by itself.
+pub(super) fn stale_policy_check(error: &BenchmarkError) -> bool {
+    JudgeDiscoveryCause::from_error(error) == Some(JudgeDiscoveryCause::TextPolicyProofRequired)
+}
+
 /// Discovery diagnostics carry no provider output into a saved attempt. The
 /// order chooses the most actionable local cause when several accounts fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -581,6 +587,11 @@ pub trait ExecutionBackend: Send + Sync {
         Box::pin(async { Ok(Default::default()) })
     }
     fn readiness<'a>(&'a self, _configuration: &'a Configuration) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+    /// Renews `provider`'s offline sandbox check when it went stale, as each
+    /// update of the app makes it. Fixture backends have no sandbox.
+    fn renew_stale_policy_check<'a>(&'a self, _provider: &'a str) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
     /// Resource waits happen before creating a provider session or spending a
@@ -5900,6 +5911,23 @@ impl ExecutionBackend for NativeBackend {
     fn readiness<'a>(&'a self, c: &'a Configuration) -> BoxFuture<'a, Result<()>> {
         self.sandbox_readiness(c, None)
     }
+    fn renew_stale_policy_check<'a>(&'a self, provider: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let Some(provider) = NativeProvider::for_harness(provider) else {
+                return Ok(());
+            };
+            crate::services::benchmark_policy_check::renew_if_stale(provider)
+                .await
+                .map_err(|error| {
+                    let code = if error.contains("resource_busy:") {
+                        "resource_busy"
+                    } else {
+                        "infrastructure_failure"
+                    };
+                    BenchmarkError::new(code, error)
+                })
+        })
+    }
     fn paces_preparation(&self) -> bool {
         true
     }
@@ -10631,6 +10659,14 @@ pub struct FakeBackend {
     inventory_delay_ms: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     inventory_revision: std::sync::Mutex<Option<String>>,
+    /// Models listed as refused by a stale sandbox check until it is renewed;
+    /// with `failing_policy_renewal`, renewing fails.
+    #[cfg(test)]
+    stale_policy_check: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    failing_policy_renewal: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    policy_renewals: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     resource_busy: std::sync::atomic::AtomicBool,
     /// Host headroom probes the dispatcher made.
@@ -10860,6 +10896,15 @@ impl ExecutionBackend for FakeBackend {
                 .unwrap()
                 .clone()
                 .unwrap_or(revision);
+            let refusal: Option<String> = None;
+            #[cfg(test)]
+            let refusal = self
+                .stale_policy_check
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .then(|| {
+                    "capability_missing: Linux text policy proof is absent, stale or its pinned runtime changed; run the isolated loopback policy probe".to_owned()
+                })
+                .or(refusal);
             Ok(["fake-pass", "fake-fail"]
                 .into_iter()
                 .map(|id| InventoryModel {
@@ -10878,10 +10923,25 @@ impl ExecutionBackend for FakeBackend {
                     name: id.into(),
                     efforts: efforts.clone(),
                     supports_fast_mode: false,
-                    available: true,
-                    reason: None,
+                    available: refusal.is_none(),
+                    reason: refusal.clone(),
                 })
                 .collect())
+        })
+    }
+    #[cfg(test)]
+    fn renew_stale_policy_check<'a>(&'a self, _provider: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            use std::sync::atomic::Ordering;
+            self.policy_renewals.fetch_add(1, Ordering::SeqCst);
+            if self.failing_policy_renewal.load(Ordering::SeqCst) {
+                return Err(BenchmarkError::new(
+                    "infrastructure_failure",
+                    "Sandbox check failed: invented probe failure",
+                ));
+            }
+            self.stale_policy_check.store(false, Ordering::SeqCst);
+            Ok(())
         })
     }
     fn execute<'a>(
@@ -17412,6 +17472,60 @@ mod tests {
         );
         assert_eq!(original.outcome.as_deref(), Some("superseded"));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn resume_renews_a_stale_sandbox_check_and_adopts_the_updated_runtime() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        // An update of the app: a new runtime whose check is stale.
+        *backend.inventory_revision.lock().unwrap() = Some("fake-v2".into());
+        backend.stale_policy_check.store(true, Ordering::SeqCst);
+        let resumed = s.control(&run.id, "resume").await.unwrap();
+        assert_eq!(resumed.state, "running");
+        assert_eq!(backend.policy_renewals.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            resumed.request.configurations[0]
+                .inventory_revision
+                .as_deref(),
+            Some("fake-v2")
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn resume_keeps_a_stale_sandbox_check_refusal_when_renewing_fails() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        *backend.inventory_revision.lock().unwrap() = Some("fake-v2".into());
+        backend.stale_policy_check.store(true, Ordering::SeqCst);
+        backend.failing_policy_renewal.store(true, Ordering::SeqCst);
+        let error = s.control(&run.id, "resume").await.unwrap_err();
+        assert_eq!(error.code, "capability_missing");
+        assert!(
+            error.message.contains("Linux text policy proof"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .ends_with("the sandbox check could not be renewed: Sandbox check failed: invented probe failure"),
+            "{}",
+            error.message
+        );
+        assert_eq!(backend.policy_renewals.load(Ordering::SeqCst), 1);
+        let unchanged = s.store.run(&run.id).await.unwrap();
+        assert_eq!(unchanged.state, "paused");
+        assert_eq!(
+            unchanged.request.configurations[0]
+                .inventory_revision
+                .as_deref(),
+            Some("fake-v1")
+        );
         dir.close().await;
     }
 

@@ -34,6 +34,7 @@
     "more": "More actions",
     "pause": "Pause",
     "resume": "Resume",
+    "resuming": "Resuming…",
     "cancelRun": "Cancel run",
     "previous": "Previous",
     "next": "Next",
@@ -355,7 +356,9 @@
     "budgetTitle": "Run settings",
     "frozenRuntimeHint": "This research run requires its original execution environment, which is no longer available. Its conditions cannot change on resume.",
     "outdatedHint": "The sandbox or CLI changed since this run started. Resume checks the same models on the installed version and continues unfinished tests. Saved answers and results are kept.",
-    "policyCheckHelp": "Runs a local check without model usage. This may take a few minutes. The run's results are kept; resume it when the check finishes."
+    "policyCheckHelp": "Runs a local check without model usage. This may take a few minutes. The run's results are kept; resume it when the check finishes.",
+    "policyCheckFailed": "Resume could not renew the sandbox check for this version of Flock. Try the check again here; the technical details say why it failed.",
+    "resumeChecking": "Checking the sandbox for this version of Flock first. This can take a few minutes."
   },
   "modelRun": {
     "allTests": "All tests",
@@ -533,7 +536,7 @@
     "campaign": "Workflow comparison",
     "campaignCreated": "Created {{date}}",
     "campaignProgress": "{{settled}} / {{total}} workflows settled",
-    "policyCheckMissing": "Not resumed: the sandbox check must be renewed for this version of Flock. Open the run, press Resume, then Update sandbox check.",
+    "policyCheckMissing": "Not resumed: the sandbox check for this version of Flock could not be renewed. Open the run and press Update sandbox check.",
     "actionRefused": "The run refused this action. Open the run for the reason.",
     "step": "Step {{number}}",
     "elapsed": "Elapsed {{elapsed}}",

@@ -34,6 +34,7 @@
     "more": "Más acciones",
     "pause": "Pausar",
     "resume": "Reanudar",
+    "resuming": "Reanudando…",
     "cancelRun": "Cancelar ejecución",
     "previous": "Anterior",
     "next": "Siguiente",
@@ -355,7 +356,9 @@
     "budgetTitle": "Ajustes de ejecución",
     "frozenRuntimeHint": "Esta ejecución de investigación requiere su entorno original, que ya no está disponible. Sus condiciones no pueden cambiar al reanudar.",
     "outdatedHint": "El sandbox o la CLI cambió desde el inicio. Reanudar comprueba los mismos modelos en la versión instalada y continúa las pruebas pendientes. Se conservan las respuestas y los resultados guardados.",
-    "policyCheckHelp": "Ejecuta una comprobación local sin consumir uso del modelo. Puede tardar unos minutos. Los resultados de la ejecución se conservan; reanúdala cuando termine la comprobación."
+    "policyCheckHelp": "Ejecuta una comprobación local sin consumir uso del modelo. Puede tardar unos minutos. Los resultados de la ejecución se conservan; reanúdala cuando termine la comprobación.",
+    "policyCheckFailed": "Reanudar no pudo renovar la comprobación del entorno aislado para esta versión de Flock. Vuelve a intentarlo aquí; los detalles técnicos explican por qué falló.",
+    "resumeChecking": "Primero se comprueba el entorno aislado para esta versión de Flock. Puede tardar unos minutos."
   },
   "modelRun": {
     "allTests": "Todas las pruebas",
@@ -533,7 +536,7 @@
     "campaign": "Comparación de flujos",
     "campaignCreated": "Creada el {{date}}",
     "campaignProgress": "{{settled}} / {{total}} flujos terminados",
-    "policyCheckMissing": "No se reanudó: hay que renovar la comprobación del entorno aislado para esta versión de Flock. Abre la ejecución, pulsa Reanudar y después Actualizar comprobación.",
+    "policyCheckMissing": "No se reanudó: no se pudo renovar la comprobación del entorno aislado para esta versión de Flock. Abre la ejecución y pulsa Actualizar comprobación.",
     "actionRefused": "La ejecución rechazó esta acción. Abre la ejecución para ver el motivo.",
     "step": "Paso {{number}}",
     "elapsed": "Tiempo transcurrido {{elapsed}}",

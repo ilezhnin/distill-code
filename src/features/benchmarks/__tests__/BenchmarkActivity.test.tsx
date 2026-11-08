@@ -422,7 +422,7 @@ it("says why a resume from the row was refused instead of showing a second Cance
   });
   expect(
     screen.getByText(
-      /Not resumed: the sandbox check must be renewed for this version of Flock/,
+      /Not resumed: the sandbox check for this version of Flock could not be renewed/,
     ),
   ).toBeInTheDocument();
   // The refused control keeps its name; only one control cancels the run.
@@ -442,6 +442,8 @@ it("names any other refusal generically and keeps its reason in reach", async ()
     fireEvent.click(screen.getByRole("button", { name: "Resume" }));
   });
   expect(
-    screen.getByText("The run refused this action. Open the run for the reason."),
+    screen.getByText(
+      "The run refused this action. Open the run for the reason.",
+    ),
   ).toHaveAttribute("title", "resource_busy: invented refusal");
 });

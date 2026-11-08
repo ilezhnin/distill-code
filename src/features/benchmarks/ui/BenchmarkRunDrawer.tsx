@@ -111,6 +111,10 @@ export function BenchmarkRunDrawer({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Resume renews a sandbox check an update of Flock left stale before it
+  // goes on, which takes minutes: after a moment the drawer says so.
+  const [resuming, setResuming] = useState(false);
+  const [resumeChecking, setResumeChecking] = useState(false);
   const control = async (operation: (id: string) => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -125,6 +129,15 @@ export function BenchmarkRunDrawer({
     } finally {
       setBusy(false);
     }
+  };
+  const resume = () => {
+    setResuming(true);
+    const slow = setTimeout(() => setResumeChecking(true), 3000);
+    void control(benchmarkApi.resumeRun).finally(() => {
+      clearTimeout(slow);
+      setResumeChecking(false);
+      setResuming(false);
+    });
   };
   const run = query.data;
   // A resume the sandbox refuses until its policy check is renewed for this
@@ -312,12 +325,17 @@ export function BenchmarkRunDrawer({
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
+          {resumeChecking ? (
+            <p className="text-sm text-muted-foreground" role="status">
+              {t("run.resumeChecking")}
+            </p>
+          ) : null}
           {policyCheckMissing ? (
             <Alert variant="destructive">
               <TriangleAlert aria-hidden />
               <AlertTitle>{t("modelRun.readinessBlocked")}</AlertTitle>
               <AlertDescription>
-                <p>{t("modelRun.policyCheckMissing")}</p>
+                <p>{t("run.policyCheckFailed")}</p>
                 <details className="w-full">
                   <summary className="cursor-pointer">
                     {t("detail.technical")}
@@ -471,9 +489,9 @@ export function BenchmarkRunDrawer({
                         run.state,
                       )
                     }
-                    onClick={() => void control(benchmarkApi.resumeRun)}
+                    onClick={resume}
                   >
-                    {t("actions.resume")}
+                    {t(resuming ? "actions.resuming" : "actions.resume")}
                   </Button>
                 </>
               )}

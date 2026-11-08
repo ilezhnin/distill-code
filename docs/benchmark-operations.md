@@ -161,9 +161,10 @@ node scripts/benchmark-sandbox.mjs install-tool zai
 ```
 
 Run qualification for the providers you use after installing their pinned Linux
-tools. When **Run benchmarks** or a model's run dialog reports an expired sandbox
-check, choose **Update sandbox check** there. The app runs the bundled offline
-suite for that provider, verifies the runtime before and after it, installs a
+tools. When **Run benchmarks** reports an expired sandbox check, choose **Update
+sandbox check** there; a model's run dialog starts that check by itself once,
+since the model is already chosen. The app runs the bundled offline suite for
+that provider, verifies the runtime before and after it, installs a
 receipt only on success, and refreshes the model list and availability, keeping
 the selected tests and run settings. It needs neither a source checkout nor a
 host Node installation. Existing attempts and results stay intact; the operator
@@ -180,6 +181,14 @@ judging") instead of stopping the run. A renewal that fails is not retried for
 30 minutes: the answer then settles with the panel's issue, and **Update
 sandbox check** in that provider's run dialog shows why. Resuming the run asks
 the judges again.
+
+Each update also stales the check of the run's own models, which pauses a run
+until the operator resumes it, because only an explicit **Resume** adopts the
+updated runtime. **Resume** renews a stale check itself before it goes on:
+the run's providers are checked one at a time, and the run drawer says so when
+this takes more than a moment. When a renewal fails, the run stays paused,
+the drawer explains that **Resume** could not renew the check, and **Update
+sandbox check** there tries again with the reason under the technical details.
 
 These policy controls use synthetic credentials and local
 loopback endpoints. They produce protected receipts bound to the Linux tools,
