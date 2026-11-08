@@ -87,7 +87,7 @@ export function WorkerBriefHeader({ node, parent, onOpenParent }: WorkerBrief) {
             flush
             size="xs"
             data-testid="worker-brief-open-parent"
-            className="h-auto px-0 py-0 text-xs font-normal text-muted-foreground hover:text-foreground"
+            className="h-auto py-0 font-normal"
             leftIcon={<IconArrowBackUp aria-hidden className="size-3.5" />}
             onClick={onOpenParent}
           >

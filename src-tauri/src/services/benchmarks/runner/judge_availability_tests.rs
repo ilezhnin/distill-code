@@ -174,10 +174,7 @@ fn unavailable_quota_seat_keeps_other_discovery_deferrals_optional() {
     let panel = ordinary_available_judges(
         &[&candidate],
         &brief(),
-        vec![
-            (Some(80.0), first.clone()),
-            (Some(60.0), second.clone()),
-        ],
+        vec![(Some(80.0), first.clone()), (Some(60.0), second.clone())],
         idle,
     )
     .unwrap();
