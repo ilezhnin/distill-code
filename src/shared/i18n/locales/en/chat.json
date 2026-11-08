@@ -538,8 +538,10 @@
       "spawnFailed": "Step {{step}} of this wave could not be started.",
       "executorReconciliationFailed": "This worker's execution record could not be reconciled: {{reason}}. Inspect its native receipt before retrying.",
       "childStopFailed": "This worker's stop is unresolved: {{reason}}. Inspect its chat before retrying.",
-      "stepBlocked": "Step {{step}} ({{name}}) reported it is blocked, so the wave was stopped: the remaining steps were not started, the running executors were told to stop, and nothing was digested or judged.",
+      "stepBlocked": "Step {{step}} ({{name}}) reported it cannot do its step. Nothing more of this wave will start, and the conductor gets the wave's digest with this report in it to decide what comes next.",
+      "stepBlockedRunning": "Step {{step}} ({{name}}) reported it cannot do its step. Nothing more of this wave will start, but the steps already running finish their work. The conductor is told now, and gets the wave's digest with this report in it when they end.",
       "stepBlockedReason": "The worker's reason: {{reason}}",
+      "blockedNoteUndelivered": "The conductor could not be told of the blocked step right away ({{detail}}). It still gets the wave's digest when the running steps end.",
       "reason": {
         "multipleFences": "The message contained more than one plan block, so there is no single plan to run.",
         "unterminatedFence": "The plan block was opened but never closed.",
@@ -574,6 +576,7 @@
       },
       "verdict": {
         "needsOperatorTitle": "This wave stopped without a decision, so it is over to you.",
+        "acceptReaskedTitle": "The conductor accepted this wave, but the acceptance could not be honoured, so the digest went back to it with the reason: it revises the work or calls you.",
         "note": "The conductor's note: {{note}}",
         "retry": "Ask the conductor again",
         "reason": {

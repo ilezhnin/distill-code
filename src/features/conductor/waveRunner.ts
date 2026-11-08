@@ -96,6 +96,7 @@ import {
   waveStepResumedNoticeText,
   waveReportVerificationFailedNoticeText,
   waveStalledNoticeText,
+  waveBlockedNoteUndeliveredText,
   waveStepBlockedNoticeText,
   waveStepExplicitModelNoticeText,
   waveStepModelNoticeText,
@@ -122,6 +123,8 @@ import {
 } from "./persistHealth";
 import { WAVE_STOP_REASONS, stopWaveChildSessions } from "./waveStop";
 import { enforceBudgets } from "./budgetGuard";
+import { deliverEnvelope } from "./digestDelivery";
+import { buildWaveBlockedNote } from "./waveDigest";
 import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
 import { loadFailedAttemptsBlock } from "./taskMemory";
 import {
@@ -1430,6 +1433,7 @@ function adoptExistingWaveSession(
 function advanceWaves(state: WaveEngineState): {
   state: WaveEngineState;
   pending: Array<{ wave: WaveState; request: WaveSpawnRequest }>;
+  blockedNotes: PendingBlockedNote[];
 } {
   const graph = useConductorGraphStore.getState();
   const nodes = Object.values(graph.nodesById);
@@ -1472,6 +1476,7 @@ function advanceWaves(state: WaveEngineState): {
     onceOrphanedWaveIds = new Set();
   }
   const pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
+  const blockedNotes: PendingBlockedNote[] = [];
 
   for (const wave of [...next.waves]) {
     // Only a running wave schedules work. Everything past `running` belongs to
@@ -1547,43 +1552,76 @@ function advanceWaves(state: WaveEngineState): {
         "warning",
       );
     }
-    // A worker reported its step blocked: the wave dies the way the operator's
-    // stop kills it (5b) — parked on `needsOperator` FIRST, so a crash
-    // mid-stop resumes into a wave the scheduler never advances again, then
-    // the children are told to stop, then the operator is told why. The
-    // persisted phase is also the idempotency: the engine recomputes
-    // `blocked` on every advance, but a parked wave never reaches this loop
-    // again. No digest and no verdict (the engine already refused
-    // `complete`), and no auto-replan (Q2): the conductor learns of the stop
-    // the same way it does after 5b — from the operator's next message, which
-    // sweeps the parked wave when a new plan is admitted.
+    // A worker reported its step blocked. Nothing more of the wave starts
+    // (the engine stopped scheduling), but nothing at work is killed either:
+    // the running steps finish, and the wave completes into its digest with
+    // the blocked report in it — the conductor judges it like any other.
+    // While steps still run, the conductor is also told now, so it can
+    // replan the blocked work beside them rather than after them. The
+    // engine's persisted `blockedAnnounced` flag keeps both to one telling.
     if (advanced.blocked.length > 0) {
-      const parked = withWavePhase(advanced.wave, "needsOperator");
-      next = withWave(next, parked);
-      setWaveEngineState(next);
-      recordWaveClose(parked, "needs-operator", "step-blocked");
-      stopWaveChildSessions(parked, WAVE_STOP_REASONS.siblingBlocked);
-      for (const blockedStep of advanced.blocked) {
-        const step = parked.steps.find(
-          (candidate) => candidate.stepIndex === blockedStep.stepIndex,
+      const othersRunning = advanced.stillRunning.length > 0;
+      const stepName = (stepIndex: number): string => {
+        const step = advanced.wave.steps.find(
+          (candidate) => candidate.stepIndex === stepIndex,
         );
-        const child = waveStepNode(parked, blockedStep.stepIndex, nodes);
+        return (
+          waveStepNode(advanced.wave, stepIndex, nodes)?.displayName ??
+          (step ? roleDisplayName(step.role) : `#${stepIndex + 1}`)
+        );
+      };
+      for (const blockedStep of advanced.blocked) {
         appendConductorNotice(
           wave.conductorSessionId,
           waveStepBlockedNoticeText({
             stepIndex: blockedStep.stepIndex,
-            name:
-              child?.displayName ??
-              (step
-                ? roleDisplayName(step.role)
-                : `#${blockedStep.stepIndex + 1}`),
+            name: stepName(blockedStep.stepIndex),
             ...(blockedStep.reason ? { reason: blockedStep.reason } : {}),
+            othersRunning,
           }),
           false,
           "warning",
         );
       }
-      continue;
+      if (othersRunning) {
+        blockedNotes.push({
+          conductorSessionId: wave.conductorSessionId,
+          text: buildWaveBlockedNote({
+            waveId: wave.waveId,
+            stepIndex: advanced.blocked[0].stepIndex,
+            entries: advanced.blocked.map((blockedStep) => {
+              const step = advanced.wave.steps.find(
+                (candidate) => candidate.stepIndex === blockedStep.stepIndex,
+              );
+              const report = graph.getReport(step?.runId);
+              return {
+                node: { displayName: stepName(blockedStep.stepIndex) },
+                report: report ?? {
+                  runId:
+                    step?.runId ??
+                    `${wave.waveId}:step:${blockedStep.stepIndex}`,
+                  status: "blocked",
+                  ...(blockedStep.reason ? { reason: blockedStep.reason } : {}),
+                  summary: blockedStep.reason ?? "",
+                  decisions: [],
+                  artifacts: [],
+                  risks: [],
+                  needsOperator: false,
+                  nextSuggestedTask: null,
+                },
+              };
+            }),
+            stillRunning: advanced.stillRunning.map((stepIndex) => {
+              const step = advanced.wave.steps.find(
+                (candidate) => candidate.stepIndex === stepIndex,
+              );
+              return step?.label
+                ? `step ${stepIndex + 1} "${step.label}"`
+                : `step ${stepIndex + 1} (${stepName(stepIndex)})`;
+            }),
+          }),
+        });
+      }
     }
     // A wave that lost its working executors before anyone reported is over,
     // the way C3 ends it at digest time — but said here, before a dependent
@@ -1676,7 +1714,33 @@ function advanceWaves(state: WaveEngineState): {
     }
   }
   forgetSettledWaveActivity(next);
-  return { state: next, pending };
+  return { state: next, pending, blockedNotes };
+}
+
+/** A blocked-step note owed to a conductor, sent once the tick commits. */
+interface PendingBlockedNote {
+  conductorSessionId: string;
+  text: string;
+}
+
+/**
+ * Sends one blocked-step note. At most once: the step was flagged before the
+ * tick committed, so a note lost to a failed send (or a restart) is not sent
+ * again — the wave's digest still carries the report. A failed send is said
+ * where the operator is looking.
+ */
+function startBlockedNoteDispatch(note: PendingBlockedNote): void {
+  void (async () => {
+    const result = await deliverEnvelope(note.conductorSessionId, note.text);
+    if (result.status === "failed") {
+      appendConductorNotice(
+        note.conductorSessionId,
+        waveBlockedNoteUndeliveredText(result.detail ?? ""),
+        false,
+        "warning",
+      );
+    }
+  })();
 }
 
 /**
@@ -1730,6 +1794,7 @@ export function runWaveEngineTick(): void {
   }
   ticking = true;
   let pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
+  let blockedNotes: PendingBlockedNote[] = [];
   let digests: PendingDigestDispatch[] = [];
   let goalTurns: PendingGoalDispatch[] = [];
   try {
@@ -1785,12 +1850,16 @@ export function runWaveEngineTick(): void {
       scheduleStallTick(WAVE_STALL_SAMPLE_MS);
     }
     pending = advanced.pending;
+    blockedNotes = advanced.blockedNotes;
     digests = digested.pending;
   } finally {
     ticking = false;
   }
   for (const { wave, request } of pending) {
     startSpawn(wave, request);
+  }
+  for (const note of blockedNotes) {
+    startBlockedNoteDispatch(note);
   }
   for (const dispatch of digests) {
     startDigestDispatch(dispatch, runWaveEngineTick);

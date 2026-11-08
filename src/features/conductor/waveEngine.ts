@@ -92,6 +92,12 @@ export interface WaveStepState {
    */
   reportDegraded?: boolean;
   /**
+   * True once the shell was handed this step's `blocked` report to announce
+   * — to the operator, and to the conductor while other steps still run.
+   * Persisted like `reportDegraded`, so a restart never says it twice.
+   */
+  blockedAnnounced?: boolean;
+  /**
    * True once the verification gate (P62) has judged this step's report —
    * pass or fail. Exactly-once discipline like `reportDegraded`: persisted,
    * so a restart neither re-judges nor re-announces.
@@ -188,8 +194,12 @@ export type WavePhase = (typeof WAVE_PHASES)[number];
  * parse" are different mistakes and need different corrections.
  */
 export interface WaveVerdictIssue {
-  /** `missing` — no verdict fence at all. `invalid` — a fence that failed. */
-  reason: "missing" | "invalid";
+  /**
+   * `missing` — no verdict fence at all. `invalid` — a fence that failed.
+   * `accept-refused` — a readable `accept` the app could not honour (no
+   * verification evidence, or named files missing); the detail says which.
+   */
+  reason: "missing" | "invalid" | "accept-refused";
   /** The parser's explanation, when there was one. */
   detail?: string;
 }
@@ -404,6 +414,14 @@ export const MISSING_STEP_REPORT_SUMMARY =
 /** Summary used for a step whose worker could never be started at all. */
 export const UNSTARTED_STEP_REPORT_SUMMARY =
   "This step could not be started, so it produced no result.";
+
+/**
+ * Summary for a step the wave never got to: an earlier step reported it
+ * blocked, or the wave stalled, before this one was started. Not "finished
+ * without a report" — nothing ran, and the digest must not suggest it did.
+ */
+export const NOT_STARTED_STEP_REPORT_SUMMARY =
+  "This step was never started, so it did none of its work: the wave ended before its turn came.";
 
 /** The unstarted summary, with the refusal the app recorded when it has one. */
 function unstartedStepSummary(step: Pick<WaveStepState, "failureReason">) {
@@ -921,19 +939,25 @@ export function collectWaveStepReports(
               "failed",
               unstartedStepSummary(step),
             )
-          : synthesizeMissingStepReport(
-              fallbackRunId,
-              // The child's own terminal status, whatever it was. Defaulting
-              // to `completed` is how a wave tells the conductor that four
-              // executors which died on their first send had succeeded —
-              // observed live, with all four reading "completed" in the
-              // digest. A step that produced no report is only "completed"
-              // when its child actually completed.
-              childStatus ?? "completed",
-              statusOf === undefined || childStatus === "completed"
-                ? MISSING_STEP_REPORT_SUMMARY
-                : INTERRUPTED_STEP_REPORT_SUMMARY,
-            ));
+          : step.phase === "pending" && childStatus === undefined
+            ? synthesizeMissingStepReport(
+                fallbackRunId,
+                "cancelled",
+                NOT_STARTED_STEP_REPORT_SUMMARY,
+              )
+            : synthesizeMissingStepReport(
+                fallbackRunId,
+                // The child's own terminal status, whatever it was. Defaulting
+                // to `completed` is how a wave tells the conductor that four
+                // executors which died on their first send had succeeded —
+                // observed live, with all four reading "completed" in the
+                // digest. A step that produced no report is only "completed"
+                // when its child actually completed.
+                childStatus ?? "completed",
+                statusOf === undefined || childStatus === "completed"
+                  ? MISSING_STEP_REPORT_SUMMARY
+                  : INTERRUPTED_STEP_REPORT_SUMMARY,
+              ));
       return {
         stepIndex: step.stepIndex,
         role: step.role,
@@ -1108,15 +1132,24 @@ export interface WaveAdvance {
    */
   degraded: readonly number[];
   /**
-   * Steps whose report says the step could not be done, in step order. Never
-   * empty alongside a non-empty `spawn` or a true `complete`: a blocked wave
-   * schedules nothing and never finishes on its own — the shell stops it the
-   * way the operator's stop does (5b), and the wave goes to the operator.
-   * Recomputed on every advance; the shell's park to `needsOperator` (which
-   * is persisted before anything else happens) is what makes acting on it
-   * idempotent, restarts included.
+   * Steps whose report says the step could not be done, found by THIS
+   * advance (their `blockedAnnounced` flag was just set), in step order. The
+   * shell announces each one; the persisted flag keeps it to exactly once.
+   *
+   * A blocked step ends the wave early without killing it: nothing more of
+   * the wave starts — no step builds on a gap a worker already named — but
+   * the steps already running finish their work, and once they have the
+   * wave completes into the ordinary digest, the blocked report included.
+   * The conductor is never left to learn of it from the operator.
    */
   blocked: readonly WaveBlockedStep[];
+  /**
+   * The steps still working while a step of the wave is blocked: spawned
+   * and not terminal, or with a spawn in flight. Empty when nothing is
+   * blocked. The digest waits for these; the shell names them when it tells
+   * the conductor of the block, so it can plan around them meanwhile.
+   */
+  stillRunning: readonly number[];
   /**
    * This advance found nothing to do: no state change, nothing to spawn,
    * not complete, nothing blocked — the wave sat still (P61). A derived
@@ -1320,7 +1353,7 @@ export function advanceWave(
   // flag and detail, and every consumer downstream substitutes the
   // quarantine stub for the report's own words.
   const verificationFailed: number[] = [];
-  const steps = preGate.map((step) => {
+  const verifiedSteps = preGate.map((step) => {
     if (step.reportVerified || step.phase !== "spawned") return step;
     const report = context.reportOf(step.runId);
     if (report === undefined) return step;
@@ -1341,21 +1374,30 @@ export function advanceWave(
   });
 
   // A worker's report saying "this step cannot be done" outranks scheduling:
-  // the cheapest response to a blocked step (§5 risk 9) is to stop the wave,
-  // not to spend every remaining step building on a gap the worker already
-  // named. The engine only *finds* the blocked steps; the shell stops the
-  // wave through the same path as the operator's stop (5b), and the phase it
-  // persists is what keeps this from firing twice.
+  // the cheapest response to a blocked step (§5 risk 9) is to start nothing
+  // more, not to spend every remaining step building on a gap the worker
+  // already named. It is not a reason to kill the siblings already at work:
+  // on 2026-11-08 a 30-second "blocked" stopped an independent two-hour link
+  // step, and the conductor — told nothing — sat idle until the operator
+  // asked. So the running steps finish, the wave completes into its digest
+  // with the blocked report in it, and the shell tells the conductor of the
+  // block at once. The flag is the exactly-once of that announcement.
   const blocked: WaveBlockedStep[] = [];
-  for (const step of steps) {
-    if (step.phase !== "spawned") continue;
+  let anyBlocked = false;
+  const flagged = verifiedSteps.map((step) => {
+    if (step.phase !== "spawned") return step;
     const report = context.reportOf(step.runId);
-    if (report?.status !== "blocked") continue;
+    if (report?.status !== "blocked") return step;
+    anyBlocked = true;
+    if (step.blockedAnnounced) return step;
     blocked.push({
       stepIndex: step.stepIndex,
       ...(report.reason ? { reason: report.reason } : {}),
     });
-  }
+    changed = true;
+    return { ...step, blockedAnnounced: true };
+  });
+  const steps = flagged;
 
   const isStepTerminal = (step: WaveStepState): boolean => {
     if (step.phase === "failed") return true;
@@ -1430,9 +1472,9 @@ export function advanceWave(
 
   const spawn: WaveSpawnRequest[] = [];
   for (const step of steps) {
-    // No step starts under a blocked report: whatever this advance would have
-    // scheduled is work the shell is about to stop.
-    if (blocked.length > 0) break;
+    // No step starts under a blocked report: whatever comes after it would
+    // build on the gap, and the conductor is about to replan anyway.
+    if (anyBlocked) break;
     if (step.phase !== "pending") continue;
     if (inFlight.has(step.stepIndex)) continue;
 
@@ -1472,10 +1514,20 @@ export function advanceWave(
     });
   }
 
-  // A blocked wave never completes on its own: `digestPending` is the door to
-  // a digest and a verdict, and a wave the shell is about to stop must reach
-  // the operator instead — the same "no digest, no verdict" rule as 5b.
-  const complete = blocked.length === 0 && steps.every(isStepTerminal);
+  // A blocked wave completes once the steps already running are done: a step
+  // that never started is over too, and the digest says it never started.
+  const complete = steps.every(
+    (step) => isStepTerminal(step) || (anyBlocked && step.phase === "pending"),
+  );
+  const stillRunning = anyBlocked
+    ? steps
+        .filter(
+          (step) =>
+            step.phase === "spawning" ||
+            (step.phase === "spawned" && !isStepTerminal(step)),
+        )
+        .map((step) => step.stepIndex)
+    : [];
 
   return {
     wave: changed ? { ...wave, steps } : wave,
@@ -1484,8 +1536,8 @@ export function advanceWave(
     complete,
     degraded,
     blocked,
-    noProgress:
-      !changed && spawn.length === 0 && !complete && blocked.length === 0,
+    stillRunning,
+    noProgress: !changed && spawn.length === 0 && !complete,
     verificationFailed,
   };
 }

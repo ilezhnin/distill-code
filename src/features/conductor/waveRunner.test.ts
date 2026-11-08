@@ -100,6 +100,18 @@ const stopOrchestratorSession = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("./orchestratorControls", () => ({ stopOrchestratorSession }));
 
+/**
+ * Every message the engine sends a conductor — digests, blocked-step notes —
+ * goes through this one seam; the tests read what was sent from its calls.
+ */
+const deliverEnvelope = vi.hoisted(() =>
+  vi.fn(async (_sessionId: string, _text: string) => ({
+    status: "queued" as const,
+  })),
+);
+
+vi.mock("./digestDelivery", () => ({ deliverEnvelope }));
+
 /** Calls through to the real resolver; exists so a test can see its inputs. */
 const resolveWaveStepTarget = vi.hoisted(() =>
   vi.fn<(roleId: string, classId?: string) => unknown>(),
@@ -189,6 +201,12 @@ function conductorMessages(): Message[] {
   return useChatStore.getState().messagesBySession[CONDUCTOR_ID] ?? [];
 }
 
+function queuedTexts(): string[] {
+  return deliverEnvelope.mock.calls
+    .filter(([sessionId]) => sessionId === CONDUCTOR_ID)
+    .map(([, text]) => text);
+}
+
 function noticeTexts(): string[] {
   return conductorMessages().flatMap((message) =>
     message.content.flatMap((block) =>
@@ -247,6 +265,7 @@ describe("waveRunner", () => {
     resetWaveEngineStateCache();
     resetWaveRunnerForTests();
     spawnConductorChildSession.mockReset();
+    deliverEnvelope.mockClear();
     let counter = 0;
     spawnConductorChildSession.mockImplementation(async (args) => {
       counter += 1;
@@ -996,7 +1015,7 @@ describe("waveRunner", () => {
     expect(second.prompt).toContain("Three callers in src/");
   });
 
-  it("stops the wave the way the operator's stop does when a step reports blocked", async () => {
+  it("hands a blocked step to the conductor as a digest instead of parking the wave", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
     runWaveEngineTick();
@@ -1020,14 +1039,13 @@ describe("waveRunner", () => {
 
     runWaveEngineTick();
 
-    // Parked first, like 5b: the scheduler never advances this wave again,
-    // and no digest or verdict is ever produced for it.
-    expect(getWaveEngineState().waves[0]?.phase).toBe("needsOperator");
+    // Not parked where the conductor cannot see it: the wave goes to its
+    // digest, and the conductor's verdict decides what comes next.
+    expect(getWaveEngineState().waves[0]?.phase).toBe("dispatchingDigest");
     // The satisfied access:"all" successor was never spawned…
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-    // …the blocked child itself already finished, so it is not "stopped"
-    // after the fact (that would relabel its completed run as cancelled)…
-    expect(stopOrchestratorSession).not.toHaveBeenCalledWith("child-0");
+    // …nothing was stopped…
+    expect(stopOrchestratorSession).not.toHaveBeenCalled();
     // …and the operator can read which step blocked and why, in the worker's
     // own words.
     const notice = noticeTexts().at(-1);
@@ -1037,19 +1055,103 @@ describe("waveRunner", () => {
     expect(notice).toContain(
       "the callers file the subtask names does not exist",
     );
-    // The close leaves the same kind of record as the operator's stop.
-    expect(getWaveTelemetry().records[0]).toMatchObject({
-      outcome: "needs-operator",
-      closureReason: "step-blocked",
-    });
+    // No step-blocked close: the wave is still the conductor's to judge.
+    expect(
+      getWaveTelemetry().records.filter(
+        (record) => record.closureReason === "step-blocked",
+      ),
+    ).toEqual([]);
+    await vi.waitFor(() =>
+      expect(
+        queuedTexts().some((text) =>
+          text.includes("the callers file the subtask names does not exist"),
+        ),
+      ).toBe(true),
+    );
+    // Nothing else was running, so there is no separate early note.
+    expect(queuedTexts().some((text) => text.includes("STEP BLOCKED"))).toBe(
+      false,
+    );
 
-    // Re-ticking neither respawns nor re-announces: the persisted phase is
-    // the idempotency, exactly as it is for 5b.
+    // Re-ticking neither respawns nor re-announces: the step's persisted
+    // flag is the idempotency.
     const noticeCount = noticeTexts().length;
     runWaveEngineTick();
     runWaveEngineTick();
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
     expect(noticeTexts()).toHaveLength(noticeCount);
+  });
+
+  it("tells the conductor of a blocked step at once while its siblings keep working", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "plan-1",
+        fence(
+          '{"steps":[{"role":"integrator","label":"hybrid link","subtask":"Link","access":[]},{"role":"integrator","label":"full v1","subtask":"Decompile","access":[]},{"role":"qa","subtask":"Verify","access":"all"}]}',
+        ),
+      ),
+    ]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
+    );
+    const step1 = getWaveEngineState().waves[0]?.steps[1];
+    const graph = useConductorGraphStore.getState();
+    graph.patchNode("child-1", { status: "completed" });
+    graph.attachReport({
+      runId: step1?.runId ?? "",
+      status: "blocked",
+      reason: "launch.json names no java PID",
+      summary: "Could not find the process",
+      decisions: [],
+      artifacts: [],
+      risks: [],
+      needsOperator: true,
+      nextSuggestedTask: null,
+    });
+
+    runWaveEngineTick();
+
+    // The link step keeps its work: nothing is stopped, the wave runs on.
+    expect(stopOrchestratorSession).not.toHaveBeenCalled();
+    expect(getWaveEngineState().waves[0]?.phase).toBe("running");
+    expect(noticeTexts().at(-1)).toContain(
+      i18n.t("chat:conductor.wave.stepBlockedRunning", {
+        step: 2,
+        name: "child-1",
+      }),
+    );
+    // The conductor hears of it now, with what still runs.
+    await vi.waitFor(() =>
+      expect(queuedTexts().some((text) => text.includes("STEP BLOCKED"))).toBe(
+        true,
+      ),
+    );
+    const note = queuedTexts().find((text) => text.includes("STEP BLOCKED"));
+    expect(note).toContain('step 1 "hybrid link"');
+    expect(note).toContain("launch.json names no java PID");
+    expect(note?.startsWith("[flock-digest:")).toBe(true);
+
+    // Once the link step finishes, the wave completes into its digest and the
+    // verifier is never started on top of the gap.
+    graph.patchNode("child-0", { status: "completed" });
+    graph.attachReport({
+      runId: getWaveEngineState().waves[0]?.steps[0]?.runId ?? "",
+      status: "completed",
+      summary: "Linked",
+      decisions: [],
+      artifacts: [],
+      risks: [],
+      needsOperator: false,
+      nextSuggestedTask: null,
+    });
+    runWaveEngineTick();
+    expect(getWaveEngineState().waves[0]?.phase).toBe("dispatchingDigest");
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+    expect(
+      queuedTexts().filter((text) => text.includes("STEP BLOCKED")),
+    ).toHaveLength(1);
   });
 
   it("refuses the whole plan when a step's model resolves to nothing, before any spawn", () => {

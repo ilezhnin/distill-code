@@ -650,6 +650,62 @@ describe("wave closed loop", () => {
     );
   });
 
+  it("sends a refused accept back to the conductor once, and a second one to the operator", async () => {
+    const CHECKED_PLAN = `\`\`\`distill-wave\n{"steps":[{"role":"integrator","subtask":"Build the feature","access":[]},{"role":"acceptor","subtask":"Verify the build","access":"all"}]}\n\`\`\``;
+    useChatStore.setState({
+      messagesBySession: {
+        [CONDUCTOR_ID]: [assistant("plan-1", CHECKED_PLAN)],
+      },
+    });
+    await settle();
+    completeAllSteps();
+    await settle();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+    // The verifier fails: nothing checked the build.
+    const graph = useConductorGraphStore.getState();
+    graph.attachReport({
+      ...report("run-2", "Could not run"),
+      status: "failed",
+    });
+    graph.patchNode("child-2", { status: "completed" });
+    await settle();
+    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+    const [wave] = getWaveEngineState().waves;
+
+    appendConductorMessage(
+      assistant("verdict-1", '```distill-verdict\n{"verdict":"accept"}\n```'),
+    );
+    await settle();
+
+    // Not parked: the digest goes back with the reason, under a new marker.
+    const [reasked] = getWaveEngineState().waves;
+    expect(reasked.phase).toBe("awaitingVerdict");
+    expect(reasked.digestAttempt).toBe(1);
+    expect(deliverEnvelope).toHaveBeenCalledTimes(2);
+    const resent = deliverEnvelope.mock.calls[1][1] as string;
+    expect(resent).toContain(waveDigestMarker(wave.waveId, 1));
+    expect(resent).toContain("was not honoured");
+    expect(resent).toContain("did not complete");
+    expect(noticeTexts().at(-1)).toContain(
+      i18n.t("chat:conductor.wave.verdict.acceptReaskedTitle"),
+    );
+    expect(getWaveTelemetry().records).toHaveLength(0);
+
+    // The same accept again is the operator's to look at.
+    appendConductorMessage(
+      assistant("verdict-2", '```distill-verdict\n{"verdict":"accept"}\n```'),
+    );
+    await settle();
+    const [parked] = getWaveEngineState().waves;
+    expect(parked.phase).toBe("needsOperator");
+    expect(parked.closure?.reason).toBe("accepted-without-evidence");
+    expect(deliverEnvelope).toHaveBeenCalledTimes(2);
+    expect(getWaveTelemetry().records[0]).toMatchObject({
+      outcome: "needs-operator",
+      closureReason: "accepted-without-evidence",
+    });
+  });
+
   it("closes the wave a verdict names when two digests are waiting", async () => {
     const SECOND_PLAN = `\`\`\`distill-wave\n{"steps":[{"role":"scout","subtask":"Map the assets","access":[]}]}\n\`\`\``;
     appendConductorMessage(assistant("plan-2", SECOND_PLAN));

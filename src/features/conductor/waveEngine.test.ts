@@ -8,9 +8,11 @@ import { waveRejectionNoticeText } from "./waveNotices";
 import { parseWaveEngineState } from "./waveStore";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import {
+  NOT_STARTED_STEP_REPORT_SUMMARY,
   UNSTARTED_STEP_REPORT_SUMMARY,
   admitWavePlan,
   advanceWave,
+  collectWaveStepReports,
   createWaveState,
   hasAttestedWaveStepReport,
   waveInterruptedBeforeReport,
@@ -248,10 +250,10 @@ describe("advanceWave scheduling", () => {
     ]);
   });
 
-  it("surfaces a blocked report and schedules nothing on top of it", () => {
+  it("surfaces a blocked report once, starts nothing on top of it, and completes into the digest", () => {
     // §5 risk 9: the cheapest response to "this step cannot be done" is to
-    // stop the wave. The engine finds the blocked step; the shell stops the
-    // wave the way the operator's stop does.
+    // start nothing more — and then let the conductor judge the wave, never
+    // to leave it parked where the conductor cannot see it.
     const wave = withWaveStepPhase(
       waveOf([step("scout", "one"), step("qa", "two", "all")]),
       0,
@@ -263,18 +265,87 @@ describe("advanceWave scheduling", () => {
       reason: "the file the subtask names does not exist",
       needsOperator: true,
     };
-    const advanced = advanceWave(wave, {
+    const context = {
       nodes: [workerNode(0, "completed")],
-      reportOf: (runId) => (runId === "run-0" ? blockedReport : undefined),
-    });
+      reportOf: (runId: string | null | undefined) =>
+        runId === "run-0" ? blockedReport : undefined,
+    };
+    const advanced = advanceWave(wave, context);
     expect(advanced.blocked).toEqual([
       { stepIndex: 0, reason: "the file the subtask names does not exist" },
     ]);
+    expect(advanced.wave.steps[0].blockedAnnounced).toBe(true);
     // The satisfied access:"all" successor is NOT requested…
     expect(advanced.spawn).toEqual([]);
-    // …and the wave never declares itself complete: `digestPending` is the
-    // door to a digest and a verdict, and a blocked wave gets neither (5b).
+    // …and with nothing else at work the wave is over: it goes to its digest.
+    expect(advanced.complete).toBe(true);
+    expect(advanced.stillRunning).toEqual([]);
+    // The never-started successor is reported as never started, not as a
+    // step that "finished without a report".
+    const digest = collectWaveStepReports(
+      advanced.wave,
+      context.reportOf,
+      (stepIndex) => (stepIndex === 0 ? "completed" : undefined),
+    );
+    expect(digest[0].report.status).toBe("blocked");
+    expect(digest[1].report).toMatchObject({
+      status: "cancelled",
+      summary: NOT_STARTED_STEP_REPORT_SUMMARY,
+    });
+    // The flag is the exactly-once: a later advance does not announce it again.
+    const again = advanceWave(advanced.wave, context);
+    expect(again.blocked).toEqual([]);
+    expect(again.complete).toBe(true);
+    // And it survives persistence.
+    const restored = parseWaveEngineState(
+      JSON.parse(JSON.stringify({ version: 2, waves: [advanced.wave] })),
+    ).waves[0];
+    expect(restored.steps[0].blockedAnnounced).toBe(true);
+  });
+
+  it("lets a sibling already at work finish when another step reports blocked", () => {
+    // 2026-11-08: a 30-second "blocked" on one step stopped an independent
+    // link step that had two hours of work ahead of it.
+    let wave = waveOf([
+      step("integrator", "link"),
+      step("integrator", "decompile"),
+      step("qa", "verify", "all"),
+    ]);
+    wave = withWaveStepPhase(wave, 0, {
+      phase: "spawned",
+      sessionId: "child-0",
+      runId: "run-0",
+    });
+    wave = withWaveStepPhase(wave, 1, {
+      phase: "spawned",
+      sessionId: "child-1",
+      runId: "run-1",
+    });
+    const blockedReport: StructuredReport = {
+      ...report("run-1", "No PID"),
+      status: "blocked",
+      reason: "launch.json names no java PID",
+    };
+    const reportOf = (runId: string | null | undefined) =>
+      runId === "run-1" ? blockedReport : undefined;
+    const advanced = advanceWave(wave, {
+      nodes: [workerNode(0, "running"), workerNode(1, "completed")],
+      reportOf,
+    });
+    expect(advanced.blocked.map((entry) => entry.stepIndex)).toEqual([1]);
+    expect(advanced.stillRunning).toEqual([0]);
+    expect(advanced.spawn).toEqual([]);
     expect(advanced.complete).toBe(false);
+
+    // The link step finishes: the wave completes, the verifier never starts.
+    const done = advanceWave(advanced.wave, {
+      nodes: [workerNode(0, "completed"), workerNode(1, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? report("run-0", "Linked") : reportOf(runId),
+    });
+    expect(done.blocked).toEqual([]);
+    expect(done.spawn).toEqual([]);
+    expect(done.complete).toBe(true);
   });
 
   it("treats a step whose spawn threw as terminal and reports it as unstarted", () => {

@@ -150,6 +150,13 @@ export interface WaveVerdictDecision {
    * can correct instead of repeating the same question (Q5).
    */
   verdictIssue?: WaveVerdictIssue;
+  /**
+   * Set when an `accept` the app could not honour goes back to the conductor
+   * instead of to the operator: the refusal it is being asked again about.
+   * The phase is `digestPending` and the digest attempt moves on, so the re-
+   * sent digest is a new anchor for the answer.
+   */
+  reasked?: WaveClosure;
 }
 
 /**
@@ -194,32 +201,42 @@ export function decideWaveVerdict(input: {
     // checked does not exist", and reporting the smaller one first would let
     // an unverified wave be explained away by a passing path check.
     const missing = missingVerificationEvidence(input.wave, input.reportOf);
-    if (missing) {
-      // Not a retry: asking the same conductor again produces the same accept.
-      // This is the operator's to look at.
-      return {
-        phase: "needsOperator",
-        closure: {
+    const absent = input.wave.missingArtifacts ?? [];
+    const refusal: WaveClosure | undefined = missing
+      ? {
           reason: "accepted-without-evidence",
           detail: missing,
           ...(verdict.note ? { note: verdict.note } : {}),
-        },
-        offerRetry: false,
-      };
-    }
-    const absent = input.wave.missingArtifacts ?? [];
-    if (absent.length > 0) {
-      // Not a retry, for the same reason as E2: the same conductor asked the
-      // same question answers it the same way. The files are the operator's.
-      return {
-        phase: "needsOperator",
-        closure: {
-          reason: "accepted-with-missing-artifacts",
-          detail: missingArtifactsDetail(absent),
-          ...(verdict.note ? { note: verdict.note } : {}),
-        },
-        offerRetry: false,
-      };
+        }
+      : absent.length > 0
+        ? {
+            reason: "accepted-with-missing-artifacts",
+            detail: missingArtifactsDetail(absent),
+            ...(verdict.note ? { note: verdict.note } : {}),
+          }
+        : undefined;
+    if (refusal) {
+      // The conductor is told once, with the reason, and asked again: told
+      // nothing, it believed the wave closed and sat idle while the operator
+      // read a notice (seen five times on 2026-11-08). Asked the same
+      // question twice it would answer the same way, so a second accept — or
+      // a request with no revision left to spend on the fix — is the
+      // operator's to look at.
+      if (
+        input.wave.verdictIssue?.reason !== "accept-refused" &&
+        input.revisionCount < maxRevisions
+      ) {
+        return {
+          phase: "digestPending",
+          offerRetry: false,
+          verdictIssue: {
+            reason: "accept-refused",
+            ...(refusal.detail ? { detail: refusal.detail } : {}),
+          },
+          reasked: refusal,
+        };
+      }
+      return { phase: "needsOperator", closure: refusal, offerRetry: false };
     }
     return {
       phase: "accepted",

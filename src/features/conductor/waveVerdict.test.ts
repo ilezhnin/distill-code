@@ -46,10 +46,16 @@ function decide(input: {
   maxRevisions?: number;
   wave?: WaveState;
   reportOf?: (runId: string | null | undefined) => StructuredReport | undefined;
+  /** The conductor was already asked again about a refused accept. */
+  reasked?: boolean;
 }) {
+  const { reasked, ...rest } = input;
+  const wave = input.wave ?? uncheckableWave();
   return decideWaveVerdict({
-    ...input,
-    wave: input.wave ?? uncheckableWave(),
+    ...rest,
+    wave: reasked
+      ? { ...wave, verdictIssue: { reason: "accept-refused" } }
+      : wave,
     reportOf: input.reportOf ?? (() => undefined),
   });
 }
@@ -83,25 +89,53 @@ describe("decideWaveVerdict", () => {
 describe("the E3b artifact check on accept (P11)", () => {
   const ACCEPT = '{"verdict":"accept","note":"Shipped."}';
 
-  it("parks accept when a report named a file that is not on disk", () => {
-    // The whole point of E3b: this report passes E2 — a verification step
-    // that completed and listed artifacts — and is still lying about them.
-    const wave = {
-      ...uncheckableWave(),
-      checkedArtifacts: 2,
-      missingArtifacts: ["src/features/net/retry.ts"],
-    };
+  const missingFileWave = (): WaveState => ({
+    ...uncheckableWave(),
+    checkedArtifacts: 2,
+    missingArtifacts: ["src/features/net/retry.ts"],
+  });
+
+  it("asks the conductor again, with the missing file, the first time", () => {
+    // Told nothing, the conductor believed the wave closed and sat idle.
     const decision = decide({
       parse: parse(verdictFence(ACCEPT)),
       revisionCount: 0,
-      wave,
+      wave: missingFileWave(),
+    });
+    expect(decision.phase).toBe("digestPending");
+    expect(decision.closure).toBeUndefined();
+    expect(decision.reasked?.reason).toBe("accepted-with-missing-artifacts");
+    expect(decision.verdictIssue).toMatchObject({ reason: "accept-refused" });
+    expect(decision.verdictIssue?.detail).toContain(
+      "src/features/net/retry.ts",
+    );
+  });
+
+  it("parks a second accept of the same digest for the operator", () => {
+    // The whole point of E3b: this report passes E2 — a verification step
+    // that completed and listed artifacts — and is still lying about them.
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      reasked: true,
+      wave: missingFileWave(),
     });
     expect(decision.phase).toBe("needsOperator");
     expect(decision.closure?.reason).toBe("accepted-with-missing-artifacts");
     expect(decision.closure?.detail).toContain("src/features/net/retry.ts");
-    // Same reasoning as E2: the same conductor answers the same question the
-    // same way, so a retry would only spend a model call.
+    // Asked once with the reason and accepted again: the same conductor
+    // answers the same question the same way, so the operator decides.
     expect(decision.offerRetry).toBe(false);
+  });
+
+  it("parks at once when no revision is left to spend on the fix", () => {
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: MAX_WAVE_REVISIONS,
+      wave: missingFileWave(),
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.reason).toBe("accepted-with-missing-artifacts");
   });
 });
 
@@ -158,6 +192,19 @@ describe("the E2 evidence gate on accept", () => {
     expect(decision.closure?.reason).toBe("accepted");
   });
 
+  it("asks the conductor again when nothing verified the wave, the first time", () => {
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: checkableWave(),
+      reportOf: (runId) =>
+        runId === "run-verify" ? stepReport({ status: "failed" }) : undefined,
+    });
+    expect(decision.phase).toBe("digestPending");
+    expect(decision.reasked?.reason).toBe("accepted-without-evidence");
+    expect(decision.verdictIssue?.detail).toContain("did not complete");
+  });
+
   it("downgrades accept when the wave never had a verification step", () => {
     // The plan lint (E1) refuses these now, but a wave admitted by an older
     // build — or a revision the conductor reshaped — can still be sitting in
@@ -165,6 +212,7 @@ describe("the E2 evidence gate on accept", () => {
     const decision = decide({
       parse: parse(verdictFence(ACCEPT)),
       revisionCount: 0,
+      reasked: true,
       wave: checkableWave({ verifierRole: "brigade" }),
       reportOf: () => stepReport(),
     });
@@ -179,6 +227,7 @@ describe("the E2 evidence gate on accept", () => {
     const decision = decide({
       parse: parse(verdictFence(ACCEPT)),
       revisionCount: 0,
+      reasked: true,
       wave: checkableWave({ verifierAccess: [] }),
       reportOf: () => stepReport(),
     });
@@ -190,6 +239,7 @@ describe("the E2 evidence gate on accept", () => {
     const decision = decide({
       parse: parse(verdictFence(ACCEPT)),
       revisionCount: 0,
+      reasked: true,
       wave: checkableWave(),
       reportOf: (runId) =>
         runId === "run-verify" ? stepReport({ status: "failed" }) : undefined,
@@ -203,6 +253,7 @@ describe("the E2 evidence gate on accept", () => {
     const decision = decide({
       parse: parse(verdictFence(ACCEPT)),
       revisionCount: 0,
+      reasked: true,
       wave: {
         ...wave,
         steps: wave.steps.map((step) =>
@@ -227,6 +278,7 @@ describe("the E2 evidence gate on accept", () => {
     const decision = decide({
       parse: parse(verdictFence(ACCEPT)),
       revisionCount: 0,
+      reasked: true,
       wave: checkableWave(),
       reportOf: (runId) =>
         runId === "run-verify" ? stepReport({ artifacts: [] }) : undefined,

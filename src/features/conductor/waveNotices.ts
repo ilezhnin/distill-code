@@ -214,6 +214,25 @@ export function waveClosureNoticeText(closure: WaveClosure): string {
 }
 
 /**
+ * Posted when the app could not honour a conductor's `accept` and sent the
+ * digest back to it with the reason, instead of handing the wave to the
+ * operator. The same reason line the parked closure would carry, under a
+ * title that says the loop goes on.
+ */
+export function waveAcceptReaskedNoticeText(closure: WaveClosure): string {
+  const reasonKey = WAVE_CLOSURE_REASON_KEYS[closure.reason];
+  const lines = [
+    i18n.t("chat:conductor.wave.verdict.acceptReaskedTitle"),
+    i18n.t(`chat:conductor.wave.verdict.reason.${reasonKey}`, {
+      max: MAX_WAVE_REVISIONS,
+    }),
+  ];
+  const detail = closure.detail?.trim();
+  if (detail) lines.push(detail);
+  return lines.join("\n\n");
+}
+
+/**
  * The notice posted when a conductor plans a wave while it already runs as
  * many as the app lets one conductor run at once.
  *
@@ -643,32 +662,43 @@ export function conductorSelfExecutionBadgeText(): string {
 }
 
 /**
- * The notice posted when a worker's blocked report stops its wave (§5 risk 9).
+ * The notice posted when a worker reports its step blocked (§5 risk 9).
  *
- * Same anatomy as {@link waveClosureNoticeText} — the loop-stopped title, one
- * line saying what happened and what it cost, and then the worker's own
+ * One line saying what happens now — nothing more of the wave starts, the
+ * steps at work finish, the conductor hears of it — and then the worker's own
  * reason, attributed as the worker's so it is never read as the app's
- * verdict on anything. It is a warning, not an error, for the same reason
- * the operator's stop is: nothing malfunctioned — a worker said honestly
- * that its step cannot be done, and the app took the cheapest exit.
+ * verdict on anything. It is a warning, not an error: nothing malfunctioned,
+ * a worker said honestly that its step cannot be done, and the decision is
+ * the conductor's to make on the digest.
  */
 export function waveStepBlockedNoticeText(facts: {
   stepIndex: number;
   name: string;
   reason?: string;
+  /** True while other steps of the wave are still working. */
+  othersRunning?: boolean;
 }): string {
   const lines = [
-    i18n.t("chat:conductor.wave.verdict.needsOperatorTitle"),
-    i18n.t("chat:conductor.wave.stepBlocked", {
-      step: facts.stepIndex + 1,
-      name: facts.name,
-    }),
+    i18n.t(
+      facts.othersRunning
+        ? "chat:conductor.wave.stepBlockedRunning"
+        : "chat:conductor.wave.stepBlocked",
+      {
+        step: facts.stepIndex + 1,
+        name: facts.name,
+      },
+    ),
   ];
   const reason = facts.reason?.trim();
   if (reason) {
     lines.push(i18n.t("chat:conductor.wave.stepBlockedReason", { reason }));
   }
   return lines.join("\n\n");
+}
+
+/** Said when the conductor could not be sent the blocked-step note at once. */
+export function waveBlockedNoteUndeliveredText(detail: string): string {
+  return i18n.t("chat:conductor.wave.blockedNoteUndelivered", { detail });
 }
 
 /**

@@ -506,9 +506,12 @@ const WAVE_VERDICT_RETRY_PROMPT = `Your previous answer to this digest could not
  * is the parser's own message.
  */
 export function buildWaveVerdictRetryInstruction(issue?: {
-  reason: "missing" | "invalid";
+  reason: "missing" | "invalid" | "accept-refused";
   detail?: string;
 }): string {
+  if (issue?.reason === "accept-refused") {
+    return buildWaveAcceptRefusedInstruction(issue.detail);
+  }
   const what =
     issue?.reason === "invalid"
       ? `Your ${VERDICT_FENCE_TAG} block was there but could not be read.`
@@ -532,6 +535,24 @@ If you ${VERDICT_TOKENS.revise}, put the revision wave in a ${WAVE_FENCE_TAG} bl
 }
 
 /**
+ * The header of a digest re-sent because the app could not honour the
+ * conductor's `accept` (E2: nothing verified it; E3b: the reports named files
+ * that are not on disk).
+ *
+ * Without it the wave went to the operator and the conductor was never told:
+ * it sat idle believing the wave closed. Asked once, with the reason, it can
+ * order the check or the missing work itself. A second `accept` of the same
+ * digest is the operator's to look at, and the text says so.
+ */
+function buildWaveAcceptRefusedInstruction(detail?: string): string {
+  const reason = detail?.trim();
+  return [
+    `Your ${VERDICT_TOKENS.accept} of this wave was not honoured, so nothing was closed.${reason ? ` ${reason}` : ""}`,
+    `The app does not close a wave on work nothing checked, or on reports that name files that are not there. Answer with exactly one ${VERDICT_FENCE_TAG} block: "${VERDICT_TOKENS.revise}", with a ${WAVE_FENCE_TAG} block in the same message whose steps produce what is missing and end on a step that verifies it; or "${VERDICT_TOKENS.needsOperator}", with the reason in "note". Another "${VERDICT_TOKENS.accept}" of this same digest goes to the operator. The digest below is unchanged — this is the same wave, asked again.`,
+  ].join("\n\n");
+}
+
+/**
  * Header of a wave digest.
  *
  * The receiving model is a conductor whose every other incoming user message is
@@ -552,6 +573,25 @@ export function buildWaveStalledLine(): string {
     "Judge what is here — accept it, revise with a SMALLER plan, or call " +
     "the operator. Do not resubmit the same plan."
   );
+}
+
+/**
+ * The header of the note a conductor gets the moment a step of a still-running
+ * wave reports itself blocked. Not the digest: the wave's other steps are at
+ * work, and the digest comes when they end. What the note buys is time — the
+ * conductor may replan the blocked work now, beside the running steps, instead
+ * of learning of it hours later (or, as before, never).
+ */
+export function buildWaveBlockedNoteInstruction(facts: {
+  waveId: string;
+  /** How the still-running steps are named, e.g. `step 1 "hybrid link"`. */
+  stillRunning: readonly string[];
+}): string {
+  return `STEP BLOCKED in wave ${facts.waveId} — this message is from the app, not from the operator, and it is not the wave's digest. A worker of this wave reported that its step cannot be done; its report is below.
+
+Still running in this wave: ${facts.stillRunning.join(", ")}. They keep working. No step of this wave that had not started will start.
+
+This wave's digest, with this report in it, comes to you when the running steps end: judge the wave then, and do not emit a ${VERDICT_FENCE_TAG} block for it now. If the blocked work should not wait that long, plan it now as a new ${WAVE_FENCE_TAG} block whose steps keep their files apart from the steps still running, and give the workers the fallback this report shows they lacked; otherwise answer in one line.`;
 }
 
 /** Another wave of the same conductor, as the digest lists it. */

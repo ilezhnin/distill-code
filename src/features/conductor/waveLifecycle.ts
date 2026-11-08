@@ -89,6 +89,7 @@ import {
 } from "./waveTelemetryStore";
 import {
   digestDeliveryFailureText,
+  waveAcceptReaskedNoticeText,
   waveClosureNoticeText,
 } from "./waveNotices";
 import {
@@ -557,6 +558,22 @@ function applyVerdictDecision(
   // retry can re-ask in terms the conductor can act on. It is cleared whenever
   // the answer *was* readable, so a later retry never quotes a stale failure.
   const judged = withVerdictIssue(wave, decision.verdictIssue);
+  if (decision.reasked) {
+    // An accept the app could not honour goes back to the conductor once,
+    // with the reason, as a new attempt of the same digest: a new marker, so
+    // the answer just read can never be read again. The wave stays live and
+    // nothing is recorded as closed; the operator sees why it went back.
+    next = withWave(next, {
+      ...withWavePhase(judged, "digestPending"),
+      digestAttempt: wave.digestAttempt + 1,
+    });
+    appendNotice(
+      wave.conductorSessionId,
+      waveAcceptReaskedNoticeText(decision.reasked),
+      "warning",
+    );
+    return next;
+  }
   const phased = withWavePhase(judged, decision.phase);
   // The closure notice is transient; the parked wave keeps its reason.
   const closed =

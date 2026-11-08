@@ -538,8 +538,10 @@
       "spawnFailed": "No se pudo iniciar el paso {{step}} de esta ola.",
       "executorReconciliationFailed": "No se pudo conciliar el registro de ejecución de este trabajador: {{reason}}. Revisa su comprobante nativo antes de reintentarlo.",
       "childStopFailed": "La detención de este trabajador sigue sin resolverse: {{reason}}. Revisa su chat antes de reintentarlo.",
-      "stepBlocked": "El paso {{step}} ({{name}}) informó que está bloqueado, así que la ola se detuvo: los pasos restantes no se iniciaron, se pidió a los ejecutores en curso que se detuvieran y nada se resumió ni se juzgó.",
+      "stepBlocked": "El paso {{step}} ({{name}}) informó que no puede hacer su paso. No se iniciará nada más de esta ola, y el conductor recibe el resumen de la ola con este informe para decidir qué sigue.",
+      "stepBlockedRunning": "El paso {{step}} ({{name}}) informó que no puede hacer su paso. No se iniciará nada más de esta ola, pero los pasos que ya están en curso terminan su trabajo. Se avisa al conductor ahora, y recibe el resumen de la ola con este informe cuando terminen.",
       "stepBlockedReason": "El motivo del ejecutor: {{reason}}",
+      "blockedNoteUndelivered": "No se pudo avisar al conductor del paso bloqueado en este momento ({{detail}}). Igual recibe el resumen de la ola cuando terminen los pasos en curso.",
       "reason": {
         "multipleFences": "El mensaje contenía más de un bloque de plan, así que no hay un único plan que ejecutar.",
         "unterminatedFence": "El bloque del plan se abrió pero nunca se cerró.",
@@ -574,6 +576,7 @@
       },
       "verdict": {
         "needsOperatorTitle": "Esta ola se detuvo sin una decisión, así que queda en tus manos.",
+        "acceptReaskedTitle": "El conductor aceptó esta ola, pero la aceptación no se pudo respetar, así que el resumen volvió a él con el motivo: revisa el trabajo o te llama.",
         "note": "Nota del conductor: {{note}}",
         "retry": "Preguntar de nuevo al conductor",
         "reason": {

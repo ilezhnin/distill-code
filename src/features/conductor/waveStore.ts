@@ -290,6 +290,7 @@ function parseStep(value: unknown): WaveStepState | null {
       ? { resumedFromSessionId: raw.resumedFromSessionId }
       : {}),
     ...(raw.reportDegraded === true ? { reportDegraded: true } : {}),
+    ...(raw.blockedAnnounced === true ? { blockedAnnounced: true } : {}),
     ...(raw.reportVerified === true ? { reportVerified: true } : {}),
     ...(raw.verificationFailed === true ? { verificationFailed: true } : {}),
     ...(typeof raw.verificationDetail === "string" && raw.verificationDetail
@@ -343,7 +344,13 @@ function parseClosure(value: unknown): WaveState["closure"] | undefined {
 function parseVerdictIssue(value: unknown): WaveVerdictIssue | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<WaveVerdictIssue>;
-  if (raw.reason !== "missing" && raw.reason !== "invalid") return null;
+  if (
+    raw.reason !== "missing" &&
+    raw.reason !== "invalid" &&
+    raw.reason !== "accept-refused"
+  ) {
+    return null;
+  }
   return {
     reason: raw.reason,
     ...(typeof raw.detail === "string" && raw.detail

@@ -82,8 +82,6 @@ export const WAVE_STOP_REASONS = {
   waveStopped: "Stopped by the app: its wave was stopped.",
   operator: "Stopped by the operator.",
   operatorCancelledWave: "Stopped by the operator: the wave was cancelled.",
-  siblingBlocked:
-    "Stopped by the app: another step of the wave reported it is blocked, so the wave was stopped.",
   stalled:
     "Stopped by the app: the wave stalled, and what exists was collected for the digest.",
   interrupted:

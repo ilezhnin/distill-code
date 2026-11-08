@@ -34,6 +34,7 @@ import type { WaveState, WaveVerdictIssue } from "./waveEngine";
 import {
   AGENT_DIGEST_INSTRUCTION,
   buildWaveArtifactLine,
+  buildWaveBlockedNoteInstruction,
   buildWaveNativeChangeLine,
   buildWaveDigestInstruction,
   buildWaveStalledLine,
@@ -387,6 +388,44 @@ export function buildWaveDigest(args: {
       ? buildWaveNativeChangeLine(args.nativeChangedFiles)
       : "",
     args.artifacts ? buildWaveArtifactLine(args.artifacts) : "",
+    digestBody(args.entries),
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
+}
+
+/**
+ * The marker of the note a conductor gets when a step of a running wave
+ * reports itself blocked. A digest envelope, so the transcript shows it as the
+ * same card, but never a wave's digest marker: the verdict scan anchors on
+ * `waveDigestMarker` alone, so an answer to this note is never read as the
+ * wave's verdict.
+ */
+export function waveBlockedNoteMarker(
+  waveId: string,
+  stepIndex: number,
+): string {
+  return digestMarker(`${waveId}:blocked:${stepIndex}`, 0);
+}
+
+/**
+ * The note itself: what happened, what still runs, what the conductor may do
+ * now, and the blocked workers' own reports.
+ */
+export function buildWaveBlockedNote(args: {
+  waveId: string;
+  /** The blocked steps' entries, in step order; at least one. */
+  entries: readonly DigestEntry[];
+  /** The first blocked step's index: it names the note. */
+  stepIndex: number;
+  stillRunning: readonly string[];
+}): string {
+  return [
+    waveBlockedNoteMarker(args.waveId, args.stepIndex),
+    buildWaveBlockedNoteInstruction({
+      waveId: args.waveId,
+      stillRunning: args.stillRunning,
+    }),
     digestBody(args.entries),
   ]
     .filter((part) => part.trim().length > 0)
