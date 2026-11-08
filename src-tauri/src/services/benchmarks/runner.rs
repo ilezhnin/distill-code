@@ -49,6 +49,11 @@ pub(super) const JUDGE_ADMISSION_WAIT: &str = "judge_admission_wait";
 const JUDGE_QUOTA_WAIT: &str = "judge_quota_wait";
 const JUDGE_QUOTA_REASON: &str = "Waiting for judge subscription quota to reset";
 const JUDGE_BUSY_RETRY: Duration = Duration::from_secs(5);
+/// A panel short only of judges whose sandbox check went stale, while the app
+/// renews those checks itself. Each update of the app makes them stale.
+const JUDGE_POLICY_RENEWAL: &str = "Updating the sandbox check before judging";
+/// How often a panel waiting on that renewal looks for its judges again.
+const JUDGE_POLICY_RETRY: Duration = Duration::from_secs(2 * 60);
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.
 pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
@@ -78,6 +83,14 @@ fn judging_deferred(attempt: &Attempt) -> bool {
         Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY | JUDGE_RESELECTING)
     ) || judge_discovery_waiting(attempt)
         || judge_quota_waiting(attempt)
+        || judge_policy_waiting(attempt)
+}
+
+fn judge_policy_waiting(attempt: &Attempt) -> bool {
+    attempt
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.starts_with(JUDGE_POLICY_RENEWAL))
 }
 
 const JUDGE_RESELECTING: &str = "Selecting a replacement judge after a usage limit";
@@ -227,6 +240,16 @@ impl JudgeDiscoveryIssue {
     }
 }
 
+fn judge_provider_label(provider: NativeProvider) -> &'static str {
+    match provider {
+        NativeProvider::Claude => "Claude",
+        NativeProvider::Codex => "Codex",
+        NativeProvider::Grok => "Grok",
+        NativeProvider::Kimi => "Kimi",
+        NativeProvider::Zai => "Z.ai",
+    }
+}
+
 /// No wire contract or extra evidence: only a short panel's existing reason
 /// receives these bounded, fixed diagnostics. Selection still uses the seats.
 struct DiscoveredJudgePanel {
@@ -277,6 +300,29 @@ impl DiscoveredJudgePanel {
         Self { seats, diagnostics }
     }
 
+    /// For a short panel, renews the sandbox check of each provider that only
+    /// misses a stale one, and returns the wait to record while those checks
+    /// run. `None` when there is none to renew, or each such renewal failed
+    /// recently: the panel's issue then asks the operator.
+    fn renew_stale_proofs(
+        &self,
+        renew: impl Fn(NativeProvider) -> crate::services::benchmark_policy_check::Automatic,
+    ) -> Option<String> {
+        if self.seats.len() >= MIN_JUDGES {
+            return None;
+        }
+        let renewing = self
+            .diagnostics
+            .iter()
+            .filter(|(_, cause)| *cause == JudgeDiscoveryCause::TextPolicyProofRequired)
+            .filter(|(provider, _)| {
+                renew(*provider) == crate::services::benchmark_policy_check::Automatic::Running
+            })
+            .map(|(provider, _)| judge_provider_label(*provider))
+            .collect::<Vec<_>>();
+        (!renewing.is_empty()).then(|| format!("{JUDGE_POLICY_RENEWAL}: {}", renewing.join(", ")))
+    }
+
     fn issue(&self, rejected: bool) -> Option<String> {
         let mut issue = panel_issue(&self.seats)?;
         if rejected {
@@ -287,14 +333,7 @@ impl DiscoveredJudgePanel {
                 .diagnostics
                 .iter()
                 .map(|(provider, cause)| {
-                    let label = match provider {
-                        NativeProvider::Claude => "Claude",
-                        NativeProvider::Codex => "Codex",
-                        NativeProvider::Grok => "Grok",
-                        NativeProvider::Kimi => "Kimi",
-                        NativeProvider::Zai => "Z.ai",
-                    };
-                    format!("{label}: {}", cause.label())
+                    format!("{}: {}", judge_provider_label(*provider), cause.label())
                 })
                 .collect::<Vec<_>>();
             issue.push_str(&format!(". Judge availability: {}.", causes.join("; ")));
@@ -4876,6 +4915,12 @@ impl NativeBackend {
                     }
                 };
                 let issue = discovered.issue(!rejected.is_empty());
+                // Renewed only for a panel that would otherwise stop here.
+                let renewing = issue.as_ref().and_then(|_| {
+                    discovered.renew_stale_proofs(
+                        crate::services::benchmark_policy_check::renew_automatically,
+                    )
+                });
                 let panel = discovered.seats;
                 // A panel that seats a candidate's lab or own model is marked,
                 // a frozen one's seats too, so boards can show or leave out
@@ -4895,6 +4940,11 @@ impl NativeBackend {
                 if let Some(issue) =
                     issue.filter(|_| !matches!(evidence, JudgeEvidence::Calibration { .. }))
                 {
+                    if let Some(wait) = renewing {
+                        attempt.reason = Some(wait);
+                        attempt.wait_until = Some(now() + JUDGE_POLICY_RETRY.as_millis() as i64);
+                        return Ok(attempt);
+                    }
                     attempt.reason = Some(issue);
                     return Ok(attempt);
                 }
@@ -5217,10 +5267,13 @@ impl ExecutionBackend for NativeBackend {
                     JudgeEvidence::Qualification { record, index },
                 )
                 .await?;
-            // Busy judge accounts or a renderer the sandbox has not admitted
-            // stop the panel before it renders or asks anyone: the control
-            // waits for them instead of failing.
-            if let Some(busy @ (JUDGES_BUSY | RENDERER_BUSY)) = judged.reason.as_deref() {
+            // Busy judge accounts, a renderer the sandbox has not admitted or
+            // a judge's sandbox check being renewed stop the panel before it
+            // renders or asks anyone: the control waits instead of failing.
+            if let Some(busy) = judged.reason.as_deref().filter(|reason| {
+                matches!(*reason, JUDGES_BUSY | RENDERER_BUSY)
+                    || reason.starts_with(JUDGE_POLICY_RENEWAL)
+            }) {
                 return Err(BenchmarkError::new("resource_busy", busy));
             }
             let score = super::analysis::score(&judged).ok_or_else(|| {
@@ -10478,7 +10531,8 @@ impl BenchmarkService {
         Ok(
             if (run.request.automatic_retry()
                 || judge_discovery_waiting(attempt)
-                || judge_quota_waiting(attempt))
+                || judge_quota_waiting(attempt)
+                || judge_policy_waiting(attempt))
                 && judging_deferred(attempt)
                 && !matches!(
                     self.store.run_state(&run.id).await?.as_str(),

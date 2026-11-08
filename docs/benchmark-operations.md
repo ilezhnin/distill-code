@@ -172,7 +172,16 @@ and can be retried in the same dialog. This renews policy verification, not
 missing sandbox tools or helpers: when the sandbox itself differs, the dialog
 offers **Repair sandbox** (above), which renews this check as its last step.
 
-These explicit policy controls use synthetic credentials and local
+Judges need the same check, and each update of the app makes it stale for
+every provider. When a judge panel is short only because some judges' checks
+went stale, the runner renews those checks itself, one provider at a time,
+and the answers wait for their judges (as "Updating the sandbox check before
+judging") instead of stopping the run. A renewal that fails is not retried for
+30 minutes: the answer then settles with the panel's issue, and **Update
+sandbox check** in that provider's run dialog shows why. Resuming the run asks
+the judges again.
+
+These policy controls use synthetic credentials and local
 loopback endpoints. They produce protected receipts bound to the Linux tools,
 adapters and execution policy. Missing or changed receipts refuse benchmark
 admission. Browser checks additionally require the pinned Linux renderer from

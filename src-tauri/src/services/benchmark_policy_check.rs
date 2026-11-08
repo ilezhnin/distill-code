@@ -1,5 +1,6 @@
-//! Explicit, offline policy renewal from the app. Only bundled public probe
-//! inputs enter the sandbox; no account, candidate artifact or paid model is used.
+//! Offline policy renewal from the app: asked for by the operator, or by
+//! judging when a judge's check went stale. Only bundled public probe inputs
+//! enter the sandbox; no account, candidate artifact or paid model is used.
 use super::{
     agent_host::{
         execution::{self, NativeProvider},
@@ -136,11 +137,114 @@ fn receipt(
     }))
 }
 
+/// What an automatic renewal asked for by judging is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Automatic {
+    /// Running or queued behind another check: judging can wait for it.
+    Running,
+    /// The last one failed recently: only the operator can act now.
+    Failed,
+}
+
+/// A failed automatic renewal is not tried again for this long, so a sandbox
+/// that cannot pass the check does not keep judging waiting on it.
+const AUTOMATIC_RETRY: Duration = Duration::from_secs(30 * 60);
+
+/// Per provider: `None` while a renewal runs, the time of its failure after.
+type AutomaticState = std::collections::HashMap<&'static str, Option<std::time::Instant>>;
+static AUTOMATIC: std::sync::LazyLock<std::sync::Mutex<AutomaticState>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether to start an automatic renewal, given the provider's last one.
+fn automatic_start(last: Option<&Option<std::time::Instant>>) -> Result<(), Automatic> {
+    match last {
+        Some(None) => Err(Automatic::Running),
+        Some(Some(failed)) if failed.elapsed() < AUTOMATIC_RETRY => Err(Automatic::Failed),
+        _ => Ok(()),
+    }
+}
+
+/// Renews `provider`'s check without the operator, for a judge panel that is
+/// short only because the check went stale, as every update of the app makes
+/// it. It is the check **Update sandbox check** runs: bundled probe inputs,
+/// synthetic credentials and a loopback endpoint, no account and no paid
+/// model. It waits for a check already running rather than refusing.
+pub(crate) fn renew_automatically(provider: NativeProvider) -> Automatic {
+    {
+        let mut state = AUTOMATIC
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(now) = automatic_start(state.get(provider.key())) {
+            return now;
+        }
+        state.insert(provider.key(), None);
+    }
+    tauri::async_runtime::spawn(async move {
+        let result = async {
+            let _lock = CHECK.lock().await;
+            let status = sandbox::observe_now().await.map_err(|e| e.to_string())?;
+            // An operator's check may have renewed it while this one queued.
+            if text_execution::require_proof(provider, &status)
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            check(provider, status).await
+        }
+        .await;
+        let mut state = AUTOMATIC
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match result {
+            Ok(()) => {
+                log::info!(
+                    "[benchmarks] renewed the {} sandbox check for judging",
+                    provider.key()
+                );
+                state.remove(provider.key());
+            }
+            // A busy sandbox says nothing about the check: the next judging
+            // pass asks for it again.
+            Err(error) if error.contains("resource_busy") => {
+                log::info!(
+                    "[benchmarks] the automatic {} sandbox check waits for the sandbox: {error}",
+                    provider.key()
+                );
+                state.remove(provider.key());
+            }
+            Err(error) => {
+                log::warn!(
+                    "[benchmarks] the automatic {} sandbox check failed: {error}",
+                    provider.key()
+                );
+                state.insert(provider.key(), Some(std::time::Instant::now()));
+            }
+        }
+    });
+    Automatic::Running
+}
+
 pub(crate) async fn renew(provider: NativeProvider) -> Result<(), String> {
     let _lock = CHECK
         .try_lock()
         .map_err(|_| "resource_busy: a sandbox check is already running")?;
     let status = sandbox::observe_now().await.map_err(|e| e.to_string())?;
+    let result = check(provider, status).await;
+    if result.is_ok() {
+        // The operator's check also ends an automatic one's failure wait.
+        let mut state = AUTOMATIC
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(state.get(provider.key()), Some(Some(_))) {
+            state.remove(provider.key());
+        }
+    }
+    result
+}
+
+/// Runs the offline check under `CHECK`, which the caller holds.
+async fn check(provider: NativeProvider, status: sandbox::Status) -> Result<(), String> {
     let artifacts = decode(&attest(&["inspect", provider.key()], None).await?)?;
     let id = format!("policy-{}-{}", provider.key(), uuid::Uuid::new_v4());
     let mut cleanup = sandbox::Cleanup(Some(id.clone()));
@@ -250,6 +354,21 @@ mod tests {
             assert!(!path
                 .components()
                 .any(|c| c == std::path::Component::ParentDir));
+        }
+    }
+
+    #[test]
+    fn automatic_renewal_runs_once_and_backs_off_after_a_failure() {
+        use std::time::Instant;
+        assert_eq!(automatic_start(None), Ok(()));
+        assert_eq!(automatic_start(Some(&None)), Err(Automatic::Running));
+        assert_eq!(
+            automatic_start(Some(&Some(Instant::now()))),
+            Err(Automatic::Failed)
+        );
+        let long_ago = Instant::now().checked_sub(AUTOMATIC_RETRY + Duration::from_secs(1));
+        if let Some(long_ago) = long_ago {
+            assert_eq!(automatic_start(Some(&Some(long_ago))), Ok(()));
         }
     }
 

@@ -134,6 +134,8 @@ fn active_since(attempt: &Attempt) -> Option<i64> {
 fn queue_since(attempt: &Attempt, progress: Option<i64>, at: i64) -> Option<i64> {
     if attempt.phase != AWAITING_JUDGES
         || judge_quota_waiting(attempt)
+        // The automatic sandbox check has its own deadline and failure wait.
+        || judge_policy_waiting(attempt)
         || super::super::analysis::score(attempt).is_some()
     {
         return None;

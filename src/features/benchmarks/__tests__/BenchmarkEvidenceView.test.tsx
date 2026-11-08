@@ -162,7 +162,7 @@ describe("blind benchmark review", () => {
     showEvidence();
     expect(
       await screen.findByText(
-        "Cannot assemble a judge panel: 1 available, 2 required. Claude: local text policy verification is required. Run the isolated policy check before judging.",
+        "Cannot assemble a judge panel: 1 available, 2 required. Claude: its sandbox check is out of date for this version of Flock. Resume renews it before judging; if that keeps failing, choose Update sandbox check in a Claude model's run dialog.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Judge availability:/)).not.toBeInTheDocument();

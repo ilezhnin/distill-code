@@ -191,6 +191,21 @@ async fn stalled_queue_pauses_normally_and_preserves_answers_without_new_calls()
 }
 
 #[tokio::test]
+async fn a_sandbox_check_renewal_does_not_turn_into_a_queue_failure() {
+    let (dir, service, run) = saved_answers().await;
+    let at = now();
+    let run = full_run(&service, &run.id).await;
+    let attempt = &run.attempts[0];
+    assert_eq!(attempt.phase, AWAITING_JUDGES);
+    assert!(queue_since(attempt, None, at).is_some());
+    let mut renewing = attempt.clone();
+    renewing.reason = Some(format!("{JUDGE_POLICY_RENEWAL}: Claude"));
+    assert!(judging_deferred(&renewing));
+    assert_eq!(queue_since(&renewing, None, at), None);
+    dir.close().await;
+}
+
+#[tokio::test]
 async fn quota_and_pause_waits_do_not_turn_into_queue_failures() {
     let (dir, service, run) = saved_answers().await;
     let at = now();

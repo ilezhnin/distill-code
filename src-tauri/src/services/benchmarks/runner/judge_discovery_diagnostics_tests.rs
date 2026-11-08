@@ -178,6 +178,68 @@ fn judge_diagnostics_do_not_change_sufficient_or_frozen_panels() {
 }
 
 #[test]
+fn a_short_panel_renews_only_stale_sandbox_checks_and_waits_for_them() {
+    use crate::services::benchmark_policy_check::Automatic;
+    let stale = || BenchmarkError::new("capability_missing", PROOF);
+    let failed = || BenchmarkError::new("provider_failure", "invented failure");
+    let panel = DiscoveredJudgePanel::discovered(
+        Vec::new(),
+        vec![
+            issue("claude-acp", stale()),
+            issue("codex-acp", failed()),
+            issue("grok-acp", stale()),
+        ],
+        &[pool("claude-acp"), pool("codex-acp"), pool("grok-acp")],
+    );
+    let asked = std::cell::RefCell::new(Vec::new());
+    let wait = panel.renew_stale_proofs(|provider| {
+        asked.borrow_mut().push(provider);
+        Automatic::Running
+    });
+    assert_eq!(
+        *asked.borrow(),
+        vec![NativeProvider::Claude, NativeProvider::Grok]
+    );
+    assert_eq!(
+        wait.as_deref(),
+        Some("Updating the sandbox check before judging: Claude, Grok")
+    );
+    // A renewal that failed recently is left to the operator.
+    assert_eq!(
+        panel
+            .renew_stale_proofs(|provider| match provider {
+                NativeProvider::Claude => Automatic::Failed,
+                _ => Automatic::Running,
+            })
+            .as_deref(),
+        Some("Updating the sandbox check before judging: Grok")
+    );
+    assert!(panel.renew_stale_proofs(|_| Automatic::Failed).is_none());
+    // The panel's issue still names the cause the operator can act on.
+    assert!(panel
+        .issue(false)
+        .unwrap()
+        .ends_with("Judge availability: Claude: local text policy verification required; Codex: model inventory unavailable; Grok: local text policy verification required."));
+
+    let full = DiscoveredJudgePanel::discovered(
+        vec![judge("claude-acp"), judge("grok-acp")],
+        vec![issue("codex-acp", stale())],
+        &[pool("codex-acp")],
+    );
+    assert!(full
+        .renew_stale_proofs(|_| panic!("a full panel renews nothing"))
+        .is_none());
+    let unrelated = DiscoveredJudgePanel::discovered(
+        Vec::new(),
+        vec![issue("codex-acp", failed())],
+        &[pool("codex-acp")],
+    );
+    assert!(unrelated
+        .renew_stale_proofs(|_| panic!("only a stale check is renewed"))
+        .is_none());
+}
+
+#[test]
 fn judge_diagnostics_do_not_replace_quota_or_resource_deferrals() {
     let candidate = judge("grok-acp");
     let draft = seed_definitions()
