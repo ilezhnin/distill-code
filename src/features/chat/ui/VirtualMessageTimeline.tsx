@@ -42,8 +42,10 @@ import {
 } from "../transcript/measurement";
 import {
   createTranscriptDiagnosticsFromVirtualTimelineDiagnostics,
+  recordTranscriptProjectionTiming,
   TRANSCRIPT_DIAGNOSTICS_EVENT,
   type TranscriptDiagnostics,
+  type TranscriptProjectionTimingState,
   type TranscriptTimingSample,
 } from "../transcript/diagnostics";
 import {
@@ -492,7 +494,7 @@ const DIAGNOSTIC_SAMPLE_LIMIT = 240;
 const BYTES_PER_MEBIBYTE = 1024 * 1024;
 
 interface TimelineDiagnosticsAccumulator {
-  projectionDurationsMs: number[];
+  projectionTiming: TranscriptProjectionTimingState;
   reactCommitDurationsMs: number[];
   scrollHandlerDurationsMs: number[];
   reactCommitSamples: TranscriptTimingSample[];
@@ -516,7 +518,7 @@ interface PerformanceMemory {
 
 function createTimelineDiagnosticsAccumulator(): TimelineDiagnosticsAccumulator {
   return {
-    projectionDurationsMs: [],
+    projectionTiming: { lastSnapshot: null, updateDurationsMs: [] },
     reactCommitDurationsMs: [],
     scrollHandlerDurationsMs: [],
     reactCommitSamples: [],
@@ -910,7 +912,10 @@ function applyTimelineDiagnosticSamples(
 
   return {
     ...diagnostics,
-    projectionP95Ms: percentile(accumulator.projectionDurationsMs, 0.95),
+    projectionP95Ms: percentile(
+      accumulator.projectionTiming.updateDurationsMs,
+      0.95,
+    ),
     descriptorChurnPercent:
       accumulator.previousProjectionRowsById == null ||
       accumulator.previousProjectionSessionId !== diagnostics.sessionId
@@ -1613,9 +1618,10 @@ function VirtualMessageTimelineSession({
   useEffect(() => {
     const accumulator = diagnosticsAccumulatorRef.current;
     const elapsedMs = getDiagnosticsNowMs() - diagnosticsStartMsRef.current;
-    recordDiagnosticsSample(
-      accumulator.projectionDurationsMs,
-      diagnostics.projectionDurationMs,
+    recordTranscriptProjectionTiming(
+      accumulator.projectionTiming,
+      snapshot,
+      DIAGNOSTIC_SAMPLE_LIMIT,
     );
 
     if (
@@ -1683,6 +1689,7 @@ function VirtualMessageTimelineSession({
     onDiagnostics,
     onTranscriptDiagnostics,
     sessionId,
+    snapshot,
     stableRows,
     streamingMessageId,
     virtualTimelineSnapshot.controllerState.nearBottom,

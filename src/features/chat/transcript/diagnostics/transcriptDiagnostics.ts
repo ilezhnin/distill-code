@@ -47,6 +47,52 @@ export interface TranscriptTimingSample {
   source?: string;
 }
 
+interface ProjectionTimingSnapshot {
+  sessionId: string;
+  sessionEpoch: number;
+  projectionDurationMs: number;
+}
+
+export interface TranscriptProjectionTimingState {
+  lastSnapshot: ProjectionTimingSnapshot | null;
+  updateDurationsMs: number[];
+}
+
+/** Sample computed projections, not the renders that reuse their snapshots.
+ * Initial projection belongs to time-to-first-visible-tail; the update p95
+ * must not turn a single cold load into a sustained per-update slowdown.
+ */
+export function recordTranscriptProjectionTiming(
+  state: TranscriptProjectionTimingState,
+  snapshot: ProjectionTimingSnapshot,
+  sampleLimit: number,
+): void {
+  const previous = state.lastSnapshot;
+  if (previous === snapshot) {
+    return;
+  }
+  state.lastSnapshot = snapshot;
+  if (
+    !previous ||
+    previous.sessionId !== snapshot.sessionId ||
+    previous.sessionEpoch !== snapshot.sessionEpoch
+  ) {
+    state.updateDurationsMs.length = 0;
+    return;
+  }
+  const duration = snapshot.projectionDurationMs;
+  if (!Number.isFinite(duration) || duration < 0) {
+    return;
+  }
+  state.updateDurationsMs.push(duration);
+  if (state.updateDurationsMs.length > sampleLimit) {
+    state.updateDurationsMs.splice(
+      0,
+      state.updateDurationsMs.length - sampleLimit,
+    );
+  }
+}
+
 export const TRANSCRIPT_DIAGNOSTIC_NUMERIC_DEFAULTS = {
   mountedRows: 0,
   protectedRows: 0,

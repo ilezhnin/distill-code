@@ -52,6 +52,7 @@ export interface RealBridgeProofProfile {
 export const DOM_BOUNDED_FULL_HISTORY_THRESHOLDS: TranscriptMetricThresholds = {
   timeToFirstVisibleTailMs: 1_200,
   restoreReplayDrainMs: 3_000,
+  // Incremental projections. Cold initialization is covered by the tail-load budget.
   projectionP95Ms: 12,
   descriptorChurnPercent: 2,
   mountedRows: 150,
