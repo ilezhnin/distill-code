@@ -41,7 +41,7 @@ nucleo-matcher = "0.3"
 percent-encoding = "2"
 portable-pty = "0.9.0"
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls", "stream"] }
-rmcp = { version = "3.5.1", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
 tar = "0.4"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
