@@ -350,6 +350,8 @@ function AccountRow({
     key: string;
     creditId?: string;
     expiresAt?: number | null;
+    /** The chosen reset as its row names it, with what it refills. */
+    name?: string;
   } | null>(null);
   const [resetOutcome, setResetOutcome] = useState<AccountResetOutcome | null>(
     null,
@@ -485,13 +487,14 @@ function AccountRow({
           state={state}
           now={now}
           resetDisabled={busy || authenticating || !account.enabled}
-          onUseReset={(credit) => {
+          onUseReset={(credit, name) => {
             setError(null);
             setResetOutcome(null);
             setResetRequest({
               key: crypto.randomUUID(),
               creditId: credit.id,
               expiresAt: credit.expiresAt,
+              name,
             });
           }}
         />
@@ -553,6 +556,9 @@ function AccountRow({
             <span className="block font-medium">
               {providerLabel(account.providerId)} · {displayName}
             </span>
+            {resetRequest?.name ? (
+              <span className="block">{resetRequest.name}</span>
+            ) : null}
             <span className="block">{t("accounts.resetDescription")}</span>
             {resetRequest?.expiresAt ? (
               <span className="block">

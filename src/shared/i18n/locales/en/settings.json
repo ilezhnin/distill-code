@@ -651,6 +651,7 @@
       "used": "Used",
       "expired": "Expired",
       "paused": "Paused",
+      "queued": "Waiting its turn",
       "unavailable": "Not available now"
     },
     "browserPending": "Complete sign-in in your browser. Other accounts stay connected.",

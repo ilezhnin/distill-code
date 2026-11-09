@@ -790,7 +790,8 @@ describe("account surfaces", () => {
     const dialog = screen.getByRole("dialog", { name: "Use one reset token?" });
     expect(dialog).toHaveTextContent("claude@example.test");
     expect(dialog).toHaveTextContent("Claude Code");
-    expect(dialog).not.toHaveTextContent("Full reset");
+    // The confirmation says which reset it spends.
+    expect(dialog).toHaveTextContent("Full reset");
     expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
     expect(dialog).not.toHaveTextContent("Automatic switching");
     expect(dialog).toHaveTextContent("Expires");
@@ -832,6 +833,7 @@ describe("account surfaces", () => {
     "expired",
     "used",
     "paused",
+    "queued",
     "unavailable",
   ])("does not offer an unavailable Claude grant (%s)", (creditState) => {
     useProviderAccountsStore.setState({
@@ -927,6 +929,14 @@ describe("account surfaces", () => {
     expect(
       screen.getByRole("button", { name: "Use Full reset" }),
     ).toBeEnabled();
+    // With two kinds on one account, the confirmation names the chosen one.
+    fireEvent.click(screen.getByRole("button", { name: "Use Fable reset" }));
+    const dialog = screen.getByRole("dialog", { name: "Use one reset token?" });
+    expect(dialog).toHaveTextContent(
+      "Fable reset · returns what Fable used to your weekly limit",
+    );
+    expect(dialog).not.toHaveTextContent("Full reset");
+    expect(mocks.reset).not.toHaveBeenCalled();
   });
 
   it("switches only the selected chat after the backend succeeds", async () => {

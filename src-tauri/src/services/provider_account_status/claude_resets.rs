@@ -399,9 +399,14 @@ pub(super) fn map_inventory(usage: &Value, now: i64) -> Result<Option<ResetToken
             && usable
             && starts_at.is_none_or(|at| at <= now)
             && cooldown.is_none_or(|at| at <= now)
-            && block["next_grant_id"].as_str() == Some(id)
         {
-            "available"
+            // The provider takes grants in its own order: only the one it
+            // names can be claimed now, and a usable one behind it waits.
+            match block["next_grant_id"].as_str() {
+                Some(next) if next == id => "available",
+                Some(_) => "queued",
+                None => "unavailable",
+            }
         } else {
             "unavailable"
         };
@@ -596,9 +601,59 @@ mod tests {
         let tokens = map_inventory(&input, now()).unwrap().unwrap();
         assert_eq!(tokens.available, 2);
         let credits = tokens.credits.unwrap();
-        assert_eq!(credits[0].status, "unavailable");
+        // Usable, but the provider takes the other grant first.
+        assert_eq!(credits[0].status, "queued");
         assert_eq!(credits[1].reset_type, "five_hour");
         assert_eq!(credits[1].status, "available");
+        // With no grant named, nothing can be claimed and nothing waits.
+        input["cedar_ember"]["next_grant_id"] = Value::Null;
+        let credits = map_inventory(&input, now()).unwrap().unwrap().credits;
+        assert!(credits
+            .unwrap()
+            .iter()
+            .all(|credit| credit.status == "unavailable"));
+    }
+
+    #[test]
+    fn two_fable_resets_and_a_used_weekly_one_read_as_the_provider_sends_them() {
+        // The shape of a launch gift: the provider types a Fable reset "full"
+        // and lists only Fable's window; `gives_back_weekly` is what tells it
+        // from a reset of the whole account.
+        let fable = |id: &str| {
+            json!({"id": id, "label": "Launch gift", "resets_total": 1, "resets_left": 1,
+                "starts_at": "2026-09-22T16:00:00+00:00", "ends_at": "2026-12-22T07:59:00+00:00",
+                "clears": ["seven_day_overage_included"], "paused": false, "usable_now": true,
+                "use_requires_limit": false, "blocking": [], "type": "full",
+                "unavailable_reason": null, "gives_back_weekly": true})
+        };
+        let usage = json!({"cedar_ember": {
+            "eligible": true, "at_limit": false, "next_grant_id": "gift-fable",
+            "cooldown_until": null,
+            "grants": [
+                {"id": "earlier-weekly", "label": "Earlier gift", "resets_total": 1,
+                    "resets_left": 0, "starts_at": "2026-09-01T00:00:00+00:00",
+                    "ends_at": "2026-12-01T00:00:00+00:00",
+                    "clears": ["seven_day", "seven_day_overage_included"], "paused": false,
+                    "usable_now": false, "type": "weekly", "gives_back_weekly": false},
+                fable("gift-fable"),
+                fable("gift-fable-second"),
+            ]
+        }});
+        let tokens = map_inventory(&usage, now()).unwrap().unwrap();
+        assert_eq!(tokens.available, 1);
+        let credits = tokens.credits.unwrap();
+        let shown: Vec<_> = credits
+            .iter()
+            .map(|credit| (credit.reset_type.as_str(), credit.status.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("weekly", "used"),
+                ("fable", "available"),
+                ("fable", "queued")
+            ]
+        );
     }
 
     #[test]

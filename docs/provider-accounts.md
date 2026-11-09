@@ -77,7 +77,8 @@ Flock reads quota and `cedar_ember` grants together through the native CLI's
 first-party usage endpoint. Full, weekly, five-hour and Fable grants are named
 apart, as the native CLI names them: a Fable reset only returns what Fable used
 to the weekly limit, so it never reads as a full reset. Each grant shows its
-availability and expiry; missing telemetry stays unknown. Failed reads retain the last known
+availability and expiry, and a usable grant the provider will only take after
+another one reads as waiting its turn; missing telemetry stays unknown. Failed reads retain the last known
 values as stale. A 429 pauses usage requests for at least one minute, increasing
 to five minutes on repeated failures, or longer if requested by Retry-After.
 One Refresh action at the top updates the panel; account cards have no duplicate.

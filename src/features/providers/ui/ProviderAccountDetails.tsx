@@ -185,14 +185,14 @@ export function ProviderUsageDetails({
             const hint = t(`accounts.resetHints.${credit.resetType}`, {
               defaultValue: "",
             });
+            const named = hint ? `${label} · ${hint}` : label;
             return (
               <div
                 key={credit.id}
                 className="flex flex-wrap items-center justify-between gap-2"
               >
                 <p title={credit.description ?? undefined}>
-                  {label}
-                  {hint ? ` · ${hint}` : ""}
+                  {named}
                   {credit.status !== "available"
                     ? ` · ${t(`accounts.resetStates.${credit.status}`, {
                         defaultValue: credit.status,
@@ -209,7 +209,7 @@ export function ProviderUsageDetails({
                     size="xs"
                     disabled={resetDisabled}
                     aria-label={t("accounts.useNamedReset", { name: label })}
-                    onClick={() => onUseReset(credit, label)}
+                    onClick={() => onUseReset(credit, named)}
                   >
                     {t("accounts.use")}
                   </Button>

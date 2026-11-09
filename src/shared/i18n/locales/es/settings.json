@@ -651,6 +651,7 @@
       "used": "Usado",
       "expired": "Caducado",
       "paused": "En pausa",
+      "queued": "Espera su turno",
       "unavailable": "No disponible ahora"
     },
     "browserPending": "Completa el inicio de sesión en el navegador. Las demás cuentas permanecen conectadas.",
