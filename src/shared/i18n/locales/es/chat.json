@@ -470,6 +470,10 @@
     "startAConversation": "Inicia una conversación"
   },
   "conductor": {
+    "noticeRelay": {
+      "undelivered_one": "No se pudo transmitir 1 aviso de la app al conductor: {{detail}}",
+      "undelivered_other": "No se pudieron transmitir {{count}} avisos de la app al conductor: {{detail}}"
+    },
     "spawnTitle": "Iniciar un orquestador",
     "spawnDescription": "Asigna una tarea acotada. Un orquestador con nombre la ejecuta y reporta aquí.",
     "nameLabel": "Nombre",

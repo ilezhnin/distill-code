@@ -37,6 +37,10 @@ expectations all have to agree on the same words.
   MUST carry the reason, and MUST NOT be derived from a run's own outcome.
 - A step whose executor ended without reporting MUST NOT be reported to the
   conductor as `completed` unless that executor's run itself completed.
+- A step whose executor ended a turn without reporting while work it left
+  running in the background still runs MUST NOT be treated as finished until
+  that work has ended.
+- A step whose executor's background work still runs MUST be shown as working.
 
 ## The verdict
 
@@ -76,6 +80,9 @@ expectations all have to agree on the same words.
   in the step's brief and to the operator that it was resumed.
 - Wherever an agent is shown as stopped or cancelled, the app MUST say who
   stopped it and why when it knows.
+- Every notice the app shows the operator in a conductor's chat MUST also reach
+  that conductor, unless the conductor receives the same facts in a digest or
+  a note.
 - The app MUST record, for every wave, the sequence of transitions it observed,
   and that record MUST be readable without the application running.
 

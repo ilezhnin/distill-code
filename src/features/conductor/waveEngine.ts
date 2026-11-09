@@ -1330,6 +1330,27 @@ export function advanceWave(
     const node = nodeByStepIndex.get(step.stepIndex);
     if (node) statusByStepIndex.set(step.stepIndex, node.status);
   }
+  // A step's run that is at work again — its agent woken by the background
+  // work it left running, or kept open while that work runs — has not given
+  // its last word yet. Whatever was judged of an earlier stop is void: the
+  // report that counts is the one the run ends with.
+  const runLive = (step: WaveStepState): boolean => {
+    const status = statusByStepIndex.get(step.stepIndex);
+    return status !== undefined && !isTerminalRunStatus(status);
+  };
+  const unjudged = reconciled.map((step): WaveStepState => {
+    if (step.phase !== "spawned" || !runLive(step)) return step;
+    if (!step.reportVerified && !step.reportDegraded) return step;
+    const {
+      reportVerified: _verified,
+      verificationFailed: _failed,
+      verificationDetail: _detail,
+      reportDegraded: _degraded,
+      ...rest
+    } = step;
+    changed = true;
+    return rest;
+  });
 
   // Risk №4's escape hatch, made visible (5b): a completed step whose report
   // never came may go terminal on the synthesized stub once the runner's
@@ -1337,7 +1358,7 @@ export function advanceWave(
   // and as persisted state — so the shell can announce it to the operator
   // without a restart ever producing a second announcement.
   const degraded: number[] = [];
-  const preGate = reconciled.map((step) => {
+  const preGate = unjudged.map((step) => {
     if (step.reportDegraded || step.phase !== "spawned") return step;
     if (statusByStepIndex.get(step.stepIndex) !== "completed") return step;
     if (context.reportOf(step.runId) !== undefined) return step;
@@ -1354,7 +1375,9 @@ export function advanceWave(
   // quarantine stub for the report's own words.
   const verificationFailed: number[] = [];
   const verifiedSteps = preGate.map((step) => {
-    if (step.reportVerified || step.phase !== "spawned") return step;
+    if (step.reportVerified || step.phase !== "spawned" || runLive(step)) {
+      return step;
+    }
     const report = context.reportOf(step.runId);
     if (report === undefined) return step;
     if (report.status !== "completed") {

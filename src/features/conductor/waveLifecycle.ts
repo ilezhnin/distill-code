@@ -47,6 +47,7 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
+import { skipConductorNoticeRelay } from "./conductorNoticeRelay";
 import { deliverEnvelope } from "./digestDelivery";
 import { parseFlockVerdict } from "./flockVerdict";
 import type { ConductorRoadmap } from "./flockRoadmap";
@@ -149,10 +150,10 @@ function appendNotice(
   text: string,
   type: "error" | "warning",
   action?: Parameters<typeof createSystemNotificationMessage>[2],
-): void {
-  useChatStore
-    .getState()
-    .addMessage(sessionId, createSystemNotificationMessage(text, type, action));
+): string {
+  const message = createSystemNotificationMessage(text, type, action);
+  useChatStore.getState().addMessage(sessionId, message);
+  return message.id;
 }
 
 /** Parked waves whose closure notice this renderer process has shown. */
@@ -181,10 +182,14 @@ export function restoreParkedWaveNotices(
     );
     if (transcript.kind !== "loaded") continue;
     announcedClosures.add(wave.waveId);
-    appendNotice(
-      wave.conductorSessionId,
-      waveClosureNoticeText(wave.closure),
-      "error",
+    // A restatement for the operator after a restart: the conductor was told
+    // when the wave closed, and is not woken to be told again.
+    skipConductorNoticeRelay(
+      appendNotice(
+        wave.conductorSessionId,
+        waveClosureNoticeText(wave.closure),
+        "error",
+      ),
     );
   }
 }
@@ -567,10 +572,13 @@ function applyVerdictDecision(
       ...withWavePhase(judged, "digestPending"),
       digestAttempt: wave.digestAttempt + 1,
     });
-    appendNotice(
-      wave.conductorSessionId,
-      waveAcceptReaskedNoticeText(decision.reasked),
-      "warning",
+    // The re-sent digest tells the conductor this itself.
+    skipConductorNoticeRelay(
+      appendNotice(
+        wave.conductorSessionId,
+        waveAcceptReaskedNoticeText(decision.reasked),
+        "warning",
+      ),
     );
     return next;
   }

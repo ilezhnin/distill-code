@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { i18n } from "@/shared/i18n";
 
@@ -612,6 +612,52 @@ describe("advanceWave verification gate (P62)", () => {
     expect(carried?.status).toBe("failed");
     expect(carried?.summary).toContain("failed verification");
     expect(carried?.summary).not.toContain("trust me");
+  });
+
+  it("judges nothing while the step's run works, and judges again once it ends", () => {
+    // The run ended on "I'll pick up when the wait finishes" and was judged.
+    const judged = advanceWave(spawnedPair(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? evidenceFree("run-0") : undefined,
+      verifyStepReport: () => ({ ok: false, detail: "no evidence" }),
+    });
+    expect(judged.wave.steps[0].verificationFailed).toBe(true);
+
+    // Its background wait ended and woke the agent: the run works again, the
+    // earlier judgement is void, and the stale report is not judged anew.
+    const verify = vi.fn(() => ({ ok: false, detail: "no evidence" }));
+    const woken = advanceWave(judged.wave, {
+      nodes: [workerNode(0, "running")],
+      reportOf: (runId) =>
+        runId === "run-0" ? evidenceFree("run-0") : undefined,
+      verifyStepReport: verify,
+    });
+    expect(woken.wave.steps[0].reportVerified).toBeUndefined();
+    expect(woken.wave.steps[0].verificationFailed).toBeUndefined();
+    expect(woken.verificationFailed).toEqual([]);
+    expect(verify).not.toHaveBeenCalled();
+    expect(woken.spawn).toEqual([]);
+    expect(woken.complete).toBe(false);
+
+    // It reports with evidence: that report is the one judged.
+    const reported = advanceWave(woken.wave, {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0"
+          ? {
+              ...evidenceFree("run-0"),
+              summary: "Compiled; summary.json written",
+            }
+          : undefined,
+      verifyStepReport: () => ({ ok: true }),
+    });
+    expect(reported.wave.steps[0].reportVerified).toBe(true);
+    expect(reported.wave.steps[0].verificationFailed).toBeUndefined();
+    const handoff = reported.spawn.find((request) => request.stepIndex === 1);
+    expect(handoff?.previousReports[0]?.report.summary).toBe(
+      "Compiled; summary.json written",
+    );
   });
 });
 

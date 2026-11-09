@@ -28,6 +28,28 @@ const states = new Set([
 ]);
 export const EMPTY_BACKGROUND_TASKS: readonly BackgroundTask[] = [];
 
+/** True for a task that has not ended: it runs, or waits to run on. */
+export function isBackgroundTaskLive(task: BackgroundTask): boolean {
+  return task.state === "running" || task.state === "paused";
+}
+
+/** How many live background tasks a chat has, under any of its ids. */
+export function liveBackgroundTaskCount(
+  bySession: Readonly<Record<string, readonly BackgroundTask[]>>,
+  sessionIds: ReadonlyArray<string | null | undefined>,
+): number {
+  let count = 0;
+  const seen = new Set<string>();
+  for (const sessionId of sessionIds) {
+    if (!sessionId || seen.has(sessionId)) continue;
+    seen.add(sessionId);
+    for (const task of bySession[sessionId] ?? []) {
+      if (isBackgroundTaskLive(task)) count += 1;
+    }
+  }
+  return count;
+}
+
 export const useBackgroundTasksStore = create<{
   bySession: Record<string, readonly BackgroundTask[]>;
   replace: (sessionId: string, value: unknown) => void;

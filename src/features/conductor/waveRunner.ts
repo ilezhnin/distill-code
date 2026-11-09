@@ -35,7 +35,8 @@ import {
 } from "./waveExecutor";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
-import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksStore";
+import { sessionBackgroundWorkLive } from "./backgroundWork";
+import { skipConductorNoticeRelay } from "./conductorNoticeRelay";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
@@ -392,18 +393,16 @@ const waveActivityAt = new Map<string, number>();
  */
 function waveChildrenWorking(wave: WaveState): boolean {
   const chat = useChatStore.getState();
-  const backgroundTasks = useBackgroundTasksStore.getState().bySession;
   let working = false;
   for (const step of wave.steps) {
     if (step.phase !== "spawned" || !step.sessionId) continue;
     const messages = chat.messagesBySession[step.sessionId];
     const runtime = chat.sessionStateById[step.sessionId];
+    // A flock-monitor job the child owns is its work as much as a background
+    // shell is: both wake it when they end.
     if (
-      (runtime &&
-        (isSessionRunning(runtime.chatState) || runtime.activeRunId)) ||
-      (backgroundTasks[step.sessionId] ?? []).some(
-        (task) => task.state === "running",
-      )
+      (runtime && isSessionRunning(runtime.chatState)) ||
+      sessionBackgroundWorkLive(step.sessionId, runtime?.activeRunId)
     ) {
       working = true;
     }
@@ -1571,16 +1570,20 @@ function advanceWaves(state: WaveEngineState): {
         );
       };
       for (const blockedStep of advanced.blocked) {
-        appendConductorNotice(
-          wave.conductorSessionId,
-          waveStepBlockedNoticeText({
-            stepIndex: blockedStep.stepIndex,
-            name: stepName(blockedStep.stepIndex),
-            ...(blockedStep.reason ? { reason: blockedStep.reason } : {}),
-            othersRunning,
-          }),
-          false,
-          "warning",
+        // The conductor gets the block in the note below, or in the digest
+        // when nothing else runs; the notice is the operator's copy.
+        skipConductorNoticeRelay(
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepBlockedNoticeText({
+              stepIndex: blockedStep.stepIndex,
+              name: stepName(blockedStep.stepIndex),
+              ...(blockedStep.reason ? { reason: blockedStep.reason } : {}),
+              othersRunning,
+            }),
+            false,
+            "warning",
+          ),
         );
       }
       if (othersRunning) {
@@ -1733,11 +1736,15 @@ function startBlockedNoteDispatch(note: PendingBlockedNote): void {
   void (async () => {
     const result = await deliverEnvelope(note.conductorSessionId, note.text);
     if (result.status === "failed") {
-      appendConductorNotice(
-        note.conductorSessionId,
-        waveBlockedNoteUndeliveredText(result.detail ?? ""),
-        false,
-        "warning",
+      // About a delivery to the conductor that failed: sending it the same
+      // way would only fail again.
+      skipConductorNoticeRelay(
+        appendConductorNotice(
+          note.conductorSessionId,
+          waveBlockedNoteUndeliveredText(result.detail ?? ""),
+          false,
+          "warning",
+        ),
       );
     }
   })();

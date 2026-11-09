@@ -470,6 +470,10 @@
     "startAConversation": "Start a conversation"
   },
   "conductor": {
+    "noticeRelay": {
+      "undelivered_one": "1 app notice could not be passed on to the conductor: {{detail}}",
+      "undelivered_other": "{{count}} app notices could not be passed on to the conductor: {{detail}}"
+    },
     "spawnTitle": "Start an orchestrator",
     "spawnDescription": "Give a bounded task. A named orchestrator runs it and reports back here.",
     "nameLabel": "Name",

@@ -71,6 +71,10 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { workingChildCountForSession } from "@/features/conductor/brigadeActivity";
 import { liveMonitorJobCount } from "@/features/conductor/monitorJobs";
 import { useMonitorJobStore } from "@/features/conductor/monitorJobStore";
+import {
+  liveBackgroundTaskCount,
+  useBackgroundTasksStore,
+} from "@/features/chat/stores/backgroundTasksStore";
 import { ConductorLeadingIcon } from "@/features/conductor/ui/ConductorLeadingIcon";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
@@ -284,9 +288,15 @@ export function SidebarChatRow({
       liveJobOwnerIds,
     ),
   );
-  const liveJobCount = useMonitorJobStore((state) =>
+  const liveMonitorJobs = useMonitorJobStore((state) =>
     liveMonitorJobCount(state.jobsById, [id, clientSessionId]),
   );
+  // A background shell the chat's agent left running is a job too: the agent
+  // is woken when it ends, so the chat is not done while it runs.
+  const liveBackgroundTasks = useBackgroundTasksStore((state) =>
+    liveBackgroundTaskCount(state.bySession, [id, clientSessionId]),
+  );
+  const liveJobCount = liveMonitorJobs + liveBackgroundTasks;
   const displayTitle = getDisplaySessionTitle(
     title,
     t("common:session.defaultTitle"),

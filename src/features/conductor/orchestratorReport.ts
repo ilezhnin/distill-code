@@ -109,6 +109,8 @@ Do this step and stop. Do not carry on into the next piece of work, and do not k
 
 Put in "decisions" every choice and assumption you made that someone continuing from your report would otherwise have to guess. They get this report, never your conversation.
 
+Work you leave running in the background — a background shell, or a flock-monitor job registered to your own session — keeps this step open after your turn ends: the app shows the step as still working and you are woken when that work ends. End a turn without the report block only while such work runs, and write the report once the result is known, success or failure. The report closes the step; anything still running after it is no longer part of this step.
+
 When you finish, end with this report block and no extra commentary after it:
 
 \`\`\`distill-report
@@ -302,6 +304,11 @@ export function parseStructuredReport(
     needsOperator: status !== "completed",
     nextSuggestedTask: null,
   };
+}
+
+/** True when the text carries a `distill-report` block. */
+export function hasReportFence(text: string): boolean {
+  return REPORT_FENCE_PATTERN.test(text);
 }
 
 export function stripReportFence(text: string): string {

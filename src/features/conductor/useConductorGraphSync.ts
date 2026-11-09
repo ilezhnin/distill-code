@@ -13,8 +13,15 @@ import {
   useConductorGraphStore,
 } from "./conductorGraphStore";
 import { publishTerminalGroupDigests } from "./digestPublisher";
+import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksStore";
+import {
+  onBackgroundWorkSettled,
+  sessionBackgroundWorkLive,
+} from "./backgroundWork";
+import { useMonitorJobStore } from "./monitorJobStore";
 import {
   RUN_FALLBACK_SUMMARIES,
+  hasReportFence,
   parseStructuredReport,
 } from "./orchestratorReport";
 import { reconcileStaleGraphStatuses } from "./reconcileStaleGraphStatuses";
@@ -133,8 +140,16 @@ function statusFromRuntime(
     typeof useChatStore.getState
   >["sessionStateById"][string],
   hasAssistantOutput: boolean,
+  heldOpen = false,
 ): RunStatus {
-  if (!chatState) return persisted;
+  // A run the operator or the app stopped stays stopped whatever still runs
+  // behind it.
+  const held =
+    heldOpen &&
+    persisted !== "failed" &&
+    persisted !== "cancelled" &&
+    persisted !== "stopped";
+  if (!chatState) return held ? "running" : persisted;
   if (chatState.chatState === "error") return "failed";
   if (chatState.isRunCancellationPending) return "cancelled";
   if (chatState.chatState === "waiting") {
@@ -142,6 +157,13 @@ function statusFromRuntime(
     return "waiting";
   }
   if (isSessionRunning(chatState.chatState)) {
+    seenRunningBySession.add(sessionId);
+    return "running";
+  }
+  // The turn ended, but work the agent left running in the background has
+  // not, and the agent did not report: it is woken when that work ends and
+  // reports then. Until then the run is not over.
+  if (held) {
     seenRunningBySession.add(sessionId);
     return "running";
   }
@@ -380,11 +402,19 @@ function runSyncPass(): void {
     const runtime = chat.sessionStateById[node.sessionId];
     const messages = chat.messagesBySession[node.sessionId];
     const summary = lastCompletedAssistantSummary(messages);
+    // A reply that carries the report block closes the run even while
+    // something it started still runs; a reply without one leaves the run
+    // open for as long as its background work lives.
+    const heldOpen =
+      node.role === "worker" &&
+      !(summary && hasReportFence(summary)) &&
+      sessionBackgroundWorkLive(node.sessionId, runtime?.activeRunId);
     const nextStatus = statusFromRuntime(
       node.sessionId,
       node.status,
       runtime,
       Boolean(summary),
+      heldOpen,
     );
     if (nextStatus !== node.status) {
       graph.patchNode(node.sessionId, { status: nextStatus });
@@ -636,6 +666,17 @@ export function useConductorGraphSync(): void {
         void hydrateMissingSessions();
       }
     });
+    // A worker's background work holds its run open, so the run settles the
+    // moment that work ends, not on whatever change happens to come next.
+    const unsubBackgroundTasks = useBackgroundTasksStore.subscribe(
+      (state, previous) => {
+        if (state.bySession !== previous.bySession) onStateChanged();
+      },
+    );
+    const unsubMonitorJobs = useMonitorJobStore.subscribe((state, previous) => {
+      if (state.liveOwnerIds !== previous.liveOwnerIds) onStateChanged();
+    });
+    const unsubSettled = onBackgroundWorkSettled(onStateChanged);
 
     return () => {
       clearInterval(ownedStatusTimer);
@@ -645,6 +686,9 @@ export function useConductorGraphSync(): void {
       unsubRuntimes();
       unsubQueued();
       unsubSessions();
+      unsubBackgroundTasks();
+      unsubMonitorJobs();
+      unsubSettled();
     };
   }, []);
 }
