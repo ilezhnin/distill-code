@@ -509,6 +509,27 @@ try {
     Assert-Equal "merged Windows externalBin stages flock-monitor" ($mergedExternalBin -contains "binaries/flock-monitor") $true
     Assert-Equal "merged Windows externalBin stages only the native sidecars" (@($mergedExternalBin).Count) 2
 
+    # ── NSIS installer hooks (an update over running monitors) ──
+    # A flock-monitor outlives the app, so an update finds its exe running.
+    # The pre-install hook moves every bundled tool aside before the copy:
+    # each externalBin sidecar and the app crate's extra binary.
+    $nsisConf = Get-ObjectValue (Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "windows") "nsis"
+    $hooksSetting = Get-ObjectValue $nsisConf "installerHooks"
+    Assert-Equal "Windows NSIS bundle uses the installer hooks" $hooksSetting "windows/installer-hooks.nsh"
+    $hooksPath = Join-Path (Join-Path (Get-FlockRepoRoot) "src-tauri") $hooksSetting
+    Assert-Equal "installer hooks file exists" (Test-Path -LiteralPath $hooksPath -PathType Leaf) $true
+    $hooks = Get-Content -Raw -LiteralPath $hooksPath
+    $appBinaries = @(Get-ChildItem -Path (Join-Path (Get-FlockRepoRoot) "src-tauri/src/bin") -Filter "*.rs" -File | ForEach-Object { $_.BaseName })
+    $bundledStems = @($mergedExternalBin | ForEach-Object { ($_ -split '/')[-1] }) + $appBinaries
+    foreach ($stem in $bundledStems) {
+        Assert-Equal "pre-install hook moves $stem.exe aside" ($hooks -match "(?m)^\s*!insertmacro FlockSetAside `"$([regex]::Escape($stem))`"\s*$") $true
+    }
+    $preinstall = [regex]::Match($hooks, '(?s)!macro NSIS_HOOK_PREINSTALL\b(.*?)!macroend').Groups[1].Value
+    $appCheck = $preinstall.IndexOf("CheckIfAppIsRunning")
+    $firstMove = $preinstall.IndexOf("FlockSetAside")
+    Assert-Equal "pre-install hook closes the app before it moves a file" (($appCheck -ge 0) -and ($appCheck -lt $firstMove)) $true
+    Assert-Equal "pre-uninstall hook removes superseded binaries" ($hooks -match '(?s)!macro NSIS_HOOK_PREUNINSTALL\b.*?FlockRemoveSuperseded.*?!macroend') $true
+
     # ── Bundle recipes are Windows-only and route through native staging ──
     # Bundling exists only on Windows: `just bundle` / `bundle-debug` drive
     # Bundle-Windows.ps1 (native PE-validated staging + NSIS) directly.

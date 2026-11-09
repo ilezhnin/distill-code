@@ -181,6 +181,18 @@ says so on stderr and in `watcher.log`. Such a monitor still ends with the
 app. Its producer sits in the monitor's own kill-on-close job, so stopping
 or killing the monitor still ends the producer's whole tree.
 
+A job also outlives an update. Windows refuses to overwrite a running
+executable but lets it be renamed, so the NSIS installer's pre-install hook
+(`src-tauri/windows/installer-hooks.nsh`) first closes the app, then moves
+`flock-monitor.exe`, `flockctl.exe` and `flock-history.exe` into the install
+folder's `superseded\` subfolder, under the tool's name and the time of the
+install, before it copies the new files. A running monitor keeps its old binary there and
+reports to the new app as before. Every monitor started after the update
+runs the new binary, and a monitor's next `flockctl` call runs the new
+`flockctl`. A moved file nothing runs is deleted at once. A later install or
+the uninstaller deletes the rest once their monitors have ended. No monitor
+is stopped.
+
 The app keeps the record in `conductor/monitor-jobs.json` under the Flock
 root (`src/features/conductor/monitorJobStore.ts`). After a restart, a
 running job is still listed, the liveness check keeps it while its monitor

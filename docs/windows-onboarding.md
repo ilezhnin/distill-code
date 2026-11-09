@@ -253,6 +253,14 @@ after the product, `Levocat Flock_<version>_x64-setup.exe` (NSIS), and
 installs `levocat-flock.exe` with `flockctl.exe` and `flock-monitor.exe`
 beside it. Installers are unsigned.
 
+An update can be installed while monitors run their jobs. The installer
+closes the app, as before, and moves the running tools aside into the
+install folder's `superseded\` subfolder instead of stopping them. Those
+monitors finish on their old binary, and new ones start on the new binary.
+Interactive, passive (`/P`) and silent (`/S`) installs go through without a
+prompt about it. A later install or the uninstaller deletes `superseded\`
+files whose monitors have ended.
+
 ## Upgrading from Distill
 
 The app was called Distill before it became Levocat Flock. An installed
