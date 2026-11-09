@@ -68,7 +68,9 @@ const { resetWaveRunnerForTests, runWaveEngineTick } = await import(
 const { getWaveEngineState, resetWaveEngineStateCache, hasWaveTombstone } =
   await import("./waveStore");
 const { stopWaveByOperator } = await import("./waveStop");
-const { WAVE_VERDICT_SILENCE_SAMPLE_MS } = await import("./waveLifecycle");
+const { WAVE_VERDICT_SILENCE_SAMPLE_MS, goalTurnMarker } = await import(
+  "./waveLifecycle"
+);
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
 
 const CONDUCTOR_ID = "conductor-1";
@@ -872,6 +874,194 @@ describe("wave closed loop", () => {
       expect(noticeTexts().join("\n")).toContain(
         i18n.t("chat:conductor.wave.goal.paused"),
       );
+    });
+
+    const ACCEPT = `\`\`\`distill-verdict\n{"verdict":"accept"}\n\`\`\``;
+
+    /** The continue turn is parked: the conductor is still closing its verdict turn. */
+    function parkContinueTurns(): void {
+      deliverEnvelope.mockImplementation(
+        async (_sessionId: string, text: string) => {
+          useChatStore.setState({
+            queuedMessageBySession: {
+              [CONDUCTOR_ID]: [
+                {
+                  id: "queued-goal",
+                  kind: "transport-ready",
+                  payload: { text },
+                } as never,
+              ],
+            },
+          });
+          return { status: "queued" as const };
+        },
+      );
+    }
+
+    /** The queue drains: its message becomes a user message of the chat. */
+    function drainConductorQueue(): void {
+      const queued =
+        useChatStore.getState().queuedMessageBySession[CONDUCTOR_ID] ?? [];
+      useChatStore.setState({ queuedMessageBySession: {} });
+      for (const record of queued) {
+        appendConductorMessage({
+          id: `envelope-${crypto.randomUUID()}`,
+          role: "user",
+          created: Date.now(),
+          content: [{ type: "text", text: record.payload.text }],
+          metadata: { origin: "distillctl_cross_session" },
+        });
+      }
+    }
+
+    function pausedNotices(): string[] {
+      return noticeTexts().filter(
+        (text) => text === i18n.t("chat:conductor.wave.goal.paused"),
+      );
+    }
+
+    it("waits for a continue turn parked in the conductor's queue, then admits the plan that answers it", async () => {
+      useChatStore.setState({
+        messagesBySession: {
+          [CONDUCTOR_ID]: [assistant("plan-1", `${PLAN}\n\n${ROADMAP}`)],
+        },
+      });
+      await runWaveToDigest();
+      parkContinueTurns();
+      appendConductorMessage(assistant("verdict-1", ACCEPT));
+      await settle();
+      // Asked once and still on its way: nothing has been answered yet.
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        status: "in-progress",
+        continueTurn: { attempt: 1 },
+      });
+      expect(pausedNotices()).toEqual([]);
+
+      drainConductorQueue();
+      await settle();
+      expect(goalTurns()).toHaveLength(1);
+      expect(pausedNotices()).toEqual([]);
+      appendConductorMessage(assistant("plan-2", `Next.\n\n${NEXT_PLAN}`));
+      await settle();
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        status: "in-progress",
+      });
+    });
+
+    it("does not take an earlier goal's answer for the first continue turn of a new goal", async () => {
+      // Turn numbers start over with a new goal, so the chat already holds a
+      // "#1" from the goal before, with the answer it got then.
+      useChatStore.setState({
+        messagesBySession: {
+          [CONDUCTOR_ID]: [
+            {
+              id: "old-goal-turn",
+              role: "user",
+              created: nextCreated(),
+              content: [
+                {
+                  type: "text",
+                  text: `${goalTurnMarker(CONDUCTOR_ID, 1)}\nGOAL CONTINUATION`,
+                },
+              ],
+              metadata: { origin: "distillctl_cross_session" },
+            },
+            assistant("old-goal-answer", "Nothing more to plan for that goal."),
+            assistant("plan-1", `${PLAN}\n\n${ROADMAP}`),
+          ],
+        },
+      });
+      await runWaveToDigest();
+      parkContinueTurns();
+      appendConductorMessage(assistant("verdict-1", ACCEPT));
+      await settle();
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        status: "in-progress",
+        continueTurn: { attempt: 1 },
+      });
+      expect(pausedNotices()).toEqual([]);
+
+      drainConductorQueue();
+      appendConductorMessage(assistant("plan-2", `Next.\n\n${NEXT_PLAN}`));
+      await settle();
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("reads the whole answer when a steered notice splits it, and pauses only once the conductor is done", async () => {
+      useChatStore.setState({
+        messagesBySession: {
+          [CONDUCTOR_ID]: [assistant("plan-1", `${PLAN}\n\n${ROADMAP}`)],
+        },
+      });
+      await runWaveToDigest();
+      appendConductorMessage(assistant("verdict-1", ACCEPT));
+      await settle();
+      expect(goalTurns()).toHaveLength(1);
+
+      // A notice is steered into the turn: what the conductor had written so
+      // far settles as a message of its own, and the turn goes on after it.
+      useChatStore.getState().setChatState(CONDUCTOR_ID, "streaming");
+      appendConductorMessage(
+        assistant("before-steer", "Looking at stage two."),
+      );
+      appendConductorMessage({
+        id: "notice-1",
+        role: "user",
+        created: Date.now(),
+        content: [
+          { type: "text", text: "[flock-notice]\nA step was stopped." },
+        ],
+        metadata: { origin: "distillctl_cross_session", delivery: "steer" },
+      });
+      await settle();
+      expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+        status: "in-progress",
+        continueTurn: { attempt: 1 },
+      });
+      expect(pausedNotices()).toEqual([]);
+
+      // The host names the rest of the reply after the steered message.
+      appendConductorMessage(
+        assistant("notice-1:steered", `Next.\n\n${NEXT_PLAN}`),
+      );
+      useChatStore.getState().setChatState(CONDUCTOR_ID, "idle");
+      await settle();
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+      expect(pausedNotices()).toEqual([]);
+      expect(
+        getWaveEngineState().roadmaps[CONDUCTOR_ID].continueTurn,
+      ).toBeUndefined();
+    });
+
+    it("pauses the loop when a continue turn is in neither the chat nor its queue for good", async () => {
+      useChatStore.setState({
+        messagesBySession: {
+          [CONDUCTOR_ID]: [assistant("plan-1", `${PLAN}\n\n${ROADMAP}`)],
+        },
+      });
+      await runWaveToDigest();
+      parkContinueTurns();
+      // Pinned, so the silence samples can be stepped by hand.
+      let now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        appendConductorMessage(assistant("verdict-1", ACCEPT));
+        await settle();
+        // The operator clears the queue: the turn will never be answered.
+        useChatStore.setState({ queuedMessageBySession: {} });
+        await settle();
+        // For a moment that is also what a draining queue looks like.
+        expect(pausedNotices()).toEqual([]);
+        now += WAVE_VERDICT_SILENCE_SAMPLE_MS + 1;
+        await settle();
+        expect(getWaveEngineState().roadmaps[CONDUCTOR_ID]).toMatchObject({
+          status: "paused",
+        });
+        expect(pausedNotices()).toHaveLength(1);
+      } finally {
+        clock.mockRestore();
+      }
     });
   });
 

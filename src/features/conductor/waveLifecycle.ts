@@ -44,6 +44,7 @@
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -128,7 +129,7 @@ import {
   withoutWave,
   type WaveEngineState,
 } from "./waveStore";
-import { getTextContent } from "@/shared/types/messages";
+import { getTextContent, type Message } from "@/shared/types/messages";
 
 /** `waveId#attempt` of digests whose delivery is in flight in this process. */
 const inFlightDigests = new Set<string>();
@@ -359,7 +360,11 @@ const verdictSilence = new Map<string, { strikes: number; at: number }>();
  * whether enough of them have piled up, far enough apart, to act on.
  */
 function noteVerdictSilence(wave: WaveState): boolean {
-  const key = digestKey(wave.waveId, wave.digestAttempt);
+  return noteSilence(digestKey(wave.waveId, wave.digestAttempt));
+}
+
+/** The sampler behind {@link noteVerdictSilence}, for anything keyed. */
+function noteSilence(key: string): boolean {
   const now = Date.now();
   const seen = verdictSilence.get(key);
   if (!seen) {
@@ -379,8 +384,11 @@ function clearVerdictSilence(wave: WaveState): void {
   verdictSilence.delete(digestKey(wave.waveId, wave.digestAttempt));
 }
 
-/** True while the conductor's queue still holds this wave's digest. */
-function isDigestQueued(conductorSessionId: string, marker: string): boolean {
+/**
+ * True while the conductor's queue still holds the message that carries this
+ * marker: a wave's digest, or a continue turn.
+ */
+function isMarkerQueued(conductorSessionId: string, marker: string): boolean {
   const queued =
     useChatStore.getState().queuedMessageBySession[conductorSessionId] ?? [];
   return queued.some(
@@ -484,7 +492,7 @@ export function processWaveVerdicts(
       // every later plan it makes — so the wave is parked and the operator is
       // given the same "ask again" button an unreadable verdict earns (WAVES:
       // an undecided wave MUST offer the operator the ability to ask again).
-      if (isDigestQueued(wave.conductorSessionId, marker)) {
+      if (isMarkerQueued(wave.conductorSessionId, marker)) {
         clearVerdictSilence(wave);
         continue;
       }
@@ -813,7 +821,7 @@ export function processWaveDigests(
         next = withWave(next, withWavePhase(wave, "awaitingVerdict"));
         continue;
       }
-      if (isDigestQueued(wave.conductorSessionId, marker)) {
+      if (isMarkerQueued(wave.conductorSessionId, marker)) {
         // Still parked in the parent's queue; it will commit when it drains.
         continue;
       }
@@ -1010,6 +1018,54 @@ function goalKey(conductorSessionId: string, attempt: number): string {
   return `${conductorSessionId}#${attempt}`;
 }
 
+/** The silence samples of a continue turn, apart from any wave's. */
+function goalSilenceKey(conductorSessionId: string, attempt: number): string {
+  return `goal:${goalKey(conductorSessionId, attempt)}`;
+}
+
+/**
+ * Where a continue turn sits in the conductor's chat.
+ *
+ * Turn numbers start over with every new goal, so the chat can hold the same
+ * marker from a goal before, with the answer that turn got. Read as this
+ * turn's, that answer paused a loop one second after it was asked to go on
+ * (2026-11-09, conductor 43b619ae: the new turn was still in the queue, and
+ * the "#1" of the day before had been answered with a broken plan). Only a
+ * message no older than the turn itself is this turn.
+ */
+function findGoalTurnIndex(
+  messages: readonly Message[],
+  marker: string,
+  startedAt: number,
+): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user" || message.created < startedAt) continue;
+    if (getTextContent(message).includes(marker)) return index;
+  }
+  return -1;
+}
+
+/**
+ * What the conductor has said since a continue turn landed, as the plan
+ * detector would read it. More than one message when something was steered
+ * into the turn: what was written before it settles on its own, and the rest
+ * of the reply follows the steered message.
+ */
+function goalTurnAnswers(
+  messages: readonly Message[],
+  turnIndex: number,
+): Message[] {
+  return messages
+    .slice(turnIndex + 1)
+    .filter(
+      (message) =>
+        message.role === "assistant" &&
+        message.metadata?.completionStatus !== "inProgress" &&
+        !isLegacyReplayReplyId(message.id),
+    );
+}
+
 /**
  * Decides, on an accepted wave, whether the conductor is asked to go on.
  *
@@ -1141,11 +1197,26 @@ export function processGoalTurns(
     const transcript = readConductorTranscript(conductorSessionId, onHydrated);
     if (transcript.kind === "unknown") continue;
     const marker = goalTurnMarker(conductorSessionId, turn.attempt);
-    const markerIndex = findDigestMessageIndex(transcript.messages, marker);
+    const silenceKey = goalSilenceKey(conductorSessionId, turn.attempt);
+    const markerIndex = findGoalTurnIndex(
+      transcript.messages,
+      marker,
+      turn.startedAt,
+    );
     if (markerIndex < 0) {
       if (turn.phase === "dispatching") continue;
-      // Landed once (the phase says so) and gone now: the queue was cleared.
-      // The loop pauses rather than nudging into a transcript that lost it.
+      // Sent, and not in the chat yet: a conductor still closing its verdict
+      // turn has the request parked in its queue, and it lands when the
+      // queue drains.
+      if (isMarkerQueued(conductorSessionId, marker)) {
+        verdictSilence.delete(silenceKey);
+        continue;
+      }
+      // In neither place. A draining queue looks like that for a moment, so
+      // only a turn that stays lost — the queue was cleared — pauses the
+      // loop, rather than nudging into a transcript that lost it.
+      if (!noteSilence(silenceKey)) continue;
+      verdictSilence.delete(silenceKey);
       next = withRoadmap(next, {
         ...withoutContinueTurn(roadmap),
         status: "paused",
@@ -1158,22 +1229,28 @@ export function processGoalTurns(
       );
       continue;
     }
-    const answer = findVerdictMessageAfter(transcript.messages, markerIndex);
-    if (!answer) {
+    verdictSilence.delete(silenceKey);
+    const answers = goalTurnAnswers(transcript.messages, markerIndex);
+    // A plan in the answer is the loop going on — admission reads that
+    // message on this very tick; a roadmap that closed the goal was applied
+    // by the roadmap pass and handled above.
+    const planned = answers.some(
+      (answer) => parseFlockWave(getTextContent(answer)).kind === "plan",
+    );
+    if (planned) {
+      next = withRoadmap(next, withoutContinueTurn(roadmap));
+      continue;
+    }
+    // No plan so far. That is an answer without one only once the conductor
+    // has finished the turn: while it works, or has something queued that
+    // will put it to work, the rest of its reply is still to come.
+    if (answers.length === 0 || conductorMayStillAnswer(conductorSessionId)) {
       if (turn.phase === "dispatching") {
         next = withRoadmap(next, {
           ...roadmap,
           continueTurn: { ...turn, phase: "awaiting" },
         });
       }
-      continue;
-    }
-    // Answered. A plan in it is the loop going on — admission reads that
-    // message on this very tick; a roadmap that closed the goal was applied
-    // by the roadmap pass and handled above; anything else pauses the loop.
-    const planned = parseFlockWave(getTextContent(answer)).kind === "plan";
-    if (planned) {
-      next = withRoadmap(next, withoutContinueTurn(roadmap));
       continue;
     }
     next = withRoadmap(next, {
