@@ -12986,13 +12986,14 @@ mod tests {
         assert_eq!(ids(&frozen), ["opus[1m]", "sonnet", "haiku"]);
         assert!(own_model(&[&opus], &frozen));
         assert!(!own_model(&[&opus], &frozen[1..]));
-        // So may an ordinary panel.
+        // So may an ordinary panel, which one lab's models fill to three.
         let rows = offered().into_iter().map(|judge| (None, judge)).collect();
         let panel = ordinary_judges(&[&opus], &draft, rows);
-        assert_eq!(ids(&panel), ["opus[1m]", "sonnet"]);
+        assert_eq!(ids(&panel), ["opus[1m]", "sonnet", "haiku"]);
         assert!(own_model(&[&opus], &panel));
         assert!(!own_model(&[&opus], &panel[1..]));
-        // One seat for one model offered twice, whoever the candidate is.
+        // One seat for one model offered twice, whoever the candidate is:
+        // the lane's, since `opus` is declared as its alias (10-31).
         let both = ["opus", "opus[1m]", "sonnet"].map(judge_row).to_vec();
         assert_eq!(
             ids(&frozen_seats(
@@ -13000,11 +13001,11 @@ mod tests {
                 &draft,
                 both.clone()
             )),
-            ["opus", "sonnet"]
+            ["opus[1m]", "sonnet"]
         );
         assert_eq!(
             ids(&frozen_seats(&[&judge_row("haiku")], &draft, both)),
-            ["opus", "sonnet"]
+            ["opus[1m]", "sonnet"]
         );
         // An author is matched by the same identity, and its model at another
         // effort is marked.
