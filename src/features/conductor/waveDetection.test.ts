@@ -50,6 +50,26 @@ describe("detectWavePlanCandidates", () => {
     expect(candidates).toEqual([]);
   });
 
+  it("reads the plan in a reply that goes on after a steered message", () => {
+    // A notice steered into the conductor's turn splits its reply: the host
+    // names the rest after the steered message. That is a reply of its own,
+    // not a derived id, so its plan counts.
+    const candidates = detectWavePlanCandidates({
+      conductorSessionIds: ["conductor-1"],
+      messagesBySession: {
+        "conductor-1": [
+          user("u1", "Continue toward the goal"),
+          user("n1", "[flock-notice]\nA model is near its limit."),
+          assistant("n1:steered", `Next stage.\n\n${PLAN}`, "completed"),
+        ],
+      },
+      isProcessed: neverProcessed,
+    });
+    expect(candidates.map((candidate) => candidate.planMessageId)).toEqual([
+      "n1:steered",
+    ]);
+  });
+
   it("ignores messages with no fence, user turns, and other sessions", () => {
     const candidates = detectWavePlanCandidates({
       conductorSessionIds: ["conductor-1"],

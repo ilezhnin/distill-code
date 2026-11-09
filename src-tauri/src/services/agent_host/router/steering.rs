@@ -8,6 +8,18 @@ pub(super) struct PendingSteer {
     delivered: Arc<AtomicBool>,
 }
 
+/// The id of the reply that goes on after a steered message.
+///
+/// It must not end in `:reply`. That suffix names a reply of history recorded
+/// before replies had ids of their own (`renderer_identity` in the store, and
+/// the renderer derives the same), and the renderer's scanners leave such ids
+/// alone as handled long ago. Named that way, the rest of a steered turn had
+/// its plan, roadmap and memory blocks ignored: on 2026-11-09 a conductor's
+/// wave plan never started because a notice had been steered into its turn.
+fn steered_reply_id(message_id: &str) -> String {
+    format!("{message_id}:steered")
+}
+
 fn delivery_update(session_id: &str, message_id: &str, delivery: &str) -> Value {
     json!({"sessionId": session_id, "update": {
         "sessionUpdate": "session_info_update",
@@ -169,7 +181,7 @@ impl Inner {
                 // continuation under a separate reply id even when the adapter
                 // consumes the SDK echo internally (Claude does).
                 if let Some(run) = runtime.run.as_mut().filter(|run| run.run_id == run_id) {
-                    run.assistant_message_id = format!("{}:reply", ids.message_id);
+                    run.assistant_message_id = steered_reply_id(&ids.message_id);
                 }
                 runtime.native_steers.push(PendingSteer {
                     message_id: ids.message_id.clone(),
@@ -247,6 +259,14 @@ impl Inner {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_reply_after_a_steered_message_is_not_named_like_older_history() {
+        let id = super::steered_reply_id("m1");
+        assert_eq!(id, "m1:steered");
+        // The renderer skips every id with the suffix of a derived reply.
+        assert!(!id.ends_with(":reply"));
+    }
+
     use super::*;
 
     fn pending() -> (Vec<PendingSteer>, Arc<AtomicBool>) {
