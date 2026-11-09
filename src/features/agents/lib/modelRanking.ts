@@ -109,7 +109,7 @@ const ASTRA: RankedModelCandidate = {
   effort: "xhigh",
 };
 const FABLE: RankedModelCandidate = {
-  label: "Fable 5.1",
+  label: "Fable 5.2",
   platform: "claude-acp",
   needles: [["fable"]],
   effort: "xhigh",
@@ -156,10 +156,10 @@ const CODEX_SOL: RankedModelCandidate = {
  * coding, and Grok plus the small models of either provider take the simple
  * plugs where there is nothing much to think about:
  *
- * - heavy engineering: Astra → Fable 5.1 → Opus 5 → Grok 4.7, all at xhigh;
+ * - heavy engineering: Astra → Fable 5.2 → Opus 5 → Grok 4.7, all at xhigh;
  * - medium engineering: the same order at medium, except Grok, which is worth
  *   running at xhigh or not at all;
- * - design and planning: Fable 5.1 → Astra → Opus 5, all at xhigh;
+ * - design and planning: Fable 5.2 → Astra → Opus 5, all at xhigh;
  * - simpler work: Opus 5 at medium → Grok 4.7 at high → Luna at xhigh.
  *
  * The Grok candidate's label tracks xAI's current generation (4.6 → 4.7,
@@ -480,7 +480,7 @@ export function pickCandidateMatch<T>(
  *
  * "Current" comes from the harness's own filing when the inventory carries
  * it: a row on the main page beats a row under More models, which is also what
- * tells Fable 5.1 (main) from Fable 5 (More). Only an inventory with no filing
+ * tells Fable 5.2 (main) from Fable 5.1 (More). Only an inventory with no filing
  * at all falls back to guessing generations from the names.
  */
 export function preferCurrentMatches<T>(
@@ -666,7 +666,8 @@ export const KNOWN_MODEL_CANDIDATES: readonly RankedModelCandidate[] = [
  * asked for, dressed as a default.
  */
 const LEGACY_CANDIDATE_LABELS: ReadonlyMap<string, string> = new Map([
-  ["Fable 5", "Fable 5.1"],
+  ["Fable 5", "Fable 5.2"],
+  ["Fable 5.1", "Fable 5.2"],
   ["Grok 4.6", "Grok 4.7"],
 ]);
 

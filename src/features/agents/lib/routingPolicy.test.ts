@@ -24,7 +24,7 @@ describe("parseRoutingPolicy", () => {
         "coding-complex": ["Opus 5"],
         "coding-simple": ["Grok 4.7"],
         "testing-heavy": ["Astra"],
-        testing: ["Fable 5.1"],
+        testing: ["Fable 5.2"],
       },
     });
     // Two retired classes merged: the first read wins; a current class
@@ -65,7 +65,10 @@ describe("applyClassOverride", () => {
     // the class back to the shipped one — a reset nobody asked for.
     expect(
       applyClassOverride(shipped, ["Fable 5", "Grok 4.6"]).map((c) => c.label),
-    ).toEqual(["Fable 5.1", "Grok 4.7"]);
+    ).toEqual(["Fable 5.2", "Grok 4.7"]);
+    expect(
+      applyClassOverride(shipped, ["Fable 5.1"]).map((c) => c.label),
+    ).toEqual(["Fable 5.2"]);
   });
 
   it("keeps the class's own effort when the operator reorders it", () => {

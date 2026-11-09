@@ -120,19 +120,21 @@ pub const HARNESSES: &[HarnessSpec] = &[
         // Claude Code's own model menu. The bridge lists aliases (default,
         // opus or opus[1m], sonnet, haiku) and one Fable — whichever the
         // operator's Claude Code is set to run, so on one machine that is
-        // claude-fable-5[1m] and on the next claude-fable-5-1[1m]. Everything
+        // claude-fable-5-1[1m] and on the next claude-fable-5-2. Everything
         // it does not list it refuses in `session/set_config_option` but runs
         // in a session opened on it through `options.model`, which is what
         // `opens_on_model` means — and why those models' effort levels and
-        // fast support are declared here rather than probed. Both Fables
-        // carry it: which of them is the unlisted one is the machine's to
+        // fast support are declared here rather than probed. Every Fable
+        // carries it: which of them is the unlisted one is the machine's to
         // say, and a listed model is written directly whatever this says
         // (`Inner::opens_on_model` asks the bridge's own list first).
         models: &[
+            // The current Fable (11-09). An account whose menu has not moved
+            // yet does not list it, and still runs a session opened on it.
             ModelDecl {
-                id: "claude-fable-5-1[1m]",
-                name: Some("Fable 5.1"),
-                description: Some("Fable 5.1 with 1M context"),
+                id: "claude-fable-5-2[1m]",
+                name: Some("Fable 5.2"),
+                description: Some("Fable 5.2 with 1M context"),
                 group: ModelGroup::Main,
                 order: 10,
                 alias_of: None,
@@ -140,15 +142,15 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(false),
             },
-            // The same Fable 5.1 under the id Claude Code lists once 1M is
-            // its native window (11-01).
+            // The same Fable 5.2 under the id Claude Code lists it by: 1M is
+            // its native window.
             ModelDecl {
-                id: "fable",
+                id: "claude-fable-5-2",
                 name: None,
                 description: None,
                 group: ModelGroup::Main,
                 order: 10,
-                alias_of: Some("claude-fable-5-1[1m]"),
+                alias_of: Some("claude-fable-5-2[1m]"),
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
@@ -214,6 +216,34 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 group: ModelGroup::Main,
                 order: 40,
                 alias_of: None,
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+            },
+            // The previous Fable, filed with the older models since 5.2
+            // (11-09).
+            ModelDecl {
+                id: "claude-fable-5-1[1m]",
+                name: Some("Fable 5.1"),
+                description: Some("Fable 5.1 with 1M context"),
+                group: ModelGroup::More,
+                order: 45,
+                alias_of: None,
+                opens_on_model: true,
+                efforts: Some(CLAUDE_EFFORTS),
+                supports_fast: Some(false),
+            },
+            // The same Fable 5.1 under the id Claude Code lists once 1M is
+            // its native window (11-01). Claude Code still means 5.1 by it
+            // on the accounts that list 5.2 beside it; the day it means 5.2,
+            // this alias moves to that lane.
+            ModelDecl {
+                id: "fable",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 45,
+                alias_of: Some("claude-fable-5-1[1m]"),
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
@@ -623,9 +653,10 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
 }
 
 /// The model `id` is declared another name for on `harness_id`, if any:
-/// Claude Code's `opus` for `opus[1m]` and `fable` for
-/// `claude-fable-5-1[1m]`, the ids it lists once 1M is a model's native
-/// window. A moving alias (`default`) declares none.
+/// Claude Code's `opus` for `opus[1m]`, `claude-fable-5-2` for
+/// `claude-fable-5-2[1m]` and `fable` for `claude-fable-5-1[1m]`, the ids it
+/// lists once 1M is a model's native window. A moving alias (`default`)
+/// declares none.
 pub fn alias_target(harness_id: &str, id: &str) -> Option<&'static str> {
     harness(harness_id)?
         .models
@@ -908,11 +939,12 @@ mod tests {
         assert_eq!(
             layout,
             [
-                ("claude-fable-5-1[1m]", "main", 10, None, true),
+                ("claude-fable-5-2[1m]", "main", 10, None, true),
                 ("opus[1m]", "main", 20, None, false),
                 ("default", "main", 20, None, false),
                 ("sonnet", "main", 30, None, false),
                 ("haiku", "main", 40, None, false),
+                ("claude-fable-5-1[1m]", "more", 45, None, true),
                 ("claude-fable-5[1m]", "more", 50, None, false),
                 ("claude-opus-4-8", "more", 60, None, true),
                 ("claude-opus-4-7", "more", 70, None, true),
@@ -979,6 +1011,42 @@ mod tests {
         );
         assert_eq!(alias_target("claude-acp", "default"), None);
         assert_eq!(alias_target("codex-acp", "opus"), None);
+    }
+
+    #[test]
+    fn the_fable_claude_code_lists_as_current_is_the_main_one() {
+        // 11-09: an account whose menu moved lists Fable 5.2 by its full id
+        // among the current models and `fable`, still 5.1, with the older.
+        let listed = [
+            ("default", "Default (recommended)"),
+            ("opus", "Opus 5.5"),
+            ("claude-fable-5-2", "Fable 5.2"),
+            ("sonnet", "Sonnet 5.5"),
+            ("haiku", "Haiku 5.5"),
+            ("fable", "Fable 5.1"),
+            ("claude-fable-5", "Fable 5"),
+        ];
+        let models = merge_inventory(
+            "claude-acp",
+            listed
+                .iter()
+                .map(|(id, name)| probed(id, name, CLAUDE_EFFORTS, false))
+                .collect(),
+        );
+        let row = |id: &str| models.iter().find(|row| row["id"] == id).unwrap();
+        assert_eq!(models[0]["id"], "claude-fable-5-2[1m]");
+        assert_eq!(row("claude-fable-5-2[1m]")["name"], "Fable 5.2");
+        assert_eq!(row("claude-fable-5-2[1m]")["group"], "main");
+        assert_eq!(row("claude-fable-5-2")["aliasOf"], "claude-fable-5-2[1m]");
+        assert_eq!(row("claude-fable-5-2")["group"], "main");
+        // The previous Fable stays offered, on the second page.
+        assert_eq!(row("claude-fable-5-1[1m]")["name"], "Fable 5.1");
+        assert_eq!(row("claude-fable-5-1[1m]")["group"], "more");
+        assert_eq!(row("fable")["aliasOf"], "claude-fable-5-1[1m]");
+        assert_eq!(row("fable")["group"], "more");
+        assert!(models
+            .iter()
+            .all(|row| row["order"].as_u64().unwrap() < 1000));
     }
 
     #[test]
@@ -1184,7 +1252,7 @@ mod tests {
         assert_eq!(newcomer["id"], "claude-opus-5-1");
         assert_eq!(newcomer["group"], "main");
         assert_eq!(newcomer["order"], 1005);
-        assert_eq!(models.len(), 11);
+        assert_eq!(models.len(), 12);
     }
 
     #[test]
@@ -1261,8 +1329,9 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "claude-fable-5-1[1m]",
+                "claude-fable-5-2[1m]",
                 "opus[1m]",
+                "claude-fable-5-1[1m]",
                 "claude-fable-5[1m]",
                 "claude-opus-4-8",
                 "claude-opus-4-7",
@@ -1290,11 +1359,12 @@ mod tests {
             session_model_meta(claude, "claude-opus-4-7"),
             Some(json!({ "claudeCode": { "options": { "model": "claude-opus-4-7" } } }))
         );
-        // Both Fables: the bridge lists the one its operator's Claude Code
-        // runs and refuses the other, and which is which differs by machine.
-        // And Opus's 1M lane, which a bridge that lists Opus as `opus` no
-        // longer lists.
+        // Every Fable: the bridge lists the one its operator's Claude Code
+        // runs and refuses the others, and which is which differs by
+        // machine. And Opus's 1M lane, which a bridge that lists Opus as
+        // `opus` no longer lists.
         for id in [
+            "claude-fable-5-2[1m]",
             "claude-fable-5-1[1m]",
             "opus[1m]",
             "claude-fable-5[1m]",

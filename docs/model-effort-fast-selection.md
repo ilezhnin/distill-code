@@ -168,7 +168,7 @@ the split was built.
   hidden.
 - **Opus 4.6 and Sonnet 4.6** have no `xhigh`.
 - **Fast mode on Claude** exists only on `default`, `opus[1m]`, Opus 4.8 and
-  Opus 4.7 — not on Fable 5 / 5.1, Sonnet 5, Haiku, Opus 4.6 or Sonnet 4.6.
+  Opus 4.7 — not on Fable 5 / 5.1 / 5.2, Sonnet 5, Haiku, Opus 4.6 or Sonnet 4.6.
 - **Fast mode on codex** exists on every model except GPT-5.3-Codex-Spark.
   codex offers `ultra` on some models (not all), and Luna tops out at `max`.
 - **grok** has a real `reasoning_effort` option and no fast toggle;
@@ -183,8 +183,9 @@ the split was built.
   disabled while a turn runs.
   A model advertised by the bridge is selectable directly, including Fable
   5.1 in Claude ACP 0.81.0; the declared fallback must not disable that row.
-- `[1m]` is a context lane, not an effort: `opus[1m]`, `claude-fable-5[1m]`
-  and `claude-fable-5-1[1m]` are whole ids and are never split.
+- `[1m]` is a context lane, not an effort: `opus[1m]`, `claude-fable-5[1m]`,
+  `claude-fable-5-1[1m]` and `claude-fable-5-2[1m]` are whole ids and are
+  never split.
 
 ## Harness pins: snapshot of 2026-09-22
 

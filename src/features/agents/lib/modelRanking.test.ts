@@ -11,7 +11,7 @@ import {
 
 const CLAUDE_MODELS: RankableModel[] = [
   { id: "claude-opus-5", displayName: "Claude Opus 5" },
-  { id: "claude-fable-5-1", displayName: "Claude Fable 5.1" },
+  { id: "claude-fable-5-2", displayName: "Claude Fable 5.2" },
 ];
 const CODEX_MODELS: RankableModel[] = [
   { id: "codex-astra", displayName: "Codex Astra" },
@@ -50,13 +50,13 @@ describe("resolveRankedModel", () => {
           platform === "grok-acp" ? "clear" : "at-limit",
       }),
     );
-    // general: Astra → Fable 5.1 → Opus 5 → Grok 4.7; everything but Grok
+    // general: Astra → Fable 5.2 → Opus 5 → Grok 4.7; everything but Grok
     // is gated here.
     expect(result.choice?.label).toBe("Grok 4.7");
     expect(result.choice?.rankIndex).toBe(3);
     expect(result.skipped).toEqual([
       { label: "Astra", reason: "at-limit" },
-      { label: "Fable 5.1", reason: "at-limit" },
+      { label: "Fable 5.2", reason: "at-limit" },
       { label: "Opus 5", reason: "at-limit" },
     ]);
   });
@@ -70,7 +70,7 @@ describe("resolveRankedModel", () => {
         platformUsedPercent: (platform) => (platform === "codex-acp" ? 98 : 12),
       }),
     );
-    expect(result.choice?.label).toBe("Fable 5.1");
+    expect(result.choice?.label).toBe("Fable 5.2");
     expect(result.skipped).toEqual([
       { label: "Astra", reason: "near-limit", usedPercent: 98 },
     ]);
@@ -84,7 +84,7 @@ describe("resolveRankedModel", () => {
 
     // Every candidate is close to its limit. Falling through to the caller's
     // untargeted default would be worse than the model the operator ranked.
-    expect(result.choice?.label).toBe("Fable 5.1");
+    expect(result.choice?.label).toBe("Fable 5.2");
     expect(result.choice?.nearLimit).toBe(true);
     // The skips reported are the strict pass — what it would have used.
     expect(result.skipped.map((skip) => skip.reason)).toEqual([
@@ -135,7 +135,7 @@ describe("resolveRankedModel", () => {
           platform === "claude-acp" ? models : [],
       });
 
-    // code-implement: Astra → Fable 5.1 → Opus 5; only Opus is installed.
+    // code-implement: Astra → Fable 5.2 → Opus 5; only Opus is installed.
     expect(
       resolveRankedModel("code-implement", onlyClaude(claudeRows)).choice?.model
         .id,

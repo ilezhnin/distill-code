@@ -1031,8 +1031,9 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "claude-fable-5-1[1m]",
+                "claude-fable-5-2[1m]",
                 "opus[1m]",
+                "claude-fable-5-1[1m]",
                 "claude-fable-5[1m]",
                 "claude-opus-4-8",
                 "claude-opus-4-7",

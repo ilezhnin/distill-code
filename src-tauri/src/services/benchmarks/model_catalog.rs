@@ -34,6 +34,9 @@ const CONTEXT_WINDOWS_CHECKED_AT: i64 = 1_793_534_400_000;
 /// the CLI clamps to each model's ceiling. A measurement before it ran at the
 /// 272,000 the CLI serves by default.
 pub const CODEX_WINDOW_RAISED_AT: i64 = 1_793_577_600_000;
+/// 2026-11-09T00:00:00Z: the day Fable 5.2 was released and its price and
+/// window were read.
+const FABLE_5_2_CHECKED_AT: i64 = 1_794_182_400_000;
 /// What every OpenAI model takes on the API, where a prompt over 272K input
 /// tokens is billed at 2x input and 1.5x output for the whole request.
 const OPENAI_API_CONTEXT: u64 = 1_050_000;
@@ -118,7 +121,31 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
         ("contexts-2026-10-22", context_seeds_2026_10_22()),
         ("moonshot-2026-10-23", moonshot_seeds_2026_10_23()),
         ("contexts-2026-11-01", context_seeds_2026_11_01()),
+        ("anthropic-2026-11-09", anthropic_seeds_2026_11_09()),
     ]
+}
+
+/// Fable 5.2, released on 2026-11-09 below Fable 5.1's price: a new model,
+/// so its row applies from its release and leaves Fable 5.1's untouched.
+fn anthropic_seeds_2026_11_09() -> Vec<CatalogEntry> {
+    vec![CatalogEntry {
+        id: "seed-anthropic-fable-5-2-2026-11-09".into(),
+        kind: "model".into(),
+        provider_id: None,
+        needle: "fable 5.2".into(),
+        display_name: Some("Claude Fable 5.2".into()),
+        vendor: Some("Anthropic".into()),
+        input_per_million: Some(8.0),
+        output_per_million: Some(40.0),
+        cache_read_per_million: Some(0.20),
+        cache_write_per_million: Some(10.0),
+        context_tokens: Some(1_000_000),
+        max_context_tokens: None,
+        effective_from: FABLE_5_2_CHECKED_AT,
+        checked_at: FABLE_5_2_CHECKED_AT,
+        source: format!("{ANTHROPIC_PRICING} ; {ANTHROPIC_MODELS}"),
+        created_at: FABLE_5_2_CHECKED_AT,
+    }]
 }
 
 /// Both windows of every OpenAI and xAI row, checked on 2026-11-01: the one
@@ -828,9 +855,15 @@ mod tests {
                 "anthropic-2026-10-22",
                 "contexts-2026-10-22",
                 "moonshot-2026-10-23",
-                "contexts-2026-11-01"
+                "contexts-2026-11-01",
+                "anthropic-2026-11-09"
             ]
         );
+        for seed in anthropic_seeds_2026_11_09() {
+            validate(&seed).unwrap();
+            assert!(seed.source.contains("platform.claude.com"));
+            assert_eq!(seed.effective_from, seed.checked_at);
+        }
         for seed in context_seeds_2026_10_22() {
             validate(&seed).unwrap();
             assert!(seed.source.starts_with("https://"), "{}", seed.id);
@@ -890,6 +923,35 @@ mod tests {
         broken.output_per_million = Some(1.0);
         broken.needle = " ".into();
         assert!(validate(&broken).is_err());
+    }
+
+    /// Fable 5.2 is priced by its own row from its release, whichever of its
+    /// ids a run names, and Fable 5.1 keeps the price it had.
+    #[test]
+    fn fable_5_2_is_priced_apart_from_fable_5_1() {
+        let entries: Vec<CatalogEntry> = seed_sets()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        let fable = |id: &str, name: &str| Configuration {
+            provider_id: "claude-acp".into(),
+            model_id: id.into(),
+            model_name: Some(name.into()),
+            ..k3()
+        };
+        let current = fable("claude-fable-5-2[1m]", "Fable 5.2");
+        let entry = resolve(&entries, &current, FABLE_5_2_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-anthropic-fable-5-2-2026-11-09");
+        assert_eq!(entry.input_per_million, Some(8.0));
+        assert_eq!(entry.output_per_million, Some(40.0));
+        assert_eq!(entry.cache_read_per_million, Some(0.20));
+        assert_eq!(entry.cache_write_per_million, Some(10.0));
+        assert_eq!(entry.context_tokens, Some(1_000_000));
+        assert!(resolve(&entries, &current, FABLE_5_2_CHECKED_AT - 1).is_none());
+        let previous = fable("claude-fable-5-1[1m]", "Fable 5.1");
+        let entry = resolve(&entries, &previous, FABLE_5_2_CHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-anthropic-fable-5-1");
+        assert_eq!(entry.input_per_million, Some(10.0));
     }
 
     /// Every OpenAI row reads with both windows: the 272K the Codex CLI
