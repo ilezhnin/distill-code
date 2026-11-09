@@ -13,6 +13,37 @@ export function isWorkingStatus(status: RunStatus): boolean {
   return status === "starting" || status === "running" || status === "waiting";
 }
 
+const NO_JOB_OWNERS: ReadonlySet<string> = new Set();
+
+/**
+ * Nodes as the brigade surfaces show them: one whose own turn is over but
+ * that owns a running `flock-monitor` job is waiting on that job, not done.
+ *
+ * A worker that starts a long job detached and ends its turn is still at
+ * work — its job's output will wake it — and before the app knew about those
+ * jobs its chip said "completed" and its conductor looked idle. Shown as
+ * `waiting`, it is counted, listed and stalled-checked as a working agent
+ * everywhere that already asks `isWorkingStatus`, without each surface
+ * learning about jobs on its own. Returns `nodes` itself when nothing changes,
+ * so a memo over it holds.
+ */
+export function withLiveJobStatus<Nodes extends readonly SessionNode[]>(
+  nodes: Nodes,
+  liveJobOwnerIds: ReadonlySet<string>,
+): Nodes {
+  if (liveJobOwnerIds.size === 0) return nodes;
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (isWorkingStatus(node.status) || !liveJobOwnerIds.has(node.sessionId)) {
+      return node;
+    }
+    changed = true;
+    return { ...node, status: "waiting" as const };
+  });
+  // The same array kind back: a mutable list stays one for its callers.
+  return changed ? (next as unknown as Nodes) : nodes;
+}
+
 export interface BrigadeActivity {
   working: number;
   done: number;
@@ -87,6 +118,8 @@ export function workingChildCountForSession(
   nodesById: Record<string, SessionNode>,
   sessionId: string,
   aliases: Array<string | null | undefined> = [],
+  /** Chats that own a running `flock-monitor` job: see `withLiveJobStatus`. */
+  liveJobOwnerIds: ReadonlySet<string> = NO_JOB_OWNERS,
 ): number {
   let root = nodesById[sessionId];
   if (!root) {
@@ -105,7 +138,10 @@ export function workingChildCountForSession(
   // row on every graph mutation, so it stays free of intermediate arrays.
   for (const key in nodesById) {
     const node = nodesById[key];
-    if (!node || !isWorkingStatus(node.status)) continue;
+    if (!node) continue;
+    if (!isWorkingStatus(node.status) && !liveJobOwnerIds.has(node.sessionId)) {
+      continue;
+    }
     if (isAgentChildOfRoot(node, root.role, rootIds)) working += 1;
   }
   return working;

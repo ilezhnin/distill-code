@@ -202,6 +202,22 @@
         }
       }
     },
+    "job": {
+      "group": "jobs",
+      "about": "List the jobs flock-monitor runs for sessions (report is flock-monitor's own)",
+      "verbs": {
+        "list": {
+          "action": "list",
+          "about": "List the flock-monitor jobs the app knows about",
+          "afterHelp": "Example:\n  flockctl job list --session-id <session-id> --json\n\nResult:\n  {\"jobs\": [{\"job_id\": \"...\", \"session_id\": \"...\", \"state_key\": \"...\", \"label\": \"...\",\n             \"state\": \"running\"|\"exited\"|\"stopped\"|\"failed\"|\"lost\",\n             \"monitor_pid\": 4242, \"producer_pid\": 4250|null,\n             \"started_at\": \"...\", \"last_output_at\": \"...\"|null,\n             \"last_report_at\": \"...\", \"silence_minutes\": 15,\n             \"silence_noticed_at\": \"...\"|null,\n             \"ended_at\": \"...\"|null, \"exit_code\": 0|null, \"detail\": \"...\"|null}]}\n  Oldest first. Stop a running job with\n  `flock-monitor stop --session-id <session-id> --state-key <state-key>`."
+        },
+        "report": {
+          "action": "report",
+          "about": "Record the state of a flock-monitor job (sent by flock-monitor)",
+          "afterHelp": "Example:\n  flockctl job report --session-id <session-id> --job-id 4242-1762600000 \\\n    --state-key build --label \"nightly build\" --state running \\\n    --monitor-pid 4242 --producer-pid 4250 --started-at 1762600000 \\\n    --last-output-at 1762600300 --json\n\nResult:\n  {\"job_id\": \"...\", \"state\": \"running\"|\"exited\"|\"stopped\"|\"failed\"|\"lost\"}\n  \"state\" is the job's state in the app after the report: a job that already\n  ended keeps the state it ended in. The first report of a job is refused\n  with session_not_found when --session-id names no session."
+        }
+      }
+    },
     "info": {
       "group": "info",
       "about": "Look up installed harnesses, available models, and the app context",

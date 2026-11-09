@@ -95,6 +95,11 @@ enum MonitorCommand {
         /// Whether events steer a running turn or queue behind it.
         #[arg(long, value_enum, default_value_t = RunningMode::Steer)]
         if_running: RunningMode,
+        /// Minutes without a stdout line, while the producer still runs, after
+        /// which Flock tells the owning session once (0 never; default: the
+        /// app's own threshold).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=i64::from(MAX_SILENCE_MINUTES)))]
+        silence_minutes: Option<u32>,
         /// Producer command and arguments, following `--`.
         #[arg(last = true, required = true, allow_hyphen_values = true)]
         command: Vec<OsString>,
@@ -110,6 +115,7 @@ enum MonitorCommand {
     },
 }
 
+#[derive(Clone)]
 struct StatePaths {
     root: PathBuf,
     log: PathBuf,
@@ -268,6 +274,7 @@ fn run_cli() -> Result<(), String> {
             instructions,
             session_id,
             if_running,
+            silence_minutes,
             command,
         } => {
             validate_single_line("--label", &label)?;
@@ -288,6 +295,7 @@ fn run_cli() -> Result<(), String> {
                     &instructions,
                     &session_id,
                     if_running,
+                    silence_minutes,
                     &command,
                     env::var(LAUNCH_TOKEN_ENV).ok().as_deref(),
                 )
@@ -334,18 +342,69 @@ fn spawn_detached(state_key: &str, session_id: &str) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    configure_detached(&mut child);
-    let mut process = child
-        .spawn()
+    let (mut process, left_job) = spawn_detached_process(&mut child)
         .map_err(|error| format!("start detached monitor: {error}"))?;
     let stop_path = paths.stop_for(&token);
-    wait_for_launch(
+    let launched = wait_for_launch(
         &mut process,
         &paths,
         &status_path,
         &stop_path,
         LAUNCH_TIMEOUT,
-    )
+    );
+    if launched.is_ok() && !left_job {
+        let _ = log_line(&paths, STAYS_IN_JOB_NOTE);
+        eprintln!("flock-monitor: {STAYS_IN_JOB_NOTE}");
+    }
+    launched
+}
+
+/// Said when the monitor could not leave the job it was started in.
+const STAYS_IN_JOB_NOTE: &str = "the process that started this monitor runs in a job that \
+     does not let it leave, so the monitor and its producer end when that process does \
+     (an app restart ends them)";
+
+/// Windows refuses `CREATE_BREAKAWAY_FROM_JOB` with this when a job the
+/// launcher is in does not allow breakaway.
+#[cfg(windows)]
+const ERROR_ACCESS_DENIED: i32 = 5;
+
+/// Start the detached monitor outside every job its launcher is in.
+///
+/// An agent's shell runs in the job Flock keeps each agent bridge in, which
+/// kills everything in it when Flock exits; a monitor left there would die
+/// with the app and take its producer along, which is the opposite of what
+/// it is for. That job allows breakaway, so the monitor asks to leave it. A
+/// launcher whose job does not allow it gets the monitor started inside
+/// anyway, and the second value says so.
+#[cfg(windows)]
+fn spawn_detached_process(command: &mut Command) -> io::Result<(std::process::Child, bool)> {
+    spawn_breaking_away(command, |command, breakaway| {
+        configure_detached(command, breakaway);
+        command.spawn()
+    })
+}
+
+#[cfg(unix)]
+fn spawn_detached_process(command: &mut Command) -> io::Result<(std::process::Child, bool)> {
+    configure_detached(command);
+    command.spawn().map(|child| (child, true))
+}
+
+/// Spawn asking to leave the launcher's job, and again without asking when
+/// that is refused; any other failure is the spawn's own.
+#[cfg(windows)]
+fn spawn_breaking_away<T>(
+    command: &mut Command,
+    mut spawn: impl FnMut(&mut Command, bool) -> io::Result<T>,
+) -> io::Result<(T, bool)> {
+    match spawn(command, true) {
+        Ok(child) => Ok((child, true)),
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+            spawn(command, false).map(|child| (child, false))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn wait_for_launch(
@@ -683,11 +742,19 @@ fn write_launch_status(paths: &StatePaths, token: Option<&str>, status: &str) {
 }
 
 #[cfg(windows)]
-fn configure_detached(command: &mut Command) {
+fn configure_detached(command: &mut Command, breakaway: bool) {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let breakaway = if breakaway {
+        CREATE_BREAKAWAY_FROM_JOB
+    } else {
+        0
+    };
+    // `creation_flags` replaces what an earlier call set, so the retry
+    // without breakaway starts from these flags alone.
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | breakaway);
 }
 
 fn request_stop(state_key: &str, session_id: &str) -> io::Result<()> {
@@ -722,12 +789,14 @@ fn request_stop_in(base: &Path, state_key: &str, session_id: &str) -> io::Result
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_foreground(
     state_key: &str,
     label: &str,
     instructions: &str,
     session_id: &str,
     if_running: RunningMode,
+    silence_minutes: Option<u32>,
     producer_command: &[OsString],
     launch_token: Option<&str>,
 ) -> io::Result<()> {
@@ -737,6 +806,7 @@ fn run_foreground(
         instructions,
         session_id,
         if_running,
+        silence_minutes,
         producer_command,
         launch_token,
         || {},
@@ -750,6 +820,7 @@ fn run_foreground_after_claim(
     instructions: &str,
     session_id: &str,
     if_running: RunningMode,
+    silence_minutes: Option<u32>,
     producer_command: &[OsString],
     launch_token: Option<&str>,
     after_claim: impl FnOnce(),
@@ -769,12 +840,18 @@ fn run_foreground_after_claim(
         remove_active_stop(&paths)?;
         return Ok(());
     }
+    let job = JobSpec {
+        job_id: owner_token.clone(),
+        state_key: state_key.to_owned(),
+        silence_minutes,
+    };
     let result = run_producer(
         &paths,
         label,
         instructions,
         session_id,
         if_running,
+        &job,
         producer_command,
         launch_token,
     );
@@ -785,12 +862,14 @@ fn run_foreground_after_claim(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_producer(
     paths: &StatePaths,
     label: &str,
     instructions: &str,
     session_id: &str,
     if_running: RunningMode,
+    job: &JobSpec,
     producer_command: &[OsString],
     launch_token: Option<&str>,
 ) -> io::Result<()> {
@@ -838,12 +917,34 @@ fn run_producer(
     let (sender, receiver) = mpsc::sync_channel::<ProducerOutputEvent>(1024);
     thread::spawn(move || forward_producer_output(stdout, sender));
 
+    // The app learns about the job from here on: started now, about once a
+    // minute while it runs, and how it ended. Reports go through their own
+    // thread, so a slow app never holds up the producer's output.
+    let reporter = JobReporter::start(
+        paths,
+        JobIdentity {
+            session_id: session_id.to_owned(),
+            job_id: job.job_id.clone(),
+            state_key: job.state_key.clone(),
+            label: label.to_owned(),
+            monitor_pid: std::process::id(),
+            producer_pid: producer.child.id(),
+            started_at: epoch_seconds(SystemTime::now()),
+            silence_minutes: job.silence_minutes,
+            log_path: paths.log.clone(),
+        },
+    );
+    let mut last_output_at: Option<u64> = None;
+    reporter.heartbeat(JobState::Running, last_output_at);
+    let mut next_heartbeat = Instant::now() + JOB_HEARTBEAT_INTERVAL;
+
     let mut batch = Vec::new();
     let mut batch_deadline: Option<Instant> = None;
     let mut retry_deadline = Instant::now();
     let mut producer_status = None;
     let mut receiver_closed = false;
     let mut termination_requested = false;
+    let mut stop_seen = false;
     let mut capture_failure = None;
 
     loop {
@@ -851,6 +952,11 @@ fn run_producer(
             log_line(paths, "stop requested")?;
             producer.terminate_and_wait();
             termination_requested = true;
+            stop_seen = true;
+        }
+        if producer_status.is_none() && Instant::now() >= next_heartbeat {
+            reporter.heartbeat(JobState::Running, last_output_at);
+            next_heartbeat = Instant::now() + JOB_HEARTBEAT_INTERVAL;
         }
 
         let now = Instant::now();
@@ -892,6 +998,7 @@ fn run_producer(
             .min(Duration::from_millis(100));
         match receiver.recv_timeout(timeout) {
             Ok(ProducerOutputEvent::Data(line)) => {
+                last_output_at = Some(epoch_seconds(SystemTime::now()));
                 if !batch.is_empty() && batch.len() + line.len() > MAX_DELIVERY_BYTES {
                     append_batch(paths, &mut pending, &mut batch)?;
                     flush_pending(
@@ -947,7 +1054,18 @@ fn run_producer(
         if_running,
     )?;
 
-    while !pending.bytes.is_empty() && !stop_requested(paths) {
+    // The end is reported after its last output went out, so the owner is
+    // already woken by the time the app stops showing the job as running.
+    let final_state = final_job_state(stop_seen, capture_failure.as_ref(), &status);
+    let mut end_owed =
+        reporter.report_and_wait(final_state.clone(), last_output_at) == ReportOutcome::Unreachable;
+    // Undelivered output keeps the monitor alive as long as it takes; an end
+    // report the app has not heard only for a while, after which the app
+    // finds the monitor gone and says the job's end is unknown.
+    let end_report_deadline = Instant::now() + JOB_END_REPORT_PATIENCE;
+    while (!pending.bytes.is_empty() || (end_owed && Instant::now() < end_report_deadline))
+        && !stop_requested(paths)
+    {
         thread::sleep(RETRY_INTERVAL);
         flush_pending(
             paths,
@@ -957,6 +1075,10 @@ fn run_producer(
             session_id,
             if_running,
         )?;
+        if end_owed {
+            end_owed = reporter.report_and_wait(final_state.clone(), last_output_at)
+                == ReportOutcome::Unreachable;
+        }
     }
     if !pending.bytes.is_empty() && stop_requested(paths) {
         pending.bytes.clear();
@@ -1275,6 +1397,339 @@ fn deliver_with_candidates(
         }
     }
     false
+}
+
+/// How often a running job tells the app it still runs, and when it last
+/// printed a line. The app judges a job silent from these reports.
+const JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+/// How long one `flockctl job report` may take before the next lock is tried.
+const JOB_REPORT_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long the producer loop waits on one end report.
+const JOB_END_REPORT_WAIT: Duration = Duration::from_secs(30);
+/// How long a monitor whose output all went out stays alive only to tell the
+/// app how its job ended. Past it the app finds the monitor gone and marks
+/// the job lost instead.
+const JOB_END_REPORT_PATIENCE: Duration = Duration::from_secs(10 * 60);
+/// The app's bounds for the reported fields (`flockctl job report`).
+const MAX_SILENCE_MINUTES: u32 = 24 * 60;
+const MAX_JOB_DETAIL_CHARS: usize = 500;
+/// App refusals that say nothing about the report itself: a busy or briefly
+/// unready app. Every other refusal is final for the job.
+const TRANSIENT_REPORT_REFUSALS: [&str; 3] = ["backend_read_failed", "internal_error", "timed_out"];
+
+/// What the monitor knows about its job before the producer starts.
+struct JobSpec {
+    /// The run's owner token: unique per run, and stable for its reports.
+    job_id: String,
+    state_key: String,
+    silence_minutes: Option<u32>,
+}
+
+/// Everything every report of one job carries.
+struct JobIdentity {
+    session_id: String,
+    job_id: String,
+    state_key: String,
+    label: String,
+    monitor_pid: u32,
+    producer_pid: u32,
+    /// Seconds since the epoch.
+    started_at: u64,
+    silence_minutes: Option<u32>,
+    log_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JobState {
+    Running,
+    Exited { code: Option<u32>, detail: String },
+    Stopped,
+    Failed(String),
+}
+
+impl JobState {
+    fn wire_name(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Exited { .. } => "exited",
+            Self::Stopped => "stopped",
+            Self::Failed(_) => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReportOutcome {
+    /// The app recorded it.
+    Recorded,
+    /// The app refused it for good (or there is no app to tell): stop reporting.
+    Refused,
+    /// The app could not be reached, or was not ready; try again later.
+    Unreachable,
+}
+
+fn epoch_seconds(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// How the job ended, from what the producer loop saw.
+fn final_job_state(
+    stop_seen: bool,
+    capture_failure: Option<&(io::ErrorKind, String)>,
+    status: &std::process::ExitStatus,
+) -> JobState {
+    if let Some((_, message)) = capture_failure {
+        return JobState::Failed(message.clone());
+    }
+    if stop_seen {
+        return JobState::Stopped;
+    }
+    JobState::Exited {
+        // Windows exit codes are 32-bit unsigned values that std hands back
+        // as `i32`; the cast restores them. A Unix signal has no code.
+        code: status.code().map(|code| code as u32),
+        detail: format!("producer exited with status {status}"),
+    }
+}
+
+/// A detail as the app accepts it: one trimmed line of at most 500 characters.
+fn job_detail(text: &str) -> Option<String> {
+    let line = text
+        .split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let line = line.chars().take(MAX_JOB_DETAIL_CHARS).collect::<String>();
+    (!line.is_empty()).then_some(line)
+}
+
+/// `--name=value`: the value can never be read as another flag, whatever it
+/// starts with.
+fn flag_arg(name: &str, value: impl AsRef<OsStr>) -> OsString {
+    let mut arg = OsString::from(format!("--{name}="));
+    arg.push(value);
+    arg
+}
+
+/// The `flockctl job report` argv, built in one place so the contract test
+/// below checks exactly what is run.
+fn job_report_args(
+    lock: &Path,
+    identity: &JobIdentity,
+    state: &JobState,
+    last_output_at: Option<u64>,
+) -> Vec<OsString> {
+    let mut args = vec![
+        flag_arg("lock-path", lock),
+        flag_arg("timeout-ms", "5000"),
+        OsString::from("job"),
+        OsString::from("report"),
+        flag_arg("session-id", &identity.session_id),
+        flag_arg("job-id", &identity.job_id),
+        flag_arg("state-key", &identity.state_key),
+        flag_arg("label", &identity.label),
+        flag_arg("state", state.wire_name()),
+        flag_arg("monitor-pid", identity.monitor_pid.to_string()),
+        flag_arg("producer-pid", identity.producer_pid.to_string()),
+        flag_arg("started-at", identity.started_at.to_string()),
+    ];
+    if let Some(at) = last_output_at {
+        args.push(flag_arg("last-output-at", at.to_string()));
+    }
+    if let Some(minutes) = identity.silence_minutes {
+        args.push(flag_arg("silence-minutes", minutes.to_string()));
+    }
+    let detail = match state {
+        JobState::Exited { code, detail } => {
+            if let Some(code) = code {
+                args.push(flag_arg("exit-code", code.to_string()));
+            }
+            job_detail(detail)
+        }
+        JobState::Failed(message) => job_detail(message),
+        JobState::Running | JobState::Stopped => None,
+    };
+    if let Some(detail) = detail {
+        args.push(flag_arg("detail", detail));
+    }
+    if !identity.log_path.as_os_str().is_empty() {
+        args.push(flag_arg("log-path", &identity.log_path));
+    }
+    args.push(OsString::from("--json"));
+    args
+}
+
+/// Sends one report. Each lock is tried with the first `flockctl` that can be
+/// started: the binaries are one CLI under several names, so the first one
+/// that runs speaks for all of them, and a refusal from an older copy further
+/// down the list must not end the reporting of a job the app would record.
+fn send_job_report(
+    identity: &JobIdentity,
+    state: &JobState,
+    last_output_at: Option<u64>,
+) -> ReportOutcome {
+    let locks = lock_candidates();
+    if locks.is_empty() {
+        // Not started from a Flock session: there is no app to tell.
+        return ReportOutcome::Refused;
+    }
+    let binaries = flockctl_candidates();
+    for lock in &locks {
+        for binary in &binaries {
+            let mut command = Command::new(binary);
+            configure_delivery(&mut command);
+            let Ok(mut child) = command
+                .args(job_report_args(lock, identity, state, last_output_at))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+            else {
+                continue;
+            };
+            let deadline = Instant::now() + JOB_REPORT_TIMEOUT;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) if Instant::now() < deadline => thread::sleep(DELIVERY_POLL_INTERVAL),
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break None;
+                    }
+                }
+            };
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            match status.and_then(|status| status.code()) {
+                Some(0) => return ReportOutcome::Recorded,
+                Some(1)
+                    if !TRANSIENT_REPORT_REFUSALS
+                        .iter()
+                        .any(|code| stderr.trim_start().starts_with(&format!("{code}:"))) =>
+                {
+                    return ReportOutcome::Refused
+                }
+                _ => break,
+            }
+        }
+    }
+    ReportOutcome::Unreachable
+}
+
+struct ReportRequest {
+    state: JobState,
+    last_output_at: Option<u64>,
+    answer: Option<mpsc::Sender<ReportOutcome>>,
+}
+
+/// Reports a job to the app from a thread of its own, so a slow or absent app
+/// never holds up the producer's output or its stop.
+struct JobReporter {
+    requests: Option<mpsc::SyncSender<ReportRequest>>,
+    refused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl JobReporter {
+    fn start(paths: &StatePaths, identity: JobIdentity) -> Self {
+        let refused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // One waiting request at most: a heartbeat that finds one already
+        // waiting is dropped, since the next one carries newer facts.
+        let (sender, receiver) = mpsc::sync_channel::<ReportRequest>(1);
+        let paths = paths.clone();
+        let worker_refused = std::sync::Arc::clone(&refused);
+        let spawned = thread::Builder::new()
+            .name("flock-monitor-job-report".into())
+            .spawn(move || run_job_reporter(&paths, &identity, &receiver, &worker_refused));
+        Self {
+            requests: spawned.is_ok().then_some(sender),
+            refused,
+        }
+    }
+
+    fn is_refused(&self) -> bool {
+        self.refused.load(Ordering::Relaxed)
+    }
+
+    /// Queues a report without waiting for it.
+    fn heartbeat(&self, state: JobState, last_output_at: Option<u64>) {
+        if self.is_refused() {
+            return;
+        }
+        if let Some(requests) = &self.requests {
+            let _ = requests.try_send(ReportRequest {
+                state,
+                last_output_at,
+                answer: None,
+            });
+        }
+    }
+
+    /// Sends a report and waits, bounded, for what became of it.
+    fn report_and_wait(&self, state: JobState, last_output_at: Option<u64>) -> ReportOutcome {
+        if self.is_refused() {
+            return ReportOutcome::Refused;
+        }
+        let Some(requests) = &self.requests else {
+            return ReportOutcome::Refused;
+        };
+        let (answer, outcome) = mpsc::channel();
+        if requests
+            .send(ReportRequest {
+                state,
+                last_output_at,
+                answer: Some(answer),
+            })
+            .is_err()
+        {
+            return ReportOutcome::Unreachable;
+        }
+        outcome
+            .recv_timeout(JOB_END_REPORT_WAIT)
+            .unwrap_or(ReportOutcome::Unreachable)
+    }
+}
+
+fn run_job_reporter(
+    paths: &StatePaths,
+    identity: &JobIdentity,
+    requests: &mpsc::Receiver<ReportRequest>,
+    refused: &std::sync::atomic::AtomicBool,
+) {
+    let mut reachable = true;
+    while let Ok(request) = requests.recv() {
+        let outcome = if refused.load(Ordering::Relaxed) {
+            ReportOutcome::Refused
+        } else {
+            send_job_report(identity, &request.state, request.last_output_at)
+        };
+        match outcome {
+            ReportOutcome::Refused if !refused.swap(true, Ordering::Relaxed) => {
+                let _ = log_line(
+                    paths,
+                    "the app refused a report about this job (or there is no app to tell); \
+                     it will not be shown as running there",
+                );
+            }
+            ReportOutcome::Unreachable if reachable => {
+                reachable = false;
+                let _ = log_line(paths, "could not report the job to the app; will retry");
+            }
+            ReportOutcome::Recorded if !reachable => {
+                reachable = true;
+                let _ = log_line(paths, "reporting the job to the app again");
+            }
+            _ => {}
+        }
+        if let Some(answer) = request.answer {
+            let _ = answer.send(outcome);
+        }
+    }
 }
 
 fn lock_candidates() -> Vec<PathBuf> {
@@ -1912,6 +2367,206 @@ mod tests {
             .position(|arg| arg == "--from")
             .expect("--from is passed");
         assert_eq!(args[from + 1], OsString::from("flock-monitor"));
+    }
+
+    fn sample_identity() -> JobIdentity {
+        JobIdentity {
+            session_id: "session-1".into(),
+            job_id: "4242-1762600000".into(),
+            state_key: "--looks-like-a-flag".into(),
+            label: "nightly build".into(),
+            monitor_pid: 4242,
+            producer_pid: 4250,
+            started_at: 1_762_600_000,
+            silence_minutes: Some(20),
+            log_path: PathBuf::from("watcher.log"),
+        }
+    }
+
+    /// The flags of `flockctl job report` as the app's generated contract
+    /// declares them: `(name, required)` per wire field.
+    fn report_contract_fields() -> Vec<(String, bool)> {
+        let surface: serde_json::Value =
+            serde_json::from_str(include_str!("../../flockctl/api-surface.json")).unwrap();
+        surface["groups"]["jobs"]["actions"]["report"]["fields"]
+            .as_array()
+            .expect("the app's contract has `flockctl job report`")
+            .iter()
+            .map(|field| {
+                (
+                    field["name"].as_str().unwrap().replace('_', "-"),
+                    field["required"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn report_flags(args: &[OsString]) -> Vec<String> {
+        let report = args.iter().position(|arg| arg == "report").unwrap();
+        args[report + 1..]
+            .iter()
+            .filter_map(|arg| {
+                let text = arg.to_string_lossy();
+                text.strip_prefix("--")
+                    .map(|flag| flag.split('=').next().unwrap().to_owned())
+            })
+            .filter(|flag| flag != "json")
+            .collect()
+    }
+
+    /// Compatibility pin with the app: every flag the monitor sends is one
+    /// `flockctl job report` takes, and every flag it requires is sent, for
+    /// each state a job can end in.
+    #[test]
+    fn job_reports_match_the_apps_contract() {
+        let fields = report_contract_fields();
+        let states = [
+            JobState::Running,
+            JobState::Exited {
+                code: Some(3),
+                detail: "producer exited with status exit code: 3".into(),
+            },
+            JobState::Stopped,
+            JobState::Failed("producer stdout capture failed".into()),
+        ];
+        for state in states {
+            let args = job_report_args(
+                Path::new("control-1.json"),
+                &sample_identity(),
+                &state,
+                Some(1_762_600_060),
+            );
+            assert_eq!(
+                &args[2..4],
+                &[OsString::from("job"), OsString::from("report")]
+            );
+            let flags = report_flags(&args);
+            for flag in &flags {
+                assert!(
+                    fields.iter().any(|(name, _)| name == flag),
+                    "`--{flag}` is not a field of `flockctl job report`"
+                );
+            }
+            for (name, required) in &fields {
+                if *required {
+                    assert!(
+                        flags.contains(name),
+                        "required `--{name}` is missing for {state:?}"
+                    );
+                }
+            }
+            let state_arg = flag_arg("state", state.wire_name());
+            assert!(args.contains(&state_arg));
+        }
+    }
+
+    #[test]
+    fn report_values_are_bound_to_their_flags() {
+        let args = job_report_args(
+            Path::new("control-1.json"),
+            &sample_identity(),
+            &JobState::Running,
+            None,
+        );
+        // A value that starts like a flag is still the value.
+        assert!(args.contains(&OsString::from("--state-key=--looks-like-a-flag")));
+        assert!(args.contains(&OsString::from("--silence-minutes=20")));
+        assert!(!report_flags(&args).contains(&"last-output-at".to_owned()));
+        assert!(!report_flags(&args).contains(&"exit-code".to_owned()));
+    }
+
+    #[test]
+    fn a_job_ends_in_the_state_the_loop_saw() {
+        let status = Command::new(env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(
+            final_job_state(true, None, &status),
+            JobState::Stopped,
+            "a stop wins over the exit it caused"
+        );
+        assert_eq!(
+            final_job_state(
+                true,
+                Some(&(io::ErrorKind::Other, "capture failed".into())),
+                &status
+            ),
+            JobState::Failed("capture failed".into())
+        );
+        match final_job_state(false, None, &status) {
+            JobState::Exited { code, detail } => {
+                assert_eq!(code, Some(0));
+                assert!(detail.starts_with("producer exited with status"));
+            }
+            other => panic!("expected an exit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn details_are_one_bounded_line() {
+        assert_eq!(
+            job_detail("first\r\n  second \n"),
+            Some("first second".into())
+        );
+        assert_eq!(job_detail(" \n "), None);
+        assert_eq!(
+            job_detail(&"x".repeat(MAX_JOB_DETAIL_CHARS + 10))
+                .unwrap()
+                .chars()
+                .count(),
+            MAX_JOB_DETAIL_CHARS
+        );
+    }
+
+    #[test]
+    fn a_monitor_outside_flock_has_no_app_to_report_to() {
+        if env::var_os("FLOCKCTL_LOCK").is_some() {
+            return;
+        }
+        assert_eq!(
+            send_job_report(&sample_identity(), &JobState::Running, None),
+            ReportOutcome::Refused
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_monitor_that_may_not_leave_its_job_starts_inside_it() {
+        let mut command = Command::new("flock-monitor-test-never-run");
+        let mut asked = Vec::new();
+        let started = spawn_breaking_away(&mut command, |_, breakaway| {
+            asked.push(breakaway);
+            if breakaway {
+                Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED))
+            } else {
+                Ok("started")
+            }
+        })
+        .unwrap();
+        assert_eq!(started, ("started", false));
+        assert_eq!(asked, [true, false]);
+
+        let mut asked = Vec::new();
+        let left = spawn_breaking_away(&mut command, |_, breakaway| {
+            asked.push(breakaway);
+            Ok(breakaway)
+        })
+        .unwrap();
+        assert_eq!(left, (true, true));
+        assert_eq!(asked, [true]);
+
+        // Any other failure is not about the job, and a second try would
+        // only fail the same way.
+        let mut tries = 0;
+        let missing = spawn_breaking_away(&mut command, |_, _| -> io::Result<()> {
+            tries += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert_eq!(missing.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(tries, 1);
     }
 
     fn temp_state_base(name: &str) -> PathBuf {

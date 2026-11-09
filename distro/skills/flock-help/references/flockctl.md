@@ -105,3 +105,19 @@ are separate choices, and each model offers its own set of them.
   own workers from the operator's chats. `flockctl info context
   --session-id <your id>` describes your own session beside the chat the user
   is viewing.
+
+## Jobs started with flock-monitor
+
+- `flock-monitor` tells the app about every job it runs (`flockctl job
+  report`, sent by the monitor itself): when the producer starts, about once
+  a minute while it runs, and how it ended. While a job runs, its session
+  reads as waiting on it in the sidebar, above the composer and in its
+  conductor's row, with the job's label, age and last output. A job keeps
+  running when Flock closes or restarts, and the app finds it again.
+- `flockctl job list --session-id <your id>` lists your running jobs; add
+  `--include-ended` for the ones that ended in the last three days. A job
+  whose monitor process is gone without saying how it ended is `lost`.
+- A job that prints nothing for its silence threshold while its producer still
+  runs earns its session one message saying so, with the command that stops
+  it. Set the threshold with `flock-monitor run --silence-minutes <n>` (0
+  never); the default is 15 minutes.

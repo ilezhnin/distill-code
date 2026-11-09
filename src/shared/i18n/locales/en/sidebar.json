@@ -77,6 +77,8 @@
     "chatActive": "Chat active",
     "childrenWorking_one": "1 agent still working",
     "childrenWorking_other": "{{count}} agents still working",
+    "jobsRunning_one": "1 job still running",
+    "jobsRunning_other": "{{count}} jobs still running",
     "pinnedChat": "Pinned chat",
     "unreadMessages": "Unread messages"
   },

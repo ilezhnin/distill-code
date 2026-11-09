@@ -496,6 +496,15 @@
     "statsCost": "${{cost}}",
     "waitingOnChildren_one": "1 executor is working",
     "waitingOnChildren_other": "{{count}} executors are working",
+    "jobs": {
+      "waiting_one": "Waiting on 1 job",
+      "waiting_other": "Waiting on {{count}} jobs",
+      "running": "running {{duration}}",
+      "lastOutput": "last output {{duration}} ago",
+      "noOutput": "no output yet",
+      "silent": "silent for {{duration}}, the agent was told",
+      "open": "Open {{name}}, which waits on this job"
+    },
     "stopChild": "Stop {{name}}",
     "persist": {
       "title": "This app can no longer save the conductor's state to disk.",
@@ -749,7 +758,8 @@
       "tools_other": "{{count}} tools",
       "rateLimited": "Rate-limited by the provider (429)",
       "rateLimitWait": "Waiting for the provider (429), next try at {{time}}",
-      "quotaWait": "Waiting for the provider's quota, next try at {{time}}"
+      "quotaWait": "Waiting for the provider's quota, next try at {{time}}",
+      "waitingOnJob": "Waiting on its job {{label}} · {{duration}}"
     },
     "report": {
       "title": "Report · {{status}}",

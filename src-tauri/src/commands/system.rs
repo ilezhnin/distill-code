@@ -378,6 +378,42 @@ pub async fn path_exists(path: String) -> bool {
         .unwrap_or(false)
 }
 
+/// One process a renderer record names: its id and the latest moment (seconds
+/// since the epoch) it can have started, so a later process given the same id
+/// is not taken for it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessProbe {
+    pid: u32,
+    started_by_secs: u64,
+}
+
+/// Bounds one call: the renderer checks its running `flock-monitor` jobs,
+/// which the job record already caps at a few hundred.
+const MAX_PROCESS_PROBES: usize = 512;
+
+/// For each probe, whether its process still runs. The `flock-monitor` job
+/// watch asks this so a job whose monitor died, or that ended while the app
+/// was closed, does not stay "running". Off the main thread: a process
+/// snapshot is a system call per process.
+#[tauri::command]
+pub async fn processes_alive(probes: Vec<ProcessProbe>) -> Result<Vec<bool>, String> {
+    if probes.len() > MAX_PROCESS_PROBES {
+        return Err(format!(
+            "at most {MAX_PROCESS_PROBES} processes can be checked at once"
+        ));
+    }
+    let probes: Vec<(u32, u64)> = probes
+        .into_iter()
+        .map(|probe| (probe.pid, probe.started_by_secs))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        crate::services::process::processes_started_by_alive(&probes)
+    })
+    .await
+    .map_err(|error| format!("process check failed: {error}"))
+}
+
 /// Lets the `asset:` scheme serve files under the open chat's folders. The
 /// static scope covers only $HOME, $TEMP and the Flock root, while most
 /// projects live on other drives, so images and artifacts in them failed to

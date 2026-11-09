@@ -1456,6 +1456,251 @@
         }
       }
     },
+    "jobs": {
+      "description": "The long-running jobs flock-monitor runs for sessions: list them; report is how flock-monitor tells the app a job started, runs or ended.",
+      "actions": {
+        "list": {
+          "description": "List the jobs flock-monitor runs for Flock sessions, as the app last heard of them: the owning session, label and state key, the producer's process id, when it started, when it last printed a line, and how it ended. A job whose monitor process is gone without saying how it ended is listed as lost. Does not change anything on screen.",
+          "fields": [
+            {
+              "name": "session_id",
+              "required": false,
+              "kind": "string",
+              "description": "Only list the jobs this session owns. Omit it for every session's jobs.",
+              "max": 200
+            },
+            {
+              "name": "include_ended",
+              "required": false,
+              "kind": "boolean",
+              "description": "Also list jobs that ended in the last three days. Defaults to false: running jobs only."
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "session_id": {
+                "description": "Only list the jobs this session owns. Omit it for every session's jobs.",
+                "type": "string",
+                "maxLength": 200
+              },
+              "include_ended": {
+                "default": false,
+                "description": "Also list jobs that ended in the last three days. Defaults to false: running jobs only.",
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "report": {
+          "description": "Record one report from flock-monitor about a job it runs: that its producer started, that it still runs and when it last printed a line, or how it ended. flock-monitor sends these itself; an agent has no reason to. While a job runs, the chat that owns it is shown as waiting on it — in the sidebar, above the composer and in its conductor's row — with the job's label, age and last output, and a job that stays silent past its threshold earns the owner one message saying so. A report for a job that already ended changes nothing.",
+          "fields": [
+            {
+              "name": "session_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the session that owns the job: the --session-id the monitor was started with.",
+              "min": 1,
+              "max": 200
+            },
+            {
+              "name": "job_id",
+              "required": true,
+              "kind": "string",
+              "description": "The monitor's own id for this run of the job (1-100 chars); every report of one run carries the same id.",
+              "min": 1,
+              "max": 100
+            },
+            {
+              "name": "state_key",
+              "required": true,
+              "kind": "string",
+              "description": "The --state-key the monitor was started with (1-200 chars).",
+              "min": 1,
+              "max": 200
+            },
+            {
+              "name": "label",
+              "required": true,
+              "kind": "string",
+              "description": "The --label the monitor was started with (1-120 chars).",
+              "min": 1,
+              "max": 120
+            },
+            {
+              "name": "state",
+              "required": true,
+              "kind": "string",
+              "description": "running while the producer runs; exited when it ended by itself; stopped when `flock-monitor stop` ended it; failed when the monitor could not keep reading it.",
+              "values": ["running", "exited", "stopped", "failed"]
+            },
+            {
+              "name": "monitor_pid",
+              "required": true,
+              "kind": "number",
+              "description": "Process id of the monitor reporting.",
+              "min": 1,
+              "max": 4294967295
+            },
+            {
+              "name": "producer_pid",
+              "required": false,
+              "kind": "number",
+              "description": "Process id of the producer the monitor runs.",
+              "min": 1,
+              "max": 4294967295
+            },
+            {
+              "name": "started_at",
+              "required": true,
+              "kind": "number",
+              "description": "When the producer started, in seconds since 1970-01-01 UTC.",
+              "min": 0,
+              "max": 4294967295
+            },
+            {
+              "name": "last_output_at",
+              "required": false,
+              "kind": "number",
+              "description": "When the producer last printed a line, in seconds since 1970-01-01 UTC. Omit it while it has printed nothing.",
+              "min": 0,
+              "max": 4294967295
+            },
+            {
+              "name": "silence_minutes",
+              "required": false,
+              "kind": "number",
+              "description": "Minutes without a line, while the producer runs, after which the owning session is told once (0-1440; 0 never). Omit it for the app's default.",
+              "min": 0,
+              "max": 1440
+            },
+            {
+              "name": "exit_code",
+              "required": false,
+              "kind": "number",
+              "description": "The producer's exit code, with state exited.",
+              "min": 0,
+              "max": 4294967295
+            },
+            {
+              "name": "detail",
+              "required": false,
+              "kind": "string",
+              "description": "How the job ended, in one line (1-500 chars).",
+              "min": 1,
+              "max": 500
+            },
+            {
+              "name": "log_path",
+              "required": false,
+              "kind": "string",
+              "description": "The monitor's log file, where the producer's stderr goes; shown to the owner when the job goes silent.",
+              "min": 1,
+              "max": 4096
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the session that owns the job: the --session-id the monitor was started with."
+              },
+              "job_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^[A-Za-z0-9._-]+$",
+                "description": "The monitor's own id for this run of the job (1-100 chars); every report of one run carries the same id."
+              },
+              "state_key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[^\\r\\n]*$",
+                "description": "The --state-key the monitor was started with (1-200 chars)."
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": "^[^\\r\\n]*$",
+                "description": "The --label the monitor was started with (1-120 chars)."
+              },
+              "state": {
+                "type": "string",
+                "enum": ["running", "exited", "stopped", "failed"],
+                "description": "running while the producer runs; exited when it ended by itself; stopped when `flock-monitor stop` ended it; failed when the monitor could not keep reading it."
+              },
+              "monitor_pid": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295,
+                "description": "Process id of the monitor reporting."
+              },
+              "producer_pid": {
+                "description": "Process id of the producer the monitor runs.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295
+              },
+              "started_at": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "When the producer started, in seconds since 1970-01-01 UTC."
+              },
+              "last_output_at": {
+                "description": "When the producer last printed a line, in seconds since 1970-01-01 UTC. Omit it while it has printed nothing.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "silence_minutes": {
+                "description": "Minutes without a line, while the producer runs, after which the owning session is told once (0-1440; 0 never). Omit it for the app's default.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1440
+              },
+              "exit_code": {
+                "description": "The producer's exit code, with state exited.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "detail": {
+                "description": "How the job ended, in one line (1-500 chars).",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "pattern": "^[^\\r\\n]*$"
+              },
+              "log_path": {
+                "description": "The monitor's log file, where the producer's stderr goes; shown to the owner when the job goes silent.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "session_id",
+              "job_id",
+              "state_key",
+              "label",
+              "state",
+              "monitor_pid",
+              "started_at"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
     "info": {
       "description": "Read-only app information: installed agent harnesses, available models, and the current app context.",
       "actions": {

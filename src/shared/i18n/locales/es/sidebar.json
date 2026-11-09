@@ -77,6 +77,8 @@
     "chatActive": "Chat activo",
     "childrenWorking_one": "1 agente sigue trabajando",
     "childrenWorking_other": "{{count}} agentes siguen trabajando",
+    "jobsRunning_one": "1 tarea sigue en marcha",
+    "jobsRunning_other": "{{count}} tareas siguen en marcha",
     "pinnedChat": "Chat fijado",
     "unreadMessages": "Mensajes no leídos"
   },

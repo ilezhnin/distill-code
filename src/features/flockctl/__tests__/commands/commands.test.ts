@@ -594,6 +594,16 @@ describe("action schemas", () => {
       "waves.amend": { wave_id: "wave-1", step: 2, text: "also check" },
       "waves.skip": { wave_id: "wave-1", step: 2 },
       "waves.roadmap": { conductor_session_id: "s1" },
+      "jobs.list": {},
+      "jobs.report": {
+        session_id: "s1",
+        job_id: "4242-1762600000",
+        state_key: "build",
+        label: "nightly build",
+        state: "running",
+        monitor_pid: 4242,
+        started_at: 1_762_600_000,
+      },
     };
 
     for (const [groupName, group] of Object.entries(TOOL_GROUPS)) {

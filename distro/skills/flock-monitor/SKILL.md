@@ -65,6 +65,31 @@ label reads `source: flock-monitor`). Stop a monitor with:
 flock-monitor stop --session-id <your session id> --state-key <stable-key>
 ```
 
+## The app sees the job
+
+The monitor tells Flock about the job when the producer starts, about once a
+minute while it runs, and when it ends (its exit code, or that it was
+stopped). While it runs, your session reads as waiting on it in the sidebar,
+above the composer and in your conductor's view, with the label, how long it
+has run and when it last printed a line, so ending your turn after starting
+a job does not make the session look idle.
+
+The monitor and its producer keep running when Flock closes or restarts. The
+app finds the job again when it starts, and the monitor's next report reaches
+it. Lines the producer printed meanwhile are delivered then. A job that ends
+while Flock is closed for more than about ten minutes is listed as `lost`,
+because nobody was there to hear how it ended.
+
+`flockctl job list --session-id <your session id>` lists your running jobs;
+`--include-ended` adds the ones that ended in the last three days. A job whose
+monitor process is gone without saying how the job ended is listed as `lost`.
+
+Silence counts stdout lines only. When the producer is still running but has
+printed nothing for `--silence-minutes` (default 15, `0` never), the session
+gets one message saying so, with the command that stops the job; it is said
+once per silence, and again only after the job prints and falls silent anew.
+Pick a threshold longer than the quietest stretch the job normally has.
+
 `distill-monitor` is an alias of `flock-monitor`, kept so older skills and
 transcripts keep working; use `flock-monitor` in anything new. A monitor
 started by a build that still called itself Distill cannot deliver into the

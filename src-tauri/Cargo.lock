@@ -1566,6 +1566,7 @@ dependencies = [
  "clap",
  "fs2",
  "libc",
+ "serde_json",
  "windows-sys 0.59.0",
 ]
 

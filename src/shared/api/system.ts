@@ -217,3 +217,17 @@ export function fileStatErrorKind(error: unknown): FileStatErrorKind {
 export async function statFile(path: string): Promise<FileStatPayload> {
   return invoke("stat_file", { path });
 }
+
+/** A process a renderer record names, and the latest it can have started. */
+export interface ProcessProbe {
+  pid: number;
+  /** Seconds since the epoch; a later process with the same id is not it. */
+  startedBySecs: number;
+}
+
+/** For each probe, whether its process still runs. Desktop only. */
+export async function processesAlive(
+  probes: readonly ProcessProbe[],
+): Promise<boolean[]> {
+  return invoke("processes_alive", { probes });
+}

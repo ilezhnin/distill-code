@@ -247,6 +247,48 @@ pub(crate) fn process_is_alive(pid: ProcessId) -> bool {
     system.process(pid).is_some()
 }
 
+/// Seconds a process may appear to have started after the moment it is
+/// expected to have started by: start times are whole seconds, and the moment
+/// it is compared with is another process's clock reading.
+const PROCESS_START_SLACK_SECS: u64 = 2;
+
+/// For each `(pid, started_by_secs)`, whether a process with that id runs and
+/// started no later than `started_by_secs` (seconds since the epoch).
+///
+/// The start time is what tells a process apart from a later one the system
+/// gave the same id: the process a record names started before the record
+/// was made, and one that started afterwards is somebody else. A process that
+/// has exited but not been reaped yet does not count as running.
+pub(crate) fn processes_started_by_alive(probes: &[(u32, u64)]) -> Vec<bool> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+
+    if probes.is_empty() {
+        return Vec::new();
+    }
+    // Each id once: sysinfo drops a process whose id it is handed twice, and
+    // two probes can name the same process.
+    let mut pids: Vec<Pid> = probes.iter().map(|(pid, _)| Pid::from_u32(*pid)).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    probes
+        .iter()
+        .map(|(pid, started_by)| {
+            system.process(Pid::from_u32(*pid)).is_some_and(|process| {
+                !matches!(
+                    process.status(),
+                    ProcessStatus::Zombie | ProcessStatus::Dead
+                ) && process.start_time() <= started_by.saturating_add(PROCESS_START_SLACK_SECS)
+            })
+        })
+        .collect()
+}
+
 /// How many running processes have one of `names` (an executable's file
 /// name, such as `grok.exe`; any case) as their name.
 pub(crate) fn count_processes_named(names: &[&str]) -> usize {
@@ -262,6 +304,36 @@ pub(crate) fn count_processes_named(names: &[&str]) -> usize {
             names.iter().any(|wanted| name.eq_ignore_ascii_case(wanted))
         })
         .count()
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    #[test]
+    fn a_running_process_is_alive_only_if_it_started_by_the_given_moment() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let own = std::process::id();
+        // The same process twice, as two records naming one process would.
+        assert_eq!(
+            processes_started_by_alive(&[(own, now), (own, 1_000)]),
+            vec![true, false],
+            "this process started before now and long after 1970"
+        );
+    }
+
+    #[test]
+    fn an_unused_process_id_is_not_alive() {
+        // Process ids are multiples of four on Windows and small on Unix.
+        assert_eq!(
+            processes_started_by_alive(&[(u32::MAX - 2, u64::MAX)]),
+            vec![false]
+        );
+        assert!(processes_started_by_alive(&[]).is_empty());
+    }
 }
 
 #[cfg(all(test, windows))]

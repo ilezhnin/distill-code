@@ -19,6 +19,7 @@ import {
   useAccountQuotaWaitStore,
 } from "@/features/chat/lib/accountQuotaWait";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { useLocaleFormatting } from "@/shared/i18n";
 
 import { isWorkingStatus } from "../brigadeActivity";
@@ -28,6 +29,8 @@ import {
   formatRunDuration,
   type BrigadeChipFacts,
 } from "../brigadeChipSummary";
+import { isMonitorJobLive, type MonitorJob } from "../monitorJobs";
+import { useMonitorJobStore } from "../monitorJobStore";
 import type { SessionNode, StructuredReport } from "../types";
 import type { BrigadeGlyphStatus } from "./BrigadeChip";
 
@@ -148,6 +151,38 @@ export function useBrigadeChipSummary(
   // Only the live words are throttled. A finished run's summary is settled,
   // and the status and reason must change the moment the chat does.
   const throttled = useThrottledValue(summaryLabel, CHIP_SUMMARY_THROTTLE_MS);
+  // The oldest job the agent waits on, when its own turn is over. The node is
+  // already `waiting` here (`withLiveJobStatus`); this says on what.
+  const job = useMonitorJobStore((state) => {
+    let oldest: MonitorJob | undefined;
+    for (const key in state.jobsById) {
+      const candidate = state.jobsById[key];
+      if (
+        candidate &&
+        isMonitorJobLive(candidate) &&
+        candidate.ownerSessionId === node.sessionId &&
+        (!oldest || candidate.startedAt < oldest.startedAt)
+      ) {
+        oldest = candidate;
+      }
+    }
+    return oldest;
+  });
+  if (
+    job &&
+    facts.status === "waiting" &&
+    !providerWait &&
+    !(runtime && isSessionRunning(runtime.chatState))
+  ) {
+    return {
+      status: "waiting",
+      summaryLabel,
+      reasonLabel: t("conductor.chip.waitingOnJob", {
+        label: job.label,
+        duration: formatRunDuration(Math.max(0, Date.now() - job.startedAt)),
+      }),
+    };
+  }
   // Said the moment the queue parks the message, before the graph's own
   // pass has moved the node to waiting.
   if (

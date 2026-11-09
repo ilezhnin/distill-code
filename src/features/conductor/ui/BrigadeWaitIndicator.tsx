@@ -8,6 +8,7 @@ import { Button } from "@/shared/ui/button";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 
 import { buildAgentForest } from "../agentTree";
+import type { MonitorJob } from "../monitorJobs";
 import { brigadeWaitIndicator } from "../brigadeActivity";
 import { useConductorGraphStore } from "../conductorGraphStore";
 import { useConductorTranscript } from "../ConductorTranscriptContext";
@@ -24,6 +25,7 @@ import type { WavePhase } from "../waveEngine";
 import { AgentTreeView } from "./AgentTreeView";
 import { stopOrchestratorSession } from "../orchestratorControls";
 import { useBrigadeChipSummary } from "./useBrigadeChipSummary";
+import { MonitorJobList } from "./MonitorJobList";
 
 /**
  * The words after an agent's name in the tree: the same live summary its
@@ -86,14 +88,23 @@ function waveWaitLabelKey(phase: WavePhase): string | null {
   }
 }
 
+const NO_JOBS: readonly MonitorJob[] = [];
+
 export function BrigadeWaitIndicator({
   chatState,
   nodes,
+  jobs = NO_JOBS,
   sessionId,
   className,
 }: {
   chatState: ChatState;
   nodes: readonly SessionNode[];
+  /**
+   * The running `flock-monitor` jobs this chat and its agents own. A chat
+   * that started a job and ended its turn is waiting on it exactly as one
+   * waiting on its agents is, and the line says so with the jobs listed.
+   */
+  jobs?: readonly MonitorJob[];
   /** Session the poke is sent to. Omit and no poke is offered. */
   sessionId?: string;
   className?: string;
@@ -103,8 +114,17 @@ export function BrigadeWaitIndicator({
     chatState,
     children: nodes,
   });
+  const jobsVisible = jobs.length > 0 && !isSessionRunning(chatState);
   const { onOpenChild } = useConductorTranscript();
   const [treeOpen, setTreeOpen] = useState(true);
+  const [jobsOpen, setJobsOpen] = useState(true);
+  // A job is this chat's own unless one of its agents owns it: the jobs
+  // handed in are this chat's and its agents', under whichever id each used.
+  const agentName = useCallback(
+    (ownerId: string) =>
+      nodes.find((node) => node.sessionId === ownerId)?.displayName,
+    [nodes],
+  );
   const renderDetail = useCallback(
     (node: SessionNode) => <AgentTreeDetail node={node} />,
     [],
@@ -152,7 +172,8 @@ export function BrigadeWaitIndicator({
       ? waveWaitLabelKey(liveWave.phase)
       : null;
 
-  if (!visible && !waveWaitLabel && !liveWave) return null;
+  const brigadeLine = visible || Boolean(waveWaitLabel) || Boolean(liveWave);
+  if (!brigadeLine && !jobsVisible) return null;
 
   return (
     <div
@@ -161,53 +182,81 @@ export function BrigadeWaitIndicator({
       data-testid="brigade-wait-indicator"
       role="status"
     >
-      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-        <ActiveChatPulseDot className="shrink-0" />
-        {/* The count is the disclosure. Every agent it is counting is one row
+      {brigadeLine ? (
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <ActiveChatPulseDot className="shrink-0" />
+          {/* The count is the disclosure. Every agent it is counting is one row
           below, at its own depth, and every row opens that agent's chat —
           which is what the line claiming they exist owes the operator. */}
-        {visible ? (
+          {visible ? (
+            <button
+              type="button"
+              data-testid="brigade-wait-toggle"
+              aria-expanded={treeOpen}
+              onClick={() => setTreeOpen((open) => !open)}
+              className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
+            >
+              {t("conductor.waitingOnChildren", { count: workingCount })}
+            </button>
+          ) : waveWaitLabel ? (
+            <span className="min-w-0 truncate">{t(waveWaitLabel)}</span>
+          ) : null}
+          {sessionId && visible ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xxs"
+              className="shrink-0"
+              data-testid="brigade-poke-button"
+              disabled={pokePending}
+              onClick={() => pokeSessionForInterimSummary(sessionId)}
+            >
+              {pokePending
+                ? t("conductor.poke.pending")
+                : t("conductor.poke.ask")}
+            </Button>
+          ) : null}
+          {sessionId && liveWave ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xxs"
+              destructive
+              className="shrink-0"
+              data-testid="brigade-stop-wave-button"
+              onClick={() => stopWaveByOperator(sessionId, liveWave.waveId)}
+            >
+              {t("conductor.wave.stop")}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {jobsVisible ? (
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <ActiveChatPulseDot className="shrink-0" />
           <button
             type="button"
-            data-testid="brigade-wait-toggle"
-            aria-expanded={treeOpen}
-            onClick={() => setTreeOpen((open) => !open)}
+            data-testid="monitor-job-toggle"
+            aria-expanded={jobsOpen}
+            onClick={() => setJobsOpen((open) => !open)}
             className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
           >
-            {t("conductor.waitingOnChildren", { count: workingCount })}
+            {t("conductor.jobs.waiting", { count: jobs.length })}
           </button>
-        ) : waveWaitLabel ? (
-          <span className="min-w-0 truncate">{t(waveWaitLabel)}</span>
-        ) : null}
-        {sessionId && visible ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="xxs"
-            className="shrink-0"
-            data-testid="brigade-poke-button"
-            disabled={pokePending}
-            onClick={() => pokeSessionForInterimSummary(sessionId)}
-          >
-            {pokePending
-              ? t("conductor.poke.pending")
-              : t("conductor.poke.ask")}
-          </Button>
-        ) : null}
-        {sessionId && liveWave ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="xxs"
-            destructive
-            className="shrink-0"
-            data-testid="brigade-stop-wave-button"
-            onClick={() => stopWaveByOperator(sessionId, liveWave.waveId)}
-          >
-            {t("conductor.wave.stop")}
-          </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
+      {jobsVisible && jobsOpen ? (
+        <MonitorJobList
+          jobs={jobs}
+          agentName={agentName}
+          onOpenOwner={
+            onOpenChild
+              ? (ownerId) => onOpenChild(ownerId, "openInTab")
+              : undefined
+          }
+          className="mt-0.5"
+        />
+      ) : null}
       {visible && treeOpen && onOpenChild ? (
         <AgentTreeView
           forest={forest}

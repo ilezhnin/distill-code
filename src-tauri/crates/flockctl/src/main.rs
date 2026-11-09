@@ -332,6 +332,23 @@ mod tests {
             ("wave", "amend") => vec!["--wave-id", "w", "--step", "1", "--text", "t"],
             ("wave", "skip") => vec!["--wave-id", "w", "--step", "1"],
             ("wave", "roadmap") => vec!["--conductor-session-id", "s"],
+            ("job", "list") => vec![],
+            ("job", "report") => vec![
+                "--session-id",
+                "s",
+                "--job-id",
+                "j",
+                "--state-key",
+                "k",
+                "--label",
+                "l",
+                "--state",
+                "running",
+                "--monitor-pid",
+                "1",
+                "--started-at",
+                "1",
+            ],
             _ => return None,
         })
     }

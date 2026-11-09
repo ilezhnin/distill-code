@@ -161,6 +161,44 @@ been dispatched yet; `roadmap` reads the goal a conductor published with a
 `wave_step` from the conductor graph, so a conductor can tell its own workers
 apart from the operator's chats.
 
+## Jobs
+
+The `job` noun is how the app learns about the producers `flock-monitor`
+runs. The monitor reports a job itself with `flockctl job report` when the
+producer starts, every minute while it runs and once when it ends; each
+report carries the whole state (owner session, state key, label, monitor and
+producer pids, start and last-output times as epoch seconds), so a missed
+report is repaired by the next. Reports go from the monitor's own thread and
+never hold up delivery; a refusal that is not transient turns reporting off
+for that monitor, and the end report is retried while the monitor lives.
+The job id is the monitor's launch token.
+
+A job outlives the app. An agent's shell runs in the job object Flock keeps
+each agent bridge in, which kills its members when Flock exits, so the
+monitor starts its detached self with `CREATE_BREAKAWAY_FROM_JOB`. When a
+job around the launcher refuses that, the monitor starts inside it anyway and
+says so on stderr and in `watcher.log`. Such a monitor still ends with the
+app. Its producer sits in the monitor's own kill-on-close job, so stopping
+or killing the monitor still ends the producer's whole tree.
+
+The app keeps the record in `conductor/monitor-jobs.json` under the Flock
+root (`src/features/conductor/monitorJobStore.ts`). After a restart, a
+running job is still listed, the liveness check keeps it while its monitor
+lives, and the monitor's next report finds the new app. It goes through the
+newest `control-*.json` beside the lock it was started with. A job that ends
+while the app is closed has its end report retried for ten minutes, and is
+`lost` after that. Every 30 seconds it checks each running job's monitor pid against
+its start time (`processes_alive`, so a reused pid does not count) and marks
+a job whose monitor is gone `lost`; a later report revives it. A session with
+a running job counts as working on its sidebar row, above the composer and
+in its conductor's footer (`withLiveJobStatus`), and the composer line lists
+each job with its label, age and last output and a way into the owning chat.
+A job silent for its threshold while its producer runs gets its owner one
+message through `deliverEnvelope`, recorded before it is sent so it is said
+once per silence (`monitorJobWatch.ts`). `job list` reads the record; there
+is no verb that stops or forgets a job from the app (`flock-monitor stop`
+stops it).
+
 ## Sessions started by a session
 
 A session one chat starts to take on part of its work is that chat's child,

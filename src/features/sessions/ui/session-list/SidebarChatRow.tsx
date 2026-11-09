@@ -69,6 +69,8 @@ import { SidebarUnreadDot } from "./SidebarUnreadDot";
 import { SidebarChildWorkDot } from "./SidebarChildWorkDot";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { workingChildCountForSession } from "@/features/conductor/brigadeActivity";
+import { liveMonitorJobCount } from "@/features/conductor/monitorJobs";
+import { useMonitorJobStore } from "@/features/conductor/monitorJobStore";
 import { ConductorLeadingIcon } from "@/features/conductor/ui/ConductorLeadingIcon";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
@@ -270,8 +272,20 @@ export function SidebarChatRow({
   );
   // Row-local and deliberately a plain number: zustand's default `Object.is`
   // comparison is enough, so this re-renders only when the tally changes.
+  // A chat waiting on a job it started under flock-monitor is waiting on
+  // external work just as one waiting on its agents is, and so is a chat
+  // whose agent is: both read the same set of job owners.
+  const liveJobOwnerIds = useMonitorJobStore((state) => state.liveOwnerIds);
   const workingChildCount = useConductorGraphStore((state) =>
-    workingChildCountForSession(state.nodesById, id, [clientSessionId]),
+    workingChildCountForSession(
+      state.nodesById,
+      id,
+      [clientSessionId],
+      liveJobOwnerIds,
+    ),
+  );
+  const liveJobCount = useMonitorJobStore((state) =>
+    liveMonitorJobCount(state.jobsById, [id, clientSessionId]),
   );
   const displayTitle = getDisplaySessionTitle(
     title,
@@ -822,17 +836,25 @@ export function SidebarChatRow({
               >
                 <ActiveChatPulseDot />
               </span>
-            ) : workingChildCount > 0 ? (
-              // The chat itself is idle but its agents are not: the operator
-              // should expect a result later. Mirrors `brigadeWaitIndicator`,
-              // which is likewise "only when the session itself is idle", and so
-              // sits below the row's own running state but above unread.
+            ) : workingChildCount > 0 || liveJobCount > 0 ? (
+              // The chat itself is idle but its agents or its jobs are not:
+              // the operator should expect a result later. Mirrors
+              // `brigadeWaitIndicator`, which is likewise "only when the
+              // session itself is idle", and so sits below the row's own
+              // running state but above unread.
               <span
                 data-sidebar-chat-children-status
                 role="status"
-                aria-label={t("status.childrenWorking", {
-                  count: workingChildCount,
-                })}
+                aria-label={[
+                  workingChildCount > 0
+                    ? t("status.childrenWorking", { count: workingChildCount })
+                    : null,
+                  liveJobCount > 0
+                    ? t("status.jobsRunning", { count: liveJobCount })
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
                 className={cn(
                   "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
                   hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",

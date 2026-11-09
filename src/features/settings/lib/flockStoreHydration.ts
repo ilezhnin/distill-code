@@ -28,6 +28,10 @@ import {
   type PersistScope,
 } from "@/features/conductor/persistHealth";
 import {
+  flushMonitorJobWrites,
+  hydrateMonitorJobStore,
+} from "@/features/conductor/monitorJobStore";
+import {
   flushWaveEngineWrites,
   hasWaveEngineStateHydrationFailed,
   hydrateWaveEngineState,
@@ -193,6 +197,9 @@ export async function hydrateFlockStores(): Promise<void> {
     hydrateRoutingPolicyStore(),
     // The benchmark time limit, read before any run is planned with it.
     hydrateBenchmarkSettingsStore(),
+    // The flock-monitor jobs, so a chat waiting on one still reads as
+    // waiting after a restart, and the watch checks each one is still there.
+    hydrateMonitorJobStore(),
   ]);
   for (const result of results) {
     if (result.status === "rejected") {
@@ -238,6 +245,7 @@ export function flushFlockStores(): void {
     flushWaveEngineWrites,
     flushWaveTelemetryWrites,
     flushRoutingPolicyWrites,
+    flushMonitorJobWrites,
   ];
   for (const flush of flushes) {
     try {

@@ -20,6 +20,7 @@ import { getSessionCommand } from "./impl/getSession";
 import { getSkillCommand } from "./impl/getSkill";
 import { listAgentsCommand } from "./impl/listAgents";
 import { listHarnessesCommand } from "./impl/listHarnesses";
+import { listJobsCommand } from "./impl/listJobs";
 import { listModelsCommand } from "./impl/listModels";
 import { listProjectsCommand } from "./impl/listProjects";
 import { listSessionsCommand } from "./impl/listSessions";
@@ -34,6 +35,7 @@ import { steerWaveCommand } from "./impl/steerWave";
 import { moveSessionCommand } from "./impl/moveSession";
 import { openSessionCommand } from "./impl/openSession";
 import { renameSessionCommand } from "./impl/renameSession";
+import { reportJobCommand } from "./impl/reportJob";
 import { sendSessionCommand } from "./impl/sendSession";
 import { setProjectStartupModeCommand } from "./impl/setProjectStartupMode";
 import { commandBridgeTimeoutMs } from "./timeouts";
@@ -181,6 +183,20 @@ export const ALL_TOOL_GROUPS = {
       amend: amendWaveStepCommand,
       skip: skipWaveStepCommand,
       roadmap: getRoadmapCommand,
+    },
+  },
+  jobs: {
+    description:
+      "The long-running jobs flock-monitor runs for sessions: list them; " +
+      "report is how flock-monitor tells the app a job started, runs or ended.",
+    cli: {
+      noun: "job",
+      about:
+        "List the jobs flock-monitor runs for sessions (report is flock-monitor's own)",
+    },
+    actions: {
+      list: listJobsCommand,
+      report: reportJobCommand,
     },
   },
   info: {

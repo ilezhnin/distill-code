@@ -120,7 +120,12 @@ import type { WorkerBrief } from "@/features/conductor/ConductorTranscriptContex
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { OPERATOR_STOP_REASON } from "@/features/conductor/waveStop";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
-import { brigadeWaitIndicator } from "@/features/conductor/brigadeActivity";
+import {
+  brigadeWaitIndicator,
+  withLiveJobStatus,
+} from "@/features/conductor/brigadeActivity";
+import { liveMonitorJobsFor } from "@/features/conductor/monitorJobs";
+import { useMonitorJobStore } from "@/features/conductor/monitorJobStore";
 import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
 import { ConductorBackBanner } from "@/features/conductor/ui/ConductorBackBanner";
 
@@ -311,7 +316,7 @@ export function ChatView({
         ? state.nodesById[effectiveSession.clientSessionId]
         : undefined),
   );
-  const conductorChildren = useConductorGraphStore(
+  const graphChildren = useConductorGraphStore(
     useShallow((state) =>
       footerAgentNodes(state.nodesById, conductorNode, [
         sessionId,
@@ -319,6 +324,40 @@ export function ChatView({
         effectiveSession?.clientSessionId,
       ]),
     ),
+  );
+  // An agent whose turn is over but whose flock-monitor job runs is waiting
+  // on it: every brigade surface below (the footer, its stats, the line above
+  // the composer) reads it as working through this one substitution.
+  const liveJobOwnerIds = useMonitorJobStore((state) => state.liveOwnerIds);
+  const conductorChildren = useMemo(
+    () => withLiveJobStatus(graphChildren, liveJobOwnerIds),
+    [graphChildren, liveJobOwnerIds],
+  );
+  // The jobs this chat and its agents wait on, for the line above the
+  // composer: what runs, how long, and when it last said anything.
+  const jobsById = useMonitorJobStore((state) => state.jobsById);
+  const liveJobs = useMemo(
+    () =>
+      liveMonitorJobsFor(
+        jobsById,
+        new Set(
+          [
+            sessionId,
+            effectiveSession?.id,
+            effectiveSession?.clientSessionId,
+            ...graphChildren.map((node) => node.sessionId),
+          ].filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+        ),
+      ),
+    [
+      effectiveSession?.clientSessionId,
+      effectiveSession?.id,
+      graphChildren,
+      jobsById,
+      sessionId,
+    ],
   );
   const conductorReportsByRunId = useConductorGraphStore(
     (state) => state.reportsByRunId,
@@ -1154,6 +1193,7 @@ export function ChatView({
         <BrigadeWaitIndicator
           chatState={controller.chatState}
           nodes={conductorChildren}
+          jobs={liveJobs}
           sessionId={sessionId}
         />
         <BackgroundTasksPanel sessionId={sessionId} />

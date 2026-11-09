@@ -496,6 +496,15 @@
     "statsCost": "${{cost}}",
     "waitingOnChildren_one": "1 ejecutor está trabajando",
     "waitingOnChildren_other": "{{count}} ejecutores están trabajando",
+    "jobs": {
+      "waiting_one": "Esperando 1 tarea",
+      "waiting_other": "Esperando {{count}} tareas",
+      "running": "en marcha desde hace {{duration}}",
+      "lastOutput": "última salida hace {{duration}}",
+      "noOutput": "sin salida todavía",
+      "silent": "en silencio desde hace {{duration}}, se avisó al agente",
+      "open": "Abrir {{name}}, que espera esta tarea"
+    },
     "stopChild": "Detener {{name}}",
     "persist": {
       "title": "Esta app ya no puede guardar en disco el estado del conductor.",
@@ -749,7 +758,8 @@
       "tools_other": "{{count}} herramientas",
       "rateLimited": "El proveedor limitó las solicitudes (429)",
       "rateLimitWait": "Esperando al proveedor (429), próximo intento a las {{time}}",
-      "quotaWait": "Esperando la cuota del proveedor, próximo intento a las {{time}}"
+      "quotaWait": "Esperando la cuota del proveedor, próximo intento a las {{time}}",
+      "waitingOnJob": "Esperando su tarea {{label}} · {{duration}}"
     },
     "report": {
       "title": "Informe · {{status}}",
