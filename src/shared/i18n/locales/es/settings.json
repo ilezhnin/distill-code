@@ -638,7 +638,13 @@
     "use": "Usar",
     "resetTypes": {
       "full": "Reinicio completo",
-      "five_hour": "Reinicio de 5 horas"
+      "five_hour": "Reinicio de 5 horas",
+      "weekly": "Reinicio semanal",
+      "fable": "Reinicio de Fable",
+      "usage": "Reinicio de uso"
+    },
+    "resetHints": {
+      "fable": "devuelve a tu límite semanal lo que usó Fable"
     },
     "resetStates": {
       "available": "Disponible",

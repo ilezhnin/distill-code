@@ -334,6 +334,36 @@ fn optional_time(value: &Value) -> Result<Option<i64>, String> {
         .ok_or("Claude returned an invalid reset date".into())
 }
 
+/// What a grant refills, named as the native CLI names it. A Fable reset
+/// returns what Fable spent to the weekly allowance and clears nothing else,
+/// though its `clears` list reads like a weekly one; the provider marks it
+/// with `gives_back_weekly`. Otherwise the provider's own `type` decides, and
+/// a reply without one is read from the windows the grant clears.
+fn grant_kind(grant: &Value, clears: &[Value]) -> (&'static str, &'static str) {
+    const FULL: (&str, &str) = ("full", "Full reset");
+    const SESSION: (&str, &str) = ("five_hour", "5-hour reset");
+    const WEEKLY: (&str, &str) = ("weekly", "Weekly reset");
+    if grant["gives_back_weekly"].as_bool() == Some(true) {
+        return ("fable", "Fable reset");
+    }
+    match grant["type"].as_str() {
+        Some("full") => return FULL,
+        Some("session") => return SESSION,
+        Some("weekly") => return WEEKLY,
+        _ => {}
+    }
+    let session = clears.iter().any(|kind| kind == "five_hour");
+    let weekly = clears
+        .iter()
+        .any(|kind| kind.as_str().is_some_and(|s| s.starts_with("seven_day")));
+    match (session, weekly) {
+        (true, true) => FULL,
+        (true, false) => SESSION,
+        (false, true) => WEEKLY,
+        (false, false) => ("usage", "Usage reset"),
+    }
+}
+
 pub(super) fn map_inventory(usage: &Value, now: i64) -> Result<Option<ResetTokens>, String> {
     let block = &usage["cedar_ember"];
     if block.is_null() {
@@ -378,16 +408,7 @@ pub(super) fn map_inventory(usage: &Value, now: i64) -> Result<Option<ResetToken
         if status == "available" {
             available = available.checked_add(left).ok_or_else(invalid)?;
         }
-        let full = clears
-            .iter()
-            .any(|kind| kind.as_str().is_some_and(|s| s.starts_with("seven_day")));
-        let (reset_type, title) = if full {
-            ("full", "Full reset")
-        } else if clears.iter().all(|kind| kind == "five_hour") {
-            ("five_hour", "5-hour reset")
-        } else {
-            ("usage", "Usage reset")
-        };
+        let (reset_type, title) = grant_kind(grant, clears);
         credits.push(ResetCredit {
             id: id.into(),
             reset_type: reset_type.into(),
@@ -578,6 +599,59 @@ mod tests {
         assert_eq!(credits[0].status, "unavailable");
         assert_eq!(credits[1].reset_type, "five_hour");
         assert_eq!(credits[1].status, "available");
+    }
+
+    #[test]
+    fn a_fable_reset_is_not_a_full_reset() {
+        let kind = |change: &dyn Fn(&mut Value)| {
+            let mut input = inventory();
+            change(&mut input["cedar_ember"]["grants"][0]);
+            let credit = map_inventory(&input, now())
+                .unwrap()
+                .unwrap()
+                .credits
+                .unwrap();
+            (
+                credit[0].reset_type.clone(),
+                credit[0].title.clone().unwrap(),
+            )
+        };
+        // The same windows as a full grant, yet it only returns Fable's share.
+        assert_eq!(
+            kind(&|grant| grant["gives_back_weekly"] = json!(true)),
+            ("fable".into(), "Fable reset".into())
+        );
+        assert_eq!(
+            kind(&|grant| {
+                grant["gives_back_weekly"] = json!(true);
+                grant["type"] = json!("full");
+                grant["clears"] = json!(["seven_day_overage_included"]);
+            })
+            .0,
+            "fable"
+        );
+        assert_eq!(
+            kind(&|grant| grant["gives_back_weekly"] = json!(false)).0,
+            "full"
+        );
+        // The provider's own type wins over what the windows suggest.
+        assert_eq!(
+            kind(&|grant| grant["type"] = json!("weekly")),
+            ("weekly".into(), "Weekly reset".into())
+        );
+        assert_eq!(
+            kind(&|grant| grant["type"] = json!("session")).0,
+            "five_hour"
+        );
+        assert_eq!(kind(&|grant| grant["type"] = json!("later_kind")).0, "full");
+        assert_eq!(
+            kind(&|grant| grant["clears"] = json!(["seven_day", "seven_day_opus"])).0,
+            "weekly"
+        );
+        assert_eq!(
+            kind(&|grant| grant["clears"] = json!(["later_window"])).0,
+            "usage"
+        );
     }
 
     #[test]

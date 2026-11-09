@@ -74,8 +74,10 @@ reset-credit inventory, and freshness. Missing provider telemetry is displayed
 as unknown, never as an unlimited allowance. API-key accounts do not expose a
 subscription quota meter. Claude's `get_usage` reply omits reset grants, so
 Flock reads quota and `cedar_ember` grants together through the native CLI's
-first-party usage endpoint. Full and five-hour grants show their availability
-and expiry; missing telemetry stays unknown. Failed reads retain the last known
+first-party usage endpoint. Full, weekly, five-hour and Fable grants are named
+apart, as the native CLI names them: a Fable reset only returns what Fable used
+to the weekly limit, so it never reads as a full reset. Each grant shows its
+availability and expiry; missing telemetry stays unknown. Failed reads retain the last known
 values as stale. A 429 pauses usage requests for at least one minute, increasing
 to five minutes on repeated failures, or longer if requested by Retry-After.
 One Refresh action at the top updates the panel; account cards have no duplicate.

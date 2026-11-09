@@ -180,6 +180,11 @@ export function ProviderUsageDetails({
             const label = t(`accounts.resetTypes.${credit.resetType}`, {
               defaultValue: credit.title ?? credit.resetType,
             });
+            // What a narrower reset refills, where its name alone would
+            // read as the whole account's.
+            const hint = t(`accounts.resetHints.${credit.resetType}`, {
+              defaultValue: "",
+            });
             return (
               <div
                 key={credit.id}
@@ -187,6 +192,7 @@ export function ProviderUsageDetails({
               >
                 <p title={credit.description ?? undefined}>
                   {label}
+                  {hint ? ` · ${hint}` : ""}
                   {credit.status !== "available"
                     ? ` · ${t(`accounts.resetStates.${credit.status}`, {
                         defaultValue: credit.status,

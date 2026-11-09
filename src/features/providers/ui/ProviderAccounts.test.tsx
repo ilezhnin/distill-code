@@ -892,6 +892,43 @@ describe("account surfaces", () => {
     expect(mocks.reset).not.toHaveBeenCalled();
   });
 
+  it("names a Fable reset apart from a full one and says what it returns", () => {
+    const credit = (id: string, resetType: string, title: string) => ({
+      id,
+      resetType,
+      status: "available",
+      grantedAt: null,
+      expiresAt: null,
+      title,
+      description: null,
+    });
+    useProviderAccountsStore.setState({
+      statuses: {
+        personal: status("personal", {
+          available: 2,
+          supported: true,
+          expiresAt: null,
+          credits: [
+            credit("fable-grant", "fable", "Fable reset"),
+            credit("full-grant", "full", "Full reset"),
+          ],
+        }),
+      },
+    });
+    render(<ProviderAccountsPanel />);
+    expect(
+      screen.getByText(
+        "Fable reset · returns what Fable used to your weekly limit",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Use Fable reset" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Use Full reset" }),
+    ).toBeEnabled();
+  });
+
   it("switches only the selected chat after the backend succeeds", async () => {
     mocks.switch.mockResolvedValue({});
     render(

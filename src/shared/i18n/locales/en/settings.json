@@ -638,7 +638,13 @@
     "use": "Use",
     "resetTypes": {
       "full": "Full reset",
-      "five_hour": "5-hour reset"
+      "five_hour": "5-hour reset",
+      "weekly": "Weekly reset",
+      "fable": "Fable reset",
+      "usage": "Usage reset"
+    },
+    "resetHints": {
+      "fable": "returns what Fable used to your weekly limit"
     },
     "resetStates": {
       "available": "Available",
