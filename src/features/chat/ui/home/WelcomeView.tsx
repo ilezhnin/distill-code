@@ -23,6 +23,7 @@ import type { HomeScreenProps } from "./HomeScreen";
  */
 export function WelcomeView({
   sessionId,
+  ensureSession,
   onActivateSession,
   onCreatePersona,
   onWorkspaceNameRequest,
@@ -54,6 +55,7 @@ export function WelcomeView({
           </div>
           <HomeComposer
             sessionId={sessionId}
+            ensureSession={ensureSession}
             onActivateSession={onActivateSession}
             onCreatePersona={onCreatePersona}
             onCreateProject={onCreateProject}

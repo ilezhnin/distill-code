@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { ArrowUp, File, FolderOpen, Plus } from "lucide-react";
+import { ArrowUp, File, FolderOpen, MessageSquare, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { useSessionCostPreference } from "@/features/chat/lib/sessionCostPreference";
@@ -52,6 +52,7 @@ interface ChatInputToolbarComposerActions {
   canSteer?: boolean;
   onAttachFiles?: () => void;
   onAttachFolders?: () => void;
+  onLoadChat?: () => void;
   attachmentsEnabled?: boolean;
   disabled?: boolean;
   sendDisabledReason?: string;
@@ -184,6 +185,7 @@ export function ChatInputToolbar({
     canSteer,
     onAttachFiles,
     onAttachFolders,
+    onLoadChat,
     attachmentsEnabled = true,
     disabled = false,
     sendDisabledReason,
@@ -337,6 +339,13 @@ export function ChatInputToolbar({
               >
                 <FolderOpen className="mr-2 h-4 w-4" />
                 {t("toolbar.attachFolder")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => onLoadChat?.()}
+                disabled={disabled || isStreaming || !onLoadChat}
+              >
+                <MessageSquare className="mr-2 h-4 w-4" />
+                {t("toolbar.loadChat")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

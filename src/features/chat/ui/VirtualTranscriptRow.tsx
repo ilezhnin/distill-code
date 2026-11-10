@@ -191,6 +191,7 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
   const {
     onRetryMessage,
     onEditMessage,
+    onRemoveMessage,
     onEditMessagePart,
     onRemoveMessagePart,
     onJumpToResponseStart,
@@ -344,6 +345,12 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
               ? onEditMessage
               : undefined
           }
+          onRemoveMessage={
+            (row.fragment.role === "end" || row.fragment.role === "single") &&
+            !isStreaming
+              ? onRemoveMessage
+              : undefined
+          }
           onJumpToResponseStart={
             message.role === "assistant" && !isStreaming
               ? handleJumpToResponseStartForRow
@@ -428,6 +435,12 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
             (message.role === "user" || message.role === "assistant") &&
             !isStreaming
               ? onEditMessage
+              : undefined
+          }
+          onRemoveMessage={
+            (message.role === "user" || message.role === "assistant") &&
+            !isStreaming
+              ? onRemoveMessage
               : undefined
           }
           onJumpToResponseStart={

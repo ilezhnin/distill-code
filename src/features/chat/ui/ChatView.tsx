@@ -57,6 +57,7 @@ import {
   useChatSessionController,
   type WorkspaceNameRequest,
 } from "../hooks/useChatSessionController";
+import { useLoadChatTranscript } from "../hooks/useLoadChatTranscript";
 import { useResizableAgentBuilderRail } from "../hooks/useResizableAgentBuilderRail";
 import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepository";
 import { useChangeSessionFolder } from "../hooks/useChangeSessionFolder";
@@ -71,7 +72,7 @@ import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import {
   getEditableText,
   isEditableMessage,
-  removeTranscriptMessagePart,
+  removeTranscriptMessage,
   updateTranscriptMessageText,
 } from "../lib/editMessage";
 import type { MessagePart } from "@/shared/types/messageParts";
@@ -218,6 +219,7 @@ export function ChatView({
   onSelectSession,
 }: ChatViewProps) {
   const { t, i18n } = useTranslation(["chat", "common"]);
+  const loadChat = useLoadChatTranscript({ sessionId });
   // The conversation has room for exactly one side panel. `sidePanelSurface`
   // decides which one owns it; neither store is cleared when the other wins,
   // so closing the last child tab brings the artifact viewer straight back.
@@ -1013,21 +1015,25 @@ export function ChatView({
   );
   // Removing a step takes it out of the host's transcript for good, so the
   // bin asks first. Held with the chat it belongs to, like the edit.
-  const [pendingStepRemoval, setPendingStepRemoval] = useState<{
+  const [pendingRemoval, setPendingRemoval] = useState<{
     sessionId: string;
     messageId: string;
-    part: MessagePart;
+    part?: MessagePart;
   } | null>(null);
+  const handleRemoveMessage = useCallback(
+    (messageId: string) => setPendingRemoval({ sessionId, messageId }),
+    [sessionId],
+  );
   const handleRemoveMessagePart = useCallback(
     (messageId: string, part: MessagePart) => {
-      setPendingStepRemoval({ sessionId, messageId, part });
+      setPendingRemoval({ sessionId, messageId, part });
     },
     [sessionId],
   );
-  const confirmStepRemoval = useCallback(async () => {
-    const removal = pendingStepRemoval;
-    setPendingStepRemoval(null);
-    if (!removal) {
+  const confirmRemoval = useCallback(async () => {
+    const removal = pendingRemoval;
+    setPendingRemoval(null);
+    if (!removal || removal.sessionId !== sessionId) {
       return;
     }
     const message = controller.messages.find(
@@ -1042,21 +1048,25 @@ export function ChatView({
       current?.messageId === removal.messageId ? null : current,
     );
     try {
-      await removeTranscriptMessagePart(
+      await removeTranscriptMessage(
         effectiveSession?.id ?? removal.sessionId,
         message,
         removal.part,
         { queryClient },
       );
     } catch (error) {
-      toast.error(t("message.removeStepFailed"), {
-        description: formatAcpErrorMessage(error),
-      });
+      toast.error(
+        t(removal.part ? "message.removeStepFailed" : "message.removeFailed"),
+        {
+          description: formatAcpErrorMessage(error),
+        },
+      );
     }
   }, [
     controller.messages,
     effectiveSession?.id,
-    pendingStepRemoval,
+    pendingRemoval,
+    sessionId,
     queryClient,
     t,
   ]);
@@ -1233,6 +1243,7 @@ export function ChatView({
           skillProviderId={controller.selectedProvider}
           composerActions={{
             onSend: controller.handleSend,
+            onLoadChat: loadChat,
             onSteerMessage: (text, personaId, attachments, options) =>
               controller.steerDraftMessage(
                 text,
@@ -1424,7 +1435,16 @@ export function ChatView({
       onEditMessagePart={
         effectiveSession?.executionOwner ? undefined : handleEditMessagePart
       }
-      onRemoveMessagePart={handleRemoveMessagePart}
+      onRemoveMessage={
+        effectiveSession?.executionOwner || showIndicator
+          ? undefined
+          : handleRemoveMessage
+      }
+      onRemoveMessagePart={
+        effectiveSession?.executionOwner || showIndicator
+          ? undefined
+          : handleRemoveMessagePart
+      }
       showPlaceholder={showTimelineLoading}
       placeholder={conversationPlaceholder}
       footer={composerFooter}
@@ -1693,16 +1713,24 @@ export function ChatView({
           />
         </div>
         <ConfirmDialog
-          open={pendingStepRemoval !== null}
+          open={pendingRemoval?.sessionId === sessionId}
           onOpenChange={(open) => {
-            if (!open) setPendingStepRemoval(null);
+            if (!open) setPendingRemoval(null);
           }}
-          title={t("agent_work.removeStepTitle")}
-          description={t("agent_work.removeStepDescription")}
+          title={t(
+            pendingRemoval?.part
+              ? "agent_work.removeStepTitle"
+              : "message.removeTitle",
+          )}
+          description={t(
+            pendingRemoval?.part
+              ? "agent_work.removeStepDescription"
+              : "message.removeDescription",
+          )}
           cancelLabel={t("common:actions.cancel")}
           confirmLabel={t("common:actions.remove")}
           destructive
-          onConfirm={confirmStepRemoval}
+          onConfirm={confirmRemoval}
         />
       </ArtifactPolicyProvider>
     </ConductorTranscriptProvider>

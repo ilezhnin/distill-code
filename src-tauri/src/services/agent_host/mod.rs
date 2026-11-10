@@ -26,6 +26,7 @@ mod session_title;
 pub mod sources;
 pub mod store;
 pub(crate) mod text_execution;
+mod transcript_import;
 mod zai;
 
 pub use router::AgentHost;

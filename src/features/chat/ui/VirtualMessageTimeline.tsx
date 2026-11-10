@@ -999,6 +999,7 @@ function VirtualMessageTimelineSession({
   searchBackendRef,
   onRetryMessage,
   onEditMessage,
+  onRemoveMessage,
   onEditMessagePart,
   onRemoveMessagePart,
   onForkFromMessage,
@@ -3681,6 +3682,7 @@ function VirtualMessageTimelineSession({
     () => ({
       onRetryMessage,
       onEditMessage,
+      onRemoveMessage,
       onEditMessagePart,
       onRemoveMessagePart,
       onForkFromMessage,
@@ -3695,6 +3697,7 @@ function VirtualMessageTimelineSession({
     [
       onRetryMessage,
       onEditMessage,
+      onRemoveMessage,
       onEditMessagePart,
       onRemoveMessagePart,
       onForkFromMessage,

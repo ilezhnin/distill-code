@@ -4158,6 +4158,7 @@ function AppShellView({ children }: { children?: React.ReactNode }) {
               isPreparingContent={isPreparingContent}
               renderedSession={renderedSession}
               homeSessionId={homeSessionId}
+              ensureHomeSession={ensureHomeSession}
               chatComposerHandoffRequest={chatComposerHandoffRequest}
               chatComposerHandoffSessionId={chatComposerHandoffSessionId}
               chatComposerHandoffActive={isGlobalComposerHandoff}

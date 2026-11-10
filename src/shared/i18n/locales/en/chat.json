@@ -376,6 +376,10 @@
     "archiveConfirmAction": "Archive and remove"
   },
   "message": {
+    "remove": "Delete message",
+    "removeTitle": "Permanently delete this message?",
+    "removeDescription": "This message and its steps will be deleted from this chat. The agent will continue with the remaining history. This cannot be undone.",
+    "removeFailed": "The message could not be deleted.",
     "copied": "Copied",
     "defaultImageAlt": "Attached",
     "edit": "Edit message",
@@ -812,6 +816,12 @@
     "attach": "Attach",
     "attachFile": "File",
     "attachFolder": "Folder",
+    "loadChat": "Load chat",
+    "loadChatDialogTitle": "Load a chat",
+    "loadChatDone_one": "Loaded {{count}} message into this chat",
+    "loadChatDone_other": "Loaded {{count}} messages into this chat",
+    "loadChatFailed": "Could not load the chat",
+    "loadChatNotReady": "This chat is not ready yet. Wait a moment and try again.",
     "chooseAgentModel": "Choose agent and model",
     "chooseProject": "Choose a project",
     "compactNow": "Compact",
@@ -957,7 +967,7 @@
     "editStep": "Edit step",
     "removeStep": "Remove step",
     "removeStepTitle": "Remove this step?",
-    "removeStepDescription": "The step is taken out of the chat's stored transcript. This cannot be undone.",
+    "removeStepDescription": "This step will be deleted from this chat. The agent will continue with the remaining history. This cannot be undone.",
     "redactedThinking": "Thinking redacted",
     "thought": {
       "label": "Thought"

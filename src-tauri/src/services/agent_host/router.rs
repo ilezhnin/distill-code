@@ -38,7 +38,10 @@ use super::repository_execution;
 use super::sandbox_sign_in::SignInRenewals;
 use super::session_title;
 use super::sources::SourceRoots;
-use super::store::{ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo};
+use super::store::{
+    message_snippet, ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo,
+    SNIPPET_CHARS,
+};
 use super::text_execution;
 use crate::services::computer_use;
 use crate::services::credential_lease;
@@ -269,7 +272,6 @@ const CANCEL_ANSWER_GRACE: std::time::Duration = std::time::Duration::from_secs(
 /// How long a close that stops the active chats waits for their agents to end
 /// the cancelled turns before ending them itself (see `stop_chats_for_close`).
 const CLOSE_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
-const SNIPPET_CHARS: usize = 200;
 /// How much of a conversation goes with a chat that moved to another agent
 /// (`carryover_block`), in characters: roughly 30k tokens, which every model
 /// the harnesses run has room for next to the work it is then asked to do. The
@@ -5211,6 +5213,62 @@ impl Inner {
         });
     }
 
+    /// Permanently remove one message or step and abandon its old provider
+    /// context. Share the dispatch lock so no prompt can race the rewrite.
+    pub(super) async fn remove_transcript_message(
+        &self,
+        session_id: &str,
+        side: super::store::MessageSide,
+        message_id: &str,
+        part: Option<&super::store::MessagePart>,
+    ) -> Result<Value, Value> {
+        let lock = self.attach_lock(session_id).await;
+        let _changing = lock.lock().await;
+        self.session_record(session_id).await?;
+        if self
+            .store
+            .execution_owner(session_id)
+            .await
+            .map_err(protocol::internal)?
+            .is_some()
+        {
+            return Err(invalid_params("Task-owned transcripts cannot be changed"));
+        }
+        if self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
+            })
+        {
+            return Err(invalid_params(
+                "Stop the current turn before deleting a message or step",
+            ));
+        }
+        self.drain_bridge_events().await?;
+        let removal = self
+            .store
+            .remove_message(session_id, side, message_id, part)
+            .await
+            .map_err(protocol::internal)?;
+        if removal.removed == 0 {
+            return Err(invalid_params("The message or step no longer exists"));
+        }
+        let released = self.sessions.lock().await.remove(session_id);
+        if let Some(runtime) = released {
+            self.let_go_of(&runtime).await;
+        }
+        let record = self.session_record(session_id).await?;
+        Ok(json!({
+            "removed": removal.removed,
+            "lastMessage": removal.was_last,
+            "snippet": record.last_snippet,
+            "messageCount": record.message_count,
+        }))
+    }
+
     pub(super) async fn update_working_dir(
         &self,
         session_id: &str,
@@ -6252,15 +6310,6 @@ impl Inner {
         Ok(response)
     }
 
-    pub(super) fn snippet(text: &str) -> Option<String> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let collapsed: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-        Some(collapsed.chars().take(SNIPPET_CHARS).collect())
-    }
-
     /// The text of a prompt block the user can see: a text block addressed to
     /// nobody in particular, or to the user among others. What the renderer
     /// sends the agent alone — a persona, a skill — is not what was said.
@@ -6447,6 +6496,29 @@ impl Inner {
         Ok(block)
     }
 
+    /// The loaded-chat transcript this session still owes its agent, if any.
+    async fn pending_import_handoff(&self, session_id: &str) -> Result<Option<Value>, Value> {
+        let stored = self
+            .store
+            .kv_get(super::transcript_import::HANDOFF_SCOPE, session_id)
+            .await
+            .map_err(protocol::internal)?;
+        let text = stored
+            .as_ref()
+            .and_then(|value| value.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(json!({
+            "type": "text",
+            "text": text,
+            "annotations": { "audience": ["assistant"] },
+        })))
+    }
+
     /// Persist a user turn's prompt blocks. A steered turn (one the agent
     /// picks up after the turn it was steered into) is marked `steer` and
     /// echoed live once: the renderer already shows the message and needs
@@ -6490,7 +6562,7 @@ impl Inner {
                 self.notify_frontend("session/update", echo);
             }
         }
-        let snippet = Self::snippet(&Self::prompt_text(prompt));
+        let snippet = message_snippet(&Self::prompt_text(prompt));
         let _ = self.store.touch(session_id, 1, snippet.as_deref()).await;
         if snippet.is_none() {
             let _ = self.store.touch(session_id, 0, None).await;
@@ -7143,6 +7215,23 @@ impl Inner {
         // stamped onto the run as something the turn produced — which is what
         // stops a prompt the bridge then rejects from being withdrawn.
         let carryover = self.pending_carryover(&session_id).await?;
+        // A chat loaded from a file owes the agent that transcript once. A
+        // session that is already handing over its whole log covers the loaded
+        // messages, so the extra block would only say them twice.
+        let import_handoff = if carryover.is_some() {
+            if let Err(error) = self
+                .store
+                .kv_delete(super::transcript_import::HANDOFF_SCOPE, &session_id)
+                .await
+            {
+                log::warn!(
+                    "[agent-host] failed to drop the loaded-chat handoff of {session_id}: {error}"
+                );
+            }
+            None
+        } else {
+            self.pending_import_handoff(&session_id).await?
+        };
         // For the same reason, everything the bridge said before this prompt
         // is handled and stored before the turn is claimed and the prompt is
         // recorded. An update still queued would otherwise be stamped as this
@@ -7234,9 +7323,10 @@ impl Inner {
         self.name_untitled_session(&record, &prompt);
         // What is recorded is what the user sent; what the agent is sent
         // opens with what it missed.
-        let sent = match &carryover {
-            Some(block) => Self::prompt_after(block, &prompt),
-            None => prompt,
+        let sent = match (&carryover, &import_handoff) {
+            (Some(block), _) => Self::prompt_after(block, &prompt),
+            (None, Some(block)) => Self::prompt_after(block, &prompt),
+            (None, None) => prompt,
         };
         let mut result = self
             .run_prompt_with_admission(
@@ -7300,6 +7390,17 @@ impl Inner {
                 if let Err(error) = self.store.clear_carryover(&session_id).await {
                     log::warn!(
                         "[agent-host] failed to settle the carry-over of {session_id}: {error}"
+                    );
+                }
+            }
+            Ok(_) if import_handoff.is_some() => {
+                if let Err(error) = self
+                    .store
+                    .kv_delete(super::transcript_import::HANDOFF_SCOPE, &session_id)
+                    .await
+                {
+                    log::warn!(
+                        "[agent-host] failed to settle the loaded-chat handoff of {session_id}: {error}"
                     );
                 }
             }
@@ -7791,7 +7892,7 @@ impl Inner {
                 .map(|run| (run.agent_text.clone(), run.saw_agent_message))
                 .unwrap_or_default()
         };
-        let snippet = Self::snippet(&agent_text);
+        let snippet = message_snippet(&agent_text);
         let _ = self
             .store
             .touch(

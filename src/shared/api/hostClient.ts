@@ -98,6 +98,13 @@ export class HostExt {
   sessionMessages(params: { sessionId: string }) {
     return this.call<SessionTranscript>("session/messages", params);
   }
+  sessionImportTranscript(params: { sessionId: string; text: string }) {
+    return this.call<{
+      messageCount: number;
+      lastSnippet?: string | null;
+      title?: string | null;
+    }>("session/import_transcript", params);
+  }
   sessionHistory(params: { sessionId: string; beforeEventId: number }) {
     return this.call<HistoryPage>("session/history", params);
   }
@@ -120,7 +127,7 @@ export class HostExt {
     sessionId: string;
     messageId: string;
     role: "user" | "assistant";
-    part: MessagePart;
+    part?: MessagePart;
   }) {
     return this.call<SessionMessageRemoveResponse>(
       "session/message/remove",

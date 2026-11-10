@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ChatInput } from "./chatInputTestUtils";
 
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
@@ -63,5 +64,41 @@ describe("ChatInputToolbar session cost", () => {
         name: "Context usage, session cost $6.28, API bill",
       }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ChatInputToolbar load chat", () => {
+  it("offers load chat next to file and folder", async () => {
+    const user = userEvent.setup();
+    const onLoadChat = vi.fn();
+    render(<ChatInput onSend={vi.fn()} onLoadChat={onLoadChat} />);
+
+    await user.click(screen.getByRole("button", { name: "Attach" }));
+
+    expect(screen.getByRole("menuitem", { name: "Load chat" })).toBeEnabled();
+    expect(screen.getByRole("menuitem", { name: "File" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "Folder" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Load chat" }));
+    expect(onLoadChat).toHaveBeenCalledOnce();
+  });
+
+  it("disables load chat while a turn is running", async () => {
+    const user = userEvent.setup();
+    render(
+      <ChatInput
+        onSend={vi.fn()}
+        onLoadChat={vi.fn()}
+        onStop={vi.fn()}
+        isStreaming
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Attach" }));
+
+    expect(screen.getByRole("menuitem", { name: "Load chat" })).toHaveAttribute(
+      "data-disabled",
+    );
   });
 });

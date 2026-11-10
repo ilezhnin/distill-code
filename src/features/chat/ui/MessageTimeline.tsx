@@ -122,6 +122,7 @@ export function MessageTimeline({
   searchContentRef,
   onRetryMessage,
   onEditMessage,
+  onRemoveMessage,
   onEditMessagePart,
   onRemoveMessagePart,
   onForkFromMessage,
@@ -1306,6 +1307,7 @@ export function MessageTimeline({
     () => ({
       onRetryMessage,
       onEditMessage,
+      onRemoveMessage,
       onEditMessagePart,
       onRemoveMessagePart,
       onForkFromMessage,
@@ -1320,6 +1322,7 @@ export function MessageTimeline({
     [
       onRetryMessage,
       onEditMessage,
+      onRemoveMessage,
       onEditMessagePart,
       onRemoveMessagePart,
       onForkFromMessage,

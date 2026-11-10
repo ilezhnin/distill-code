@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Check, Copy, Split, Pencil, RotateCcw, X } from "lucide-react";
+import { Check, Copy, Split, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { IconChevronsUp } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/shared/lib/cn";
@@ -16,6 +16,7 @@ interface MessageBubbleActionsProps {
   onCopy: () => void;
   onRetryMessage?: (messageId: string) => void;
   onEditMessage?: (messageId: string) => void;
+  onRemoveMessage?: (messageId: string) => void;
   onJumpToResponseStart?: (messageId: string) => void;
   onForkFromMessage?: (messageId: string) => void;
   showJumpToResponseStartHint?: boolean;
@@ -32,6 +33,7 @@ export function MessageBubbleActions({
   onCopy,
   onRetryMessage,
   onEditMessage,
+  onRemoveMessage,
   onJumpToResponseStart,
   onForkFromMessage,
   showJumpToResponseStartHint,
@@ -170,6 +172,18 @@ export function MessageBubbleActions({
         </MessageAction>
       )}
       {editAction}
+      {onRemoveMessage && (
+        <MessageAction
+          size="icon-xs"
+          variant="ghost"
+          destructive
+          label={t("message.remove")}
+          tooltip={t("message.remove")}
+          onClick={() => onRemoveMessage(messageId)}
+        >
+          <Trash2 className="size-3.5" />
+        </MessageAction>
+      )}
       {!isUser && timestamp}
     </MessageActions>
   );

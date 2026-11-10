@@ -221,6 +221,19 @@ export async function readSessionTranscript(
   return client.host.sessionMessages({ sessionId });
 }
 
+/** Append an exported chat to a session. The text is the export file. */
+export async function importSessionTranscript(
+  sessionId: string,
+  text: string,
+): Promise<{
+  messageCount: number;
+  lastSnippet?: string | null;
+  title?: string | null;
+}> {
+  const client = await getClient();
+  return client.host.sessionImportTranscript({ sessionId, text });
+}
+
 /**
  * Put new text on a message the host already stores, in place: the message
  * keeps its id, its time and everything but the text being edited — its
@@ -245,18 +258,22 @@ export async function updateSessionMessageText(
 }
 
 /**
- * Take a step out of a message the host already stores: a run of text, a run
- * of reasoning, or a tool call with its result. Rejects when the host knows
- * no such step.
+ * Permanently delete a message or a specific step, including a tool's result.
+ * The host also discards the provider context containing the removed content.
  */
-export async function removeSessionMessagePart(
+export async function removeSessionMessage(
   sessionId: string,
   messageId: string,
   role: "user" | "assistant",
-  part: MessagePart,
+  part?: MessagePart,
 ): Promise<SessionMessageRemoveResponse> {
   const client = await getClient();
-  return client.host.sessionMessageRemove({ sessionId, messageId, role, part });
+  return client.host.sessionMessageRemove({
+    sessionId,
+    messageId,
+    role,
+    ...(part ? { part } : {}),
+  });
 }
 
 export interface AcpForkSessionOptions {

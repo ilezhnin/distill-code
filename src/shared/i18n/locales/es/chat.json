@@ -376,6 +376,10 @@
     "archiveConfirmAction": "Archivar y quitar"
   },
   "message": {
+    "remove": "Eliminar mensaje",
+    "removeTitle": "?Eliminar este mensaje permanentemente?",
+    "removeDescription": "Este mensaje y sus pasos se eliminar?n de este chat. El agente continuar? con el historial restante. No se puede deshacer.",
+    "removeFailed": "No se pudo eliminar el mensaje.",
     "copied": "Copiado",
     "defaultImageAlt": "Adjunto",
     "edit": "Editar mensaje",
@@ -812,6 +816,12 @@
     "attach": "Adjuntar",
     "attachFile": "Archivo",
     "attachFolder": "Carpeta",
+    "loadChat": "Cargar chat",
+    "loadChatDialogTitle": "Cargar un chat",
+    "loadChatDone_one": "Se cargó {{count}} mensaje en este chat",
+    "loadChatDone_other": "Se cargaron {{count}} mensajes en este chat",
+    "loadChatFailed": "No se pudo cargar el chat",
+    "loadChatNotReady": "Este chat todavía no está listo. Espera un momento y vuelve a intentarlo.",
     "chooseAgentModel": "Elegir agente y modelo",
     "chooseProject": "Elegir un proyecto",
     "compactNow": "Compactar",
@@ -957,7 +967,7 @@
     "editStep": "Editar paso",
     "removeStep": "Eliminar paso",
     "removeStepTitle": "¿Eliminar este paso?",
-    "removeStepDescription": "El paso se quita de la transcripción guardada del chat. No se puede deshacer.",
+    "removeStepDescription": "Este paso se eliminar? de este chat. El agente continuar? con el historial restante. No se puede deshacer.",
     "redactedThinking": "Pensamiento redactado",
     "thought": {
       "label": "Pensamiento"

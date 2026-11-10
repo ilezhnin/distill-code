@@ -12,6 +12,17 @@ use std::path::Path;
 use super::execution::{ExecutionDispatch, OwnedEvent, OwnedEventPage, OwnedSessionRequest};
 use super::protocol::now_iso;
 
+pub(super) const SNIPPET_CHARS: usize = 200;
+
+pub(super) fn message_snippet(text: &str) -> Option<String> {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed.chars().take(SNIPPET_CHARS).collect())
+    }
+}
+
 // Ownership can grow from one probe to thousands of rows between planner
 // maintenance runs. Its unique key must remain a lookup even with stale stats.
 const SESSION_LIST_SQL: &str = "SELECT s.*, o.policy_json AS execution_policy_json, o.owner_purpose AS execution_owner_purpose FROM sessions s INDEXED BY sessions_visible_activity LEFT JOIN session_execution_owners o INDEXED BY sqlite_autoindex_session_execution_owners_1 ON o.session_id = s.id WHERE s.hidden = 0 ORDER BY s.updated_at DESC, s.created_at DESC LIMIT ? OFFSET ?";
@@ -2313,16 +2324,16 @@ impl SessionStore {
         })
     }
 
-    /// Take a part out of a message already in the log: a run of text, a run
-    /// of thoughts, or a tool call with its progress. Everything else stays
-    /// where it was, under its own time. One transaction. Nothing is written
-    /// when the message holds no such part.
-    pub async fn remove_message_part(
+    /// Permanently remove a whole message, or one text/thought/tool step.
+    /// Reset the provider binding and cached context in the same transaction,
+    /// leaving other messages and their timestamps unchanged. A missing target
+    /// changes nothing, including the provider binding.
+    pub async fn remove_message(
         &self,
         session_id: &str,
         side: MessageSide,
         message_id: &str,
-        part: &MessagePart,
+        part: Option<&MessagePart>,
     ) -> Result<MessageRemoval, String> {
         let mut tx = self
             .pool
@@ -2331,7 +2342,10 @@ impl SessionStore {
             .map_err(|error| db_error("failed to start removal transaction", error))?;
         let events = Self::session_events_in(&mut tx, session_id).await?;
         let (own, text_rows) = collect_own(&events, side, message_id);
-        let targets = part_updates(&own, part);
+        let targets = match part {
+            Some(part) => part_updates(&own, part),
+            None => (0..own.len()).collect(),
+        };
         if targets.is_empty() {
             return Ok(MessageRemoval {
                 removed: 0,
@@ -2352,19 +2366,40 @@ impl SessionStore {
                 .await
                 .map_err(|error| db_error("failed to remove a step", error))?;
         }
+        let remaining: Vec<&Value> = events
+            .iter()
+            .filter(|(row, _)| !removed_rows.contains(row))
+            .map(|(_, event)| event)
+            .collect();
+        let last = last_text_run(remaining.iter().copied());
+        let snippet = last.as_deref().and_then(message_snippet);
+        let message_count = remaining
+            .iter()
+            .filter_map(|event| renderer_identity(&event["update"]))
+            .collect::<std::collections::HashSet<_>>()
+            .len() as i64;
+        // Never resume a provider context that still contains the removed
+        // content. The next prompt rebuilds context from this surviving log.
+        // Commit the log, its metadata and the context reset together.
+        sqlx::query("UPDATE sessions SET bridge_session_id = NULL, carryover_pending = ?, message_count = ?, last_snippet = ? WHERE id = ?")
+            .bind(message_count > 0)
+            .bind(message_count)
+            .bind(snippet)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to reset context after removal", error))?;
+        // This cached import contains the original, unedited transcript.
+        sqlx::query("DELETE FROM kv WHERE scope = ? AND key = ?")
+            .bind(super::transcript_import::HANDOFF_SCOPE)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to remove stale import context", error))?;
         tx.commit()
             .await
             .map_err(|error| db_error("failed to commit the removal", error))?;
-        let last_text = if was_last {
-            last_text_run(
-                events
-                    .iter()
-                    .filter(|(row, _)| !removed_rows.contains(row))
-                    .map(|(_, event)| event),
-            )
-        } else {
-            None
-        };
+        let last_text = if was_last { last } else { None };
         Ok(MessageRemoval {
             removed: removed_rows.len(),
             was_last,
@@ -4617,11 +4652,11 @@ mod tests {
 
         // A tool call goes with its progress; the text around it stays.
         let removal = store
-            .remove_message_part(
+            .remove_message(
                 "c",
                 MessageSide::Assistant,
                 "r1",
-                &MessagePart::Tool("t1".to_string()),
+                Some(&MessagePart::Tool("t1".to_string())),
             )
             .await
             .expect("remove");
@@ -4635,11 +4670,11 @@ mod tests {
         );
         // A thought run goes whole, a text run with all its chunks.
         let removal = store
-            .remove_message_part(
+            .remove_message(
                 "c",
                 MessageSide::Assistant,
                 "r1",
-                &MessagePart::Reasoning(0),
+                Some(&MessagePart::Reasoning(0)),
             )
             .await
             .expect("remove");
@@ -4648,7 +4683,12 @@ mod tests {
         // the text after them sit side by side: one run now, three chunks —
         // the same run the transcript shows as one step.
         let removal = store
-            .remove_message_part("c", MessageSide::Assistant, "r1", &MessagePart::Text(0))
+            .remove_message(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                Some(&MessagePart::Text(0)),
+            )
             .await
             .expect("remove");
         assert_eq!(removal.removed, 3);
@@ -4664,11 +4704,11 @@ mod tests {
 
         // A step the reply does not have leaves the log as it is.
         let removal = store
-            .remove_message_part(
+            .remove_message(
                 "c",
                 MessageSide::Assistant,
                 "r1",
-                &MessagePart::Tool("t9".to_string()),
+                Some(&MessagePart::Tool("t9".to_string())),
             )
             .await
             .expect("remove");
@@ -4700,7 +4740,12 @@ mod tests {
         .await;
 
         let removal = store
-            .remove_message_part("c", MessageSide::Assistant, "r1", &MessagePart::Text(1))
+            .remove_message(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                Some(&MessagePart::Text(1)),
+            )
             .await
             .expect("remove");
         assert_eq!(
@@ -4714,10 +4759,183 @@ mod tests {
 
         // With the step gone too, the prompt is the last word.
         let removal = store
-            .remove_message_part("c", MessageSide::Assistant, "r1", &MessagePart::Text(0))
+            .remove_message(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                Some(&MessagePart::Text(0)),
+            )
             .await
             .expect("remove");
         assert_eq!(removal.last_text.as_deref(), Some("question"));
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn transcript_deletion_removes_a_reply_and_resets_only_its_context() {
+        let (dir, store) = store_with_a_stepped_reply().await;
+        store.insert_session(&record("other")).await.unwrap();
+        store
+            .set_bridge_session_id("c", Some("old-native"))
+            .await
+            .unwrap();
+        store
+            .set_bridge_session_id("other", Some("other-native"))
+            .await
+            .unwrap();
+        store
+            .kv_set(
+                super::super::transcript_import::HANDOFF_SCOPE,
+                "c",
+                &json!({"text":"cached reply with removed tool output"}),
+            )
+            .await
+            .unwrap();
+        store
+            .kv_set(
+                super::super::transcript_import::HANDOFF_SCOPE,
+                "other",
+                &json!({"text":"keep this context"}),
+            )
+            .await
+            .unwrap();
+        let before = store.get_session("c").await.unwrap().unwrap();
+        let removal = store
+            .remove_message("c", MessageSide::Assistant, "r1", None)
+            .await
+            .unwrap();
+        assert!(removal.removed > 1);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![("user_message_chunk".into(), "question".into())]
+        );
+        let after = store.get_session("c").await.unwrap().unwrap();
+        assert_eq!(after.bridge_session_id, None);
+        assert_eq!(after.message_count, 1);
+        assert_eq!(after.last_snippet.as_deref(), Some("question"));
+        assert_eq!(after.updated_at, before.updated_at);
+        assert!(store.carryover_pending("c").await.unwrap());
+        assert!(store
+            .kv_get(super::super::transcript_import::HANDOFF_SCOPE, "c")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .get_session("other")
+                .await
+                .unwrap()
+                .unwrap()
+                .bridge_session_id
+                .as_deref(),
+            Some("other-native")
+        );
+        assert!(store
+            .kv_get(super::super::transcript_import::HANDOFF_SCOPE, "other")
+            .await
+            .unwrap()
+            .is_some());
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn transcript_deletion_preserves_the_reply_when_its_user_prompt_is_removed() {
+        let prompt = json!({"messageId":"m1"});
+        let (dir, store) = store_with_conversation(&[
+            chunk(
+                "user_message_chunk",
+                prompt.clone(),
+                text("erase this question"),
+            ),
+            chunk(
+                "user_message_chunk",
+                prompt.clone(),
+                json!({"type":"image","data":"private-image","mimeType":"image/png"}),
+            ),
+            chunk("agent_message_chunk", prompt, text("keep this answer")),
+        ])
+        .await;
+        store
+            .set_bridge_session_id("c", Some("old-native"))
+            .await
+            .unwrap();
+        let missing = store
+            .remove_message("c", MessageSide::User, "unknown", None)
+            .await
+            .unwrap();
+        assert_eq!(missing.removed, 0);
+        assert_eq!(
+            store
+                .get_session("c")
+                .await
+                .unwrap()
+                .unwrap()
+                .bridge_session_id
+                .as_deref(),
+            Some("old-native")
+        );
+        let removal = store
+            .remove_message("c", MessageSide::User, "m1", None)
+            .await
+            .unwrap();
+        assert_eq!(removal.removed, 2);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![("agent_message_chunk".into(), "keep this answer".into())]
+        );
+        store
+            .remove_message("c", MessageSide::Assistant, "m1:reply", None)
+            .await
+            .unwrap();
+        let empty = store.get_session("c").await.unwrap().unwrap();
+        assert_eq!(empty.message_count, 0);
+        assert_eq!(empty.last_snippet, None);
+        assert!(!store.carryover_pending("c").await.unwrap());
+        assert!(store.list_events("c").await.unwrap().is_empty());
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn transcript_deletion_of_a_tool_removes_its_output_and_stale_import_context() {
+        let (dir, store) = store_with_a_stepped_reply().await;
+        store
+            .set_bridge_session_id("c", Some("old-native"))
+            .await
+            .unwrap();
+        store
+            .kv_set(
+                super::super::transcript_import::HANDOFF_SCOPE,
+                "c",
+                &json!({"text":"stale tool output"}),
+            )
+            .await
+            .unwrap();
+        let removal = store
+            .remove_message(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                Some(&MessagePart::Tool("t1".into())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(removal.removed, 2);
+        let events = store.list_events("c").await.unwrap();
+        assert!(!events.iter().any(|e| e["update"]["toolCallId"] == "t1"));
+        assert!(events.iter().any(|e| e["update"]["toolCallId"] == "t2"));
+        assert!(store.carryover_pending("c").await.unwrap());
+        assert!(store
+            .get_session("c")
+            .await
+            .unwrap()
+            .unwrap()
+            .bridge_session_id
+            .is_none());
+        assert!(store
+            .kv_get(super::super::transcript_import::HANDOFF_SCOPE, "c")
+            .await
+            .unwrap()
+            .is_none());
         dir.close().await;
     }
 

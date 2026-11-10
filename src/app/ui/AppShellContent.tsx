@@ -1,5 +1,8 @@
 import { memo, useCallback, useEffect, type ReactNode } from "react";
-import { HomeScreen } from "@/features/chat/ui/home/HomeScreen";
+import {
+  HomeScreen,
+  type HomeScreenProps,
+} from "@/features/chat/ui/home/HomeScreen";
 import { WelcomeView } from "@/features/chat/ui/home/WelcomeView";
 import { ChatView } from "@/features/chat/ui/ChatView";
 import { BenchmarksView } from "@/features/benchmarks/ui/BenchmarksView";
@@ -49,6 +52,7 @@ interface AppShellContentProps {
   isPreparingContent: boolean;
   renderedSession?: ChatSession;
   homeSessionId: string | null;
+  ensureHomeSession?: HomeScreenProps["ensureSession"];
   chatComposerHandoffRequest?: number;
   chatComposerHandoffSessionId?: string | null;
   chatComposerHandoffActive?: boolean;
@@ -109,6 +113,7 @@ export function AppShellContent({
   onDesignSystemSectionChange,
   renderedSession,
   homeSessionId,
+  ensureHomeSession,
   chatComposerHandoffRequest = 0,
   chatComposerHandoffSessionId = null,
   chatComposerHandoffActive = false,
@@ -157,6 +162,7 @@ export function AppShellContent({
   const homeContent = (
     <MemoizedWelcomeView
       sessionId={homeSessionId}
+      ensureSession={ensureHomeSession}
       onActivateSession={onActivateHomeSession}
       onCreatePersona={onCreatePersona}
       onCreateProject={onCreateProject}
@@ -173,6 +179,7 @@ export function AppShellContent({
     designSystemInspectorVisible,
     homeContent,
     homeSessionId,
+    ensureHomeSession,
     location: renderedLocation,
     onCloseDesignSystem,
     onDesignSystemInspectorVisibleChange,
@@ -236,6 +243,7 @@ interface RenderRouteContentOptions {
   designSystemInspectorVisible?: boolean;
   homeContent: ReactNode;
   homeSessionId: string | null;
+  ensureHomeSession?: HomeScreenProps["ensureSession"];
   location: AppNavigationLocation;
   onCloseDesignSystem?: () => void;
   onDesignSystemInspectorVisibleChange?: (visible: boolean) => void;
@@ -296,6 +304,7 @@ function renderRouteContent({
   designSystemInspectorVisible,
   homeContent,
   homeSessionId,
+  ensureHomeSession,
   location,
   onActivateHomeSession,
   onAgentsBreadcrumbLabelChange,
@@ -420,6 +429,7 @@ function renderRouteContent({
       ) : (
         <HomeScreen
           sessionId={homeSessionId}
+          ensureSession={ensureHomeSession}
           onActivateSession={onActivateHomeSession}
           onCreatePersona={onCreatePersona}
           onCreateProject={onCreateProject}

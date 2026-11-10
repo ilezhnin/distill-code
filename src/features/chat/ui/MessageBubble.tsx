@@ -394,6 +394,7 @@ interface MessageBubbleProps {
   onCopy?: () => void;
   onRetryMessage?: (messageId: string) => void;
   onEditMessage?: (messageId: string) => void;
+  onRemoveMessage?: (messageId: string) => void;
   onJumpToResponseStart?: (messageId: string) => void;
   onForkFromMessage?: (messageId: string) => void;
   showJumpToResponseStartHint?: boolean;
@@ -747,6 +748,7 @@ export const MessageBubble = memo(function MessageBubble({
   fragmentRole,
   onRetryMessage,
   onEditMessage,
+  onRemoveMessage,
   onJumpToResponseStart,
   onForkFromMessage,
   showJumpToResponseStartHint,
@@ -1302,6 +1304,7 @@ export const MessageBubble = memo(function MessageBubble({
                 onCopy={() => copyToClipboard(actionTextContent)}
                 onRetryMessage={onRetryMessage}
                 onEditMessage={onEditMessage}
+                onRemoveMessage={onRemoveMessage}
                 onJumpToResponseStart={
                   !isUser && !isStreaming ? onJumpToResponseStart : undefined
                 }

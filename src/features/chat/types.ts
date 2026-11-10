@@ -149,6 +149,7 @@ export interface ComposerMessageEdit {
 
 export interface ChatInputComposerActions {
   onSend: ChatInputSendHandler;
+  onLoadChat?: () => void | Promise<void>;
   onSteerMessage?: ChatInputSendHandler;
   onStop?: () => void;
   onSteerQueuedMessage?: () => boolean | Promise<boolean>;

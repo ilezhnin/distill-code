@@ -219,6 +219,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const {
     onSend,
+    onLoadChat,
     onSteerMessage,
     onStop,
     onSteerQueuedMessage,
@@ -1701,6 +1702,7 @@ export function ChatInput({
                   attachmentsEnabled: scopedControls.attachments,
                   onAttachFiles: handleAttachFiles,
                   onAttachFolders: handleAttachFolders,
+                  onLoadChat,
                   disabled,
                   sendDisabledReason,
                   onSend: handleSend,

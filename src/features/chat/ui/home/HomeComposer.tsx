@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { ChatInput } from "@/features/chat/ui/ChatInput";
+import { useLoadChatTranscript } from "@/features/chat/hooks/useLoadChatTranscript";
 import {
   useChatSessionController,
   type WorkspaceNameRequest,
@@ -10,6 +11,7 @@ import type { HomeScreenProps } from "./HomeScreen";
 
 interface HomeComposerProps {
   sessionId: string | null;
+  ensureSession?: HomeScreenProps["ensureSession"];
   onActivateSession: (sessionId: string) => void;
   onCreatePersona?: () => void;
   onWorkspaceNameRequest?: (request: WorkspaceNameRequest) => void;
@@ -18,11 +20,17 @@ interface HomeComposerProps {
 
 export function HomeComposer({
   sessionId,
+  ensureSession,
   onActivateSession,
   onCreatePersona,
   onWorkspaceNameRequest,
   onCreateProject,
 }: HomeComposerProps) {
+  const loadChat = useLoadChatTranscript({
+    sessionId,
+    ensureSession,
+    onImported: onActivateSession,
+  });
   const controller = useChatSessionController({
     sessionId,
     isHomeSession: true,
@@ -68,6 +76,7 @@ export function HomeComposer({
     <ChatInput
       composerActions={{
         onSend: controller.handleSend,
+        onLoadChat: loadChat,
         onSteerQueuedMessage: controller.steerQueuedMessage,
         canSteerQueuedMessage: controller.canSteerQueuedMessage,
         disabled: controller.projectMetadataPending,

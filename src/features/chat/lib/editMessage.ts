@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
-  removeSessionMessagePart,
+  removeSessionMessage,
   updateSessionMessageText,
 } from "@/shared/api/acpApi";
 import { evictSessionSearchCorpus } from "@/shared/api/sessionSearch";
@@ -254,43 +254,52 @@ export async function updateTranscriptMessageText(
   return true;
 }
 
-export interface RemoveTranscriptMessagePartOptions {
+export interface RemoveTranscriptMessageOptions {
   queryClient?: QueryClient;
 }
 
 /**
- * Take a step out of an agent's reply on the host and, once it is gone,
- * everywhere the renderer shows it. When the step held the chat's last text,
- * the list snippet moves to whatever text the chat ends on now.
+ * Delete a message or step on the host, then remove it from the renderer and
+ * search cache. A whole reply includes its steps. Refresh the stored count
+ * and snippet even when deletion leaves the chat empty.
  *
- * Resolves `false` without touching anything for a message that is not the
- * agent's; rejects with the host's error when the host knows no such step.
+ * System notices and individual parts of user messages are not deletable.
  */
-export async function removeTranscriptMessagePart(
+export async function removeTranscriptMessage(
   sessionId: string,
   message: Message,
-  part: MessagePart,
-  options: RemoveTranscriptMessagePartOptions = {},
+  part?: MessagePart,
+  options: RemoveTranscriptMessageOptions = {},
 ): Promise<boolean> {
-  if (message.role !== "assistant") {
+  if (
+    (message.role !== "assistant" && message.role !== "user") ||
+    (part && message.role !== "assistant")
+  ) {
     return false;
   }
-  const response = await removeSessionMessagePart(
+  const response = await removeSessionMessage(
     sessionId,
     message.id,
     message.role,
     part,
   );
-  useChatStore
-    .getState()
-    .updateMessage(sessionId, message.id, (current) =>
+  const chat = useChatStore.getState();
+  if (part) {
+    chat.updateMessage(sessionId, message.id, (current) =>
       removeMessagePart(current, part),
     );
-  if (response.lastMessage && response.snippet) {
-    useChatSessionStore
+    const remaining = useChatStore
       .getState()
-      .updateSessionSubtitleFromText(sessionId, response.snippet);
+      .messagesBySession[sessionId]?.find((item) => item.id === message.id);
+    if (remaining?.content.length === 0)
+      chat.removeMessage(sessionId, message.id);
+  } else {
+    chat.removeMessage(sessionId, message.id);
   }
+  useChatSessionStore.getState().patchSession(sessionId, {
+    subtitle: response.snippet ?? undefined,
+    messageCount: response.messageCount,
+  });
   if (options.queryClient) {
     evictSessionSearchCorpus(options.queryClient, sessionId);
   }

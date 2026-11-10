@@ -165,6 +165,49 @@ function restoreScrollHeight() {
 }
 
 describe("MessageBubble", () => {
+  it("offers a trash button beside edit for either side and targets the original message", async () => {
+    const onRemoveMessage = vi.fn();
+    const onEditMessage = vi.fn();
+    const view = render(
+      <MessageBubble
+        message={userMessage("question")}
+        onRemoveMessage={onRemoveMessage}
+        onEditMessage={onEditMessage}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Edit message" }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Delete message" }),
+    );
+    expect(onRemoveMessage).toHaveBeenLastCalledWith(
+      userMessage("question").id,
+    );
+    view.rerender(
+      <MessageBubble
+        message={assistantMessage([{ type: "text", text: "answer" }])}
+        actionMessageId="original-reply"
+        onRemoveMessage={onRemoveMessage}
+        onEditMessage={onEditMessage}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Delete message" }),
+    );
+    expect(onRemoveMessage).toHaveBeenLastCalledWith("original-reply");
+    view.rerender(
+      <MessageBubble
+        message={assistantMessage([{ type: "text", text: "answer" }])}
+        isStreaming
+        onRemoveMessage={onRemoveMessage}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Delete message" }),
+    ).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     useAgentStore.setState({ personas: [] });
     useProviderCatalogStore.getState().setEntries(providerCatalogEntries);

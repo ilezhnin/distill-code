@@ -92,7 +92,7 @@ export interface SessionMessageUpdateResponse {
   lastMessage: boolean;
 }
 
-/** What taking a step out of a stored message did on the host. */
+/** What permanently deleting a message or step did on the host. */
 export interface SessionMessageRemoveResponse {
   /** Stored updates removed. */
   removed: number;
@@ -100,6 +100,7 @@ export interface SessionMessageRemoveResponse {
   lastMessage: boolean;
   /** The snippet the chat list quotes now, when it moved; null when no text is left. */
   snippet: string | null;
+  messageCount: number;
 }
 
 /**

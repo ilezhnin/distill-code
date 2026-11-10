@@ -166,6 +166,28 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .await
                 .map_err(protocol::internal)
         }
+        "session/import_transcript" => {
+            let id = session_id(&params)?;
+            let text = params
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_params("text required"))?;
+            if host.active_run_id(&id).await.is_some() {
+                return Err(invalid_params(
+                    "Stop the current turn before loading a chat into it",
+                ));
+            }
+            host.drain_bridge_events().await?;
+            if host.active_run_id(&id).await.is_some() {
+                return Err(invalid_params(
+                    "Stop the current turn before loading a chat into it",
+                ));
+            }
+            super::transcript_import::apply(&host.store, &id, text)
+                .await
+                .map_err(invalid_params)
+        }
         "session/messages" => {
             let id = session_id(&params)?;
             // The updates of a chat that is streaming right now may still be
@@ -209,7 +231,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             // an edit further up never rewrites what the chat currently ends
             // on. The times stay: nothing new was said.
             if rewrite.was_last {
-                let snippet = Inner::snippet(text);
+                let snippet = super::store::message_snippet(text);
                 host.store
                     .set_last_snippet(&id, snippet.as_deref())
                     .await
@@ -220,34 +242,9 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
         "session/message/remove" => {
             let id = session_id(&params)?;
             let (message_id, side) = message_target(&params)?;
-            let part = message_part(&params)?.ok_or_else(|| invalid_params("part required"))?;
-            // As for an edit: the log has to hold the whole turn first.
-            host.drain_bridge_events().await?;
-            let removal = host
-                .store
-                .remove_message_part(&id, side, &message_id, &part)
+            let part = message_part(&params)?;
+            host.remove_transcript_message(&id, side, &message_id, part.as_ref())
                 .await
-                .map_err(protocol::internal)?;
-            if removal.removed == 0 {
-                return Err(invalid_params(format!(
-                    "No such step in message {message_id} of session {id}"
-                )));
-            }
-            // The step held the chat's last word: the list now quotes
-            // whatever text the chat ends on, or nothing.
-            let mut snippet = None;
-            if removal.was_last {
-                snippet = removal.last_text.as_deref().and_then(Inner::snippet);
-                host.store
-                    .set_last_snippet(&id, snippet.as_deref())
-                    .await
-                    .map_err(protocol::internal)?;
-            }
-            Ok(json!({
-                "removed": removal.removed,
-                "lastMessage": removal.was_last,
-                "snippet": snippet,
-            }))
         }
 
         // --- preferences ----------------------------------------------------

@@ -42,6 +42,7 @@ export function getTimelineMessageIdentity(message: Message): string {
 export interface MessageBubbleCallbacks {
   onRetryMessage?: (messageId: string) => void;
   onEditMessage?: (messageId: string) => void;
+  onRemoveMessage?: (messageId: string) => void;
   /** Edit one step of an agent's reply in the composer. */
   onEditMessagePart?: (messageId: string, part: MessagePart) => void;
   /** Take one step out of an agent's reply. */

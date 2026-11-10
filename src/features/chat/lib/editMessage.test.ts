@@ -4,7 +4,7 @@ import type { Message } from "@/shared/types/messages";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { useChatStore } from "../stores/chatStore";
 import {
-  removeTranscriptMessagePart,
+  removeTranscriptMessage,
   replaceMessageText,
   updateTranscriptMessageText,
 } from "./editMessage";
@@ -20,15 +20,16 @@ const mockUpdateSessionMessageText = vi.hoisted(() =>
   >(),
 );
 
-const mockRemoveSessionMessagePart = vi.hoisted(() =>
+const mockRemoveSessionMessage = vi.hoisted(() =>
   vi.fn<
     (
       sessionId: string,
       messageId: string,
       role: "user" | "assistant",
-      part: { kind: string },
+      part?: { kind: string },
     ) => Promise<{
       removed: number;
+      messageCount: number;
       lastMessage: boolean;
       snippet: string | null;
     }>
@@ -37,7 +38,7 @@ const mockRemoveSessionMessagePart = vi.hoisted(() =>
 
 vi.mock("@/shared/api/acpApi", () => ({
   updateSessionMessageText: mockUpdateSessionMessageText,
-  removeSessionMessagePart: mockRemoveSessionMessagePart,
+  removeSessionMessage: mockRemoveSessionMessage,
 }));
 
 function message(overrides: Partial<Message> = {}): Message {
@@ -214,9 +215,9 @@ describe("updateTranscriptMessageText", () => {
   });
 });
 
-describe("removeTranscriptMessagePart", () => {
+describe("removeTranscriptMessage", () => {
   beforeEach(() => {
-    mockRemoveSessionMessagePart.mockReset();
+    mockRemoveSessionMessage.mockReset();
     useChatStore.getState().setMessages("s1", [
       message(),
       message({
@@ -250,10 +251,11 @@ describe("removeTranscriptMessagePart", () => {
   });
 
   it("takes the step out on the host, then on screen", async () => {
-    mockRemoveSessionMessagePart.mockResolvedValue({
+    mockRemoveSessionMessage.mockResolvedValue({
       removed: 2,
+      messageCount: 2,
       lastMessage: false,
-      snippet: null,
+      snippet: "the reply",
     });
     const reply = useChatStore.getState().messagesBySession.s1?.[1];
     if (!reply) throw new Error("fixture reply missing");
@@ -261,7 +263,7 @@ describe("removeTranscriptMessagePart", () => {
     queryClient.setQueryData(["session-search-corpus", "s1", "stamp"], []);
 
     await expect(
-      removeTranscriptMessagePart(
+      removeTranscriptMessage(
         "s1",
         reply,
         { kind: "tool", toolCallId: "t1" },
@@ -269,7 +271,7 @@ describe("removeTranscriptMessagePart", () => {
       ),
     ).resolves.toBe(true);
 
-    expect(mockRemoveSessionMessagePart).toHaveBeenCalledWith(
+    expect(mockRemoveSessionMessage).toHaveBeenCalledWith(
       "s1",
       "r1",
       "assistant",
@@ -287,24 +289,71 @@ describe("removeTranscriptMessagePart", () => {
     ).toBeUndefined();
   });
 
-  it("changes nothing on screen when the host refuses, and never asks about a prompt", async () => {
-    mockRemoveSessionMessagePart.mockRejectedValue(new Error("No such step"));
+  it("removes a whole reply, its steps and search cache after the host commits", async () => {
+    mockRemoveSessionMessage.mockResolvedValue({
+      removed: 3,
+      messageCount: 1,
+      lastMessage: true,
+      snippet: "hello",
+    });
+    const reply = useChatStore.getState().messagesBySession.s1![1]!;
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(["session-search-corpus", "s1", "stamp"], [reply]);
+    await removeTranscriptMessage("s1", reply, undefined, { queryClient });
+    expect(mockRemoveSessionMessage).toHaveBeenCalledWith(
+      "s1",
+      "r1",
+      "assistant",
+      undefined,
+    );
+    expect(
+      useChatStore.getState().messagesBySession.s1?.map((m) => m.id),
+    ).toEqual(["m1"]);
+    expect(useChatSessionStore.getState().getSession("s1")).toMatchObject({
+      messageCount: 1,
+      subtitle: "hello",
+    });
+    expect(
+      queryClient.getQueryData(["session-search-corpus", "s1", "stamp"]),
+    ).toBeUndefined();
+  });
+
+  it("deletes a user message and clears the last snippet when the chat becomes empty", async () => {
+    useChatStore.getState().setMessages("s1", [message()]);
+    mockRemoveSessionMessage.mockResolvedValue({
+      removed: 1,
+      messageCount: 0,
+      lastMessage: true,
+      snippet: null,
+    });
+    await removeTranscriptMessage("s1", message());
+    expect(useChatStore.getState().messagesBySession.s1).toEqual([]);
+    expect(
+      useChatSessionStore.getState().getSession("s1")?.subtitle,
+    ).toBeUndefined();
+    expect(useChatSessionStore.getState().getSession("s1")?.messageCount).toBe(
+      0,
+    );
+  });
+
+  it("changes nothing on screen when the host refuses, and never removes a part of a prompt", async () => {
+    mockRemoveSessionMessage.mockRejectedValue(new Error("No such step"));
     const reply = useChatStore.getState().messagesBySession.s1?.[1];
     if (!reply) throw new Error("fixture reply missing");
 
     await expect(
-      removeTranscriptMessagePart("s1", reply, { kind: "text", ordinal: 0 }),
+      removeTranscriptMessage("s1", reply, { kind: "text", ordinal: 0 }),
     ).rejects.toThrow("No such step");
     expect(
       useChatStore.getState().messagesBySession.s1?.[1]?.content,
     ).toHaveLength(3);
 
     await expect(
-      removeTranscriptMessagePart("s1", message(), {
+      removeTranscriptMessage("s1", message(), {
         kind: "text",
         ordinal: 0,
       }),
     ).resolves.toBe(false);
-    expect(mockRemoveSessionMessagePart).toHaveBeenCalledTimes(1);
+    expect(mockRemoveSessionMessage).toHaveBeenCalledTimes(1);
   });
 });

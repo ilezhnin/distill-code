@@ -5,6 +5,7 @@ import type { WorkspaceNameRequest } from "@/features/chat/hooks/useChatSessionC
 
 export interface HomeScreenProps {
   sessionId: string | null;
+  ensureSession?: () => Promise<{ id: string } | null | undefined>;
   onActivateSession: (sessionId: string) => void;
   onCreatePersona?: () => void;
   onWorkspaceNameRequest?: (request: WorkspaceNameRequest) => void;
@@ -15,6 +16,7 @@ export interface HomeScreenProps {
 
 export function HomeScreen({
   sessionId,
+  ensureSession,
   onActivateSession,
   onCreatePersona,
   onWorkspaceNameRequest,
@@ -34,6 +36,7 @@ export function HomeScreen({
         <div className="flex w-full max-w-[600px] flex-col antialiased">
           <HomeComposer
             sessionId={sessionId}
+            ensureSession={ensureSession}
             onActivateSession={onActivateSession}
             onCreatePersona={onCreatePersona}
             onCreateProject={onCreateProject}
