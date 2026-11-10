@@ -20,6 +20,17 @@ members = [
   "plugins/flockctl",
   "plugins/app-test-driver",
 ]
+exclude = ["vendor/sqlx-sqlite"]
+
+# sqlx 0.8.6 bundles SQLite through libsqlite3-sys ^0.30.1, and SQLite before
+# 3.54.0 can return uninitialized page-cache memory for a database opened with
+# a `-wal` file of another page size (RUSTSEC-2026-0459). libsqlite3-sys 0.39
+# bundles 3.54, and no sqlx release accepts it yet: sqlx main allows
+# `>=0.30.1, <0.40.0`. vendor/sqlx-sqlite is the published sqlx-sqlite 0.8.6
+# with that range and nothing else changed. Drop it once a sqlx release this
+# app can take allows libsqlite3-sys 0.39.
+[patch.crates-io]
+sqlx-sqlite = { path = "vendor/sqlx-sqlite" }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
