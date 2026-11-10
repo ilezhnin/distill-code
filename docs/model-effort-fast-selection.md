@@ -11,11 +11,13 @@ A chat runs on four selections:
 
 Fast has an immediate toggle after the reasoning control in both composers,
 available from the inventory before a session opens and from the acknowledged
-option afterward. Codex and Grok keep the newest numeric generation present in
-their inventory on the main page and file earlier generations under More
-models; same-generation variants (including Grok Fast) stay together. Unknown
-model IDs stay on the main page. This grouping never removes a model or changes
-the current selection.
+option afterward. Codex and Grok keep the newest generation of each tier
+present in their inventory on the main page (GPT-6.1 Sol beside GPT-6 Astra,
+Grok 4.7 beside Grok 4.7 Fast) and file a model under More models once a
+newer major generation is listed or a newer generation of its own tier; a
+model that names no tier is filed there once any newer generation is. Unknown
+model IDs stay on the main page. This grouping never removes a model or
+changes the current selection.
 
 Each is chosen on its own, stored on its own, and applied in a fixed order.
 Flock used to fold the effort into the model id (`gpt-5.6-sol[low]`); that
@@ -167,8 +169,10 @@ the split was built.
 - **Haiku** has neither an effort control nor fast mode; the effort pill is
   hidden.
 - **Opus 4.6 and Sonnet 4.6** have no `xhigh`.
-- **Fast mode on Claude** exists only on `default`, `opus[1m]`, Opus 4.8 and
-  Opus 4.7 — not on Fable 5 / 5.1 / 5.2, Sonnet 5, Haiku, Opus 4.6 or Sonnet 4.6.
+- **Fast mode on Claude** exists on `opus[1m]`, Fable 5.2, Opus 5 and
+  Opus 4.8 — not on Fable 5 / 5.1, Sonnet, Haiku, Opus 4.7, Opus 4.6 or
+  Sonnet 4.6 (probed 2026-11-10 on Claude ACP 0.104.1). `default` has it when
+  the model it names does.
 - **Fast mode on codex** exists on every model except GPT-5.3-Codex-Spark.
   codex offers `ultra` on some models (not all), and Luna tops out at `max`.
 - **grok** has a real `reasoning_effort` option and no fast toggle;
@@ -231,6 +235,44 @@ memory scopes and `distill-memory` write protocol remain authoritative.
 Upstream changes: [Claude ACP 0.81.0](https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.81.0),
 [Codex ACP 1.13.0](https://github.com/agentclientprotocol/codex-acp/releases/tag/v1.13.0),
 [Grok CLI reference](https://docs.x.ai/build/cli/reference).
+
+## Harness pins: 2026-11-10
+
+The managed pins moved to Claude ACP **0.104.1** (Claude Agent SDK
+**0.3.322**, Claude Code 2.1.322) and Codex ACP **2.6.0** (Codex CLI
+**0.166.0**). Flock still negotiates ACP v1 with both.
+
+- **Codex models are served by client version.** The Codex backend lists
+  GPT-6.1 Sol and GPT-6.1 Terra for a CLI from 0.160 on and withholds them
+  from 0.155.1, whatever the account. A model missing from the Codex menu is
+  first a question about the pinned CLI.
+- **Claude Code's `fable` names Fable 5.2** since 2.1.322, with a fast toggle,
+  and Fable 5.1 is listed as `claude-fable-5-1`. Both are declared in
+  `harness.rs` as other names for their `[1m]` lanes; `claude-fable-5-2`, the
+  id 2.1.312 listed, still names the 5.2 lane.
+- **Codex ACP 2 reports tool calls to an AIR client by its own contract**, and
+  Flock is one because it declares the AIR extensions it needs
+  (`sessionFailure`, `asyncTasks`). A shell command still streams through
+  `terminal_output_delta` and ends with `terminal_exit`, now often in one
+  update. A command Codex classifies as a file read sends no output, and a
+  search or a listing sends its output once in `rawOutput`.
+- **Two bridge features that spend tokens on their own are off.** Codex ACP
+  asks the model to predict the next prompt after every turn of an AIR client
+  (`CODEX_ACP_PROMPT_SUGGESTIONS=false` in the harness environment), and
+  Claude ACP compacts a session that sat idle for 54 minutes on a context of
+  200,000 tokens or more (`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` set out of
+  reach, because the bridge reads its own switch only from Claude Code's
+  settings files).
+
+The benchmark lane pins the same builds: the sandbox runtime pins, the Claude
+and Codex policy adapters and the Codex policy entry moved with them, and both
+loopback policy probes pass. Codex 0.166.0 sends its base instructions as a
+leading developer message in both wire shapes and, with incremental tool
+windows on, repeats them in a turn that has no tools, so the Codex policy
+turns `incremental_tools` off.
+
+Upstream changes: [Claude ACP 0.104.1](https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.104.1),
+[Codex ACP 2.6.0](https://github.com/agentclientprotocol/codex-acp/releases/tag/v2.6.0).
 
 ## Legacy folded ids
 

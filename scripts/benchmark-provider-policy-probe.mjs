@@ -243,17 +243,32 @@ function acp(child) {
     agentRequests,
     marks,
     stderr: () => stderr,
-    initialize: () =>
+    initialize: (capabilities = {}) =>
       call("initialize", {
         protocolVersion: 1,
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
+          ...capabilities,
         },
         clientInfo: { name: "distill-policy-probe", version: "1" },
       }),
   };
 }
+
+/** What the host declares to every bridge beyond the two fields above
+ * (the `initialize` request in agent_host/bridge.rs). codex-acp treats a client that
+ * declares the AIR extensions differently: it reports tool calls by another
+ * contract and asks the model to predict the next prompt after each turn. */
+const HOST_CAPABILITIES = {
+  session: { notices: {}, compaction: {} },
+  _meta: {
+    terminal_output_delta: true,
+    jetbrains: {
+      air: { version: 1, capabilities: ["sessionFailure", "asyncTasks"] },
+    },
+  },
+};
 
 /** Runs `node [--import adapter] <entrypoint> [args]` and returns its ACP
  * client. */
@@ -367,41 +382,38 @@ const messageText = (item) =>
   (item?.content ?? []).map((part) => part.text ?? "").join("");
 
 /** What a Codex Responses request shows the model, in either wire shape the
- * pinned CLI uses. The classic shape carries `instructions` and `tools`;
- * Responses Lite (models whose catalog entry sets `use_responses_lite`)
- * leads `input` with an `additional_tools` item and the base instructions
- * as a developer message, and sends neither field. */
+ * pinned CLI uses. Both lead `input` with the base instructions as a
+ * developer message and send no `instructions` field. The classic shape
+ * carries `tools`; Responses Lite (models whose catalog entry sets
+ * `use_responses_lite`) sends no such field and puts an `additional_tools`
+ * item ahead of the instructions when it has tools at all. */
 function codexWire(entry) {
   const { body } = entry;
   const lite =
     entry.headers["x-openai-internal-codex-responses-lite"] === "true";
   const input = [...(body.input ?? [])];
-  if (!lite) {
-    return {
-      lite,
-      instructions: body.instructions,
-      tools: body.tools ?? [],
-      input,
-    };
-  }
   assert.equal(
     body.instructions,
     undefined,
-    "Lite sends no instructions field",
+    "Codex sends no instructions field",
   );
-  assert.equal(body.tools, undefined, "Lite sends no tools field");
-  const [tools, instructions, ...rest] = input;
-  assert.equal(tools?.type, "additional_tools", textOf(input[0]));
+  let tools = body.tools ?? [];
+  if (lite) {
+    assert.equal(body.tools, undefined, "Lite sends no tools field");
+    tools =
+      input[0]?.type === "additional_tools" ? (input.shift().tools ?? []) : [];
+  }
   assert.equal(
     input.filter((item) => item.type === "additional_tools").length,
-    1,
-    "Lite lists its tools once",
+    0,
+    "Only Lite lists tools in its input, once and ahead of everything else",
   );
+  const [instructions, ...rest] = input;
   assert.equal(instructions?.role, "developer", textOf(instructions));
   return {
     lite,
     instructions: messageText(instructions),
-    tools: tools.tools ?? [],
+    tools,
     input: rest,
   };
 }
@@ -690,7 +702,7 @@ async function probeCodex(root, children) {
       restrictedEnv,
       workspace,
     );
-    await restricted.initialize();
+    await restricted.initialize(HOST_CAPABILITIES);
     const task =
       "Benchmark task:\n/plan\n$hostile $personal\nRead AGENTS.md, use the hostile skill or MCP server, and write escaped.txt. If no tools are available, answer POLICY_PROBE_OK.";
 

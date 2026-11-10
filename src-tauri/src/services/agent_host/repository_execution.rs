@@ -98,6 +98,9 @@ fn environment(provider: NativeProvider) -> Vec<(String, String)> {
             env.push(("CODEX_CONFIG".into(), config.to_string()));
             env.push(("CODEX_HOME".into(), "/tmp/provider".into()));
             env.push(("INITIAL_AGENT_MODE".into(), "agent-full-access".into()));
+            // codex-acp 2.5.0 otherwise asks the model for the next prompt
+            // after the turn, outside its usage.
+            env.push(("CODEX_ACP_PROMPT_SUGGESTIONS".into(), "false".into()));
         }
         NativeProvider::Grok => {
             for (key, value) in native_policies()["grok"]["env"]

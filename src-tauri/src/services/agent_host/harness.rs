@@ -88,6 +88,22 @@ const GROK_COMPAT_IMPORTS_OFF: &[(&str, &str)] = &[
     ("GROK_CODEX_SESSIONS_ENABLED", "0"),
 ];
 
+/// claude-agent-acp 0.104.1 compacts a session on its own once it has sat idle
+/// for most of the hour its prompt cache lives, so the next prompt writes a
+/// summary instead of the whole context. A Flock chat is compacted when its
+/// operator or its own context limit says so: a conductor waiting on a wave
+/// keeps its context, and a finished worker spends nothing more. The bridge
+/// reads its own switch only from Claude Code's settings files, which are
+/// the account's, so the context size it waits for is set where no context
+/// reaches it.
+const CLAUDE_IDLE_COMPACTION_OFF: &[(&str, &str)] =
+    &[("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS", "2000000000")];
+
+/// codex-acp 2.5.0 asks the model to predict the operator's next prompt after
+/// every turn, for a client that declares the AIR extensions as Flock does.
+/// Flock shows no such suggestion, so the request is not made.
+const CODEX_PROMPT_SUGGESTIONS_OFF: &[(&str, &str)] = &[("CODEX_ACP_PROMPT_SUGGESTIONS", "false")];
+
 /// claude-agent-acp hands `_meta.claudeCode.options` to the Claude Agent SDK.
 fn claude_session_model_meta(model_id: &str) -> Value {
     json!({ "claudeCode": { "options": { "model": model_id } } })
@@ -110,7 +126,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         args: &[],
         // Prevent nested-session detection inside the wrapped Claude Code.
         env_remove: &["CLAUDECODE"],
-        env: &[],
+        env: CLAUDE_IDLE_COMPACTION_OFF,
         modes: &[
             ("auto", "bypassPermissions"),
             ("approve", "default"),
@@ -118,19 +134,20 @@ pub const HARNESSES: &[HarnessSpec] = &[
             ("chat", "plan"),
         ],
         // Claude Code's own model menu. The bridge lists aliases (default,
-        // opus or opus[1m], sonnet, haiku) and one Fable — whichever the
-        // operator's Claude Code is set to run, so on one machine that is
-        // claude-fable-5-1[1m] and on the next claude-fable-5-2. Everything
-        // it does not list it refuses in `session/set_config_option` but runs
-        // in a session opened on it through `options.model`, which is what
-        // `opens_on_model` means — and why those models' effort levels and
-        // fast support are declared here rather than probed. Every Fable
-        // carries it: which of them is the unlisted one is the machine's to
-        // say, and a listed model is written directly whatever this says
-        // (`Inner::opens_on_model` asks the bridge's own list first).
+        // opus or opus[1m], fable, sonnet, haiku) and the previous releases
+        // by their full ids; which release an alias names is the pinned
+        // Claude Code's to say. Everything it does not list it refuses in
+        // `session/set_config_option` but runs in a session opened on it
+        // through `options.model`, which is what `opens_on_model` means —
+        // and why those models' effort levels and fast support are declared
+        // here rather than probed. Every Fable carries it: which of them is
+        // the unlisted one is the machine's to say, and a listed model is
+        // written directly whatever this says (`Inner::opens_on_model` asks
+        // the bridge's own list first).
         models: &[
-            // The current Fable (11-09). An account whose menu has not moved
-            // yet does not list it, and still runs a session opened on it.
+            // The current Fable (11-09). Claude Code 2.1.322 (bridge 0.104.1)
+            // lists it as `fable` and gives it a fast toggle (11-10); unlisted,
+            // the lane still runs a session opened on it.
             ModelDecl {
                 id: "claude-fable-5-2[1m]",
                 name: Some("Fable 5.2"),
@@ -140,12 +157,26 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 alias_of: None,
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS),
-                supports_fast: Some(false),
+                supports_fast: Some(true),
             },
-            // The same Fable 5.2 under the id Claude Code lists it by: 1M is
-            // its native window.
+            // The same Fable 5.2 under the full id Claude Code 2.1.312 listed
+            // it by: 1M is its native window.
             ModelDecl {
                 id: "claude-fable-5-2",
+                name: None,
+                description: None,
+                group: ModelGroup::Main,
+                order: 10,
+                alias_of: Some("claude-fable-5-2[1m]"),
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+            },
+            // The same Fable 5.2 under the alias Claude Code lists it by
+            // since 2.1.322 (11-10). Until then `fable` named Fable 5.1; the
+            // day it names the next Fable, this alias moves to that lane.
+            ModelDecl {
+                id: "fable",
                 name: None,
                 description: None,
                 group: ModelGroup::Main,
@@ -233,12 +264,10 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(false),
             },
-            // The same Fable 5.1 under the id Claude Code lists once 1M is
-            // its native window (11-01). Claude Code still means 5.1 by it
-            // on the accounts that list 5.2 beside it; the day it means 5.2,
-            // this alias moves to that lane.
+            // The same Fable 5.1 under the full id Claude Code lists it by
+            // since `fable` names Fable 5.2 (2.1.322, 11-10).
             ModelDecl {
-                id: "fable",
+                id: "claude-fable-5-1",
                 name: None,
                 description: None,
                 group: ModelGroup::More,
@@ -362,7 +391,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
         command: "codex-acp",
         args: &[],
         env_remove: &[],
-        env: &[],
+        env: CODEX_PROMPT_SUGGESTIONS_OFF,
         modes: &[
             ("auto", "agent-full-access"),
             ("approve", "read-only"),
@@ -625,15 +654,27 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
             }
         }
     }
-    let newest = rows
+    // A model is filed with the older ones once a newer major generation is
+    // listed, or a newer generation of its own tier; one that names no tier,
+    // once any newer generation is. A minor generation need not be whole:
+    // GPT-6.1 arrived as Sol and Terra, and GPT-6 Astra and Luna stayed the
+    // current ones of their tiers.
+    let superseded: Vec<bool> = rows
         .iter()
-        .filter_map(|(_, row)| model_generation(harness_id, row))
-        .max();
-    if let Some(newest) = newest {
-        for (_, row) in &mut rows {
-            if model_generation(harness_id, row).is_some_and(|generation| generation < newest) {
-                row["group"] = json!(ModelGroup::More.as_str());
-            }
+        .map(|(_, row)| {
+            model_lineage(harness_id, row).is_some_and(|(generation, tier)| {
+                rows.iter()
+                    .filter_map(|(_, other)| model_lineage(harness_id, other))
+                    .any(|(newer, newer_tier)| {
+                        newer > generation
+                            && (newer.0 > generation.0 || tier.is_empty() || newer_tier == tier)
+                    })
+            })
+        })
+        .collect();
+    for ((_, row), superseded) in rows.iter_mut().zip(superseded) {
+        if superseded {
+            row["group"] = json!(ModelGroup::More.as_str());
         }
     }
     // These native menus are oldest-first (Kimi also uses stable aliases for
@@ -653,10 +694,10 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
 }
 
 /// The model `id` is declared another name for on `harness_id`, if any:
-/// Claude Code's `opus` for `opus[1m]`, `claude-fable-5-2` for
-/// `claude-fable-5-2[1m]` and `fable` for `claude-fable-5-1[1m]`, the ids it
-/// lists once 1M is a model's native window. A moving alias (`default`)
-/// declares none.
+/// Claude Code's `opus` for `opus[1m]`, `fable` and `claude-fable-5-2` for
+/// `claude-fable-5-2[1m]` and `claude-fable-5-1` for `claude-fable-5-1[1m]`,
+/// the ids it lists once 1M is a model's native window. A moving alias
+/// (`default`) declares none.
 pub fn alias_target(harness_id: &str, id: &str) -> Option<&'static str> {
     harness(harness_id)?
         .models
@@ -676,10 +717,21 @@ fn lane_model<'a>(probed: &'a [Value], id: &str) -> Option<&'a Value> {
 /// Compare only known lineages within this inventory. Unknown IDs stay main,
 /// and speed variants of one generation stay together in the bridge's order.
 fn model_generation(harness_id: &str, row: &Value) -> Option<(u32, u32)> {
+    model_lineage(harness_id, row).map(|(generation, _)| generation)
+}
+
+/// A model's generation and the tier it is the generation of: `(6, 1)` and
+/// `sol` for `gpt-6.1-sol`, `(4, 7)` and `build-fast` for
+/// `grok-4.7-build-fast`. A model that names no tier has an empty one, and so
+/// does every Kimi model, whose generation is read from a label.
+fn model_lineage<'a>(harness_id: &str, row: &'a Value) -> Option<((u32, u32), &'a str)> {
     if harness_id == "kimi-acp" {
         // `kimi-for-coding` and `kimi-for-coding-highspeed` currently name
         // different generations. Read the advertised K label, not the alias.
-        return parse_model_version(row["name"].as_str()?.strip_prefix('K')?);
+        return Some((
+            parse_model_version(row["name"].as_str()?.strip_prefix('K')?)?,
+            "",
+        ));
     }
     let prefix = match harness_id {
         "codex-acp" => "gpt-",
@@ -687,7 +739,9 @@ fn model_generation(harness_id: &str, row: &Value) -> Option<(u32, u32)> {
         "zai-acp" => "zai-coding-plan/glm-",
         _ => return None,
     };
-    parse_model_version(row["id"].as_str()?.strip_prefix(prefix)?)
+    let versioned = row["id"].as_str()?.strip_prefix(prefix)?;
+    let tier = versioned.split_once('-').map_or("", |(_, tier)| tier);
+    Some((parse_model_version(versioned)?, tier))
 }
 
 fn parse_model_version(value: &str) -> Option<(u32, u32)> {
@@ -959,14 +1013,16 @@ mod tests {
 
     #[test]
     fn claude_codes_full_id_menu_folds_into_one_row_per_model() {
-        // 11-01: Claude Code lists `fable` and `opus` as the current models,
-        // `default` as Fable 5.1, and the previous releases by full id.
+        // 11-10: Claude Code 2.1.322 lists `fable` (Fable 5.2 now) and
+        // `opus` as the current models, `default` as Fable 5.1, and the
+        // previous releases, Fable 5.1 among them, by full id.
         let listed = [
             ("default", "Default (recommended)"),
             ("opus", "Opus 5.5"),
-            ("fable", "Fable 5.1"),
+            ("fable", "Fable 5.2"),
             ("sonnet", "Sonnet 5.5"),
             ("haiku", "Haiku 5.5"),
+            ("claude-fable-5-1", "Fable 5.1"),
             ("claude-haiku-4-5-20251001", "Haiku 4.5"),
             ("claude-sonnet-5", "Sonnet 5"),
             ("claude-opus-5", "Opus 5"),
@@ -989,13 +1045,15 @@ mod tests {
             .iter()
             .all(|row| row["order"].as_u64().unwrap() < 1000));
         // The ids Claude Code lists for a lane are other names for it.
-        assert_eq!(row("fable")["aliasOf"], "claude-fable-5-1[1m]");
+        assert_eq!(row("fable")["aliasOf"], "claude-fable-5-2[1m]");
+        assert_eq!(row("claude-fable-5-1")["aliasOf"], "claude-fable-5-1[1m]");
         assert_eq!(row("opus")["aliasOf"], "opus[1m]");
         assert_eq!(row("claude-fable-5")["aliasOf"], "claude-fable-5[1m]");
         // `default` is Fable 5.1 today and was Opus yesterday: no alias.
         assert_eq!(row("default")["aliasOf"], Value::Null);
         // The previous releases are on the second page.
         for id in [
+            "claude-fable-5-1",
             "claude-haiku-4-5-20251001",
             "claude-sonnet-5",
             "claude-opus-5",
@@ -1004,9 +1062,14 @@ mod tests {
             assert_eq!(row(id)["group"], "more", "{id}");
         }
         assert_eq!(row("opus[1m]")["name"], "Opus 5.5");
+        assert_eq!(row("claude-fable-5-2[1m]")["name"], "Fable 5.2");
         assert_eq!(row("claude-fable-5-1[1m]")["name"], "Fable 5.1");
         assert_eq!(
             alias_target("claude-acp", "fable"),
+            Some("claude-fable-5-2[1m]")
+        );
+        assert_eq!(
+            alias_target("claude-acp", "claude-fable-5-1"),
             Some("claude-fable-5-1[1m]")
         );
         assert_eq!(alias_target("claude-acp", "default"), None);
@@ -1015,15 +1078,15 @@ mod tests {
 
     #[test]
     fn the_fable_claude_code_lists_as_current_is_the_main_one() {
-        // 11-09: an account whose menu moved lists Fable 5.2 by its full id
-        // among the current models and `fable`, still 5.1, with the older.
+        // 11-10: Claude Code 2.1.322 lists Fable 5.2 as `fable` among the
+        // current models and Fable 5.1 by its full id with the older.
         let listed = [
             ("default", "Default (recommended)"),
             ("opus", "Opus 5.5"),
-            ("claude-fable-5-2", "Fable 5.2"),
+            ("fable", "Fable 5.2"),
             ("sonnet", "Sonnet 5.5"),
             ("haiku", "Haiku 5.5"),
-            ("fable", "Fable 5.1"),
+            ("claude-fable-5-1", "Fable 5.1"),
             ("claude-fable-5", "Fable 5"),
         ];
         let models = merge_inventory(
@@ -1037,16 +1100,22 @@ mod tests {
         assert_eq!(models[0]["id"], "claude-fable-5-2[1m]");
         assert_eq!(row("claude-fable-5-2[1m]")["name"], "Fable 5.2");
         assert_eq!(row("claude-fable-5-2[1m]")["group"], "main");
-        assert_eq!(row("claude-fable-5-2")["aliasOf"], "claude-fable-5-2[1m]");
-        assert_eq!(row("claude-fable-5-2")["group"], "main");
+        assert_eq!(row("claude-fable-5-2[1m]")["supportsFast"], true);
+        assert_eq!(row("fable")["aliasOf"], "claude-fable-5-2[1m]");
+        assert_eq!(row("fable")["group"], "main");
         // The previous Fable stays offered, on the second page.
         assert_eq!(row("claude-fable-5-1[1m]")["name"], "Fable 5.1");
         assert_eq!(row("claude-fable-5-1[1m]")["group"], "more");
-        assert_eq!(row("fable")["aliasOf"], "claude-fable-5-1[1m]");
-        assert_eq!(row("fable")["group"], "more");
+        assert_eq!(row("claude-fable-5-1")["aliasOf"], "claude-fable-5-1[1m]");
+        assert_eq!(row("claude-fable-5-1")["group"], "more");
         assert!(models
             .iter()
             .all(|row| row["order"].as_u64().unwrap() < 1000));
+        // The full id Claude Code 2.1.312 listed Fable 5.2 by still names it.
+        assert_eq!(
+            alias_target("claude-acp", "claude-fable-5-2"),
+            Some("claude-fable-5-2[1m]")
+        );
     }
 
     #[test]
@@ -1226,6 +1295,24 @@ mod tests {
                 "codex-acp",
                 vec!["gpt-5.6-sol", "gpt-5.6-luna"],
                 vec!["main", "main"],
+            ),
+            // 11-10: GPT-6.1 arrived as Sol and Terra only, so GPT-6 Astra
+            // and Luna are still the current models of their tiers.
+            (
+                "codex-acp",
+                vec![
+                    "gpt-6.1-sol",
+                    "gpt-6-astra",
+                    "gpt-6.1-terra",
+                    "gpt-6-sol",
+                    "gpt-6-luna",
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                ],
+                vec![
+                    "main", "main", "main", "more", "main", "more", "more", "more",
+                ],
             ),
         ] {
             let models = merge_inventory(

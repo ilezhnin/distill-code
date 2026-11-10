@@ -22,7 +22,7 @@ assert(installed, "Pass the installed claude-agent-acp package directory");
 const packageInfo = JSON.parse(
   await readFile(join(installed, "package.json"), "utf8"),
 );
-assert.equal(packageInfo.version, "0.99.1");
+assert.equal(packageInfo.version, "0.104.1");
 const titleControlOnly = process.argv.includes("--title-control-only");
 const root = await mkdtemp(join(tmpdir(), "distill-policy-"));
 const workspace = join(root, "workspace");
@@ -510,14 +510,14 @@ try {
       },
     );
     const changedPackage = join(root, "changed-package");
-    await mkdir(changedPackage);
+    await mkdir(join(changedPackage, "v1"), { recursive: true });
     await writeFile(
       join(changedPackage, "index.js"),
       'console.log("UNVERIFIED_ENTRYPOINT_EXECUTED")',
     );
     await writeFile(
-      join(changedPackage, "acp-agent.js"),
-      await readFile(join(installed, "dist", "acp-agent.js")),
+      join(changedPackage, "v1", "acp-agent.js"),
+      await readFile(join(installed, "dist", "v1", "acp-agent.js")),
     );
     await writeFile(
       join(changedPackage, "session-titles.js"),

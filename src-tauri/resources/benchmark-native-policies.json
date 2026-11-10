@@ -3,15 +3,18 @@
   "codex": {
     "revision": "distill-native-text-codex-v1",
     "runtime": {
-      "label": "codex-acp:1.13.0:cli:0.155.1",
+      "label": "codex-acp:2.6.0:cli:0.166.0",
       "files": {
-        "entrypoint": "cb4b021dfe1ea1b579b02800ac03c057273803535dad9ac2cd262eb174152269",
-        "nativeCli": "eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316"
+        "entrypoint": "733b7521c2a437a34ed016d45a6f46bebff2bac123a172467574ee827db98b99",
+        "nativeCli": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42"
       }
     },
     "permissionMode": "read-only",
     "excludedEfforts": ["ultra"],
-    "env": { "INITIAL_AGENT_MODE": "read-only" },
+    "env": {
+      "INITIAL_AGENT_MODE": "read-only",
+      "CODEX_ACP_PROMPT_SUGGESTIONS": "false"
+    },
     "config": {
       "project_doc_max_bytes": 0,
       "project_doc_fallback_filenames": [],
@@ -53,6 +56,7 @@
         "multi_agent": false,
         "multi_agent_v2": false,
         "code_mode_host": false,
+        "incremental_tools": false,
         "goals": false,
         "hooks": false,
         "memories": false,
@@ -72,16 +76,16 @@
       "apply_patch_tool_type": null
     },
     "verified": {
-      "date": "2026-11-01",
+      "date": "2026-11-10",
       "runtime": {
-        "label": "codex-acp:1.13.0:cli:0.155.1",
+        "label": "codex-acp:2.6.0:cli:0.166.0",
         "files": {
-          "entrypoint": "cb4b021dfe1ea1b579b02800ac03c057273803535dad9ac2cd262eb174152269",
-          "nativeCli": "eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316"
+          "entrypoint": "733b7521c2a437a34ed016d45a6f46bebff2bac123a172467574ee827db98b99",
+          "nativeCli": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42"
         }
       },
-      "policy": "622e0678db3269d0c0b8b0ce429adb2c1a7e388391a302c845abb4842f77397f",
-      "adapter": "133821a1f8fcbc4cad57582dbd7e598064655e7ab19b1fea5687e20066d27822"
+      "policy": "480c25bddd4a3d87b8cbc623a22b7dd8c0da63483aebc9365c8cf366e7fdd579",
+      "adapter": "eacf1ed89935739914433ef02d7543b024ac53d780d3fdf474f51b217eca868e"
     }
   },
   "grok": {

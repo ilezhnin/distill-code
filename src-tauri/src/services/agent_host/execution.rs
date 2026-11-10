@@ -373,7 +373,7 @@ impl NativeProvider {
                 "request":request,
                 "nativePolicy":native_text_meta(&request.model_id),
                 "processPolicy":"clear-environment-no-distill-shims-v1",
-                "bridgeVersion":"0.99.1", "sdkVersion":"0.3.312"
+                "bridgeVersion":"0.104.1", "sdkVersion":"0.3.322"
             }),
             Some(policy) => self.configured_hash_input(policy, request),
         };
@@ -771,7 +771,7 @@ mod tests {
                 "request":request,
                 "nativePolicy":meta,
                 "processPolicy":"clear-environment-no-distill-shims-v1",
-                "bridgeVersion":"0.99.1", "sdkVersion":"0.3.312"
+                "bridgeVersion":"0.104.1", "sdkVersion":"0.3.322"
             }))
             .unwrap(),
         );
@@ -868,12 +868,14 @@ mod tests {
         assert_eq!(NativeProvider::Codex.admission_issue(), None);
         let codex = POLICIES.codex.verified.as_ref().unwrap();
         assert_eq!(codex.runtime, POLICIES.codex.runtime);
-        // 2026-11-01: the policy raises the served window to the CLI's
-        // ceiling (`model_context_window`).
-        assert_eq!(codex.date, "2026-11-01");
+        // 2026-11-10: codex-acp 2.6.0 with Codex 0.166.0. The policy turns
+        // off the bridge's next-prompt prediction and the CLI's incremental
+        // tool windows, which repeat the instructions of a turn with no
+        // tools.
+        assert_eq!(codex.date, "2026-11-10");
         assert_eq!(
             NativeProvider::Codex.policy_digest().as_deref(),
-            Some("622e0678db3269d0c0b8b0ce429adb2c1a7e388391a302c845abb4842f77397f")
+            Some("480c25bddd4a3d87b8cbc623a22b7dd8c0da63483aebc9365c8cf366e7fdd579")
         );
         assert_eq!(codex.adapter, Some(digest(CODEX_ADAPTER)));
         // Grok passed on the pinned grok.exe with the session sign-in read

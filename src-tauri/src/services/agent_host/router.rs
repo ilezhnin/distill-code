@@ -3745,7 +3745,7 @@ impl Inner {
     /// Keep a session that was put on `asked` named `asked` when its bridge
     /// reports the model under the id the harness declares another name for
     /// it. Claude Code 2.1.312 runs `opus[1m]` at Opus 5.5's native 1M window
-    /// and calls it `opus` (and `claude-fable-5-1[1m]` `fable`): read back
+    /// and calls it `opus` (and 2.1.322 `claude-fable-5-2[1m]` `fable`): read back
     /// raw, a chat moved to Opus 5.5 took that for a substitution and fell
     /// back to the model it came from (11-01), as benchmark rows did before
     /// `acknowledge_lane`. Only a declared pairing is renamed; any other
@@ -12463,8 +12463,21 @@ mod tests {
         let mut fable = claude_answer("fable", Some("high"), EVERY_EFFORT, None);
         assert!(Inner::hold_declared_model(
             "claude-acp",
-            "claude-fable-5-1[1m]",
+            "claude-fable-5-2[1m]",
             &mut fable
+        ));
+        // 11-10: `fable` names Fable 5.2, and Fable 5.1 answers by its full id.
+        let mut previous = claude_answer("claude-fable-5-1", Some("high"), EVERY_EFFORT, None);
+        assert!(Inner::hold_declared_model(
+            "claude-acp",
+            "claude-fable-5-1[1m]",
+            &mut previous
+        ));
+        let mut moved_on = claude_answer("fable", Some("high"), EVERY_EFFORT, None);
+        assert!(!Inner::hold_declared_model(
+            "claude-acp",
+            "claude-fable-5-1[1m]",
+            &mut moved_on
         ));
     }
 

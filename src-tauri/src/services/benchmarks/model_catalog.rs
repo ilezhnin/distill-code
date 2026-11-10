@@ -686,7 +686,7 @@ fn openai_seeds() -> Vec<CatalogEntry> {
                 [Some(0.1), Some(0.5), Some(0.01), Some(0.125)],
                 served,
             ),
-            // Served once the pinned Codex runtime moves past 0.155.1.
+            // Served since the pinned Codex runtime moved to 0.166.0 (11-10).
             seed(
                 "gpt-6-1-sol",
                 "gpt-6.1-sol",
