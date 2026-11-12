@@ -46,7 +46,7 @@ export async function connectAgentPlatform(
     const account =
       model?.accounts.find((entry) => entry.id === model.defaultAccountId) ??
       model?.accounts[0];
-    if (account && account.enabled && account.authMethod === "oauth") {
+    if (account?.enabled && account.authMethod === "oauth") {
       await accounts.authenticate(account.id);
     }
   }

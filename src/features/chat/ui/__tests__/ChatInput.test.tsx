@@ -177,8 +177,12 @@ describe("ChatInput", () => {
       />,
     );
 
-    const notice = screen.getByText(/gets this message when its current turn ends/);
-    expect(notice).toHaveTextContent("Press Esc to stop the turn and send it now.");
+    const notice = screen.getByText(
+      /gets this message when its current turn ends/,
+    );
+    expect(notice).toHaveTextContent(
+      "Press Esc to stop the turn and send it now.",
+    );
     expect(notice).not.toHaveTextContent("cannot be interrupted");
 
     await user.click(screen.getByRole("textbox"));

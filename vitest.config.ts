@@ -2,6 +2,9 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
 const packageJson = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8"),
@@ -20,7 +23,7 @@ export default defineConfig({
     alias: [
       {
         find: "@",
-        replacement: resolve(__dirname, "./src"),
+        replacement: resolve(rootDir, "src"),
       },
     ],
   },

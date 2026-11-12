@@ -296,7 +296,8 @@ describe("removeTranscriptMessage", () => {
       lastMessage: true,
       snippet: "hello",
     });
-    const reply = useChatStore.getState().messagesBySession.s1![1]!;
+    const reply = useChatStore.getState().messagesBySession.s1?.[1];
+    if (!reply) throw new Error("fixture reply missing");
     const queryClient = new QueryClient();
     queryClient.setQueryData(["session-search-corpus", "s1", "stamp"], [reply]);
     await removeTranscriptMessage("s1", reply, undefined, { queryClient });

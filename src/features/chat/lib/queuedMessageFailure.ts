@@ -74,7 +74,9 @@ export function letGoOfAcceptedQueuedMessage(
     "info",
     `[queue] session ${sessionId} already holds queued message ${queuedMessage.recordId} (${error.requestKey}); letting go of the stale copy`,
   );
-  useChatStore.getState().dismissQueuedMessage(sessionId, queuedMessage.recordId);
+  useChatStore
+    .getState()
+    .dismissQueuedMessage(sessionId, queuedMessage.recordId);
 }
 
 /**

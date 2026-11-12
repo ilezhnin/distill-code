@@ -43,7 +43,7 @@ fn main() {
     let result = runtime.block_on(history_maintenance::compact(&path, again, |_, stats| {
         sessions += 1;
         running.add(stats);
-        if sessions % 500 == 0 {
+        if sessions.is_multiple_of(500) {
             eprintln!(
                 "{sessions} sessions: {} -> {} rows, {} -> {} MB",
                 running.rows_before,

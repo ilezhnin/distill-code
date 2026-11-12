@@ -158,7 +158,7 @@ fn anthropic_seeds_2026_11_09() -> Vec<CatalogEntry> {
 fn context_seeds_2026_11_01() -> Vec<CatalogEntry> {
     let openai_note = "prompts over 272K input tokens are billed at 2x input and 1.5x output for the whole request";
     // Slug, needle, name, prices, the window served by default and the raised one.
-    let openai: [(&str, &str, &str, [Option<f64>; 4], Option<u64>, Option<u64>); 8] = [
+    let openai = [
         (
             "gpt-6-astra",
             "gpt-6-astra",
@@ -228,7 +228,7 @@ fn context_seeds_2026_11_01() -> Vec<CatalogEntry> {
     ];
     // After Grok 4.7, whose needle it also matches, and priced as the
     // estimate it corrects, so the board keeps reading it as one.
-    let xai: [(&str, &str, &str, [Option<f64>; 4], &str); 4] = [
+    let xai = [
         ("grok-4-7", "grok-4.7", "Grok 4.7", [Some(2.0), Some(6.0), Some(0.5), None], XAI_MODELS),
         (
             "grok-4-7-build-fast",

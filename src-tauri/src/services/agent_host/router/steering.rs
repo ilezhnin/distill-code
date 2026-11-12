@@ -247,7 +247,7 @@ impl Inner {
         let update = delivery_update(&session_id, &ids.message_id, delivery);
         if let Err(error) = self
             .store
-            .append_events(&session_id, &[update.clone()])
+            .append_events(&session_id, std::slice::from_ref(&update))
             .await
         {
             log::warn!("[agent-host] could not persist steering receipt: {error}");

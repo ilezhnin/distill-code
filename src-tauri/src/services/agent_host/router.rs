@@ -6760,15 +6760,14 @@ impl Inner {
             }
             // No reset lifts a lasting refusal: the prompt goes again only
             // to another account, never back to the one that refused it.
-            if crate::services::provider_account_status::is_lasting_quota_error(error) {
-                if self
+            if crate::services::provider_account_status::is_lasting_quota_error(error)
+                && (self
                     .route_account_for_dispatch(&record, ids.allow_credits)
                     .await
                     .is_err()
-                    || self.session_record(&session_id).await?.account_id == record.account_id
-                {
-                    return result;
-                }
+                    || self.session_record(&session_id).await?.account_id == record.account_id)
+            {
+                return result;
             }
         }
     }

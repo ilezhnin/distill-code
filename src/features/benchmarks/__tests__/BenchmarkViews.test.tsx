@@ -604,13 +604,13 @@ describe("benchmark authoring and saved evidence", () => {
     );
     expect(screen.getAllByRole("row")).toHaveLength(3);
     const high = screen.getByRole("button", { name: "Open model-1 · high" });
-    const row = high.closest("tr")!;
+    const row = high.closest("tr") as HTMLElement;
     expect(row).toHaveTextContent("640");
     expect(row).not.toHaveTextContent("runtime");
     expect(within(row).getByText("high")).toBeInTheDocument();
     const fast = screen
       .getByRole("button", { name: "Open model-1 · max · fast" })
-      .closest("tr")!;
+      .closest("tr") as HTMLElement;
     expect(within(fast).getByText("max")).toBeInTheDocument();
     expect(within(fast).getByText("fast")).toBeInTheDocument();
     await userEvent.click(

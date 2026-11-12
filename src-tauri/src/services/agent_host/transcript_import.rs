@@ -471,6 +471,7 @@ fn thought_event(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tool_call_event(
     session_id: &str,
     message_id: &str,
@@ -495,6 +496,7 @@ fn tool_call_event(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tool_result_event(
     session_id: &str,
     message_id: &str,

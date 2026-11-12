@@ -370,6 +370,7 @@ export function SidebarChatRow({
   // is not a button of its own: the row carries `aria-expanded`, and
   // ArrowRight / ArrowLeft on the focused row unfold and fold the subtree.
   const treeToggle = hasChildChats ? (
+    // biome-ignore lint/a11y/noStaticElementInteractions: a pointer shortcut inside the row button; the row carries aria-expanded and the arrow keys
     <span
       role="presentation"
       data-sidebar-chat-tree-toggle

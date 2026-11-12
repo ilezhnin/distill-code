@@ -121,7 +121,7 @@ fn receipt(
     after_revision: &str,
     after_artifacts: &Value,
 ) -> Result<Value, String> {
-    if report["status"] != "passed" || !report["checks"].as_array().is_some_and(|c| c.len() >= 5) {
+    if report["status"] != "passed" || report["checks"].as_array().is_none_or(|c| c.len() < 5) {
         return Err("The offline sandbox policy check did not pass".into());
     }
     if revision != after_revision || artifacts != after_artifacts {

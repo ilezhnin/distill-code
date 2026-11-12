@@ -61,7 +61,10 @@ describe("getToolCallIdentity", () => {
     expect(
       getToolCallIdentity(
         toolCallUpdate({
-          kimiCode: { parentToolCallId: "3:tool_a", subagent: { id: "agent-1" } },
+          kimiCode: {
+            parentToolCallId: "3:tool_a",
+            subagent: { id: "agent-1" },
+          },
         }),
       ),
     ).toEqual({});

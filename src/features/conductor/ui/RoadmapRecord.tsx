@@ -141,6 +141,7 @@ function RoadmapRecord({ code, isIncomplete }: CustomRendererProps) {
         <ol className="space-y-0.5">
           {roadmap.stages.map((stage, index) => (
             <Stage
+              // biome-ignore lint/suspicious/noArrayIndexKey: stages are positional, the number is a stage's identity
               key={`${index}-${stage.title}`}
               stage={stage}
               number={index + 1}

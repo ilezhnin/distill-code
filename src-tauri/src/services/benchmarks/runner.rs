@@ -3845,12 +3845,12 @@ impl NativeBackend {
                 continue;
             };
             let key = (judge.provider_id.clone(), account.to_owned());
-            if !availability.contains_key(&key) {
+            if let std::collections::btree_map::Entry::Vacant(entry) = availability.entry(key) {
                 let activity = host
                     .account_activity(&judge.provider_id, account)
                     .await
                     .map_err(host_error)?;
-                availability.insert(key, activity.active_sessions.is_empty());
+                entry.insert(activity.active_sessions.is_empty());
             }
         }
         let offered = offered

@@ -40,9 +40,9 @@ const blobs =
     : git(["cat-file", "--batch", "-z"], {
         encoding: null,
         input: Buffer.from(
-          paths
+          `${paths
             .map((path) => (mode === "--tree" ? `HEAD:${path}` : `:${path}`))
-            .join("\0") + "\0",
+            .join("\0")}\0`,
         ),
       });
 let offset = 0;

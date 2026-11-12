@@ -111,8 +111,8 @@ async fn judge_scheduler_reserves_preparation_before_fresh_candidates_can_take_i
     while let Some(result) = flights.join_next().await {
         result.unwrap();
     }
-    assert_eq!(
-        candidate_took_place, false,
+    assert!(
+        !candidate_took_place,
         "a selected sealed answer must own its place before candidate resource probes"
     );
     assert_eq!(backend.fake.judges.load(Ordering::SeqCst), 1);

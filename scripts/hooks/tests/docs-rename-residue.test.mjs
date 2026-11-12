@@ -80,7 +80,7 @@ const residue = {
     "`DISTILL_TAURI_CARGO_TARGET_DIR`,\n  `DISTILL_DISTRO_DIR`, `DISTILL_DEV_ROOT`, `DISTILLCTL_LOCK`,\n  `DISTILLCTL_BIN` and `DISTILL_MONITOR_BIN`",
     "replace `distillctl` and\n  `distill-monitor`; the old names remain",
     "`distill://session/<id>` still\n  open",
-    "renamed from `com.levocat.distill` at first start",
+    "or under\n`.distill` on an install upgraded from Distill",
   ],
   "docs/flock-root-layout.md": [
     "`DISTILL_ROOT`, the variable's earlier name, still honoured",

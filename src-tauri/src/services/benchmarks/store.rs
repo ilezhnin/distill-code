@@ -1562,9 +1562,7 @@ fn temporary_provider_issue(outcome: Option<&str>, reason: &str) -> Option<&'sta
         reason
     }
     .to_ascii_lowercase();
-    if outcome.is_none() {
-        return None;
-    }
+    outcome?;
     if [
         "rate limit",
         "rate_limit",

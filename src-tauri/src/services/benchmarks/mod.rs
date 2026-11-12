@@ -957,16 +957,14 @@ impl BenchmarkService {
             HashMap::new();
         for configuration in &mut request.configurations {
             let unmeasured = run.attempts.iter().any(|attempt| {
-                attempt.configuration.id == configuration.id
-                    && (attempt.phase == "pending"
-                        || attempt.phase == "terminal"
-                            && !analysis::is_measured(attempt)
-                            && !matches!(
-                                attempt.outcome.as_deref(),
-                                Some("excluded" | "unsupported" | "superseded")
-                            )
-                            && !(attempt.outcome.as_deref() == Some("pending_review")
-                                && attempt.evidence_hash.is_some()))
+                if attempt.configuration.id != configuration.id {
+                    return false;
+                }
+                let outcome = attempt.outcome.as_deref();
+                let settled = analysis::is_measured(attempt)
+                    || matches!(outcome, Some("excluded" | "unsupported" | "superseded"))
+                    || (outcome == Some("pending_review") && attempt.evidence_hash.is_some());
+                attempt.phase == "pending" || (attempt.phase == "terminal" && !settled)
             });
             if configuration.inventory_revision.is_none() || !unmeasured {
                 continue;

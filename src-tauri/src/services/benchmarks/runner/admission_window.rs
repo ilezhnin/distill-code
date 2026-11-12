@@ -203,10 +203,10 @@ fn finish_generation(scope: &str, id: &str, generation: Option<u64>) -> bool {
     let Some(window) = windows.get_mut(scope) else {
         return false;
     };
-    if !window
+    if window
         .running
         .get(id)
-        .is_some_and(|current| generation.is_none_or(|wanted| *current == wanted))
+        .is_none_or(|current| generation.is_some_and(|wanted| *current != wanted))
     {
         return false;
     }
@@ -542,10 +542,10 @@ mod tests {
             if admit {
                 job.admitted();
             }
-            let result: Result<(), ()> = (|| {
+            let result: Result<(), ()> = {
                 let _job = job;
                 Err(())
-            })();
+            };
             assert!(result.is_err());
             assert!(with(&scope, |window| window.preparing.is_empty()
                 && window.running.is_empty()));
