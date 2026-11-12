@@ -41,11 +41,17 @@ import {
 } from "../api/providerAccounts";
 import type { AgentProviderReadiness } from "../hooks/useAgentProviderStatus";
 import {
-  canUseAccountReset,
   earliestAccountReset,
   resetCountdown,
 } from "../lib/providerAccountStatus";
+import {
+  holdResetOperation,
+  resetOperation,
+  settleResetOperation,
+  type ResetTokenRow,
+} from "../lib/resetTokens";
 import { ProviderAccountDetails } from "./ProviderAccountDetails";
+import { resetTokenText } from "./ResetTokenList";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { providerDisplayName as providerLabel } from "../providerCatalog";
 
@@ -262,11 +268,6 @@ function ProviderCard({
           {t("accounts.add")}
         </Button>
       </div>
-      {single ? (
-        <p className="text-xs text-muted-foreground">
-          {t("accounts.singleSignIn", { provider: name })}
-        </p>
-      ) : null}
       {resetAt ? (
         <p role="status" className="text-xs text-muted-foreground">
           {t("accounts.allLimited", {
@@ -348,14 +349,14 @@ function AccountRow({
   const [connecting, setConnecting] = useState(false);
   const [resetRequest, setResetRequest] = useState<{
     key: string;
-    creditId?: string;
-    expiresAt?: number | null;
-    /** The chosen reset as its row names it, with what it refills. */
-    name?: string;
+    /** The key repeats an earlier try the provider did not confirm. */
+    retried: boolean;
+    /** The chosen reset as its row showed it when Use was pressed. */
+    row: ResetTokenRow;
   } | null>(null);
-  const [resetOutcome, setResetOutcome] = useState<AccountResetOutcome | null>(
-    null,
-  );
+  const [resetOutcome, setResetOutcome] = useState<
+    AccountResetOutcome | "cooldownRetried" | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = async (action: () => Promise<unknown>) => {
@@ -377,13 +378,8 @@ function AccountRow({
     state === "needs_auth" ||
     (!hasAuthenticatedStatus &&
       (auth?.status === "needs_auth" || auth?.status === "error"));
-  const canReset =
-    !authenticating &&
-    !needsSignIn &&
-    account.enabled &&
-    canUseAccountReset(status, now);
-  const showDefaultReset = canReset && !status?.resetTokens?.credits?.length;
   const displayName = status?.accountLabel || account.label;
+  const resetText = resetRequest ? resetTokenText(t, resetRequest.row) : null;
   const signIn = () => {
     if (account.authMethod === "api_key" && !cli) setConnecting(true);
     else void useProviderAccountsStore.getState().authenticate(account.id);
@@ -487,34 +483,15 @@ function AccountRow({
           state={state}
           now={now}
           resetDisabled={busy || authenticating || !account.enabled}
-          onUseReset={(credit, name) => {
+          onUseReset={(row) => {
             setError(null);
             setResetOutcome(null);
             setResetRequest({
-              key: crypto.randomUUID(),
-              creditId: credit.id,
-              expiresAt: credit.expiresAt,
-              name,
+              ...resetOperation(account.id, row.creditId),
+              row,
             });
           }}
         />
-      ) : null}
-      {showDefaultReset ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            disabled={busy}
-            onClick={() => {
-              setError(null);
-              setResetOutcome(null);
-              setResetRequest({ key: crypto.randomUUID() });
-            }}
-          >
-            {t("accounts.useReset")}
-          </Button>
-        </div>
       ) : null}
       {authenticating ? (
         <p role="status" className="text-xs text-muted-foreground">
@@ -527,7 +504,8 @@ function AccountRow({
           {auth.message}
         </p>
       ) : null}
-      {error ? (
+      {/* An open reset confirmation shows the error itself. */}
+      {error && !resetRequest ? (
         <p role="alert" className="break-words text-xs text-destructive">
           {error}
         </p>
@@ -556,14 +534,21 @@ function AccountRow({
             <span className="block font-medium">
               {providerLabel(account.providerId)} · {displayName}
             </span>
-            {resetRequest?.name ? (
-              <span className="block">{resetRequest.name}</span>
+            {resetText ? <span className="block">{resetText.name}</span> : null}
+            {resetText?.hint ? (
+              <span className="block">{resetText.hint}</span>
             ) : null}
-            <span className="block">{t("accounts.resetDescription")}</span>
-            {resetRequest?.expiresAt ? (
+            <span className="block">
+              {t(
+                resetRequest?.retried
+                  ? "accounts.resetRetried"
+                  : "accounts.resetDescription",
+              )}
+            </span>
+            {resetRequest?.row.expiresAt ? (
               <span className="block">
                 {t("accounts.expiresAt", {
-                  date: formatDate(resetRequest.expiresAt, {
+                  date: formatDate(resetRequest.row.expiresAt, {
                     dateStyle: "long",
                     timeStyle: "short",
                   }),
@@ -585,12 +570,27 @@ function AccountRow({
         onConfirm={() =>
           run(async () => {
             if (!resetRequest) return;
-            const result = await consumeProviderAccountReset(
-              account.id,
-              resetRequest.key,
-              resetRequest.creditId,
-            );
-            setResetOutcome(result.outcome);
+            const { key, retried } = resetRequest;
+            const { creditId } = resetRequest.row;
+            let outcome: AccountResetOutcome;
+            try {
+              ({ outcome } = await consumeProviderAccountReset(
+                account.id,
+                key,
+                creditId,
+              ));
+            } catch (failure) {
+              // Unconfirmed: a later try of this reset repeats this one.
+              holdResetOperation(account.id, creditId, key);
+              setResetRequest((request) =>
+                request?.key === key ? { ...request, retried: true } : request,
+              );
+              throw failure;
+            }
+            // A cooldown on a repeated try may be the earlier try at work.
+            const earlierTry = outcome === "cooldown" && retried;
+            if (!earlierTry) settleResetOperation(account.id, creditId);
+            setResetOutcome(earlierTry ? "cooldownRetried" : outcome);
             setResetRequest(null);
             await useProviderAccountsStore.getState().refresh(true);
           })

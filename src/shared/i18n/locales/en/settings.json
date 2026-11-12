@@ -587,8 +587,8 @@
     "add": "Add account",
     "autoSwitch": "Auto-switch accounts",
     "autoSwitchLabel": "Auto-switch {{provider}} accounts",
-    "autoSwitchDescription": "When limits are reached, switch accounts within this provider and billing type. If all accounts are limited, wait for the next available reset.",
-    "singleSignIn": "{{provider}} keeps one sign-in, so there is nothing to switch between. Sign out of it to connect another.",
+    "autoSwitchDescription": "Switches to another account of this provider when a limit is reached.",
+    "singleSignIn": "{{provider}} keeps a single sign-in.",
     "manualResetOnly": "Reset tokens are only used when you explicitly request and confirm a reset.",
     "states": {
       "ready": "Available",
@@ -604,10 +604,11 @@
     "onCredits": "Running on credits",
     "usagePaused": "Usage updates paused",
     "refused": "Requests refused",
-    "usageRetryIn": "The provider paused usage requests. Retry in {{minutes}}:{{seconds}}.",
+    "usageRetryIn": "Usage requests paused. Retry in {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Waiting for the next usage update.",
     "limitsUnknown": "Usage limits not reported",
-    "resetTokens": "Reset tokens: {{value}}",
+    "resetTokensTitle": "Reset tokens",
+    "resetCount": "×{{value}}",
     "expiresAt": "Expires {{date}}",
     "credits": "Credits: {{value}}",
     "creditBalance": "{{label}}: {{value}}",
@@ -620,7 +621,7 @@
     },
     "unlimited": "Unlimited",
     "checkedAt": "Last checked {{date}}",
-    "allLimited": "Enabled accounts included in automatic switching report exhausted general limits. Earliest usable reset in this snapshot: {{date}} ({{hours}} h {{minutes}} min). Reset tokens require your action.",
+    "allLimited": "All accounts are at their limits. Next reset {{date}} ({{hours}} h {{minutes}} min).",
     "default": "Default",
     "methods": {
       "oauth": "Subscription",
@@ -633,7 +634,6 @@
     "cancelSignIn": "Cancel sign-in",
     "signIn": "Sign in",
     "signOut": "Sign out",
-    "useReset": "Use a reset token",
     "useNamedReset": "Use {{name}}",
     "use": "Use",
     "resetTypes": {
@@ -644,26 +644,33 @@
       "usage": "Usage reset"
     },
     "resetHints": {
-      "fable": "returns what Fable used to your weekly limit"
+      "fable": "Returns Fable usage to the weekly limit"
     },
     "resetStates": {
-      "available": "Available",
-      "used": "Used",
-      "expired": "Expired",
+      "redeeming": "In progress",
       "paused": "Paused",
-      "queued": "Waiting its turn",
-      "unavailable": "Not available now"
+      "unavailable": "Unavailable"
     },
-    "browserPending": "Complete sign-in in your browser. Other accounts stay connected.",
+    "resetBlocks": {
+      "needs_limit": "Usable at a limit it refills",
+      "other_limit": "Does not refill the reached limit",
+      "nothing_to_return": "No Fable usage to return",
+      "cooldown": "Try again in a minute",
+      "not_started": "Not active yet"
+    },
+    "browserPending": "Complete sign-in in your browser.",
     "cancel": "Cancel",
     "resetTitle": "Use one reset token?",
     "resetDescription": "This spends one reset token and cannot be undone.",
+    "resetRetried": "Repeats your earlier unconfirmed try. At most one token is spent.",
     "confirmReset": "Use one token",
     "resetOutcomes": {
-      "reset": "Limit reset successfully.",
-      "alreadyRedeemed": "This reset was already applied.",
-      "nothingToReset": "There is no limit to reset.",
-      "noCredit": "No reset token is available."
+      "reset": "Limit reset.",
+      "alreadyRedeemed": "Already applied.",
+      "nothingToReset": "No limit to reset.",
+      "noCredit": "No longer available. Nothing was used.",
+      "cooldown": "Another reset just started, so this one was not used. Try again in a minute.",
+      "cooldownRetried": "Your earlier try may still be going through. Check again in a minute."
     },
     "connectTitle": "Sign in to {{provider}}",
     "addTitle": "Add {{provider}} account",

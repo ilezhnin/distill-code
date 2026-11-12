@@ -233,36 +233,9 @@ pub(super) fn map_usage(
     } else if let Some(bucket) = usage.get("rateLimits").filter(|bucket| !bucket.is_null()) {
         append_bucket(&mut status, "codex", bucket);
     }
-    status.reset_tokens = usage.get("rateLimitResetCredits").and_then(|value| {
-        let available = value["availableCount"].as_u64()?;
-        let credits: Option<Vec<ResetCredit>> = value["credits"].as_array().map(|rows| {
-            rows.iter()
-                .filter_map(|row| {
-                    Some(ResetCredit {
-                        id: row["id"].as_str()?.to_owned(),
-                        reset_type: row["resetType"].as_str()?.to_owned(),
-                        status: row["status"].as_str()?.to_owned(),
-                        granted_at: timestamp(&row["grantedAt"]),
-                        expires_at: timestamp(&row["expiresAt"]),
-                        title: row["title"].as_str().map(str::to_owned),
-                        description: row["description"].as_str().map(str::to_owned),
-                    })
-                })
-                .collect()
-        });
-        let expires_at = credits.as_ref().and_then(|rows| {
-            rows.iter()
-                .filter(|row| row.status == "available")
-                .filter_map(|row| row.expires_at)
-                .min()
-        });
-        Some(ResetTokens {
-            available,
-            expires_at,
-            supported: true,
-            credits,
-        })
-    });
+    status.reset_tokens = usage
+        .get("rateLimitResetCredits")
+        .and_then(|value| reset_tokens(value, now));
     let spent = |window: &AccountLimitWindow| {
         window.model_id.is_none() && window.used_percent.is_some_and(|used| used >= 100.0)
     };
@@ -281,6 +254,59 @@ pub(super) fn map_usage(
     };
     status.on_credits = status.state == AccountState::Ready && status.limits.iter().any(spent);
     status
+}
+
+/// The account's earned usage limit resets. The count is the server's; the
+/// credits behind it are listed when the server details them.
+fn reset_tokens(value: &Value, now: i64) -> Option<ResetTokens> {
+    let available = value["availableCount"].as_u64()?;
+    let credits = value["credits"].as_array().map(|rows| {
+        let mut credits: Vec<ResetCredit> = rows
+            .iter()
+            .filter_map(|row| reset_credit(row, now))
+            .collect();
+        // Any available credit can be redeemed; the one that expires first
+        // is offered first.
+        credits.sort_by_key(|credit| credit.expires_at.unwrap_or(i64::MAX));
+        credits
+    });
+    let expires_at = credits.as_ref().and_then(|rows| {
+        rows.iter()
+            .filter(|row| row.status == ResetCreditStatus::Available)
+            .filter_map(|row| row.expires_at)
+            .min()
+    });
+    Some(ResetTokens {
+        available,
+        expires_at,
+        supported: true,
+        credits,
+    })
+}
+
+/// One reset credit in the vocabulary every provider shares. Codex has one
+/// reset type, which refills its usage limits, and three states of its own.
+fn reset_credit(row: &Value, now: i64) -> Option<ResetCredit> {
+    let expires_at = timestamp(&row["expiresAt"]);
+    let status = match row["status"].as_str()? {
+        "available" if expires_at.is_some_and(|at| at <= now) => ResetCreditStatus::Expired,
+        "available" => ResetCreditStatus::Available,
+        "redeeming" => ResetCreditStatus::Redeeming,
+        "redeemed" => ResetCreditStatus::Used,
+        // A state this build does not know is never offered.
+        _ => ResetCreditStatus::Unavailable,
+    };
+    Some(ResetCredit {
+        id: row["id"].as_str()?.to_owned(),
+        reset_type: ResetKind::Usage,
+        status,
+        uses_left: u64::from(status != ResetCreditStatus::Used),
+        blocked: None,
+        granted_at: timestamp(&row["grantedAt"]),
+        expires_at,
+        title: row["title"].as_str().map(str::to_owned),
+        description: row["description"].as_str().map(str::to_owned),
+    })
 }
 
 /// Whether a bucket's credits keep its account usable past spent plan

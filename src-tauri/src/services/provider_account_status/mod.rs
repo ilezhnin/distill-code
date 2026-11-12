@@ -1388,7 +1388,9 @@ pub async fn consume_reset(
         return Err("Invalid reset credit identifier".into());
     }
     let account = provider_accounts::account(app, account_id)?;
-    if !matches!(account.provider_id.as_str(), "codex-acp" | "claude-acp")
+    // The adapter that reads an account's resets is the one that redeems them.
+    let telemetry = provider_accounts::spec(&account.provider_id).map(|spec| spec.telemetry);
+    if !matches!(telemetry, Some(Telemetry::Claude | Telemetry::Codex))
         || account.auth_method == provider_accounts::AuthMethod::ApiKey
         || !account.enabled
     {
@@ -1398,8 +1400,10 @@ pub async fn consume_reset(
     let _guard = state.reset_lock.lock().await;
     let slot = state.native.refresh_slot(account_id).await;
     let refresh_guard = slot.gate.lock().await;
-    let result = match account.provider_id.as_str() {
-        "claude-acp" => claude::consume(app, &account, idempotency_key, credit_id).await?,
+    let result = match telemetry {
+        Some(Telemetry::Claude) => {
+            claude::consume(app, &account, idempotency_key, credit_id).await?
+        }
         _ => codex::consume(app, &account, idempotency_key, credit_id).await?,
     };
     drop(refresh_guard);

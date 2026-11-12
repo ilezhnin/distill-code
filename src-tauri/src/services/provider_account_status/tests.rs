@@ -935,7 +935,51 @@ fn codex_preserves_all_buckets_and_authoritative_reset_count() {
     assert_eq!(result.subscription.as_deref(), Some("Pro 200"));
     let tokens = result.reset_tokens.unwrap();
     assert_eq!(tokens.available, 3);
-    assert_eq!(tokens.credits.unwrap().len(), 1);
+    let credits = tokens.credits.unwrap();
+    assert_eq!(credits.len(), 1);
+    // Codex's own type and state names never reach the renderer.
+    assert_eq!(credits[0].reset_type, ResetKind::Usage);
+    assert_eq!(credits[0].status, ResetCreditStatus::Available);
+    assert_eq!(credits[0].uses_left, 1);
+}
+
+#[test]
+fn codex_reset_credits_use_the_shared_states_and_offer_the_first_to_expire() {
+    let identity = json!({"account":{"type":"chatgpt"}});
+    let credit = |id: &str, status: &str, expires_at: Value| {
+        json!({"id":id,"resetType":"codexRateLimits","status":status,
+            "grantedAt":1790000000,"expiresAt":expires_at,"title":"Usage limit reset"})
+    };
+    let credits = json!([
+        credit("later", "available", json!(1830000000)),
+        credit("spent", "redeemed", json!(1820000000)),
+        credit("lapsed", "available", json!(1700000000)),
+        credit("sooner", "available", json!(1810000000)),
+        credit("in-flight", "redeeming", json!(1840000000)),
+        credit("later-state", "held", Value::Null),
+    ]);
+    let usage = json!({"rateLimits":{"primary":{"usedPercent":10}},
+        "rateLimitResetCredits":{"availableCount":2,"credits":credits}});
+    let result = codex::map_usage("a", &identity, &usage, 1_800_000_000_000);
+    let tokens = result.reset_tokens.unwrap();
+    let shown: Vec<_> = tokens
+        .credits
+        .unwrap()
+        .into_iter()
+        .map(|credit| (credit.id, credit.status, credit.uses_left))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("lapsed".to_string(), ResetCreditStatus::Expired, 1),
+            ("sooner".to_string(), ResetCreditStatus::Available, 1),
+            ("spent".to_string(), ResetCreditStatus::Used, 0),
+            ("later".to_string(), ResetCreditStatus::Available, 1),
+            ("in-flight".to_string(), ResetCreditStatus::Redeeming, 1),
+            ("later-state".to_string(), ResetCreditStatus::Unavailable, 1),
+        ]
+    );
+    assert_eq!(tokens.expires_at, Some(1_810_000_000_000));
 }
 
 #[test]

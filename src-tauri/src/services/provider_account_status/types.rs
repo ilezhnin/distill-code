@@ -45,14 +45,68 @@ pub struct AccountLimitWindow {
     pub coding: bool,
 }
 
+/// What a reset refills, named once for every provider. Each adapter maps its
+/// provider's own types onto these, so no provider string reaches a label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetKind {
+    /// Every usage window of the account.
+    Full,
+    Weekly,
+    FiveHour,
+    /// Returns what Fable used to the weekly allowance and clears nothing else.
+    Fable,
+    /// The provider does not say which windows it refills.
+    Usage,
+}
+
+/// Where a reset credit stands, in one vocabulary for every provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetCreditStatus {
+    /// Can be redeemed now.
+    Available,
+    /// Usable, but the provider takes another credit of its kind first.
+    Queued,
+    /// A redemption of it is under way at the provider.
+    Redeeming,
+    Paused,
+    /// Has uses left and cannot be redeemed now; `blocked` says why when the
+    /// provider does.
+    Unavailable,
+    Used,
+    Expired,
+}
+
+/// Why a credit with uses left cannot be redeemed now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetBlock {
+    /// It works only at a limit it refills, and the account is at none.
+    NeedsLimit,
+    /// The account is at a limit it does not refill.
+    OtherLimit,
+    /// Nothing was used this week for it to return (a Fable reset).
+    NothingToReturn,
+    /// Another reset was used a moment ago.
+    Cooldown,
+    /// Its period has not begun.
+    NotStarted,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetCredit {
     pub id: String,
-    pub reset_type: String,
-    pub status: String,
+    pub reset_type: ResetKind,
+    pub status: ResetCreditStatus,
+    /// Redemptions left in this credit.
+    pub uses_left: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<ResetBlock>,
     pub granted_at: Option<i64>,
     pub expires_at: Option<i64>,
+    /// The provider's own name for the credit, where the kind has none.
     pub title: Option<String>,
     pub description: Option<String>,
 }
@@ -60,6 +114,7 @@ pub struct ResetCredit {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetTokens {
+    /// Redemptions the account could make now, across its credits.
     pub available: u64,
     pub expires_at: Option<i64>,
     /// This adapter has a verified operator-only redemption method.
@@ -151,6 +206,8 @@ pub enum ResetOutcome {
     AlreadyRedeemed,
     NothingToReset,
     NoCredit,
+    /// Another reset was used a moment ago; this one was not spent.
+    Cooldown,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

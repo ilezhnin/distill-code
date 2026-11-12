@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_STATUS_STALE_MS,
   accountStatusIsStale,
-  canUseAccountReset,
   earliestAccountReset,
   resetCountdown,
 } from "./providerAccountStatus";
@@ -93,81 +92,11 @@ describe("provider account status", () => {
       ),
     ).toBeNull();
   });
-  it("never turns missing inventory into permission to spend a reset token", () => {
-    expect(canUseAccountReset(status, now)).toBe(false);
-    expect(
-      canUseAccountReset(
-        {
-          ...status,
-          resetTokens: { available: 3, supported: false, expiresAt: null },
-        },
-        now,
-      ),
-    ).toBe(false);
-  });
-
-  it("requires fresh supported unexpired inventory for an aggregate reset count", () => {
-    const available = {
-      ...status,
-      resetTokens: { available: 1, supported: true, expiresAt: now + 1000 },
-    };
-    expect(canUseAccountReset(available, now)).toBe(true);
-    expect(canUseAccountReset({ ...available, stale: true }, now)).toBe(false);
-    expect(canUseAccountReset({ ...available, state: "error" }, now)).toBe(
-      false,
-    );
-    expect(canUseAccountReset(available, now + 1001)).toBe(false);
-    // A status read on the host's five-minute schedule stays current.
+  it("keeps a status read on the host's five-minute schedule current", () => {
     expect(accountStatusIsStale(status, now + 5 * 60_000)).toBe(false);
     expect(
       accountStatusIsStale(status, now + ACCOUNT_STATUS_STALE_MS + 1),
     ).toBe(true);
-  });
-
-  it("checks individual reset expiry without letting an old grant hide a usable one", () => {
-    const credit = {
-      id: "old",
-      resetType: "full",
-      status: "available",
-      grantedAt: null,
-      expiresAt: now - 1,
-      title: "Full reset",
-      description: null,
-    };
-    const available: ProviderAccountStatus = {
-      ...status,
-      resetTokens: {
-        available: 1,
-        supported: true,
-        expiresAt: now - 1,
-        credits: [credit, { ...credit, id: "current", expiresAt: now + 1000 }],
-      },
-    };
-    expect(canUseAccountReset(available, now)).toBe(true);
-    expect(canUseAccountReset(available, now + 1000)).toBe(false);
-    expect(canUseAccountReset({ ...available, state: "needs_auth" }, now)).toBe(
-      false,
-    );
-    expect(canUseAccountReset({ ...available, stale: true }, now)).toBe(true);
-    expect(
-      canUseAccountReset({ ...available, state: "error", stale: true }, now),
-    ).toBe(true);
-    for (const state of ["needs_auth", "disabled", "unknown"] as const)
-      expect(canUseAccountReset({ ...available, state }, now)).toBe(false);
-    expect(
-      canUseAccountReset(
-        {
-          ...available,
-          resetTokens: {
-            available: 1,
-            supported: true,
-            expiresAt: now + 1000,
-            credits: [{ ...credit, id: "", expiresAt: now + 1000 }],
-          },
-        },
-        now,
-      ),
-    ).toBe(false);
   });
 
   it("does not describe an unknown or stale account as exhausted", () => {

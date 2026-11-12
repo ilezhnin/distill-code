@@ -587,8 +587,8 @@
     "add": "Añadir cuenta",
     "autoSwitch": "Cambio automático de cuentas",
     "autoSwitchLabel": "Cambio automático de cuentas de {{provider}}",
-    "autoSwitchDescription": "Al alcanzar los límites, cambia de cuenta dentro de este proveedor y tipo de facturación. Si todas las cuentas están limitadas, espera al próximo reinicio disponible.",
-    "singleSignIn": "{{provider}} mantiene un único inicio de sesión, así que no hay entre qué cambiar. Cierra esa sesión para conectar otra.",
+    "autoSwitchDescription": "Cambia a otra cuenta de este proveedor cuando se alcanza un límite.",
+    "singleSignIn": "{{provider}} mantiene un único inicio de sesión.",
     "manualResetOnly": "Los tokens de reinicio solo se usan cuando solicitas y confirmas un reinicio.",
     "states": {
       "ready": "Disponible",
@@ -604,10 +604,11 @@
     "onCredits": "Usando créditos",
     "usagePaused": "Actualizaciones de uso en pausa",
     "refused": "Solicitudes rechazadas",
-    "usageRetryIn": "El proveedor ha pausado las consultas de uso. Reintento en {{minutes}}:{{seconds}}.",
+    "usageRetryIn": "Consultas de uso en pausa. Reintento en {{minutes}}:{{seconds}}.",
     "usageRetryPending": "Esperando la próxima actualización de uso.",
     "limitsUnknown": "Límites de uso no disponibles",
-    "resetTokens": "Tokens de reinicio: {{value}}",
+    "resetTokensTitle": "Tokens de reinicio",
+    "resetCount": "×{{value}}",
     "expiresAt": "Caduca {{date}}",
     "credits": "Créditos: {{value}}",
     "creditBalance": "{{label}}: {{value}}",
@@ -620,7 +621,7 @@
     },
     "unlimited": "Sin límite",
     "checkedAt": "Última comprobación {{date}}",
-    "allLimited": "Las cuentas habilitadas incluidas en el cambio automático indican límites generales agotados. Primer reinicio utilizable según estos datos: {{date}} ({{hours}} h {{minutes}} min). Debes solicitar el uso de tokens.",
+    "allLimited": "Todas las cuentas han alcanzado sus límites. Próximo reinicio {{date}} ({{hours}} h {{minutes}} min).",
     "default": "Predeterminada",
     "methods": {
       "oauth": "Suscripción",
@@ -633,7 +634,6 @@
     "cancelSignIn": "Cancelar inicio de sesión",
     "signIn": "Iniciar sesión",
     "signOut": "Cerrar sesión",
-    "useReset": "Usar token de reinicio",
     "useNamedReset": "Usar {{name}}",
     "use": "Usar",
     "resetTypes": {
@@ -644,26 +644,33 @@
       "usage": "Reinicio de uso"
     },
     "resetHints": {
-      "fable": "devuelve a tu límite semanal lo que usó Fable"
+      "fable": "Devuelve el uso de Fable al límite semanal"
     },
     "resetStates": {
-      "available": "Disponible",
-      "used": "Usado",
-      "expired": "Caducado",
+      "redeeming": "En curso",
       "paused": "En pausa",
-      "queued": "Espera su turno",
-      "unavailable": "No disponible ahora"
+      "unavailable": "No disponible"
     },
-    "browserPending": "Completa el inicio de sesión en el navegador. Las demás cuentas permanecen conectadas.",
+    "resetBlocks": {
+      "needs_limit": "Se puede usar en un límite que reinicie",
+      "other_limit": "No reinicia el límite alcanzado",
+      "nothing_to_return": "No hay uso de Fable que devolver",
+      "cooldown": "Inténtalo de nuevo en un minuto",
+      "not_started": "Aún no está activo"
+    },
+    "browserPending": "Completa el inicio de sesión en el navegador.",
     "cancel": "Cancelar",
     "resetTitle": "¿Usar un token de reinicio?",
     "resetDescription": "Se gastará un token de reinicio y no se puede deshacer.",
+    "resetRetried": "Repite tu intento anterior sin confirmar. Se gasta como máximo un token.",
     "confirmReset": "Usar un token",
     "resetOutcomes": {
       "reset": "Límite reiniciado.",
-      "alreadyRedeemed": "Este reinicio ya se aplicó.",
-      "nothingToReset": "No hay ningún límite para reiniciar.",
-      "noCredit": "No hay tokens disponibles."
+      "alreadyRedeemed": "Ya se aplicó.",
+      "nothingToReset": "No hay límite que reiniciar.",
+      "noCredit": "Ya no está disponible. No se ha usado nada.",
+      "cooldown": "Se acaba de iniciar otro reinicio, así que este no se ha usado. Inténtalo de nuevo en un minuto.",
+      "cooldownRetried": "Puede que tu intento anterior siga en curso. Vuelve a comprobarlo en un minuto."
     },
     "connectTitle": "Iniciar sesión en {{provider}}",
     "addTitle": "Añadir cuenta de {{provider}}",

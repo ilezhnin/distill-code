@@ -5,17 +5,17 @@ import { getUsageSections } from "@/features/status/lib/rateLimitWindows";
 import { UsageLimits } from "@/features/status/ui/UsageLimits";
 import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import { Badge } from "@/shared/ui/badge";
-import { Button } from "@/shared/ui/button";
 import type {
   ProviderAccount,
-  ProviderAccountResetCredit,
   ProviderAccountStatus,
 } from "../api/providerAccounts";
+import { accountStatusIsStale } from "../lib/providerAccountStatus";
 import {
-  accountStatusIsStale,
   canUseAccountReset,
-  resetCreditIsAvailable,
-} from "../lib/providerAccountStatus";
+  resetTokenRows,
+  type ResetTokenRow,
+} from "../lib/resetTokens";
+import { ResetTokenList } from "./ResetTokenList";
 
 export function ProviderAccountDetails({
   account,
@@ -34,7 +34,7 @@ export function ProviderAccountDetails({
    */
   state?: ProviderAccountStatus["state"];
   now: number;
-  onUseReset?: (credit: ProviderAccountResetCredit, label: string) => void;
+  onUseReset?: (row: ResetTokenRow) => void;
   resetDisabled?: boolean;
 }) {
   const usage = accountUsageFor(account, status);
@@ -44,7 +44,7 @@ export function ProviderAccountDetails({
       now={now}
       state={state}
       stale={status ? accountStatusIsStale(status, now) : false}
-      resetTokens={status?.resetTokens}
+      resetTokens={resetTokenRows(status, now)}
       onUseReset={canUseAccountReset(status, now) ? onUseReset : undefined}
       resetDisabled={resetDisabled}
     />
@@ -71,13 +71,12 @@ export function ProviderUsageDetails({
   now: number;
   state?: ProviderAccountStatus["state"];
   stale?: boolean;
-  resetTokens?: ProviderAccountStatus["resetTokens"];
-  onUseReset?: (credit: ProviderAccountResetCredit, label: string) => void;
+  resetTokens?: ResetTokenRow[];
+  onUseReset?: (row: ResetTokenRow) => void;
   resetDisabled?: boolean;
 }) {
   const { t } = useTranslation("settings");
   const { formatDate, formatNumber } = useLocaleFormatting();
-  const hasResetCredits = Boolean(resetTokens?.credits?.length);
   const usagePaused = usage.usageRetryAt != null;
   const retrySeconds = Math.max(
     0,
@@ -120,22 +119,6 @@ export function ProviderUsageDetails({
       ) : (
         <p className="text-muted-foreground">{t("accounts.limitsUnknown")}</p>
       )}
-      {!hasResetCredits && resetTokens ? (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
-          <span>
-            {t("accounts.resetTokens", {
-              value: formatNumber(resetTokens.available),
-            })}
-          </span>
-          {resetTokens.expiresAt ? (
-            <span>
-              {t("accounts.expiresAt", {
-                date: date(resetTokens.expiresAt),
-              })}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
       {usage.credits?.map((credit) => {
         const amount = (raw: string | null) => {
           const numeric = raw?.trim() ? Number(raw) : NaN;
@@ -174,50 +157,12 @@ export function ProviderUsageDetails({
           </div>
         );
       })}
-      {resetTokens?.credits?.length ? (
-        <div className="space-y-1 text-muted-foreground">
-          {resetTokens.credits.map((credit) => {
-            const label = t(`accounts.resetTypes.${credit.resetType}`, {
-              defaultValue: credit.title ?? credit.resetType,
-            });
-            // What a narrower reset refills, where its name alone would
-            // read as the whole account's.
-            const hint = t(`accounts.resetHints.${credit.resetType}`, {
-              defaultValue: "",
-            });
-            const named = hint ? `${label} · ${hint}` : label;
-            return (
-              <div
-                key={credit.id}
-                className="flex flex-wrap items-center justify-between gap-2"
-              >
-                <p title={credit.description ?? undefined}>
-                  {named}
-                  {credit.status !== "available"
-                    ? ` · ${t(`accounts.resetStates.${credit.status}`, {
-                        defaultValue: credit.status,
-                      })}`
-                    : ""}
-                  {credit.expiresAt
-                    ? ` · ${t("accounts.expiresAt", { date: date(credit.expiresAt) })}`
-                    : ""}
-                </p>
-                {onUseReset && resetCreditIsAvailable(credit, now) ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    disabled={resetDisabled}
-                    aria-label={t("accounts.useNamedReset", { name: label })}
-                    onClick={() => onUseReset(credit, named)}
-                  >
-                    {t("accounts.use")}
-                  </Button>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
+      {resetTokens?.length ? (
+        <ResetTokenList
+          rows={resetTokens}
+          onUse={onUseReset}
+          disabled={resetDisabled}
+        />
       ) : null}
       {usagePaused ? (
         <p className="text-muted-foreground" role="status">

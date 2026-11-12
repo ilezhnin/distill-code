@@ -61,12 +61,45 @@ export interface ProviderAccountLimit {
   coding?: boolean;
 }
 
+/** What a reset refills, named once for every provider. */
+export type ProviderAccountResetKind =
+  | "full"
+  | "weekly"
+  | "five_hour"
+  | "fable"
+  | "usage";
+
+/**
+ * Where a reset credit stands. `queued` is usable but behind another credit
+ * of its kind; `unavailable` has uses left and cannot be redeemed now.
+ */
+export type ProviderAccountResetCreditStatus =
+  | "available"
+  | "queued"
+  | "redeeming"
+  | "paused"
+  | "unavailable"
+  | "used"
+  | "expired";
+
+/** Why a credit with uses left cannot be redeemed now. */
+export type ProviderAccountResetBlock =
+  | "needs_limit"
+  | "other_limit"
+  | "nothing_to_return"
+  | "cooldown"
+  | "not_started";
+
 export interface ProviderAccountResetCredit {
   id: string;
-  resetType: string;
-  status: string;
+  resetType: ProviderAccountResetKind;
+  status: ProviderAccountResetCreditStatus;
+  /** Redemptions left in this credit. */
+  usesLeft: number;
+  blocked?: ProviderAccountResetBlock | null;
   grantedAt: number | null;
   expiresAt: number | null;
+  /** The provider's own name for the credit, where the kind has none. */
   title: string | null;
   description: string | null;
 }
@@ -87,6 +120,7 @@ export interface ProviderAccountStatus {
   accountLabel: string | null;
   limits: ProviderAccountLimit[];
   resetTokens: {
+    /** Redemptions the account could make now, across its credits. */
     available: number;
     expiresAt: number | null;
     supported: boolean;
@@ -231,7 +265,9 @@ export type AccountResetOutcome =
   | "reset"
   | "alreadyRedeemed"
   | "nothingToReset"
-  | "noCredit";
+  | "noCredit"
+  /** Another reset was used a moment ago; this one was not spent. */
+  | "cooldown";
 
 export function consumeProviderAccountReset(
   accountId: string,

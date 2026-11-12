@@ -1,6 +1,5 @@
 import type {
   ProviderAccount,
-  ProviderAccountResetCredit,
   ProviderAccountStatus,
 } from "../api/providerAccounts";
 
@@ -22,31 +21,6 @@ export function accountStatusIsStale(
   );
 }
 
-export function canUseAccountReset(
-  status: ProviderAccountStatus | undefined,
-  now = Date.now(),
-): boolean {
-  if (
-    !status?.resetTokens?.supported ||
-    status.resetTokens.available <= 0 ||
-    !accountIsConnected(status)
-  )
-    return false;
-  const inventory = status.resetTokens;
-  // A cached grant remains selectable during a telemetry outage. Confirmation
-  // pins its ID; the provider validates that exact grant when it is redeemed.
-  if (inventory.credits?.length)
-    return inventory.credits.some((credit) =>
-      resetCreditIsAvailable(credit, now),
-    );
-  // An aggregate count cannot pin a grant, so it still requires fresh data.
-  return (
-    !accountStatusIsStale(status, now) &&
-    status.state !== "error" &&
-    (inventory.expiresAt === null || inventory.expiresAt > now)
-  );
-}
-
 export function accountIsConnected(
   status: ProviderAccountStatus | undefined,
 ): boolean {
@@ -56,18 +30,6 @@ export function accountIsConnected(
     status?.state === "ready" ||
     status?.state === "limited" ||
     status?.state === "error"
-  );
-}
-
-export function resetCreditIsAvailable(
-  credit: ProviderAccountResetCredit,
-  now = Date.now(),
-): boolean {
-  return (
-    credit.id.trim().length > 0 &&
-    credit.status === "available" &&
-    (credit.grantedAt === null || credit.grantedAt <= now) &&
-    (credit.expiresAt === null || credit.expiresAt > now)
   );
 }
 

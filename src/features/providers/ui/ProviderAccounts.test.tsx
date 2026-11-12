@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import type {
   ProviderAccount,
+  ProviderAccountResetCredit,
   ProviderAccountStatus,
 } from "../api/providerAccounts";
 
@@ -705,16 +706,52 @@ describe("account surfaces", () => {
     expect(checkedAt.parentElement).toContainElement(
       screen.getByRole("button", { name: "Refresh" }),
     );
-    expect(
-      screen.queryByRole("button", { name: "Use a reset token" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
+    expect(screen.queryByText("Reset tokens")).toBeNull();
   });
+
+  /** A reset credit as the host lists it, in the words every provider shares. */
+  function resetCredit(
+    id: string,
+    patch: Partial<ProviderAccountResetCredit> = {},
+  ): ProviderAccountResetCredit {
+    return {
+      id,
+      resetType: "full",
+      status: "available",
+      usesLeft: 1,
+      grantedAt: null,
+      expiresAt: null,
+      title: null,
+      description: null,
+      ...patch,
+    };
+  }
+
+  function setResetCredits(credits: ProviderAccountResetCredit[]) {
+    useProviderAccountsStore.setState({
+      statuses: {
+        personal: status("personal", {
+          available: credits.length,
+          supported: true,
+          expiresAt: null,
+          credits,
+        }),
+      },
+    });
+  }
+
+  function resetRows() {
+    return within(
+      screen.getByRole("list", { name: "Reset tokens" }),
+    ).getAllByRole("listitem");
+  }
 
   it("only sends a reset after confirmation and keeps one idempotency key on uncertain retry", async () => {
     useProviderAccountsStore.setState({
       statuses: {
         personal: status("personal", {
-          available: 1,
+          available: 3,
           supported: true,
           expiresAt: null,
         }),
@@ -724,7 +761,12 @@ describe("account surfaces", () => {
       .mockRejectedValueOnce(new Error("Connection lost"))
       .mockResolvedValueOnce({ outcome: "alreadyRedeemed" });
     render(<ProviderAccountsPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Use a reset token" }));
+    // A count without its credits is the same kind of row as a listed reset.
+    const [row] = resetRows();
+    expect(row).toHaveTextContent(/^Usage reset×3Use$/);
+    fireEvent.click(
+      within(row).getByRole("button", { name: "Use Usage reset" }),
+    );
     expect(mocks.reset).not.toHaveBeenCalled();
     const dialog = screen.getByRole("dialog", { name: "Use one reset token?" });
     fireEvent.click(
@@ -735,27 +777,79 @@ describe("account surfaces", () => {
         "Connection lost",
       ),
     );
+    // The open confirmation is the one place the failure is shown.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Use one token" }),
     );
     await waitFor(() => expect(mocks.reset).toHaveBeenCalledTimes(2));
     expect(mocks.reset.mock.calls[0]).toEqual(mocks.reset.mock.calls[1]);
+    // The provider picks the credit behind a count; none is named.
+    expect(mocks.reset.mock.calls[0]).toEqual([
+      "personal",
+      expect.any(String),
+      undefined,
+    ]);
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalledWith(true));
+  });
+
+  it("repeats an unconfirmed reset with its key after the confirmation was closed", async () => {
+    setResetCredits([resetCredit("grant", { usesLeft: 2 })]);
+    mocks.reset
+      .mockRejectedValueOnce(new Error("Connection lost"))
+      .mockResolvedValueOnce({ outcome: "cooldown" })
+      .mockResolvedValueOnce({ outcome: "reset" })
+      .mockResolvedValueOnce({ outcome: "cooldown" });
+    render(<ProviderAccountsPanel />);
+    const confirm = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Use Full reset" }));
+      const dialog = screen.getByRole("dialog", {
+        name: "Use one reset token?",
+      });
+      const calls = mocks.reset.mock.calls.length;
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Use one token" }),
+      );
+      await waitFor(() => expect(mocks.reset).toHaveBeenCalledTimes(calls + 1));
+      return dialog;
+    };
+    const first = await confirm();
+    await waitFor(() =>
+      expect(within(first).getByRole("alert")).toBeInTheDocument(),
+    );
+    expect(first).toHaveTextContent("Repeats your earlier unconfirmed try.");
+    fireEvent.click(within(first).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // Trying the same reset again repeats the first try: with two uses
+    // left, a new operation could spend a second one.
+    await confirm();
+    expect(mocks.reset.mock.calls[1]).toEqual(mocks.reset.mock.calls[0]);
+    // A cooldown answering the repeated try may be that first try at work,
+    // so its key is kept for the next one.
+    expect(
+      await screen.findByText(/Your earlier try may still be going through/),
+    ).toBeInTheDocument();
+    await confirm();
+    expect(mocks.reset.mock.calls[2]).toEqual(mocks.reset.mock.calls[0]);
+    expect(await screen.findByText("Limit reset.")).toBeInTheDocument();
+    // Once the provider has answered, the next use is a new operation, and a
+    // cooldown on it spent nothing.
+    await confirm();
+    expect(mocks.reset.mock.calls[3][1]).not.toBe(mocks.reset.mock.calls[0][1]);
+    expect(
+      await screen.findByText(/so this one was not used/),
+    ).toBeInTheDocument();
   });
 
   it.each([
     false,
     true,
   ])("confirms the same Claude account, grant and retry operation with stale telemetry=%s", async (stale) => {
-    const credit = {
-      id: "launch-grant",
-      resetType: "full",
-      status: "available",
+    const credit = resetCredit("launch-grant", {
       grantedAt: now - 1000,
       expiresAt: now + 86400000,
-      title: "Full reset",
       description: "Launch allowance",
-    };
+    });
     const claudeStatus: ProviderAccountStatus = {
       ...status("personal", {
         available: 1,
@@ -775,7 +869,6 @@ describe("account surfaces", () => {
       .mockRejectedValueOnce(new Error("Connection lost"))
       .mockResolvedValueOnce({ outcome: "alreadyRedeemed" });
     render(<ProviderAccountsPanel />);
-    expect(screen.queryByText("Reset tokens: 1")).toBeNull();
     expect(screen.getAllByText(/Expires/)).toHaveLength(1);
     expect(screen.queryByText("Available")).toBeNull();
     expect(
@@ -830,61 +923,45 @@ describe("account surfaces", () => {
   });
 
   it.each([
-    "expired",
-    "used",
-    "paused",
-    "queued",
-    "unavailable",
-  ])("does not offer an unavailable Claude grant (%s)", (creditState) => {
-    useProviderAccountsStore.setState({
-      statuses: {
-        personal: status("personal", {
-          available: 1,
-          supported: true,
-          expiresAt: null,
-          credits: [
-            {
-              id: "grant",
-              resetType: "full",
-              status: creditState,
-              grantedAt: null,
-              expiresAt: null,
-              title: "Full reset",
-              description: null,
-            },
-          ],
-        }),
-      },
-    });
+    ["paused", null, "Paused"],
+    ["queued", null, "Unavailable"],
+    ["redeeming", null, "In progress"],
+    ["unavailable", null, "Unavailable"],
+    ["unavailable", "needs_limit", "Usable at a limit it refills"],
+    ["unavailable", "other_limit", "Does not refill the reached limit"],
+    ["unavailable", "nothing_to_return", "No Fable usage to return"],
+    ["unavailable", "cooldown", "Try again in a minute"],
+    ["unavailable", "not_started", "Not active yet"],
+  ] as const)("lists a reset that cannot be used now without offering it (%s, %s)", (creditState, blocked, shown) => {
+    setResetCredits([resetCredit("grant", { status: creditState, blocked })]);
     render(<ProviderAccountsPanel />);
-    expect(screen.queryByRole("button", { name: "Use Full reset" })).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: "Use a reset token" }),
-    ).toBeNull();
+    const [row] = resetRows();
+    expect(row).toHaveTextContent(`Full reset${shown}`);
+    expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
     expect(mocks.reset).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "expired",
+    "used",
+  ] as const)("does not list a reset that is gone (%s)", (creditState) => {
+    setResetCredits([
+      resetCredit("grant", {
+        status: creditState,
+        usesLeft: creditState === "used" ? 0 : 1,
+        expiresAt: now + 86_400_000,
+      }),
+    ]);
+    render(<ProviderAccountsPanel />);
+    const card = screen.getByRole("article", { name: "Personal" });
+    expect(card).not.toHaveTextContent("Reset tokens");
+    expect(card).not.toHaveTextContent("Full reset");
+    expect(card).not.toHaveTextContent("Expires");
+    expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
+  });
+
   it("opening and cancelling a reset confirmation never consumes a token", async () => {
-    useProviderAccountsStore.setState({
-      statuses: {
-        personal: status("personal", {
-          available: 1,
-          supported: true,
-          expiresAt: null,
-          credits: [
-            {
-              id: "grant",
-              resetType: "full",
-              status: "available",
-              grantedAt: null,
-              expiresAt: null,
-              title: "Full reset",
-              description: null,
-            },
-          ],
-        }),
-      },
-    });
+    setResetCredits([resetCredit("grant")]);
     render(<ProviderAccountsPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Use Full reset" }));
     const dialog = screen.getByRole("dialog", { name: "Use one reset token?" });
@@ -894,49 +971,104 @@ describe("account surfaces", () => {
     expect(mocks.reset).not.toHaveBeenCalled();
   });
 
-  it("names a Fable reset apart from a full one and says what it returns", () => {
-    const credit = (id: string, resetType: string, title: string) => ({
-      id,
-      resetType,
-      status: "available",
-      grantedAt: null,
-      expiresAt: null,
-      title,
-      description: null,
-    });
-    useProviderAccountsStore.setState({
-      statuses: {
-        personal: status("personal", {
-          available: 2,
-          supported: true,
-          expiresAt: null,
-          credits: [
-            credit("fable-grant", "fable", "Fable reset"),
-            credit("full-grant", "full", "Full reset"),
-          ],
-        }),
-      },
-    });
+  it("offers a weekly and a Fable reset side by side, one row for each kind", async () => {
+    // An account at its weekly limit: one weekly reset left of two, and two
+    // Fable resets, the second waiting behind the first.
+    setResetCredits([
+      resetCredit("weekly-grant", {
+        resetType: "weekly",
+        expiresAt: now + 30 * 86_400_000,
+      }),
+      resetCredit("weekly-spent", {
+        resetType: "weekly",
+        status: "used",
+        usesLeft: 0,
+        expiresAt: now + 35 * 86_400_000,
+      }),
+      resetCredit("fable-grant", {
+        resetType: "fable",
+        expiresAt: now + 90 * 86_400_000,
+      }),
+      resetCredit("fable-second", {
+        resetType: "fable",
+        status: "queued",
+        expiresAt: now + 90 * 86_400_000,
+      }),
+    ]);
     render(<ProviderAccountsPanel />);
+    const rows = resetRows();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent(/^Weekly resetExpires .+Use$/);
+    expect(rows[1]).toHaveTextContent(
+      /^Fable reset×2Returns Fable usage to the weekly limitExpires .+Use$/,
+    );
+    // No untranslated key, state word or spent reset is left in the rows.
+    for (const row of rows) {
+      expect(row).not.toHaveTextContent("accounts.");
+      expect(row).not.toHaveTextContent(/Used|Waiting|Available/);
+      expect(within(row).getAllByText(/^Expires/)).toHaveLength(1);
+    }
     expect(
-      screen.getByText(
-        "Fable reset · returns what Fable used to your weekly limit",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Use Fable reset" }),
-    ).toBeEnabled();
-    expect(
-      screen.getByRole("button", { name: "Use Full reset" }),
+      screen.getByRole("button", { name: "Use Weekly reset" }),
     ).toBeEnabled();
     // With two kinds on one account, the confirmation names the chosen one.
     fireEvent.click(screen.getByRole("button", { name: "Use Fable reset" }));
     const dialog = screen.getByRole("dialog", { name: "Use one reset token?" });
-    expect(dialog).toHaveTextContent(
-      "Fable reset · returns what Fable used to your weekly limit",
-    );
-    expect(dialog).not.toHaveTextContent("Full reset");
+    expect(dialog).toHaveTextContent("Fable reset");
+    expect(dialog).toHaveTextContent("Returns Fable usage to the weekly limit");
+    expect(dialog).not.toHaveTextContent("Weekly reset");
     expect(mocks.reset).not.toHaveBeenCalled();
+    mocks.reset.mockResolvedValueOnce({ outcome: "reset" });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Use one token" }),
+    );
+    await waitFor(() =>
+      expect(mocks.reset).toHaveBeenCalledWith(
+        "personal",
+        expect.any(String),
+        "fable-grant",
+      ),
+    );
+  });
+
+  it("names every kind of reset in words, with a provider's own name where Flock has none", () => {
+    setResetCredits([
+      resetCredit("full"),
+      resetCredit("session", { resetType: "five_hour" }),
+      resetCredit("weekly", { resetType: "weekly" }),
+      resetCredit("usage", {
+        resetType: "usage",
+        title: "Usage limit reset",
+        description: "Earned in October",
+      }),
+    ]);
+    render(<ProviderAccountsPanel />);
+    expect(resetRows().map((row) => row.textContent)).toEqual([
+      "5-hour resetUse",
+      "Weekly resetUse",
+      "Full resetUse",
+      "Usage limit resetUse",
+    ]);
+    expect(screen.getByText("Usage limit reset")).toHaveAttribute(
+      "title",
+      "Earned in October",
+    );
+    expect(
+      screen.getByRole("button", { name: "Use Usage limit reset" }),
+    ).toBeEnabled();
+  });
+
+  it("lists reset tokens without a way to spend them outside the account's own card", () => {
+    setResetCredits([resetCredit("grant")]);
+    render(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={useProviderAccountsStore.getState().statuses.personal}
+        now={now}
+      />,
+    );
+    expect(resetRows()[0]).toHaveTextContent(/^Full reset$/);
+    expect(screen.queryByRole("button", { name: /Use/ })).toBeNull();
   });
 
   it("switches only the selected chat after the backend succeeds", async () => {
@@ -1107,7 +1239,7 @@ describe("account surfaces", () => {
     expect(glmRow.getByText("5 hours")).toBeInTheDocument();
     expect(glmRow.getByRole("button", { name: "Sign out" })).toBeEnabled();
     // A CLI provider: one row for its sign-in, the toggle and Add disabled
-    // because it holds one sign-in, and the reason said once.
+    // because it holds one sign-in; the reason waits in the toggle's tooltip.
     const grokRow = within(card("Grok").getByRole("article"));
     expect(grokRow.getByText("person@example.test")).toBeInTheDocument();
     expect(grokRow.getByText("Default")).toBeInTheDocument();
@@ -1122,9 +1254,7 @@ describe("account surfaces", () => {
     expect(
       card("Grok").getByRole("button", { name: "Add account" }),
     ).toBeDisabled();
-    expect(
-      card("Grok").getByText(/Grok keeps one sign-in/),
-    ).toBeInTheDocument();
+    expect(card("Grok").queryByText(/keeps a single sign-in/)).toBeNull();
     // A signed-out CLI sign-in offers Sign in on its row, and no usage.
     const kimiRow = within(card("Kimi Code").getByRole("article"));
     expect(kimiRow.getByRole("button", { name: "Sign in" })).toBeEnabled();

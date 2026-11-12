@@ -29,8 +29,8 @@ sign-out from that row (`grok login --oauth` and `grok logout`, `kimi login`
 and Kimi's ACP logout, `copilot login`, `amp login`), with the CLI's streamed
 output in the card header as before. Flock never holds these credentials.
 Because the CLI holds one sign-in, the card's switch and Add account button
-are disabled and the card says why; sign out of the sign-in to connect
-another. A harness without a sign-out flow (Copilot, Amp) offers none, and
+are disabled, and the switch's tooltip says why; sign out of the sign-in to
+connect another. A harness without a sign-out flow (Copilot, Amp) offers none, and
 a harness without a usage source shows "Usage limits not reported" rather
 than a claim.
 Adding a subscription with the same name under the same provider reuses its
@@ -74,11 +74,7 @@ reset-credit inventory, and freshness. Missing provider telemetry is displayed
 as unknown, never as an unlimited allowance. API-key accounts do not expose a
 subscription quota meter. Claude's `get_usage` reply omits reset grants, so
 Flock reads quota and `cedar_ember` grants together through the native CLI's
-first-party usage endpoint. Full, weekly, five-hour and Fable grants are named
-apart, as the native CLI names them: a Fable reset only returns what Fable used
-to the weekly limit, so it never reads as a full reset. Each grant shows its
-availability and expiry, and a usable grant the provider will only take after
-another one reads as waiting its turn; missing telemetry stays unknown. Failed reads retain the last known
+first-party usage endpoint. Missing telemetry stays unknown. Failed reads retain the last known
 values as stale. A 429 pauses usage requests for at least one minute, increasing
 to five minutes on repeated failures, or longer if requested by Retry-After.
 One Refresh action at the top updates the panel; account cards have no duplicate.
@@ -185,12 +181,39 @@ available quota wakes the queue. A partially executed turn is never replayed
 automatically; transparent retry requires proof that the provider accepted no
 prompt activity and the host removed its rejected turn.
 
+**Reset tokens read the same for every provider.** An account card lists them
+under Reset tokens, one row per kind of reset: its name, the number left when
+there is more than one, its expiry, and Use where one can be used now. Spent
+and expired resets are not listed, and an account without a usable or waiting
+reset shows no list. Each status adapter maps its provider's types and states
+onto one vocabulary (the kinds full, weekly, five-hour, Fable and usage; the
+states available, queued, redeeming, paused, unavailable, used and expired),
+so a provider's own identifiers never reach a label. Codex's one reset type is
+a usage reset, named by the title Codex gives it, and the credit that expires
+first is offered first; a count Codex reports without its credits is the same
+row, and Codex picks the credit.
+
+Claude's full, weekly, five-hour and Fable grants are named apart, as the
+native CLI names them: a Fable reset only returns what Fable used to the weekly
+limit, so it never reads as a full reset. As in the native CLI, one grant of
+each kind can be claimed, so a weekly and a Fable reset on one account are
+both offered. Within a kind the grant the provider takes by default
+(`next_grant_id`) goes first, else the first usable one; it holds no other
+kind back. Further grants of a kind wait behind it and count in its row. A
+reset that cannot be used now says why where the provider does: kept for a
+limit it refills, held at a limit it does not refill, no Fable usage to give
+back, another reset used a moment ago, or not active yet. While a redemption
+is under way, the other resets of its kind are not offered.
+
 **Reset credits are operator-only.** Polling, routing and queued retries never
-consume them. The operator selects Use reset and confirms the specific account.
-Both providers' operations carry an idempotency UUID. The dialog retains the
-selected credit and UUID after an uncertain response, so retrying cannot
-silently spend a different grant. Claude uses the provider's grant eligibility
+consume them. The operator selects Use on a reset and confirms the specific
+account. Both providers' operations carry an idempotency UUID. An operation
+the provider did not confirm keeps its credit and UUID for ten minutes, as the
+native CLI keeps them, whether or not the dialog stays open, so trying the same
+reset again repeats the first attempt and cannot spend a second one. Claude uses the provider's grant eligibility
 and `reset_rate_limits` response; an unconfirmed response is never success.
+A cooldown answer spent nothing and is reported as that; when it answers a
+repeated attempt it may be the first attempt going through, so the UUID is kept.
 A previously reported, unexpired grant remains selectable during a telemetry
 failure. Confirmation pins that grant's ID, and the provider checks its current
 eligibility on redemption. An aggregate count without grant IDs still requires
