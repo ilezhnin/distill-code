@@ -193,6 +193,11 @@ runs the new binary, and a monitor's next `flockctl` call runs the new
 the uninstaller deletes the rest once their monitors have ended. No monitor
 is stopped.
 
+The same file's post-install hook rewrites the product's desktop shortcut,
+where one exists, for the build just installed. An update otherwise leaves
+that shortcut alone, and one pointing at an earlier copy of the app in
+another folder went on opening that copy, with none of the update's changes.
+
 The app keeps the record in `conductor/monitor-jobs.json` under the Flock
 root (`src/features/conductor/monitorJobStore.ts`). After a restart, a
 running job is still listed, the liveness check keeps it while its monitor

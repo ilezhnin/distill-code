@@ -78,3 +78,14 @@ Var FlockSupersededStamp
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro FlockRemoveSuperseded
 !macroend
+
+; An update leaves an existing desktop shortcut as it is. One that points at
+; another copy of the app, an earlier install in another folder, therefore
+; went on opening that copy after every update, with none of its changes.
+; The product's own shortcut is written again for the build just installed.
+!macro NSIS_HOOK_POSTINSTALL
+  ${If} ${FileExists} "$DESKTOP\${PRODUCTNAME}.lnk"
+    CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+  ${EndIf}
+!macroend

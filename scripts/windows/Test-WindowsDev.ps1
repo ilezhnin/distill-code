@@ -529,6 +529,14 @@ try {
     $firstMove = $preinstall.IndexOf("FlockSetAside")
     Assert-Equal "pre-install hook closes the app before it moves a file" (($appCheck -ge 0) -and ($appCheck -lt $firstMove)) $true
     Assert-Equal "pre-uninstall hook removes superseded binaries" ($hooks -match '(?s)!macro NSIS_HOOK_PREUNINSTALL\b.*?FlockRemoveSuperseded.*?!macroend') $true
+    # An update skips the desktop shortcut, so a shortcut left pointing at an
+    # earlier copy of the app kept opening that copy. The post-install hook
+    # rewrites the product's own shortcut, and only where one exists.
+    $postinstall = [regex]::Match($hooks, '(?s)!macro NSIS_HOOK_POSTINSTALL\b(.*?)!macroend').Groups[1].Value
+    $shortcut = '"$DESKTOP\${PRODUCTNAME}.lnk"'
+    $shortcutGuard = $postinstall.IndexOf('${If} ${FileExists} ' + $shortcut)
+    $shortcutWrite = $postinstall.IndexOf('CreateShortcut ' + $shortcut + ' "$INSTDIR\${MAINBINARYNAME}.exe"')
+    Assert-Equal "post-install hook points an existing desktop shortcut at the installed build" (($shortcutGuard -ge 0) -and ($shortcutWrite -gt $shortcutGuard)) $true
 
     # ── Bundle recipes are Windows-only and route through native staging ──
     # Bundling exists only on Windows: `just bundle` / `bundle-debug` drive
