@@ -46,6 +46,14 @@ shape survives only as legacy input that is read, never written (see
   so a CLI updated in place serves its new models without a reinstall.
   Claude's extra models are declared in `harness.rs` because each needs its
   own bridge session to read.
+- **Models granted to an account alone.** A provider can serve a model to
+  the accounts it has approved and leave it out of its CLI's menu: Claude
+  Code never lists Mythos. Such a model is declared `granted_only`, and a
+  model probe of a Claude subscription account also reads the provider's
+  own model list (`/v1/models`, with the account's sign-in) and adds a
+  `granted` row for each of them it names. The lane is offered only where
+  that row stands, so Mythos 5.2 and 5.1 appear for the account that has
+  them and for no other; a read that fails keeps the rows of the last one.
 - **Session answers.** `session/new`, `session/load`, `session/fork` and
   session info carry `_meta.modelId`, `_meta.reasoningEffort` and
   `_meta.fastMode`.
@@ -188,7 +196,8 @@ the split was built.
   A model advertised by the bridge is selectable directly, including Fable
   5.1 in Claude ACP 0.81.0; the declared fallback must not disable that row.
 - `[1m]` is a context lane, not an effort: `opus[1m]`, `claude-fable-5[1m]`,
-  `claude-fable-5-1[1m]` and `claude-fable-5-2[1m]` are whole ids and are
+  `claude-fable-5-1[1m]`, `claude-fable-5-2[1m]` and the Mythos lanes
+  (`claude-mythos-5-2[1m]`, `claude-mythos-5-1[1m]`) are whole ids and are
   never split.
 
 ## Harness pins: snapshot of 2026-09-22

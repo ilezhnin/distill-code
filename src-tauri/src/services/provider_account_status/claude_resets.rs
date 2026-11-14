@@ -1,5 +1,7 @@
 //! Claude's native /limit-reset contract. Keep it separate from get_usage,
 //! which strips reset grants. Only consume() sends a redemption request.
+//! The same first-party client reads the models the provider lists for an
+//! account.
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -16,6 +18,7 @@ use provider_accounts::ProviderAccount;
 
 const ORIGIN: &str = "https://api.anthropic.com";
 const USAGE_PATH: &str = "/api/oauth/usage?cedar_ember=1";
+const MODELS_PATH: &str = "/v1/models?limit=1000";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug)]
@@ -119,6 +122,28 @@ pub(super) fn record_usage_result(
     }
 }
 
+/// What a first-party request is for, which is how its failure reads.
+#[derive(Clone, Copy)]
+enum Purpose {
+    Usage,
+    Credits,
+    Models,
+    /// The one request that spends something: unanswered, it may still
+    /// have been taken.
+    Claim,
+}
+
+impl Purpose {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Usage => "usage",
+            Self::Credits => "credit balance",
+            Self::Models => "model list",
+            Self::Claim => "reset",
+        }
+    }
+}
+
 struct Client {
     http: reqwest::Client,
     token: String,
@@ -129,7 +154,7 @@ impl Client {
     fn for_account(
         app: &AppHandle,
         account: &ProviderAccount,
-        version: Option<&str>,
+        user_agent: String,
     ) -> Result<Self, String> {
         let root = flock_root::app_root(app)?;
         let home = provider_accounts::account_home(app, account)?;
@@ -158,7 +183,7 @@ impl Client {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(25))
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(user_agent(version)?)
+            .user_agent(user_agent)
             .build()
             .map_err(|_| "Cannot start Claude reset service".to_string())?;
         Ok(Self {
@@ -168,15 +193,38 @@ impl Client {
         })
     }
 
-    async fn send(&self, request: reqwest::RequestBuilder) -> Result<Value, RequestError> {
+    async fn send(
+        &self,
+        purpose: Purpose,
+        request: reqwest::RequestBuilder,
+    ) -> Result<Value, RequestError> {
+        let what = purpose.noun();
         let mut response = request
             .bearer_auth(&self.token)
             .header("anthropic-beta", "oauth-2025-04-20")
             .header("Content-Type", "application/json")
             .send()
             .await
-            .map_err(|_| {
-                "Claude reset request could not be confirmed; retry the same operation".to_string()
+            .map_err(|error| {
+                // The cause is named by its kind alone: a request error can
+                // carry the address it was sent to.
+                let cause = if error.is_timeout() {
+                    "timed out"
+                } else if error.is_connect() {
+                    "could not connect"
+                } else {
+                    "was not answered"
+                };
+                log::warn!("[account-status] the Claude {what} request {cause}");
+                match purpose {
+                    Purpose::Claim => {
+                        "Claude reset request could not be confirmed; retry the same operation"
+                            .to_string()
+                    }
+                    _ => format!(
+                        "The Claude {what} request {cause}. It is sent again on the next refresh."
+                    ),
+                }
             })?;
         if !response.status().is_success() {
             if response.status() == reqwest::StatusCode::UNAUTHORIZED {
@@ -193,7 +241,7 @@ impl Client {
             }
             // Never expose provider response bodies or credentials to the renderer.
             return Err(RequestError::Other(format!(
-                "Claude reset service returned HTTP {}; refresh the account and retry",
+                "The Claude {what} request returned HTTP {}; refresh the account and retry",
                 response.status().as_u16()
             )));
         }
@@ -201,17 +249,17 @@ impl Client {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| "Could not read Claude reset response".to_string())?
+            .map_err(|_| format!("Could not read the Claude {what} response"))?
         {
             if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(RequestError::Other(
-                    "Claude reset response exceeded the size limit".into(),
-                ));
+                return Err(RequestError::Other(format!(
+                    "The Claude {what} response exceeded the size limit"
+                )));
             }
             bytes.extend_from_slice(&chunk);
         }
         let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
-            RequestError::Other("Claude returned an unreadable reset response".into())
+            RequestError::Other(format!("Claude returned an unreadable {what} response"))
         })?;
         if value.pointer("/error/type").and_then(Value::as_str) == Some("rate_limit_error") {
             return Err(RequestError::RateLimited(60));
@@ -245,9 +293,12 @@ pub(super) async fn fetch_usage(
     if let Some(seconds) = usage_backoff_remaining(&account.id, now_ms()) {
         return Err(RequestError::RateLimited(seconds));
     }
-    let client = Client::for_account(app, account, version)?;
+    let client = Client::for_account(app, account, user_agent(version)?)?;
     let result = client
-        .send(client.http.get(format!("{ORIGIN}{USAGE_PATH}")))
+        .send(
+            Purpose::Usage,
+            client.http.get(format!("{ORIGIN}{USAGE_PATH}")),
+        )
         .await;
     let mut usage = record_usage_result(&account.id, now_ms(), result)?;
     // The usage reply leaves purchased credits out; the native CLI reads their
@@ -259,7 +310,7 @@ pub(super) async fn fetch_usage(
                 "{ORIGIN}/api/oauth/organizations/{organization}/prepaid/credits"
             ))
             .header("x-organization-uuid", organization);
-        match client.send(request).await {
+        match client.send(Purpose::Credits, request).await {
             Ok(credits) => {
                 fields.insert(PREPAID_CREDITS.into(), credits);
             }
@@ -267,6 +318,55 @@ pub(super) async fn fetch_usage(
         }
     }
     Ok(usage)
+}
+
+/// The models the provider lists for the account, each with the name it
+/// gives it: its own model list, read with the account's sign-in. This is
+/// where a model granted to an account alone is named; Claude Code's menu
+/// leaves such a model out.
+pub(super) async fn fetch_models(
+    app: &AppHandle,
+    account: &ProviderAccount,
+) -> Result<Vec<(String, Option<String>)>, RequestError> {
+    // A public endpoint that asks for no CLI: Flock reads it as itself.
+    let agent = format!("levocat-flock/{}", env!("CARGO_PKG_VERSION"));
+    let client = Client::for_account(app, account, agent)?;
+    let reply = client
+        .send(
+            Purpose::Models,
+            client
+                .http
+                .get(format!("{ORIGIN}{MODELS_PATH}"))
+                .header("anthropic-version", "2023-06-01"),
+        )
+        .await?;
+    Ok(model_rows(&reply))
+}
+
+/// The rows of a model list reply that name a model the way an id is
+/// written; anything else in the reply is left out.
+fn model_rows(reply: &Value) -> Vec<(String, Option<String>)> {
+    let plain = |text: &str, limit: usize| {
+        !text.is_empty() && text.len() <= limit && !text.chars().any(char::is_control)
+    };
+    reply["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let id = row["id"].as_str().filter(|id| {
+                plain(id, 80)
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+            })?;
+            let name = row["display_name"]
+                .as_str()
+                .filter(|name| plain(name, 80))
+                .map(str::to_owned);
+            Some((id.to_owned(), name))
+        })
+        .collect()
 }
 
 /// Where [`fetch_usage`] puts the purchased credit balance in its reply.
@@ -280,7 +380,7 @@ pub(super) async fn consume(
     grant_id: &str,
 ) -> Result<ResetResult, String> {
     let body = claim_body(grant_id, request_id)?;
-    let client = Client::for_account(app, account, version)?;
+    let client = Client::for_account(app, account, user_agent(version)?)?;
     let organization = client
         .organization
         .as_deref()
@@ -289,6 +389,7 @@ pub(super) async fn consume(
     // after an uncertain response, matching the native CLI's idempotent claim.
     let result = client
         .send(
+            Purpose::Claim,
             client
                 .http
                 .post(format!(
@@ -1012,6 +1113,69 @@ mod tests {
     }
 
     #[test]
+    fn the_accounts_model_list_names_models_by_id_and_drops_anything_else() {
+        let reply = json!({"data": [
+            {"type": "model", "id": "claude-mythos-5-2", "display_name": "Claude Mythos 5.2"},
+            {"type": "model", "id": "claude-fable-5-2"},
+            {"type": "model", "id": "claude mythos\n5", "display_name": "Bad id"},
+            {"type": "model", "id": "claude-opus-5-5", "display_name": "Opus\u{7}5.5"},
+            {"type": "model"},
+        ], "has_more": false});
+        assert_eq!(
+            model_rows(&reply),
+            [
+                (
+                    "claude-mythos-5-2".to_string(),
+                    Some("Claude Mythos 5.2".to_string())
+                ),
+                ("claude-fable-5-2".to_string(), None),
+                // A name that is not plain text is dropped; the id stands.
+                ("claude-opus-5-5".to_string(), None),
+            ]
+        );
+        assert!(model_rows(&json!({})).is_empty());
+        assert!(model_rows(&json!({"data": "none"})).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_read_reads_as_a_read_and_an_unanswered_claim_as_a_claim() {
+        // Nothing listens on the address once its listener is dropped.
+        let address = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let client = Client {
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            token: "private-test-token".into(),
+            organization: None,
+        };
+        let url = format!("http://{address}/");
+        let usage = client
+            .send(Purpose::Usage, client.http.get(&url))
+            .await
+            .unwrap_err()
+            .to_string();
+        // A failed usage read used to say the reset request was not confirmed.
+        assert_eq!(
+            usage,
+            "The Claude usage request could not connect. It is sent again on the next refresh."
+        );
+        let claim = client
+            .send(Purpose::Claim, client.http.post(&url))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            claim,
+            "Claude reset request could not be confirmed; retry the same operation"
+        );
+        for text in [usage, claim] {
+            assert!(!text.contains("private-test-token") && !text.contains("127.0.0.1"));
+        }
+    }
+
+    #[test]
     fn eligibility_uses_the_reported_cli_version_and_identifies_distill() {
         assert_eq!(
             user_agent(Some("2.1.280")).unwrap(),
@@ -1044,7 +1208,10 @@ mod tests {
             organization: None,
         };
         let error = client
-            .send(client.http.get(format!("http://{address}/usage")))
+            .send(
+                Purpose::Usage,
+                client.http.get(format!("http://{address}/usage")),
+            )
             .await
             .unwrap_err();
         assert!(error.to_string().contains("401"));

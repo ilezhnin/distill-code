@@ -33,11 +33,12 @@ const VERSIONLESS_ALIASES = new Set([
 ]);
 
 /** Claude model families as a regex alternation (also used by humanizeModelId). */
-export const CLAUDE_FAMILIES = "fable|opus|sonnet|haiku";
+export const CLAUDE_FAMILIES = "fable|mythos|opus|sonnet|haiku";
 
 /** Claude Code's own picker order: the most capable family first. */
 const CLAUDE_FAMILY_ORDER = [
   "claude-fable",
+  "claude-mythos",
   "claude-opus",
   "claude-sonnet",
   "claude-haiku",
@@ -223,7 +224,7 @@ export function groupModelsByGeneration(
 }
 
 /**
- * Display order for a Claude model row — Fable, Opus, Sonnet, Haiku, and the
+ * Display order for a Claude model row — Fable, Mythos, Opus, Sonnet, Haiku, and the
  * newest generation first within a family — or undefined for any other model.
  */
 export function claudeModelSortOrder(

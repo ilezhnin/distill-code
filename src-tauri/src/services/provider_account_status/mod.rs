@@ -1374,6 +1374,24 @@ pub(crate) async fn record_served(app: &AppHandle, account_id: &str) {
     }
 }
 
+/// The models the provider itself lists for a stored subscription account, by
+/// id and the name it gives each, read with the account's own sign-in. Empty
+/// for an account whose provider or billing has no such list to read.
+pub(crate) async fn account_models(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    let account = provider_accounts::account(app, account_id)?;
+    let claude = provider_accounts::spec(&account.provider_id)
+        .is_some_and(|spec| spec.telemetry == Telemetry::Claude);
+    if !claude || account.auth_method == provider_accounts::AuthMethod::ApiKey || !account.enabled {
+        return Ok(Vec::new());
+    }
+    claude_resets::fetch_models(app, &account)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 pub async fn consume_reset(
     app: &AppHandle,
     account_id: &str,

@@ -488,7 +488,7 @@ const INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// whenever the models Flock itself contributes change -- those are merged
 /// in at request time and never touch the probe's `updatedAt`, so without this
 /// a renderer holding a cached list has no way to notice them.
-const SHAPE_REVISION: u32 = 11;
+const SHAPE_REVISION: u32 = 12;
 
 /// One account catalogue for chats and benchmark candidates. Runtime probes
 /// validate this list; they do not own a second list of model identities.
@@ -683,7 +683,8 @@ async fn refresh_models(
     harness_id: &str,
     account_id: Option<&str>,
 ) -> Result<(Vec<Value>, String), Value> {
-    let (models, probed_on) = host.probe_models(harness_id, account_id).await?;
+    let (mut models, probed_on) = host.probe_models(harness_id, account_id).await?;
+    add_granted_models(host, harness_id, account_id, &mut models).await;
     let updated_at = protocol::now_iso();
     let value = inventory_record(&models, &updated_at, &probed_on);
     host.store
@@ -695,6 +696,66 @@ async fn refresh_models(
         .await
         .map_err(protocol::internal)?;
     Ok((models, updated_at))
+}
+
+/// Adds the models the provider serves this account alone to its probed
+/// list. The harness's own menu never names them (Claude Code leaves Mythos
+/// out), so they are read from the provider's model list for the account;
+/// `harness::merge_inventory` offers a granted-only lane only where such a
+/// row stands. A read that fails says nothing about the grant, so the rows
+/// the last read found are kept.
+async fn add_granted_models(
+    host: &Arc<Inner>,
+    harness_id: &str,
+    account_id: Option<&str>,
+    models: &mut Vec<Value>,
+) {
+    let wanted = harness::granted_only_models(harness_id);
+    let Some(account_id) = account_id.filter(|_| !wanted.is_empty()) else {
+        return;
+    };
+    let granted = match crate::services::provider_account_status::account_models(
+        &host.app, account_id,
+    )
+    .await
+    {
+        Ok(listed) => granted_rows(&wanted, &listed),
+        Err(error) => {
+            log::warn!(
+                    "[agent-host] the models the provider grants account {account_id} were not read: {error}"
+                );
+            cached_inventory(host, harness_id, Some(account_id))
+                .await
+                .models
+                .into_iter()
+                .filter(|row| row["granted"] == true)
+                .collect()
+        }
+    };
+    for row in granted {
+        if !models.iter().any(|model| model["id"] == row["id"]) {
+            models.push(row);
+        }
+    }
+}
+
+/// The probed rows for the granted-only models an account's own list names.
+/// Nothing was selected on them, so what they can do stays unknown here and
+/// is declared by their lanes.
+fn granted_rows(wanted: &[&str], listed: &[(String, Option<String>)]) -> Vec<Value> {
+    wanted
+        .iter()
+        .filter_map(|id| {
+            let (_, name) = listed.iter().find(|(listed, _)| listed == id)?;
+            Some(json!({
+                "id": id,
+                "name": name.as_deref().unwrap_or(id),
+                "description": Value::Null,
+                "capabilitySource": "unknown",
+                "granted": true,
+            }))
+        })
+        .collect()
 }
 
 /// The KV record a probe leaves behind; `CachedInventory::from_record` reads
@@ -1002,6 +1063,48 @@ mod tests {
             inventory_response("codex-acp", Vec::new(), None)["revision"],
             format!("{SHAPE_REVISION}:")
         );
+    }
+
+    #[test]
+    fn an_account_gets_the_granted_models_its_own_list_names_and_no_others() {
+        let wanted = harness::granted_only_models("claude-acp");
+        let listed = |ids: &[&str]| -> Vec<(String, Option<String>)> {
+            ids.iter()
+                .map(|id| (id.to_string(), Some(format!("Claude {id}"))))
+                .collect()
+        };
+        // The provider's whole list: only the granted-only models become rows,
+        // the rest are the harness menu's to list.
+        let rows = granted_rows(
+            &wanted,
+            &listed(&["claude-mythos-5-2", "claude-fable-5-2", "claude-opus-5-5"]),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "claude-mythos-5-2");
+        assert_eq!(rows[0]["name"], "Claude claude-mythos-5-2");
+        assert_eq!(rows[0]["granted"], true);
+        assert!(granted_rows(&wanted, &listed(&["claude-fable-5-2"])).is_empty());
+        // The catalogue of the account that was granted it offers the lane…
+        let mut probed = vec![json!({ "id": "sonnet", "name": "Sonnet" })];
+        probed.extend(rows);
+        let answer = inventory_response("claude-acp", probed, None);
+        let ids = |answer: &Value| -> Vec<String> {
+            answer["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|model| model["id"].as_str().map(str::to_owned))
+                .collect()
+        };
+        assert!(ids(&answer).contains(&"claude-mythos-5-2[1m]".to_string()));
+        assert!(!ids(&answer).contains(&"claude-mythos-5-1[1m]".to_string()));
+        // …and the catalogue of an account that was not offers none.
+        let plain = inventory_response(
+            "claude-acp",
+            vec![json!({ "id": "sonnet", "name": "Sonnet" })],
+            None,
+        );
+        assert!(ids(&plain).iter().all(|id| !id.contains("mythos")));
     }
 
     #[test]

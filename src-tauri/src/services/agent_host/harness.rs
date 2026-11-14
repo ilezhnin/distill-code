@@ -47,6 +47,10 @@ pub struct ModelDecl {
     /// are probed.
     pub efforts: Option<&'static [&'static str]>,
     pub supports_fast: Option<bool>,
+    /// The provider serves this model only to accounts it has granted it
+    /// to, and the harness's menu never lists it. The row is offered where
+    /// the account's own model list names the model, and nowhere else.
+    pub granted_only: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -158,6 +162,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(true),
+                granted_only: false,
             },
             // The same Fable 5.2 under the full id Claude Code 2.1.312 listed
             // it by: 1M is its native window.
@@ -171,6 +176,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             // The same Fable 5.2 under the alias Claude Code lists it by
             // since 2.1.322 (11-10). Until then `fable` named Fable 5.1; the
@@ -185,6 +191,37 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
+            },
+            // Mythos: the same model as Fable without Fable's added
+            // safeguards, which the provider serves to approved accounts
+            // only. Claude Code's menu does not list it, so its lane is
+            // offered where the account's own model list names it and is
+            // opened like the other unlisted lanes.
+            ModelDecl {
+                id: "claude-mythos-5-2[1m]",
+                name: Some("Mythos 5.2"),
+                description: Some("Mythos 5.2 with 1M context"),
+                group: ModelGroup::Main,
+                order: 12,
+                alias_of: None,
+                opens_on_model: true,
+                efforts: Some(CLAUDE_EFFORTS),
+                supports_fast: Some(false),
+                granted_only: true,
+            },
+            // The id the provider's model list names it by.
+            ModelDecl {
+                id: "claude-mythos-5-2",
+                name: None,
+                description: None,
+                group: ModelGroup::Main,
+                order: 12,
+                alias_of: Some("claude-mythos-5-2[1m]"),
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+                granted_only: true,
             },
             // Opus at its 1M context: the model Opus chats, judges and
             // benchmark rows name. Claude Code 2.1.312 (bridge 0.99.1) gives
@@ -201,6 +238,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(true),
+                granted_only: false,
             },
             // Whatever Claude Code is set to run, which moves: Opus until
             // 10-31, Fable 5.1 since 11-01. It is never declared another name
@@ -215,6 +253,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             // The same Opus under the id Claude Code lists once 1M is its
             // native window.
@@ -228,6 +267,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             ModelDecl {
                 id: "sonnet",
@@ -239,6 +279,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             ModelDecl {
                 id: "haiku",
@@ -250,6 +291,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             // The previous Fable, filed with the older models since 5.2
             // (11-09).
@@ -263,6 +305,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(false),
+                granted_only: false,
             },
             // The same Fable 5.1 under the full id Claude Code lists it by
             // since `fable` names Fable 5.2 (2.1.322, 11-10).
@@ -276,6 +319,33 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
+            },
+            // The previous Mythos, beside the previous Fable.
+            ModelDecl {
+                id: "claude-mythos-5-1[1m]",
+                name: Some("Mythos 5.1"),
+                description: Some("Mythos 5.1 with 1M context"),
+                group: ModelGroup::More,
+                order: 47,
+                alias_of: None,
+                opens_on_model: true,
+                efforts: Some(CLAUDE_EFFORTS),
+                supports_fast: Some(false),
+                granted_only: true,
+            },
+            // The id the provider's model list names it by.
+            ModelDecl {
+                id: "claude-mythos-5-1",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 47,
+                alias_of: Some("claude-mythos-5-1[1m]"),
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+                granted_only: true,
             },
             ModelDecl {
                 id: "claude-fable-5[1m]",
@@ -287,6 +357,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(false),
+                granted_only: false,
             },
             // Claude Code lists the previous releases by their full ids since
             // 11-01. Fable 5 runs at 1M natively, so its id is another name
@@ -302,6 +373,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             ModelDecl {
                 id: "claude-opus-5",
@@ -313,6 +385,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             ModelDecl {
                 id: "claude-sonnet-5",
@@ -324,6 +397,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
             ModelDecl {
                 id: "claude-opus-4-8",
@@ -335,6 +409,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(true),
+                granted_only: false,
             },
             ModelDecl {
                 id: "claude-opus-4-7",
@@ -346,6 +421,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS),
                 supports_fast: Some(true),
+                granted_only: false,
             },
             ModelDecl {
                 id: "claude-opus-4-6",
@@ -357,6 +433,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS_NO_XHIGH),
                 supports_fast: Some(false),
+                granted_only: false,
             },
             ModelDecl {
                 id: "claude-sonnet-4-6",
@@ -368,6 +445,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: true,
                 efforts: Some(CLAUDE_EFFORTS_NO_XHIGH),
                 supports_fast: Some(false),
+                granted_only: false,
             },
             ModelDecl {
                 id: "claude-haiku-4-5-20251001",
@@ -379,6 +457,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 opens_on_model: false,
                 efforts: None,
                 supports_fast: None,
+                granted_only: false,
             },
         ],
         session_model_meta: Some(claude_session_model_meta),
@@ -610,8 +689,11 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
             let found = probed.iter().find(|row| row["id"] == decl.id);
             // A declaration only places and names a model the bridge lists;
             // it does not conjure one. The models Flock opens a session on
-            // are the exception — no bridge ever lists those.
-            (found.is_some() || decl.opens_on_model).then(|| {
+            // are the exception — no bridge ever lists those — and of them,
+            // one the provider grants account by account is offered only
+            // where the account's own list names it.
+            let granted = !decl.granted_only || lane_model(&probed, decl.id).is_some();
+            (found.is_some() || (decl.opens_on_model && granted)).then(|| {
                 let mut row = declared_row(decl, found);
                 // An unlisted context lane is named as the bridge names its model.
                 if let Some(base) = lane_model(&probed, decl.id).filter(|_| found.is_none()) {
@@ -691,6 +773,18 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
         }
     }
     rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// The models `harness_id` serves to granted accounts only, by the ids the
+/// provider's own model list names them: Claude's Mythos releases.
+pub fn granted_only_models(harness_id: &str) -> Vec<&'static str> {
+    harness(harness_id)
+        .map(|spec| spec.models)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|decl| decl.granted_only && decl.alias_of.is_some())
+        .map(|decl| decl.id)
+        .collect()
 }
 
 /// The model `id` is declared another name for on `harness_id`, if any:
@@ -1009,6 +1103,68 @@ mod tests {
         // Moving aliases keep the bridge's current name, not a pinned release.
         assert_eq!(models[1]["name"], "Opus (1M context)");
         assert_eq!(models[2]["name"], "Default");
+    }
+
+    #[test]
+    fn a_granted_only_lane_is_offered_where_the_accounts_own_list_names_it() {
+        // An account the provider has not granted Mythos sees none of it,
+        // whatever Flock declares.
+        let plain = merge_inventory("claude-acp", claude_bridge_rows());
+        assert!(plain
+            .iter()
+            .all(|row| !row["id"].as_str().unwrap().contains("mythos")));
+        // The provider's ids, as the grant read adds them to the account's
+        // probed list.
+        assert_eq!(
+            granted_only_models("claude-acp"),
+            ["claude-mythos-5-2", "claude-mythos-5-1"]
+        );
+        assert!(granted_only_models("codex-acp").is_empty());
+        let granted_row = |id: &str| {
+            json!({ "id": id, "name": id, "description": Value::Null,
+                "capabilitySource": "unknown", "granted": true })
+        };
+        let mut rows = claude_bridge_rows();
+        rows.extend(
+            granted_only_models("claude-acp")
+                .into_iter()
+                .map(granted_row),
+        );
+        let models = merge_inventory("claude-acp", rows);
+        let row = |id: &str| models.iter().find(|row| row["id"] == id).unwrap();
+        let lane = row("claude-mythos-5-2[1m]");
+        assert_eq!(lane["name"], "Mythos 5.2");
+        assert_eq!(lane["group"], "main");
+        assert_eq!(lane["opensOnModel"], true);
+        assert_eq!(
+            lane["efforts"].as_array().unwrap().len(),
+            CLAUDE_EFFORTS.len()
+        );
+        assert_eq!(row("claude-mythos-5-1[1m]")["group"], "more");
+        // The provider's id is another name for the lane, never a second model.
+        assert_eq!(row("claude-mythos-5-2")["aliasOf"], "claude-mythos-5-2[1m]");
+        assert_eq!(row("claude-mythos-5-2")["opensOnModel"], false);
+        // Mythos sits right after the Fable of its release.
+        let position = |id: &str| models.iter().position(|row| row["id"] == id).unwrap();
+        assert!(position("claude-fable-5-2[1m]") < position("claude-mythos-5-2[1m]"));
+        assert!(position("claude-mythos-5-2[1m]") < position("opus[1m]"));
+        // One release granted is one lane.
+        let mut rows = claude_bridge_rows();
+        rows.push(granted_row("claude-mythos-5-1"));
+        let models = merge_inventory("claude-acp", rows);
+        assert!(models
+            .iter()
+            .any(|row| row["id"] == "claude-mythos-5-1[1m]"));
+        assert!(models
+            .iter()
+            .all(|row| row["id"] != "claude-mythos-5-2[1m]"));
+        // The lane opens like the other models the menu does not list.
+        let claude = harness(CLAUDE_HARNESS).unwrap();
+        assert_eq!(
+            session_model_meta(claude, "claude-mythos-5-2[1m]").unwrap()["claudeCode"]["options"]
+                ["model"],
+            "claude-mythos-5-2[1m]"
+        );
     }
 
     #[test]
