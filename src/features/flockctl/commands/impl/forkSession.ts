@@ -26,9 +26,10 @@ const forkSessionSchema = z
       .optional()
       .describe(
         "Your session's token (the Flock preamble states it beside your " +
-          "session id): the proof that the call is yours. Required when the " +
-          "command runs in an agent session's shell; the operator's own " +
-          "terminal needs none.",
+          "session id): the proof that the call is made for you. Required " +
+          "when the command runs in an agent session's shell; the operator's " +
+          "own terminal needs none. A script you start reads it from " +
+          "FLOCK_SESSION_TOKEN in its environment instead of the flag.",
       ),
   })
   .strict();

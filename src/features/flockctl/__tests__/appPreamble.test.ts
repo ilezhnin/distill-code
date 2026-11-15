@@ -69,6 +69,16 @@ describe("getFlockctlPreamble", () => {
     expect(preamble).toContain(
       `pass \`--parent-session-id ${SESSION_ID} --session-token ${token}\` to \`flockctl session create\``,
     );
+    // The token is the session's to hand to its own scripts, and it is
+    // told how: a conductor that read the token as untouchable refused
+    // to give it to its own dispatcher and sent the operator to a
+    // terminal instead.
+    expect(preamble).toContain(`\`FLOCK_SESSION_TOKEN=${token}\``);
+    expect(preamble).toContain("yours to delegate");
+    expect(preamble).toContain(
+      "Never ask the user to run something from their own terminal",
+    );
+    expect(preamble).not.toContain("no other session's to use");
   });
 });
 

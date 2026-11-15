@@ -131,7 +131,10 @@ Required command properties:
   and a keyed digest of it, checked without a record of what was issued).
   The session the token proves is the one the ACL is checked against;
   `--parent-session-id` only says where the new session hangs, and must be
-  that same session. An agent's call without the token is refused, whether
+  that session or one started under it. The token is the session's to
+  delegate: a script it starts carries it in `FLOCK_SESSION_TOKEN`, which
+  the CLI sends when the flag is absent, so a dispatcher written without
+  the flag starts sessions as the session that launched it. An agent's call without the token is refused, whether
   it names a session or none. A call that carries no `agent` mark is the
   operator's own terminal or an app-internal dispatch: it needs no token, a
   session it names is the actor, and one that names none is allowed and

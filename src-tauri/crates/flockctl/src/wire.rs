@@ -50,7 +50,30 @@ pub enum Invocation {
     },
 }
 
+/// The variable a script reads its session's token from.
+///
+/// A session that may start others is told a token and passes it as
+/// `--session-token`. A script the session starts to do its work — a
+/// dispatcher that fans a job out over many sessions — has no place to
+/// pass a flag it was written without, and was refused every session it
+/// tried to start: its conductor then asked the operator to run the
+/// script from their own terminal (11-16). The session sets this variable
+/// in the script's environment instead, and every `flockctl` the script
+/// runs carries the token as if the flag had been given. The flag wins
+/// when both are present.
+pub const SESSION_TOKEN_ENV: &str = "FLOCK_SESSION_TOKEN";
+const SESSION_TOKEN_FIELD: &str = "session_token";
+
 pub fn invocation(contract: &Contract, matches: &ArgMatches) -> Invocation {
+    invocation_with_env(contract, matches, |name| std::env::var(name).ok())
+}
+
+/// [`invocation`], with the environment handed in so a test names its own.
+pub fn invocation_with_env(
+    contract: &Contract,
+    matches: &ArgMatches,
+    env: impl Fn(&str) -> Option<String>,
+) -> Invocation {
     let (noun, noun_matches) = matches
         .subcommand()
         .expect("clap enforces subcommand_required");
@@ -68,7 +91,19 @@ pub fn invocation(contract: &Contract, matches: &ArgMatches) -> Invocation {
         .unwrap_or_else(|| panic!("clap only parses contract verbs, got `{noun} {verb}`"))
         .action;
 
-    let body = built_body(contract, &spec.group, action, verb_matches);
+    let mut body = built_body(contract, &spec.group, action, verb_matches);
+    let takes_token = contract
+        .field_specs(&spec.group, action)
+        .is_some_and(|fields| fields.iter().any(|field| field.name == SESSION_TOKEN_FIELD));
+    if takes_token && !body.contains_key(SESSION_TOKEN_FIELD) {
+        // An exported-but-empty variable is no token, like an unset one.
+        if let Some(token) = env(SESSION_TOKEN_ENV)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+        {
+            body.insert(SESSION_TOKEN_FIELD.into(), Value::String(token));
+        }
+    }
     Invocation::Call {
         group: spec.group.clone(),
         body,

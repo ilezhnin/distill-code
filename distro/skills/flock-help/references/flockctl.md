@@ -31,7 +31,12 @@ Pass your own session id and token, which the Flock preamble states, as
 `flockctl session create --parent-session-id <your id> --session-token
 <your token>`. The token proves the call is yours: from an agent's shell
 `session create` and `session fork` are refused without it, and a session
-that was told it starts no other sessions has none. The new session is
+that was told it starts no other sessions has none. A script or background
+process you start to do your work — a dispatcher that starts many sessions —
+needs no change: set `FLOCK_SESSION_TOKEN` to your token in its environment
+and every `flockctl` it runs carries it. The sessions it starts are started
+as you, and may hang under you or under a session you started. Do not ask
+the user to run such a script from their own terminal. The new session is
 then shown under your chat in the sidebar instead of as a chat of its own,
 your chat shows it working, and its result is delivered back to your chat
 when its turn ends, so it does not need to be told to report back. Leave

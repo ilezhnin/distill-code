@@ -112,9 +112,61 @@ mod tests {
     fn wire_of(argv: &[&str]) -> (String, Map<String, Value>) {
         let matches =
             try_parse(argv).unwrap_or_else(|err| panic!("`{argv:?}` should parse: {err}"));
-        match wire::invocation(&Contract::load(), &matches) {
+        // No environment of the machine's: a token exported in the shell
+        // that runs the tests must not ride into what they pin.
+        match wire::invocation_with_env(&Contract::load(), &matches, |_| None) {
             wire::Invocation::Call { group, body } => (group, body),
         }
+    }
+
+    /// A script a session started carries the session's token in its
+    /// environment, so the sessions it creates need no flag it was written
+    /// without. The flag wins, an empty variable is none, and only the
+    /// commands that take a token read it.
+    #[test]
+    fn the_session_token_rides_in_from_the_environment() {
+        let body_of = |argv: &[&str], token: Option<&str>| {
+            let matches = try_parse(argv).expect("parses");
+            let env = |name: &str| {
+                (name == wire::SESSION_TOKEN_ENV)
+                    .then(|| token.map(str::to_owned))
+                    .flatten()
+            };
+            match wire::invocation_with_env(&Contract::load(), &matches, env) {
+                wire::Invocation::Call { body, .. } => body,
+            }
+        };
+        let create = ["flockctl", "session", "create", "--prompt", "p"];
+        assert_eq!(
+            body_of(&create, Some(" invented.0000 "))["session_token"],
+            "invented.0000"
+        );
+        let fork = ["flockctl", "session", "fork", "--session-id", "s"];
+        assert_eq!(
+            body_of(&fork, Some("invented.0000"))["session_token"],
+            "invented.0000"
+        );
+        for none in [None, Some(""), Some("   ")] {
+            assert!(
+                !body_of(&create, none).contains_key("session_token"),
+                "{none:?}"
+            );
+        }
+        let flagged = [
+            "flockctl",
+            "session",
+            "create",
+            "--prompt",
+            "p",
+            "--session-token",
+            "mine.1111",
+        ];
+        assert_eq!(
+            body_of(&flagged, Some("other.2222"))["session_token"],
+            "mine.1111"
+        );
+        let list = ["flockctl", "session", "list"];
+        assert!(!body_of(&list, Some("invented.0000")).contains_key("session_token"));
     }
 
     /// The contract gate: every cross-artifact inconsistency (missing or
@@ -164,8 +216,13 @@ mod tests {
     /// value is the operator's terminal rather than an agent's shell.
     #[test]
     fn agent_shell_global_parses_and_stays_out_of_wire_args() {
-        let plain = try_parse(&["flockctl", "session", "list"]).expect("parses");
-        assert!(!wire::globals(&plain).agent_shell);
+        // With no flag the mark is whatever the environment says, and these
+        // tests are themselves run from agents' shells, where the app sets
+        // it: only a machine without the variable can show the unset case.
+        if std::env::var_os("FLOCK_AGENT_SHELL").is_none() {
+            let plain = try_parse(&["flockctl", "session", "list"]).expect("parses");
+            assert!(!wire::globals(&plain).agent_shell);
+        }
         for (value, expected) in [("1", true), ("true", true), ("0", false), ("", false)] {
             let matches = try_parse(&["flockctl", "session", "list", "--agent-shell", value])
                 .expect("agent-shell global parses");
@@ -654,8 +711,10 @@ Options:
 
       --session-token <SESSION_TOKEN>
           Your session's token (the Flock preamble states it beside your session
-          id): the proof that the call is yours. Required when the command runs
-          in an agent session's shell; the operator's own terminal needs none.
+          id): the proof that the call is made for you. Required when the
+          command runs in an agent session's shell; the operator's own terminal
+          needs none. A script you start reads it from FLOCK_SESSION_TOKEN in
+          its environment instead of the flag.
 
       --from <FROM>
           Optional visible sender label for the initial message (1-120 chars).

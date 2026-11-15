@@ -49,6 +49,11 @@ Run \`flockctl <noun> <verb> --help\` for arguments. When asked to switch or mov
  * also told its token (`sessionToken.ts`): the proof the spawn gate asks
  * of a call made from an agent's shell. A session that starts nobody is
  * told none.
+ *
+ * The token is the session's to delegate, and the text says so. It first
+ * said the token was "no other session's to use": a conductor read that
+ * as a ban on handing it to its own dispatcher script, refused, and asked
+ * the operator to run the script from a terminal (11-16).
  */
 export function formatFlockctlPreamble(
   sessionId: string,
@@ -63,7 +68,7 @@ export function formatFlockctlPreamble(
   // `spawn_not_allowed` (11-14).
   const spawning = maySpawn
     ? sessionToken
-      ? `When you start a session to take on part of your work, pass \`--parent-session-id ${id} --session-token ${sessionToken}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit \`--parent-session-id\` only for an independent chat the user asked for. The token is how the app knows a call is yours: \`session create\` and \`session fork\` run from your shell are refused without it, and it is no other session's to use.`
+      ? `When you start a session to take on part of your work, pass \`--parent-session-id ${id} --session-token ${sessionToken}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit \`--parent-session-id\` only for an independent chat the user asked for. The token is how the app knows a call is made for you: \`session create\` and \`session fork\` run from an agent's shell are refused without it. It is yours to delegate: a script or background process you start to do your work (a dispatcher, a runner) needs no change, set \`FLOCK_SESSION_TOKEN=${sessionToken}\` in its environment and every \`flockctl\` it runs carries it, so the sessions it starts are started as you. Such a session may hang under you or under a session you started (\`--parent-session-id\`). Never ask the user to run something from their own terminal because of the token.`
       : `When you start a session to take on part of your work, pass \`--parent-session-id ${id}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit it only for an independent chat the user asked for.`
     : `This session starts no other sessions: \`flockctl session create\` and \`flockctl session fork\` are not yours to run, under your own id or another chat's. If the work needs more hands than you have, say so in your report (\`needsOperator\`, \`nextSuggestedTask\`) and the chat that gave you the task decides.`;
   return `${FLOCKCTL_PREAMBLE}

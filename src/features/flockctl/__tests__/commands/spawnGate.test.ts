@@ -378,6 +378,67 @@ describe("resolveFlockctlSpawnCaller", () => {
     expect(borrowed.message).toContain("only start sessions under itself");
   });
 
+  it("lets a session hang what it starts under its own executors", async () => {
+    // The conductor's dispatcher starts readers under the step that
+    // launched it, with the conductor's token in its environment.
+    useConductorGraphStore.setState({
+      nodesById: {
+        "conductor-1": node({
+          sessionId: "conductor-1",
+          role: "conductor",
+          managedBy: "ui",
+          parentSessionId: null,
+        }),
+        [ACTOR_ID]: node(),
+        "reader-1": node({
+          sessionId: "reader-1",
+          parentSessionId: ACTOR_ID,
+        }),
+        elsewhere: node({
+          sessionId: "elsewhere",
+          parentSessionId: "conductor-2",
+          rootConductorId: "conductor-2",
+        }),
+      },
+    });
+    const token = await sessionTokenFor("conductor-1");
+    for (const parent of [ACTOR_ID, "reader-1"]) {
+      expect(
+        await resolveFlockctlSpawnCaller({
+          actor: undefined,
+          fromAgent: true,
+          parentSessionId: parent,
+          sessionToken: token,
+        }),
+        // Checked as the conductor, hung where the work is.
+      ).toEqual({ actor: "conductor-1", parentSessionId: parent });
+    }
+    // Not under another conductor's executor, and not the other way up:
+    // an executor's token does not reach its conductor.
+    for (const [parent, owner] of [
+      ["elsewhere", "conductor-1"],
+      ["conductor-1", ACTOR_ID],
+    ]) {
+      const error = await refusal({
+        actor: undefined,
+        fromAgent: true,
+        parentSessionId: parent,
+        sessionToken: await sessionTokenFor(owner),
+      });
+      expect(error.code).toBe("invalid_args");
+    }
+  });
+
+  it("says where a script finds the token when it refuses a call without one", async () => {
+    const error = await refusal({
+      actor: undefined,
+      fromAgent: true,
+      parentSessionId: undefined,
+      sessionToken: undefined,
+    });
+    expect(error.message).toContain("FLOCK_SESSION_TOKEN");
+  });
+
   it("keeps a harness's own exported identity working without a token", async () => {
     expect(
       await resolveFlockctlSpawnCaller({

@@ -234,7 +234,26 @@ export interface FlockctlSpawnCaller {
 
 const TOKEN_WHERE =
   "Pass `--session-token` with the token from your app context, where it " +
-  "stands beside your session id.";
+  "stands beside your session id; a script you started reads it from " +
+  "FLOCK_SESSION_TOKEN in its environment.";
+
+/** How far up the tree a named parent is looked for its starter. */
+const MAX_PARENT_DEPTH = 32;
+
+/**
+ * Whether `sessionId` is `ancestorId` or was started, at any depth, under
+ * it. A session's dispatcher hangs what it starts where the work is: under
+ * the session itself, or under an executor that session started.
+ */
+function isInSessionTree(sessionId: string, ancestorId: string): boolean {
+  const graph = useConductorGraphStore.getState();
+  let current: string | null | undefined = sessionId;
+  for (let depth = 0; current && depth < MAX_PARENT_DEPTH; depth += 1) {
+    if (current === ancestorId) return true;
+    current = graph.getNode(current)?.parentSessionId;
+  }
+  return false;
+}
 const TOKEN_NONE_FOR_SOME =
   "A session that was told it starts no other sessions has no token and " +
   "may not start one.";
@@ -242,8 +261,10 @@ const TOKEN_NONE_FOR_SOME =
 /**
  * Resolves the caller of one flockctl spawn.
  *
- * A valid `--session-token` proves the session; a call from an agent's
- * shell without one is refused, whichever session it names. Everything
+ * A valid `--session-token` proves the session the call is made for —
+ * by the session itself or by a script it handed the token to — and the
+ * new session may hang under it or anywhere in its own tree. A call from
+ * an agent's shell without one is refused, whichever session it names. Everything
  * else — the operator's terminal, a harness that exports its own actor, a
  * renderer that cannot make tokens — is read as before.
  */
@@ -263,10 +284,10 @@ export async function resolveFlockctlSpawnCaller(args: {
         "`--session-token` is not a token this app gave a session. Pass the one from your own app context, unchanged.",
       );
     }
-    if (parent && parent !== proven.sessionId) {
+    if (parent && !isInSessionTree(parent, proven.sessionId)) {
       throw new CommandError(
         "invalid_args",
-        `Session "${parent}" is not the session this token was given to ("${proven.sessionId}"); a session can only start sessions under itself.`,
+        `Session "${parent}" is neither the session this token was given to ("${proven.sessionId}") nor one started under it; a session can only start sessions under itself or under its own executors.`,
       );
     }
     return { actor: proven.sessionId, parentSessionId: parent };
