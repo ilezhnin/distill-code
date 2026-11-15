@@ -158,8 +158,6 @@
     "empty": {
       "folderNotSet": "Folder not set",
       "noChanges": "No uncommitted changes",
-      "noGitWorkspaces": "No git repo in this chat's workspaces",
-      "notGitRepo": "This folder isn't a git repo",
       "noProjectAssigned": "No project assigned"
     },
     "errors": {
@@ -289,6 +287,17 @@
       "details": "Context",
       "changes": "Changes",
       "files": "Files"
+    },
+    "usage": {
+      "empty": "No usage yet",
+      "openChat": "Open {{name}}",
+      "percentUsed": "{{percent}} used",
+      "rowAria": "Context window of {{name}}",
+      "team": "Team",
+      "title": "Context window",
+      "tokens": "{{used}} / {{limit}}",
+      "tokensOnly": "{{used}} tokens",
+      "unnamedChat": "Chat"
     },
     "widgets": {
       "artifacts": "Artifacts",

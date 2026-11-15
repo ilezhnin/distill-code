@@ -104,6 +104,8 @@ vi.mock("@/shared/hooks/useHomeDir", () => ({
 
 vi.mock("@/shared/api/acpApi", () => ({
   updateWorkingDir: mockUpdateWorkingDir,
+  // The context tab asks the host what unloaded chats last reported.
+  getSessionsContextUsage: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -142,10 +144,16 @@ describe("ContextPanel", () => {
           ? new RegExp(`open actions for .*${name.source}`, "i")
           : new RegExp(`open actions for .*${name}`, "i"),
     });
+  // The folder and its git state live on the changes tab; the panel opens on
+  // the context tab.
+  const openChangesTab = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole("tab", { name: /^changes$/i }));
+  };
   const openWorkspaceActionsMenu = async (
     user: ReturnType<typeof userEvent.setup>,
     name?: RegExp | string,
   ) => {
+    await openChangesTab(user);
     await user.click(getWorkspaceActionsMenuButton(name));
   };
   const materializedWorkspace = (path: string): WorkspaceAttachment => ({
@@ -375,6 +383,31 @@ describe("ContextPanel", () => {
       },
     );
     mockUseWorkspaceChangedFilesRuntimes.mockReturnValue([]);
+  });
+
+  it("opens on the context window and keeps the folder and git on the changes tab", async () => {
+    const user = userEvent.setup();
+    renderContextPanel();
+
+    expect(screen.getByTestId("context-usage")).toBeInTheDocument();
+    expect(screen.getByText("Context window")).toBeInTheDocument();
+    // The context tab says nothing about the folder, and does not probe it.
+    expect(
+      screen.queryByRole("button", { name: /open actions for/i }),
+    ).not.toBeInTheDocument();
+    expect(mockUseWorkspaceGitRuntimes).toHaveBeenLastCalledWith(
+      expect.anything(),
+      false,
+    );
+
+    await openChangesTab(user);
+
+    expect(getWorkspaceActionsMenuButton()).toBeInTheDocument();
+    expect(screen.queryByTestId("context-usage")).not.toBeInTheDocument();
+    expect(mockUseWorkspaceGitRuntimes).toHaveBeenLastCalledWith(
+      expect.anything(),
+      true,
+    );
   });
 
   it("cleans up a last-use Flock-created worktree before removing it from the chat", async () => {

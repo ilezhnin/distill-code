@@ -158,8 +158,6 @@
     "empty": {
       "folderNotSet": "Carpeta no configurada",
       "noChanges": "No hay cambios sin confirmar",
-      "noGitWorkspaces": "Ningún espacio de trabajo de este chat es un repositorio de git",
-      "notGitRepo": "Esta carpeta no es un repositorio de git",
       "noProjectAssigned": "No hay proyecto asignado"
     },
     "errors": {
@@ -289,6 +287,17 @@
       "details": "Contexto",
       "changes": "Cambios",
       "files": "Archivos"
+    },
+    "usage": {
+      "empty": "Sin uso todavía",
+      "openChat": "Abrir {{name}}",
+      "percentUsed": "{{percent}} en uso",
+      "rowAria": "Ventana de contexto de {{name}}",
+      "team": "Equipo",
+      "title": "Ventana de contexto",
+      "tokens": "{{used}} / {{limit}}",
+      "tokensOnly": "{{used}} tokens",
+      "unnamedChat": "Chat"
     },
     "widgets": {
       "artifacts": "Artefactos",

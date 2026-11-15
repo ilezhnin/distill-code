@@ -62,6 +62,8 @@ interface ChatContextPanelProps {
   elevated?: boolean;
   onToggleTerminal?: () => void;
   onOpenTerminalAtPath?: (path: string) => void;
+  /** Opens another chat of this chat's team. Must be referentially stable. */
+  onOpenSession?: (sessionId: string) => void;
 }
 
 /**
@@ -86,6 +88,7 @@ export const ChatContextPanel = memo(function ChatContextPanel({
   elevated = false,
   onToggleTerminal,
   onOpenTerminalAtPath,
+  onOpenSession,
 }: ChatContextPanelProps) {
   const [panelElement, setPanelElement] = useState<HTMLDivElement | null>(null);
   const handlePanelRef = useCallback((node: HTMLDivElement | null) => {
@@ -134,8 +137,10 @@ export const ChatContextPanel = memo(function ChatContextPanel({
             projectWorkingDirs={project?.workingDirs ?? EMPTY_WORKING_DIRS}
             sessionWorkingDir={sessionWorkingDir}
             terminalOpen={terminalOpen}
+            isVisible={isVisible}
             onToggleTerminal={onToggleTerminal}
             onOpenTerminalAtPath={onOpenTerminalAtPath}
+            onOpenSession={onOpenSession}
           />
         </aside>
       </div>

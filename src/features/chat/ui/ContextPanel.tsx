@@ -31,13 +31,13 @@ import {
 import { WorkspaceWidget } from "./widgets/WorkspaceWidget";
 import { LegacyWorkspaceWidget } from "./widgets/LegacyWorkspaceWidget";
 import {
-  ChangesEmptyState,
   ChangesErrorState,
   ChangesLoadingState,
   ChangesWidget,
   WorkspaceChangesWidget,
 } from "./widgets/ChangesWidget";
 import { ArtifactsWidget } from "./widgets/ArtifactsWidget";
+import { ContextUsageWidget } from "./widgets/ContextUsageWidget";
 import { formatErrorMessage } from "./widgets/formatError";
 import {
   WorkspaceAddDialog,
@@ -81,8 +81,15 @@ interface ContextPanelProps {
   projectWorkingDirs?: string[];
   sessionWorkingDir?: string | null;
   terminalOpen?: boolean;
+  /**
+   * Whether the panel is on screen. It stays mounted while the rail is
+   * hidden, and a hidden panel must not ask the host for anything.
+   */
+  isVisible?: boolean;
   onToggleTerminal?: () => void;
   onOpenTerminalAtPath?: (path: string) => void;
+  /** Opens another chat of this chat's team from the context tab. */
+  onOpenSession?: (sessionId: string) => void;
 }
 
 interface ContextPanelWorktreeTrackerProps {
@@ -260,8 +267,10 @@ export function ContextPanel({
   projectWorkingDirs = [],
   sessionWorkingDir,
   terminalOpen = false,
+  isVisible = true,
   onToggleTerminal,
   onOpenTerminalAtPath,
+  onOpenSession,
 }: ContextPanelProps) {
   const { t } = useTranslation("chat");
   const { openInApp } = useArtifactActionsContext();
@@ -317,8 +326,9 @@ export function ContextPanel({
   const hasWorkspaceAttachments =
     isMultiWorkspaceMode && workspaceAttachments.length > 0;
   const queryClient = useQueryClient();
-  const isWorkspaceContextTab =
-    activeTab === "details" || activeTab === "changes";
+  // Only the changes tab reads git: the context tab is about the agents'
+  // windows, and a rail left on it must not keep probing the repository.
+  const isWorkspaceContextTab = activeTab === "changes";
   const {
     data: fallbackGitState,
     error: fallbackGitError,
@@ -363,35 +373,20 @@ export function ContextPanel({
   const shouldShowChanges = hasWorkspaceAttachments
     ? workspaceChangedFileRuntimes.length > 0
     : Boolean(gitTargetPath) && fallbackGitState?.isGitRepo !== false;
-  // The git probe decides whether the tab can render changes at all, so wait
-  // for it before committing to an empty state — otherwise a repo-backed
-  // session flashes "not a git repo" on every first open of the tab.
-  const isChangesProbeLoading = hasWorkspaceAttachments
-    ? workspaceGitRuntimes.some(
-        (runtime) => runtime.isLoading && !runtime.gitState,
-      )
-    : Boolean(gitTargetPath) && fallbackGitIsLoading && !fallbackGitState;
-  // A failed probe also leaves the tab with nothing to render, but it is not
-  // evidence that the folder lacks a repo — surface the failure instead, or we
-  // would tell someone with a healthy repo to go initialize git.
-  const changesProbeError = hasWorkspaceAttachments
+  // The workspace widget above the changes says what the folder is — not set,
+  // still being probed, not a repository, unreadable — for every case but
+  // one: a chat's workspace rows carry no probe state of their own. So while
+  // those rows have produced no changes to list, their probe's progress and
+  // its failure are reported here, and a failed probe is never left looking
+  // like a repository with nothing changed.
+  const isWorkspaceProbeLoading =
+    hasWorkspaceAttachments &&
+    workspaceGitRuntimes.some(
+      (runtime) => runtime.isLoading && !runtime.gitState,
+    );
+  const workspaceProbeError = hasWorkspaceAttachments
     ? (workspaceGitRuntimes.find((runtime) => runtime.error)?.error ?? null)
-    : fallbackGitError instanceof Error
-      ? fallbackGitError
-      : null;
-  // Explain which precondition is missing instead of rendering a blank rail.
-  // Phrasing follows how many folders the chat actually carries, not whether
-  // multi-workspace mode is on: singular "this folder" would misdescribe a
-  // chat holding several non-git workspaces.
-  const changesFolderCount = hasWorkspaceAttachments
-    ? workspaceAttachments.length
-    : Number(Boolean(gitTargetPath));
-  const changesUnavailableMessage =
-    changesFolderCount === 0
-      ? t("contextPanel.empty.folderNotSet")
-      : changesFolderCount > 1
-        ? t("contextPanel.empty.noGitWorkspaces")
-        : t("contextPanel.empty.notGitRepo");
+    : null;
   const shouldShowArtifacts =
     hasWorkspaceAttachments && workspaceGitRuntimes.length > 0
       ? workspaceGitRuntimes.every(
@@ -1022,6 +1017,41 @@ export function ContextPanel({
     [setSectionVisibility],
   );
   const isProjectContext = Boolean(projectName);
+  const workspaceProbeErrorMessage = workspaceProbeError
+    ? workspaceProbeError.message || t("contextPanel.errors.gitChangesRead")
+    : null;
+  // What sits under the workspace widget. Nothing at all when the widget has
+  // already said why there are no changes to list (no folder, no repository).
+  const changesBody = shouldShowChanges ? (
+    hasWorkspaceAttachments ? (
+      <WorkspaceChangesWidget
+        groups={workspaceChangedFileRuntimes}
+        onOpenFile={handleOpenWorkspaceChangedFile}
+        probeErrorMessage={workspaceProbeErrorMessage}
+      />
+    ) : (
+      <ChangesWidget
+        files={fallbackChangedFiles}
+        isLoading={isFallbackFilesLoading}
+        error={
+          fallbackChangedFilesError instanceof Error
+            ? fallbackChangedFilesError
+            : null
+        }
+        isLoadingError={isFallbackChangedFilesLoadingError}
+        currentBranch={fallbackGitState?.currentBranch ?? null}
+        dirtyFileCount={fallbackGitState?.dirtyFileCount ?? 0}
+        repoPath={gitTargetPath ?? ""}
+        onOpenFile={handleOpenChangedFile}
+        isOpen={sectionVisibility.changes}
+        onToggleOpen={() => toggleSection("changes")}
+      />
+    )
+  ) : isWorkspaceProbeLoading ? (
+    <ChangesLoadingState />
+  ) : workspaceProbeErrorMessage ? (
+    <ChangesErrorState message={workspaceProbeErrorMessage} />
+  ) : null;
 
   return (
     <Tabs
@@ -1057,6 +1087,18 @@ export function ContextPanel({
       <div className="mx-4 shrink-0 border-b border-border/80" aria-hidden />
 
       <TabsContent value="details" className={TAB_CONTENT_CLASS}>
+        <ContextUsageWidget
+          sessionId={sessionId}
+          active={isVisible}
+          onOpenSession={onOpenSession}
+        />
+      </TabsContent>
+
+      <TabsContent value="changes" className={TAB_CONTENT_CLASS}>
+        {/* The folder, its branch and its uncommitted files are one subject:
+            where the agent works and what it changed there. They used to be
+            split across this tab and the context one, which left "Context"
+            showing a folder and nothing about the context. */}
         <div className="-mt-0.5 w-full">
           {isMultiWorkspaceMode ? (
             <>
@@ -1137,53 +1179,14 @@ export function ContextPanel({
             />
           )}
         </div>
-      </TabsContent>
-
-      <TabsContent value="changes" className={TAB_CONTENT_CLASS}>
-        <div className="w-full pb-4">
-          {shouldShowChanges ? (
-            hasWorkspaceAttachments ? (
-              <WorkspaceChangesWidget
-                groups={workspaceChangedFileRuntimes}
-                onOpenFile={handleOpenWorkspaceChangedFile}
-                probeErrorMessage={
-                  changesProbeError
-                    ? changesProbeError.message ||
-                      t("contextPanel.errors.gitChangesRead")
-                    : null
-                }
-              />
-            ) : (
-              <ChangesWidget
-                files={fallbackChangedFiles}
-                isLoading={isFallbackFilesLoading}
-                error={
-                  fallbackChangedFilesError instanceof Error
-                    ? fallbackChangedFilesError
-                    : null
-                }
-                isLoadingError={isFallbackChangedFilesLoadingError}
-                currentBranch={fallbackGitState?.currentBranch ?? null}
-                dirtyFileCount={fallbackGitState?.dirtyFileCount ?? 0}
-                repoPath={gitTargetPath ?? ""}
-                onOpenFile={handleOpenChangedFile}
-                isOpen={sectionVisibility.changes}
-                onToggleOpen={() => toggleSection("changes")}
-              />
-            )
-          ) : isChangesProbeLoading ? (
-            <ChangesLoadingState />
-          ) : changesProbeError ? (
-            <ChangesErrorState
-              message={
-                changesProbeError.message ||
-                t("contextPanel.errors.gitChangesRead")
-              }
-            />
-          ) : (
-            <ChangesEmptyState message={changesUnavailableMessage} />
-          )}
-        </div>
+        {changesBody ? (
+          <div
+            className="mt-4 w-full border-t border-border/80 pb-4 pt-4"
+            data-testid="context-panel-changes"
+          >
+            {changesBody}
+          </div>
+        ) : null}
       </TabsContent>
 
       <TabsContent value="files" className={TAB_CONTENT_CLASS}>

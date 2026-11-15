@@ -76,6 +76,11 @@ interface ChatRightRailProps {
   onRequestCloseRightRail?: () => void;
   onToggleTerminal?: () => void;
   onOpenTerminalAtPath?: (path: string) => void;
+  /**
+   * Opens another chat of this chat's team from the context tab. Must be
+   * referentially stable: it crosses the context panel's memo boundary.
+   */
+  onOpenSession?: (sessionId: string) => void;
 }
 
 export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
@@ -103,6 +108,7 @@ export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
       onRequestCloseRightRail,
       onToggleTerminal,
       onOpenTerminalAtPath,
+      onOpenSession,
     },
     ref,
   ) {
@@ -361,6 +367,7 @@ export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
             elevated={isContextPanelCompactViewport}
             onToggleTerminal={onToggleTerminal}
             onOpenTerminalAtPath={onOpenTerminalAtPath}
+            onOpenSession={onOpenSession}
           />
           {railPreviewActive && railHostVisible ? (
             <TerminalDockPreview

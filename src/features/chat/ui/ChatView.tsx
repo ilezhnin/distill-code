@@ -1718,6 +1718,7 @@ export function ChatView({
             onTerminalDockPreviewChange={setTerminalDockPreview}
             onTerminalDockToRegion={handleTerminalDockToRegion}
             onOpenTerminalAtPath={handleOpenTerminalAtPath}
+            onOpenSession={onSelectSession ? handleNavigateToChild : undefined}
           />
         </div>
         <ConfirmDialog

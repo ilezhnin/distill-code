@@ -38,16 +38,28 @@ share one desktop, so they can still interfere with each other's windows.
 Verify specifics against `src-tauri/src/services/computer_use/` before
 answering.
 
-## The right rail (files, worktrees, terminal)
+## The right rail (context, changes, files, terminal)
 
-A session's right rail is scoped to whatever workspace(s) (folders, repos,
-worktrees) are attached to that session — the same attachment concept named
-above, not a separate feature. It composes a few distinct pieces: a
-workspace list, a changes view (git status/diff for the attached workspace),
-an artifacts view (files opened from the session), and a dockable terminal
-that can open at a specific path. "Where did my files go" or "what's the
-changes tab" questions are almost always about one of these, scoped to the
-session's attached workspace(s) — ask which workspace/project the user means
-if it's ambiguous. This is one of the most actively-changing parts of the
-app; verify specifics against `src/features/chat/ui/ContextPanel.tsx` and
+A session's right rail has three tabs and a dockable terminal that can open
+at a specific path.
+
+- **Context** shows how full the chat's context window is and, when the chat
+  started agents or was started by one, the same figure for every agent of
+  that team — whatever harness and model each runs on. A row opens that
+  agent's chat. The figure is what the harness reports (tokens in the window
+  and the window's size), so a harness that reports neither shows a dash, and
+  one that reports tokens without a size shows a count and no percentage.
+  There is no per-category breakdown: no bridge sends one.
+- **Changes** is scoped to whatever workspace(s) (folders, repos, worktrees)
+  are attached to the session — the same attachment concept named above, not
+  a separate feature. It holds the workspace list with its branch and
+  worktree controls, the uncommitted files of each repository, and, for a
+  folder that is not a repository, the files the session produced.
+- **Files** browses the attached folders.
+
+"Where did my files go" or "what's the changes tab" questions are almost
+always about the attached workspace(s) — ask which workspace/project the user
+means if it's ambiguous. This is one of the most actively-changing parts of
+the app; verify specifics against `src/features/chat/ui/ContextPanel.tsx`,
+`src/features/chat/ui/widgets/ContextUsageWidget.tsx` and
 `src/features/terminal/` rather than describing widget behavior from memory.

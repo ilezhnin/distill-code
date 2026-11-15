@@ -33,22 +33,12 @@ function ChangesEmptyMessage({ message }: { message?: string }) {
   );
 }
 
-/** Tab-level states. Shared spacing comes from the tab content wrapper; these
- *  only own their centered state layout. */
-export function ChangesEmptyState({ message }: { message?: string }) {
-  return (
-    <div className="flex h-32 items-center justify-center text-center">
-      <ChangesEmptyMessage message={message} />
-    </div>
-  );
-}
-
+/** Tab-level states, shown under the workspace widget. Spacing comes from the
+ *  tab's own wrapper. There is no tab-level empty state: a folder that is not
+ *  set or is not a repository is what the workspace widget above already
+ *  says. */
 export function ChangesErrorState({ message }: { message: string }) {
-  return (
-    <div className="flex h-32 items-center justify-center text-center">
-      <p className="text-sm text-destructive">{message}</p>
-    </div>
-  );
+  return <p className="text-sm text-destructive">{message}</p>;
 }
 
 export function ChangesLoadingState() {
