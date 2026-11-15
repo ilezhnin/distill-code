@@ -36,9 +36,15 @@ Result:
   "dropped": the wave was queued and never started.
   "already_closed": the wave had already left the live loop; nothing changed.`,
   schema: cancelWaveSchema,
-  execute: async (args) => {
-    const { cancelWave, requireWave } = await import("../runtime/waves");
+  execute: async (args, ctx) => {
+    const { cancelWave, requireWave, waveCommandCaller } = await import(
+      "../runtime/waves"
+    );
     const wave = requireWave(args.wave_id);
-    return { ok: true, wave_id: wave.waveId, outcome: cancelWave(wave) };
+    return {
+      ok: true,
+      wave_id: wave.waveId,
+      outcome: cancelWave(wave, waveCommandCaller(ctx)),
+    };
   },
 });

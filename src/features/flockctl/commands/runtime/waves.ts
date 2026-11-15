@@ -33,6 +33,7 @@ import {
   waveStepAmendedNoticeText,
   waveStepRestartedNoticeText,
   waveStepSkippedNoticeText,
+  type WaveCommandCaller,
 } from "@/features/conductor/waveNotices";
 import { runWaveEngineTick } from "@/features/conductor/waveRunner";
 import {
@@ -49,7 +50,7 @@ import { isWaveLive } from "@/features/conductor/waveVerdict";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { truncate } from "../helpers";
-import { CommandError } from "../types";
+import { CommandError, type CommandContext } from "../types";
 
 export const WAVE_SUMMARY_LIMIT = 500;
 export const WAVE_DETAIL_LIMIT = 4_000;
@@ -205,13 +206,27 @@ function postConductorNotice(sessionId: string, text: string): void {
     .addMessage(sessionId, createSystemNotificationMessage(text, "warning"));
 }
 
+/**
+ * Who ran a wave command. A call from an agent's shell carries the app's
+ * agent-shell mark, or a harness's own actor; one with neither is the
+ * operator's terminal. What the command leaves in the wave and in the
+ * conductor's chat names the caller it had, so a step an agent skipped
+ * or a wave it cancelled is never recorded as the operator's order.
+ */
+export function waveCommandCaller(
+  ctx: Pick<CommandContext, "actor" | "fromAgent"> | undefined,
+): WaveCommandCaller {
+  return ctx?.fromAgent || ctx?.actor ? "agent" : "operator";
+}
+
 /** Cancels a wave: a live one is stopped, a queued one is dropped. */
 export function cancelWave(
   wave: WaveState,
+  by: WaveCommandCaller = "operator",
 ): "stopped" | "dropped" | "already_closed" {
   const outcome = wave.phase === "queued" ? "dropped" : "stopped";
   if (!isWaveLive(wave) && wave.phase !== "queued") return "already_closed";
-  const done = stopWaveByOperator(wave.conductorSessionId, wave.waveId);
+  const done = stopWaveByOperator(wave.conductorSessionId, wave.waveId, by);
   if (!done) return "already_closed";
   runWaveEngineTick();
   return outcome;
@@ -239,7 +254,11 @@ export function amendWaveStep(
 }
 
 /** Marks a pending step as skipped so its dependents proceed without it. */
-export function skipWaveStep(wave: WaveState, step: number): void {
+export function skipWaveStep(
+  wave: WaveState,
+  step: number,
+  by: WaveCommandCaller = "operator",
+): void {
   const target = requirePendingStep(wave, step);
   updateWaveEngineState((state) => {
     const current = state.waves.find((row) => row.waveId === wave.waveId);
@@ -248,13 +267,16 @@ export function skipWaveStep(wave: WaveState, step: number): void {
       state,
       withWaveStepPhase(current, target.stepIndex, {
         phase: "failed",
-        failureReason: "Skipped on the operator's order through flockctl.",
+        failureReason:
+          by === "agent"
+            ? "Skipped at an agent's request through flockctl."
+            : "Skipped on the operator's order through flockctl.",
       }),
     );
   });
   postConductorNotice(
     wave.conductorSessionId,
-    waveStepSkippedNoticeText(target.stepIndex),
+    waveStepSkippedNoticeText(target.stepIndex, by),
   );
   runWaveEngineTick();
 }
@@ -312,8 +334,12 @@ export function validateWavePlan(text: string, conductorSessionId?: string) {
 }
 
 /** Why a session a restart replaced was stopped, as its chip says it. */
-const STEP_RESTART_STOP_REASON =
-  "Stopped by the operator through flockctl: its step is being run again.";
+const STEP_RESTART_STOP_REASON: Record<WaveCommandCaller, string> = {
+  operator:
+    "Stopped by the operator through flockctl: its step is being run again.",
+  agent:
+    "Stopped at an agent's request through flockctl: its step is being run again.",
+};
 
 /**
  * Runs a dispatched step again in a new session: stops the one at work on
@@ -325,6 +351,7 @@ export async function restartWaveStep(
   wave: WaveState,
   step: number,
   text?: string,
+  by: WaveCommandCaller = "operator",
 ): Promise<string | null> {
   const target = wave.steps.find((row) => row.stepIndex === step - 1);
   if (!target) {
@@ -354,7 +381,7 @@ export async function restartWaveStep(
       node.status === "starting" ||
       node.status === "waiting")
   ) {
-    await stopOrchestratorSession(node.sessionId, STEP_RESTART_STOP_REASON);
+    await stopOrchestratorSession(node.sessionId, STEP_RESTART_STOP_REASON[by]);
   }
   updateWaveEngineState((state) => {
     const current = state.waves.find((row) => row.waveId === wave.waveId);
@@ -375,7 +402,7 @@ export async function restartWaveStep(
   });
   postConductorNotice(
     wave.conductorSessionId,
-    waveStepRestartedNoticeText(target.stepIndex, Boolean(text?.trim())),
+    waveStepRestartedNoticeText(target.stepIndex, Boolean(text?.trim()), by),
   );
   runWaveEngineTick();
   return replaced;

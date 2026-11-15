@@ -189,6 +189,7 @@ export const WAVE_CLOSURE_REASON_KEYS: Record<WaveClosureReason, string> = {
   "accepted-with-missing-artifacts": "acceptedWithMissingArtifacts",
   "wave-interrupted": "waveInterrupted",
   "operator-stopped": "operatorStopped",
+  "agent-stopped": "agentStopped",
   "step-blocked": "stepBlocked",
   "digest-lost": "digestLost",
   "verdict-unanswered": "verdictUnanswered",
@@ -316,22 +317,39 @@ export function waveStepAmendedNoticeText(stepIndex: number): string {
   return i18n.t("chat:conductor.wave.amended", { step: stepIndex + 1 });
 }
 
+/**
+ * Who ran a wave command: the operator, from their own terminal or the
+ * app, or an agent, from its session's shell. What the app writes down
+ * about the command says which.
+ */
+export type WaveCommandCaller = "operator" | "agent";
+
 /** The notice posted when flockctl has a dispatched step run again. */
 export function waveStepRestartedNoticeText(
   stepIndex: number,
   corrected: boolean,
+  by: WaveCommandCaller = "operator",
 ): string {
+  const form = corrected ? "corrected" : "plain";
   return i18n.t(
-    corrected
-      ? "chat:conductor.wave.stepRestarted.corrected"
-      : "chat:conductor.wave.stepRestarted.plain",
+    by === "agent"
+      ? `chat:conductor.wave.stepRestarted.${form}ByAgent`
+      : `chat:conductor.wave.stepRestarted.${form}`,
     { step: stepIndex + 1 },
   );
 }
 
 /** The notice posted when flockctl skips a pending step. */
-export function waveStepSkippedNoticeText(stepIndex: number): string {
-  return i18n.t("chat:conductor.wave.stepSkipped", { step: stepIndex + 1 });
+export function waveStepSkippedNoticeText(
+  stepIndex: number,
+  by: WaveCommandCaller = "operator",
+): string {
+  return i18n.t(
+    by === "agent"
+      ? "chat:conductor.wave.stepSkippedByAgent"
+      : "chat:conductor.wave.stepSkipped",
+    { step: stepIndex + 1 },
+  );
 }
 
 /** The notice posted each time the conductor's roadmap changes. */

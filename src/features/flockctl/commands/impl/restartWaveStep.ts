@@ -52,10 +52,17 @@ Result:
   Refused with "wave_step_not_dispatched" for a pending step (use \`wave amend\`)
   and with "wave_not_running" once the wave has gone to its digest.`,
   schema: restartWaveStepSchema,
-  execute: async (args) => {
-    const { requireWave, restartWaveStep } = await import("../runtime/waves");
+  execute: async (args, ctx) => {
+    const { requireWave, restartWaveStep, waveCommandCaller } = await import(
+      "../runtime/waves"
+    );
     const wave = requireWave(args.wave_id);
-    const stopped = await restartWaveStep(wave, args.step, args.text);
+    const stopped = await restartWaveStep(
+      wave,
+      args.step,
+      args.text,
+      waveCommandCaller(ctx),
+    );
     return {
       ok: true,
       wave_id: wave.waveId,

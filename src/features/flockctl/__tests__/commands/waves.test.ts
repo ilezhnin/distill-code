@@ -469,6 +469,70 @@ describe("wave commands", () => {
     expect(runWaveEngineTick).toHaveBeenCalled();
   });
 
+  it("writes down an agent's command as the agent's, never as the operator's order", async () => {
+    const notices = () =>
+      (useChatStore.getState().messagesBySession[CONDUCTOR] ?? []).flatMap(
+        (message) =>
+          message.content.flatMap((block) =>
+            block.type === "systemNotification" ? [block.text] : [],
+          ),
+      );
+    const fromAgent = { fromAgent: true };
+    const { live } = seed();
+    useChatStore.setState({ messagesBySession: {} });
+
+    await dispatchCommand(
+      "waves",
+      { action: "skip", wave_id: live.waveId, step: 2 },
+      fromAgent,
+    );
+    expect(
+      getWaveEngineState().waves.find((wave) => wave.waveId === live.waveId)
+        ?.steps[1].failureReason,
+    ).toBe("Skipped at an agent's request through flockctl.");
+    expect(notices().join("\n")).toContain("at an agent's request");
+    expect(notices().join("\n")).not.toContain("operator's order");
+
+    useChatStore.setState({ messagesBySession: {} });
+    await dispatchCommand(
+      "waves",
+      { action: "cancel", wave_id: live.waveId },
+      // A harness that exports its own actor is an agent just the same.
+      { actor: `${live.waveId}-child-0` },
+    );
+    expect(stopOrchestratorSession).toHaveBeenCalledWith(
+      `${live.waveId}-child-0`,
+      "Stopped at an agent's request through flockctl: the wave was cancelled.",
+    );
+    expect(notices().join("\n")).toContain("An agent stopped this wave");
+    expect(notices().join("\n")).not.toContain("You stopped this wave");
+  });
+
+  it("keeps the operator's own command in the operator's name", async () => {
+    const { live } = seed();
+    useChatStore.setState({ messagesBySession: {} });
+    await dispatchCommand(
+      "waves",
+      { action: "skip", wave_id: live.waveId, step: 2 },
+      ctx,
+    );
+    await dispatchCommand(
+      "waves",
+      { action: "cancel", wave_id: live.waveId },
+      ctx,
+    );
+    const said = (useChatStore.getState().messagesBySession[CONDUCTOR] ?? [])
+      .flatMap((message) =>
+        message.content.flatMap((block) =>
+          block.type === "systemNotification" ? [block.text] : [],
+        ),
+      )
+      .join("\n");
+    expect(said).toContain("operator's order");
+    expect(said).toContain("You stopped this wave");
+    expect(said).not.toContain("agent");
+  });
+
   it("reads the roadmap, or null for a conductor without one", async () => {
     seed();
     const result = (await dispatchCommand(

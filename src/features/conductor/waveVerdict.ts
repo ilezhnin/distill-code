@@ -93,6 +93,13 @@ export type WaveClosureReason =
    */
   | "operator-stopped"
   /**
+   * An agent stopped the wave with `flockctl wave cancel`. The same stop
+   * as the operator's, said as what it was: the app knows the command
+   * came from an agent's shell, and a record that the operator did it
+   * would be one the operator never made.
+   */
+  | "agent-stopped"
+  /**
    * A worker reported its step `blocked` — it could not be done at all — and
    * the app stopped the wave through the same path as the operator's stop
    * (§5 risk 9): remaining steps were not started, running executors were

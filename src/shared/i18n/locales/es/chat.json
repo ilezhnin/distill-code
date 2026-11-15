@@ -620,6 +620,7 @@
           "acceptedWithMissingArtifacts": "El conductor aceptó el resultado, pero los informes nombraron archivos que no están en el disco, así que no se respetó la aceptación.",
           "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó.",
           "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó.",
+          "agentStopped": "Un agente detuvo esta ola con `flockctl wave cancel`. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó.",
           "stepBlocked": "Un ejecutor informó que no puede hacer su paso, así que la ola se detuvo.",
           "digestLost": "El informe de la brigada nunca se entregó al conductor —se quitó de la cola antes de enviarse—, así que no se decidió nada. Volver a preguntar abajo lo reenvía.",
           "verdictUnanswered": "El conductor nunca respondió al informe de la brigada, así que no se decidió nada. Su turno sobre el informe terminó sin respuesta. Volver a preguntar abajo lo reenvía."
@@ -705,9 +706,12 @@
       "adopted": "El paso {{step}} ({{name}}) ya tenía una sesión iniciada por otro proceso de Flock, así que se adoptó esa sesión en lugar de iniciar una segunda.",
       "amended": "Al paso {{step}} de esta ola se le añadió texto al encargo antes de empezar.",
       "stepSkipped": "El paso {{step}} de esta ola se omitió por orden del operador; los pasos posteriores lo tratan como no hecho.",
+      "stepSkippedByAgent": "El paso {{step}} de esta ola se omitió a petición de un agente mediante flockctl; los pasos posteriores lo tratan como no hecho.",
       "stepRestarted": {
         "plain": "El paso {{step}} de esta ola se ejecuta de nuevo en una sesión nueva por orden del operador; la sesión que lo ejecutaba se detuvo.",
-        "corrected": "El paso {{step}} de esta ola se ejecuta de nuevo en una sesión nueva por orden del operador, con una corrección añadida a su encargo; la sesión que lo ejecutaba se detuvo."
+        "corrected": "El paso {{step}} de esta ola se ejecuta de nuevo en una sesión nueva por orden del operador, con una corrección añadida a su encargo; la sesión que lo ejecutaba se detuvo.",
+        "plainByAgent": "El paso {{step}} de esta ola se ejecuta de nuevo en una sesión nueva a petición de un agente mediante flockctl; la sesión que lo ejecutaba se detuvo.",
+        "correctedByAgent": "El paso {{step}} de esta ola se ejecuta de nuevo en una sesión nueva a petición de un agente mediante flockctl, con una corrección añadida a su encargo; la sesión que lo ejecutaba se detuvo."
       },
       "roadmap": {
         "updated": "Hoja de ruta: {{goal}} — {{done}} de {{total}} etapas hechas, estado {{status}}.",

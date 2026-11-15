@@ -82,6 +82,8 @@ export const WAVE_STOP_REASONS = {
   waveStopped: "Stopped by the app: its wave was stopped.",
   operator: "Stopped by the operator.",
   operatorCancelledWave: "Stopped by the operator: the wave was cancelled.",
+  agentCancelledWave:
+    "Stopped at an agent's request through flockctl: the wave was cancelled.",
   stalled:
     "Stopped by the app: the wave stalled, and what exists was collected for the digest.",
   interrupted:
@@ -103,8 +105,18 @@ export const OPERATOR_STOP_REASON = WAVE_STOP_REASONS.operator;
  * the live phases. The false case is deliberate silence: the operator may be
  * pressing a button rendered for a state that has since moved on, and the
  * honest response to that is "nothing happened", not a second notice.
+ *
+ * `by` is who asked. `flockctl wave cancel` reaches this from an agent's
+ * shell as well as from the operator's terminal, and the stop is then
+ * recorded and announced as the agent's: the same stop, never the words
+ * "you stopped this wave" for a wave the operator did not stop.
  */
-export function stopWaveByOperator(sessionId: string, waveId: string): boolean {
+export function stopWaveByOperator(
+  sessionId: string,
+  waveId: string,
+  by: "operator" | "agent" = "operator",
+): boolean {
+  const reason = by === "agent" ? "agent-stopped" : "operator-stopped";
   let parked: WaveState | undefined;
   let dropped: WaveState | undefined;
   updateWaveEngineState((state) => {
@@ -121,28 +133,33 @@ export function stopWaveByOperator(sessionId: string, waveId: string): boolean {
     return withWave(state, parked);
   });
   if (dropped) {
-    recordWaveClose(dropped, "needs-operator", "operator-stopped");
+    recordWaveClose(dropped, "needs-operator", reason);
     useChatStore
       .getState()
       .addMessage(
         sessionId,
         createSystemNotificationMessage(
-          waveClosureNoticeText({ reason: "operator-stopped" }),
+          waveClosureNoticeText({ reason }),
           "warning",
         ),
       );
     return true;
   }
   if (!parked) return false;
-  recordWaveClose(parked, "needs-operator", "operator-stopped");
+  recordWaveClose(parked, "needs-operator", reason);
 
-  stopWaveChildSessions(parked, WAVE_STOP_REASONS.operatorCancelledWave);
+  stopWaveChildSessions(
+    parked,
+    by === "agent"
+      ? WAVE_STOP_REASONS.agentCancelledWave
+      : WAVE_STOP_REASONS.operatorCancelledWave,
+  );
   useChatStore
     .getState()
     .addMessage(
       sessionId,
       createSystemNotificationMessage(
-        waveClosureNoticeText({ reason: "operator-stopped" }),
+        waveClosureNoticeText({ reason }),
         "warning",
       ),
     );

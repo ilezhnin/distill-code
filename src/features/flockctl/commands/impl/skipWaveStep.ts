@@ -38,10 +38,12 @@ Result:
   {"ok": true, "wave_id": "...", "step": 3}
   Refused with "wave_step_not_pending" once the step has been dispatched.`,
   schema: skipWaveStepSchema,
-  execute: async (args) => {
-    const { requireWave, skipWaveStep } = await import("../runtime/waves");
+  execute: async (args, ctx) => {
+    const { requireWave, skipWaveStep, waveCommandCaller } = await import(
+      "../runtime/waves"
+    );
     const wave = requireWave(args.wave_id);
-    skipWaveStep(wave, args.step);
+    skipWaveStep(wave, args.step, waveCommandCaller(ctx));
     return { ok: true, wave_id: wave.waveId, step: args.step };
   },
 });
