@@ -487,9 +487,9 @@ fn normalize_path(path: &Path) -> PathBuf {
 fn resolve_shell(shell_env: &HashMap<String, String>) -> String {
     if cfg!(target_os = "windows") {
         // Windows PowerShell 5.1 is present on supported Windows versions.
-        // Use the explicit executable name rather than `%ComSpec%`, which
+        // Use the explicit executable rather than `%ComSpec%`, which
         // intentionally points at cmd.exe.
-        return "powershell.exe".to_string();
+        return windows_powershell_path(std::env::var_os("SystemRoot").as_deref());
     }
 
     shell_env
@@ -497,6 +497,27 @@ fn resolve_shell(shell_env: &HashMap<String, String>) -> String {
         .cloned()
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "/bin/sh".to_string())
+}
+
+/// Windows PowerShell by its full path under the system folder.
+///
+/// A bare `powershell.exe` is looked up on the terminal's own PATH, and that
+/// PATH starts with the folder's `.hermit/bin`: a repository that ships a
+/// `powershell.exe` there had it run by opening a terminal in it, before
+/// the operator typed anything. The system folder comes from the app's own
+/// environment, which no project folder writes. No fallback to the bare
+/// name: a shell that is not where the system keeps it is not started.
+fn windows_powershell_path(system_root: Option<&std::ffi::OsStr>) -> String {
+    let root = system_root
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    root.join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn add_fallback_env_vars(env: &mut HashMap<String, String>) {
@@ -546,8 +567,34 @@ const FALLBACK_ENV_KEYS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_terminal_cwd, take_decodable_utf8};
+    use super::{resolve_terminal_cwd, take_decodable_utf8, windows_powershell_path};
     use tempfile::tempdir;
+
+    /// The shell is named by a full path under the system folder, so no
+    /// folder on the terminal's PATH — a project's `.hermit/bin` first of
+    /// all — can stand in for it.
+    #[test]
+    fn the_terminal_shell_is_named_by_its_full_system_path() {
+        let named = windows_powershell_path(Some(std::ffi::OsStr::new(r"D:\Invented\Windows")));
+        let expected = std::path::Path::new(r"D:\Invented\Windows")
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        assert_eq!(std::path::Path::new(&named), expected);
+        // An unset or empty variable is not a reason to trust the PATH.
+        for missing in [None, Some(std::ffi::OsStr::new(""))] {
+            let fallback = windows_powershell_path(missing);
+            assert!(fallback.contains("System32"), "{fallback}");
+            assert_ne!(fallback, "powershell.exe");
+        }
+        #[cfg(windows)]
+        {
+            let shell = super::resolve_shell(&std::collections::HashMap::new());
+            assert!(std::path::Path::new(&shell).is_absolute(), "{shell}");
+            assert!(std::path::Path::new(&shell).is_file(), "{shell}");
+        }
+    }
 
     #[test]
     fn characters_split_across_reads_are_decoded_whole() {
