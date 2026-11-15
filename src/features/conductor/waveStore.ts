@@ -102,6 +102,15 @@ export interface WaveEngineState {
    */
   newestProcessedMessageCreatedAt: Record<string, number>;
   /**
+   * The conductors whose new work the operator holds. Nothing new starts
+   * for one of them: no wave, no revision, no turn toward its goal and no
+   * session under its tree. What is already running finishes. Only the
+   * operator sets and lifts it; an instruction to "only finish what is
+   * started" used to be a sentence the conductor could ignore (11-14).
+   * Absent on a document written before holds existed.
+   */
+  heldConductors?: string[];
+  /**
    * Per conductor, the newest roadmap it published: the goal it pursues on
    * its own, its stages, and the continue turn in flight. Kept here rather
    * than in a document of its own so it rides the same hydration and the same
@@ -620,7 +629,40 @@ export function parseWaveEngineState(value: unknown): WaveEngineState {
       raw.newestProcessedMessageCreatedAt,
     ),
     roadmaps: parseRoadmaps(raw.roadmaps),
+    ...(Array.isArray(raw.heldConductors) &&
+    raw.heldConductors.some((id) => typeof id === "string" && id)
+      ? {
+          heldConductors: raw.heldConductors.filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+        }
+      : {}),
   };
+}
+
+/** Whether the operator holds this conductor's new work. */
+export function isConductorHeld(
+  state: WaveEngineState,
+  conductorSessionId: string | null | undefined,
+): boolean {
+  return Boolean(
+    conductorSessionId && state.heldConductors?.includes(conductorSessionId),
+  );
+}
+
+/** The state with this conductor's new work held, or released. */
+export function withConductorHold(
+  state: WaveEngineState,
+  conductorSessionId: string,
+  held: boolean,
+): WaveEngineState {
+  if (isConductorHeld(state, conductorSessionId) === held) return state;
+  const others = (state.heldConductors ?? []).filter(
+    (id) => id !== conductorSessionId,
+  );
+  const heldConductors = held ? [...others, conductorSessionId] : others;
+  const { heldConductors: _previous, ...rest } = state;
+  return heldConductors.length > 0 ? { ...rest, heldConductors } : rest;
 }
 
 /**

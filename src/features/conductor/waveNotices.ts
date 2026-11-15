@@ -56,6 +56,7 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "verification-step-missing": "verificationStepMissing",
   "verification-step-misplaced": "verificationStepMisplaced",
   "verification-step-blind": "verificationStepBlind",
+  "new-work-on-hold": "newWorkOnHold",
 };
 
 export interface WaveRejectionNotice {

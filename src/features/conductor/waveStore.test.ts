@@ -7,10 +7,12 @@ import {
   emptyWaveEngineState,
   getWaveEngineState,
   hasWaveTombstone,
+  isConductorHeld,
   isSupersededPlanMessage,
   newestProcessedMessageAt,
   parseWaveEngineState,
   resetWaveEngineStateCache,
+  withConductorHold,
   withProcessedMessageWatermark,
   withRemappedConductorSessionId,
   withWave,
@@ -243,6 +245,33 @@ describe("parseWaveEngineState", () => {
       tombstones: [],
     });
     expect(parsed.waves).toEqual([]);
+  });
+});
+
+describe("the operator's hold on a conductor's new work", () => {
+  it("is set and lifted per conductor, and survives a restart", () => {
+    const state = withWave(emptyWaveEngineState(), wave("wave-1"));
+    expect(isConductorHeld(state, "conductor-1")).toBe(false);
+    const held = withConductorHold(state, "conductor-1", true);
+    expect(isConductorHeld(held, "conductor-1")).toBe(true);
+    expect(isConductorHeld(held, "conductor-2")).toBe(false);
+    expect(isConductorHeld(held, null)).toBe(false);
+    // Setting it twice changes nothing.
+    expect(withConductorHold(held, "conductor-1", true)).toBe(held);
+    // The document written to disk reads back with the hold on.
+    const restored = parseWaveEngineState(JSON.parse(JSON.stringify(held)));
+    expect(isConductorHeld(restored, "conductor-1")).toBe(true);
+    // Lifted, it leaves no trace in the document.
+    const lifted = withConductorHold(restored, "conductor-1", false);
+    expect(isConductorHeld(lifted, "conductor-1")).toBe(false);
+    expect("heldConductors" in lifted).toBe(false);
+    // Junk in a stored document is no hold.
+    expect(
+      isConductorHeld(
+        parseWaveEngineState({ heldConductors: [7, "", null] }),
+        "conductor-1",
+      ),
+    ).toBe(false);
   });
 });
 

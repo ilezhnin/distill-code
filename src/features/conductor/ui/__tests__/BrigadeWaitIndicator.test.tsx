@@ -2,6 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useConductorGraphStore } from "../../conductorGraphStore";
+import { conductorHeld } from "../../conductorHold";
 import type { SessionNode } from "../../types";
 import { createWaveState, type WavePhase } from "../../waveEngine";
 import {
@@ -89,6 +91,64 @@ describe("BrigadeWaitIndicator", () => {
     await user.click(screen.getByTestId("brigade-stop-wave-button"));
 
     expect(mocks.stopWaveByOperator).toHaveBeenCalledWith(CONDUCTOR_ID, "w1");
+  });
+
+  it("lets the operator hold a conductor's new work, and shows the hold until it is lifted", async () => {
+    const user = userEvent.setup();
+    const conductorId = "conductor-held";
+    useConductorGraphStore.setState({
+      nodesById: {
+        [conductorId]: {
+          ...workers(1, conductorId)[0],
+          sessionId: conductorId,
+          role: "conductor",
+          managedBy: "ui",
+          parentSessionId: null,
+        },
+      },
+    });
+    const view = render(
+      <BrigadeWaitIndicator
+        chatState="idle"
+        nodes={workers(2, conductorId)}
+        sessionId={conductorId}
+      />,
+    );
+    const button = screen.getByTestId("brigade-hold-button");
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    await user.click(button);
+    expect(conductorHeld(conductorId)).toBe(true);
+    expect(screen.getByTestId("brigade-hold-button")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    // The brigade finishes: the hold is still said, and can be lifted.
+    view.rerender(
+      <BrigadeWaitIndicator
+        chatState="idle"
+        nodes={[]}
+        sessionId={conductorId}
+      />,
+    );
+    expect(screen.getByTestId("brigade-hold-label")).toHaveTextContent(
+      "conductor.hold.label",
+    );
+    await user.click(screen.getByTestId("brigade-hold-button"));
+    expect(conductorHeld(conductorId)).toBe(false);
+    expect(screen.queryByTestId("brigade-wait-indicator")).toBeNull();
+    useConductorGraphStore.setState({ nodesById: {} });
+  });
+
+  it("offers no hold in a chat that is no conductor", () => {
+    render(
+      <BrigadeWaitIndicator
+        chatState="idle"
+        nodes={workers(2, "plain-chat")}
+        sessionId="plain-chat"
+      />,
+    );
+    expect(screen.queryByTestId("brigade-hold-button")).toBeNull();
   });
 
   it("counts a brigade in one line and lists it when asked", async () => {

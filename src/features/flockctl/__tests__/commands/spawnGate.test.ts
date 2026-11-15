@@ -174,6 +174,58 @@ describe("enforceFlockctlSpawnAcl", () => {
   });
 });
 
+describe("the operator's hold", () => {
+  it("refuses a session under a held conductor's tree, whoever asks", async () => {
+    const {
+      emptyWaveEngineState,
+      resetWaveEngineStateCache,
+      setWaveEngineState,
+      withConductorHold,
+    } = await import("@/features/conductor/waveStore");
+    resetWaveEngineStateCache();
+    const conductor = node({
+      sessionId: "conductor-1",
+      role: "conductor",
+      managedBy: "ui",
+      parentSessionId: null,
+    });
+    useConductorGraphStore.setState({
+      nodesById: { "conductor-1": conductor, [ACTOR_ID]: node() },
+    });
+    const spawn = (actor: string) => () =>
+      enforceFlockctlSpawnAcl({
+        actor,
+        verb: "create",
+        targetLayer: "worker",
+      });
+    // Not held: the conductor may start a worker.
+    expect(spawn("conductor-1")).not.toThrow();
+
+    setWaveEngineState(
+      withConductorHold(emptyWaveEngineState(), "conductor-1", true),
+    );
+    for (const actor of ["conductor-1", ACTOR_ID]) {
+      let refusal: unknown;
+      try {
+        spawn(actor)();
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(CommandError);
+      expect((refusal as CommandError).code).toBe("spawn_not_allowed");
+      expect((refusal as CommandError).message).toContain("on hold");
+    }
+    // Another conductor's tree is untouched.
+    useConductorGraphStore.setState({
+      nodesById: {
+        "conductor-2": { ...conductor, sessionId: "conductor-2" },
+      },
+    });
+    expect(spawn("conductor-2")).not.toThrow();
+    resetWaveEngineStateCache();
+  });
+});
+
 describe("resolveFlockctlSpawnParent", () => {
   it("takes the named parent, else the actor, and refuses two different callers", () => {
     expect(

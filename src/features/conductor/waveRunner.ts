@@ -58,7 +58,9 @@ import type { SessionNode } from "./types";
 import { detectWavePlanCandidates } from "./waveDetection";
 import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 import {
+  NEW_WORK_ON_HOLD_DETAIL,
   admitWavePlan,
+  type WaveAdmission,
   advanceWave,
   createWaveState,
   isTerminalRunStatus,
@@ -164,6 +166,7 @@ import {
   pruneOrphanedWaves,
   setWaveEngineState,
   updateWaveEngineState,
+  isConductorHeld,
   whenWaveEngineStateHydrated,
   withProcessedMessageWatermark,
   withWave,
@@ -734,12 +737,22 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
 
     // 4a/D5: a step's explicit model is checked against the live inventory
     // and limits HERE, while nothing is spawned — a refused plan costs the
-    // conductor a replan, not a half-started wave.
-    const admission = admitWavePlan(candidate.parse, {
-      checkStepModel: checkExplicitWaveStepModel,
-      checkStepRunSettings: (step) =>
-        checkWaveStepRunSettings(step, candidate.conductorSessionId),
-    });
+    // conductor a replan, not a half-started wave. A conductor whose new
+    // work the operator holds has its plan refused whatever it says.
+    const admission: WaveAdmission = isConductorHeld(
+      next,
+      candidate.conductorSessionId,
+    )
+      ? {
+          kind: "rejected",
+          reason: "new-work-on-hold",
+          detail: NEW_WORK_ON_HOLD_DETAIL,
+        }
+      : admitWavePlan(candidate.parse, {
+          checkStepModel: checkExplicitWaveStepModel,
+          checkStepRunSettings: (step) =>
+            checkWaveStepRunSettings(step, candidate.conductorSessionId),
+        });
     if (admission.kind === "rejected") {
       // Tombstone first: a rejected plan must never re-error, even if
       // appending the notice throws.

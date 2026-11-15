@@ -138,6 +138,7 @@ const {
   getWaveEngineState,
   hasWaveTombstone,
   resetWaveEngineStateCache,
+  withConductorHold,
   setWaveEngineState,
   setWaveEngineStateHydratedForTests,
 } = await import("./waveStore");
@@ -394,6 +395,29 @@ describe("waveRunner", () => {
       ),
     ]);
   }
+
+  it("starts nothing for a plan sent while the operator holds the conductor's new work", async () => {
+    selectionPlan();
+    setWaveEngineState(
+      withConductorHold(getWaveEngineState(), CONDUCTOR_ID, true),
+    );
+    runWaveEngineTick();
+    await Promise.resolve();
+    // The plan is sound, and is refused whole: no wave, no executor.
+    expect(getWaveEngineState().waves).toEqual([]);
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+    expect(executorSelection.select).not.toHaveBeenCalled();
+    // The refusal says why, where the operator and the conductor read it.
+    expect(noticeTexts().join("\n")).toContain("on hold");
+    // It is settled, not waiting: lifting the hold does not run it later.
+    setWaveEngineState(
+      withConductorHold(getWaveEngineState(), CONDUCTOR_ID, false),
+    );
+    runWaveEngineTick();
+    await Promise.resolve();
+    expect(getWaveEngineState().waves).toEqual([]);
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
 
   it("records the preference pool and reconciles dispatch notices with the returned model and settings", async () => {
     selectionPlan(false, {

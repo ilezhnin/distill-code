@@ -48,7 +48,12 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { checkSpawnAllowed } from "@/features/conductor/spawnAcl";
 import type { RoleLayer } from "@/features/conductor/roleCatalog";
 import type { SessionNode, SessionRole } from "@/features/conductor/types";
+import { NEW_WORK_ON_HOLD_DETAIL } from "@/features/conductor/waveEngine";
 import { spawnAclDeniedNoticeText } from "@/features/conductor/waveNotices";
+import {
+  getWaveEngineState,
+  isConductorHeld,
+} from "@/features/conductor/waveStore";
 import { logRendererEvent } from "@/shared/api/rendererLog";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
@@ -139,6 +144,16 @@ export function enforceFlockctlSpawnAcl(args: {
   }
   const node = actorNode(args.actor);
   if (!node) return;
+  // The operator's hold on a conductor covers its whole tree: a session
+  // under it is new work, whoever on that tree asks for it.
+  const conductorId =
+    node.role === "conductor" ? node.sessionId : node.rootConductorId;
+  if (isConductorHeld(getWaveEngineState(), conductorId)) {
+    throw new CommandError(
+      "spawn_not_allowed",
+      `New work is on hold in this chat's conductor: ${NEW_WORK_ON_HOLD_DETAIL}`,
+    );
+  }
   const persona = node.personaId
     ? useAgentStore
         .getState()

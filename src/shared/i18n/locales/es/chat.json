@@ -502,6 +502,15 @@
     "statsDone": "{{count}} listos",
     "statsTokens": "{{tokens}} tokens",
     "statsCost": "${{cost}}",
+    "hold": {
+      "set": "Retener trabajo nuevo",
+      "lift": "Levantar la retención",
+      "label": "El trabajo nuevo está retenido",
+      "setHint": "Lo que está en marcha termina; no se inicia ninguna ola ni sesión nueva para este chat hasta que levantes la retención.",
+      "liftHint": "Permite que este chat vuelva a iniciar olas y sesiones.",
+      "setNotice": "El operador retuvo el trabajo nuevo en este chat. Lo que ya está en marcha termina; no se inicia ninguna ola, revisión ni sesión nueva, y un plan enviado ahora se rechaza. No planifiques ni inicies sesiones hasta que se levante la retención.",
+      "liftedNotice": "El operador levantó la retención del trabajo nuevo en este chat. Ya pueden iniciarse olas y sesiones nuevas."
+    },
     "waitingOnChildren_one": "1 ejecutor está trabajando",
     "waitingOnChildren_other": "{{count}} ejecutores están trabajando",
     "jobs": {
@@ -588,7 +597,8 @@
         "stepRunSettingsUnavailable": "El paso {{step}} pide un esfuerzo de razonamiento o un modo rápido que su modelo no ofrece, y se rechazó el plan entero en lugar de ejecutar el paso con otro ajuste sin avisar.",
         "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero nada en él comprueba el resultado. Una ola así debe terminar con un paso de verificación que inspeccione el resultado.",
         "verificationStepMisplaced": "Este plan sí comprueba su trabajo, pero la comprobación no es lo último que hace: después del verificador se ejecuta un paso que no es de commit ni de publicación.",
-        "verificationStepBlind": "Este plan termina con un paso de verificación que nunca recibe los informes de los demás pasos, así que no puede saber qué está verificando."
+        "verificationStepBlind": "Este plan termina con un paso de verificación que nunca recibe los informes de los demás pasos, así que no puede saber qué está verificando.",
+        "newWorkOnHold": "El trabajo nuevo está retenido en este chat, así que el plan no se inició."
       },
       "budgetReset": {
         "title": "El presupuesto de revisiones empieza de cero con este plan.",

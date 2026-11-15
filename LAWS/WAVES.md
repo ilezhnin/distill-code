@@ -107,6 +107,15 @@ expectations all have to agree on the same words.
   already runs the step MUST make that session the step's executor, never a
   second worker beside it.
 
+## Holds
+
+- While the operator holds a conductor's new work, the app MUST NOT start a
+  wave, a revision, a turn toward its goal or a session under its tree, and
+  MUST refuse a plan sent meanwhile saying why.
+- A hold MUST NOT stop work that was already running when it was set.
+- Only the operator MUST be able to set or lift a hold, and the app MUST
+  show a hold for as long as it is on.
+
 ## Goals
 
 - While a conductor's roadmap says its goal is in progress, the app MUST

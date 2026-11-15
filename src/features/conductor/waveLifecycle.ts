@@ -55,7 +55,9 @@ import type { ConductorRoadmap } from "./flockRoadmap";
 import { parseFlockWave } from "./flockWave";
 import type { SessionNode } from "./types";
 import {
+  NEW_WORK_ON_HOLD_DETAIL,
   admitWavePlan,
+  type WaveAdmission,
   collectWaveStepReports,
   createWaveState,
   hasAttestedWaveStepReport,
@@ -120,6 +122,7 @@ import {
 import { readConductorTranscript } from "./waveTranscripts";
 import {
   hasWaveTombstone,
+  isConductorHeld,
   setWaveEngineState,
   updateWaveEngineState,
   withProcessedMessageWatermark,
@@ -610,22 +613,33 @@ function applyVerdictDecision(
   });
 
   if (decision.revision) {
-    const admission = admitWavePlan(
-      {
-        kind: "plan",
-        steps: [...decision.revision.steps],
-        planText: "",
-        prose: "",
-      },
-      // A revision's explicit step models face the same live check as a fresh
-      // plan's — the verdict path must not be the door a silently unrunnable
-      // model walks in through.
-      {
-        checkStepModel: checkExplicitWaveStepModel,
-        checkStepRunSettings: (step) =>
-          checkWaveStepRunSettings(step, wave.conductorSessionId),
-      },
-    );
+    // A revision is new work: under the operator's hold it is not
+    // started, and the wave is handed back saying so.
+    const admission: WaveAdmission = isConductorHeld(
+      next,
+      wave.conductorSessionId,
+    )
+      ? {
+          kind: "rejected",
+          reason: "new-work-on-hold",
+          detail: NEW_WORK_ON_HOLD_DETAIL,
+        }
+      : admitWavePlan(
+          {
+            kind: "plan",
+            steps: [...decision.revision.steps],
+            planText: "",
+            prose: "",
+          },
+          // A revision's explicit step models face the same live check as a fresh
+          // plan's — the verdict path must not be the door a silently unrunnable
+          // model walks in through.
+          {
+            checkStepModel: checkExplicitWaveStepModel,
+            checkStepRunSettings: (step) =>
+              checkWaveStepRunSettings(step, wave.conductorSessionId),
+          },
+        );
     if (admission.kind === "rejected") {
       // The revision wave itself is unrunnable (a model nothing installed can
       // run, say). No revision is spent and the operator sees why.
@@ -1147,6 +1161,9 @@ export function processGoalTurns(
       (wave) =>
         wave.conductorSessionId === conductorSessionId && isWaveLive(wave),
     );
+    // Under the operator's hold the goal is not pursued: asking the
+    // conductor to continue is asking it for new work.
+    if (isConductorHeld(next, conductorSessionId)) continue;
     if (!roadmap.continueTurn) {
       // A roadmap closed by the conductor while a turn was owed, or set with
       // nothing running: the first case is done, the second starts the loop.

@@ -374,6 +374,13 @@ export type WaveRejectionReason =
    */
   | "verification-step-misplaced"
   /**
+   * The operator holds the conductor's new work: the plan is sound and is
+   * not run. Refused rather than queued, because a hold has no end the
+   * app knows, and a plan started hours later on stale premises is the
+   * work the operator was holding back.
+   */
+  | "new-work-on-hold"
+  /**
    * The plan closes with a verification step whose `access` is `[]`: it never
    * receives the earlier steps' reports, so it cannot know what it is
    * verifying. A verifier in name only.
@@ -395,6 +402,10 @@ export type WaveAdmission =
       /** Zero-based offending step, when the reason is per-step. */
       stepIndex?: number;
     };
+
+/** What a plan or a revision is told when its conductor's new work is held. */
+export const NEW_WORK_ON_HOLD_DETAIL =
+  "The operator is holding new work in this chat: what is already running finishes, and nothing new is started. Do not plan again or start sessions until the operator lifts the hold.";
 
 /** Statuses a run can no longer leave on its own. */
 export function isTerminalRunStatus(status: RunStatus): boolean {

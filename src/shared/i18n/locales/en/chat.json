@@ -502,6 +502,15 @@
     "statsDone": "{{count}} done",
     "statsTokens": "{{tokens}} tokens",
     "statsCost": "${{cost}}",
+    "hold": {
+      "set": "Hold new work",
+      "lift": "Lift the hold",
+      "label": "New work is on hold",
+      "setHint": "What is running finishes; no new wave or session starts for this chat until you lift the hold.",
+      "liftHint": "Let this chat start new waves and sessions again.",
+      "setNotice": "The operator put new work on hold in this chat. What is already running finishes; no new wave, revision or session is started, and a plan sent now is refused. Do not plan or start sessions until the hold is lifted.",
+      "liftedNotice": "The operator lifted the hold on new work in this chat. New waves and sessions may start again."
+    },
     "waitingOnChildren_one": "1 executor is working",
     "waitingOnChildren_other": "{{count}} executors are working",
     "jobs": {
@@ -588,7 +597,8 @@
         "stepRunSettingsUnavailable": "Step {{step}} asks for a reasoning effort or fast mode its model does not offer, and the whole plan was refused rather than quietly running the step at a different setting.",
         "verificationStepMissing": "This plan builds something that can be checked, but nothing in it checks the result. A wave like this has to end with a verification step that inspects the result itself.",
         "verificationStepMisplaced": "This plan does check its work, but the check is not its last word: a step that is not a commit or release step runs after the verifier.",
-        "verificationStepBlind": "This plan ends with a verification step that never receives the other steps' reports, so it cannot know what it is verifying."
+        "verificationStepBlind": "This plan ends with a verification step that never receives the other steps' reports, so it cannot know what it is verifying.",
+        "newWorkOnHold": "New work is on hold in this chat, so the plan was not started."
       },
       "budgetReset": {
         "title": "The revision budget starts over with this plan.",

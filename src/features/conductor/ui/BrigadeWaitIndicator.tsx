@@ -11,7 +11,15 @@ import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { buildAgentForest } from "../agentTree";
 import type { MonitorJob } from "../monitorJobs";
 import { brigadeWaitIndicator } from "../brigadeActivity";
-import { useConductorGraphStore } from "../conductorGraphStore";
+import {
+  isConductorSession,
+  useConductorGraphStore,
+} from "../conductorGraphStore";
+import {
+  conductorHeld,
+  setConductorHold,
+  subscribeToConductorHolds,
+} from "../conductorHold";
 import { useConductorTranscript } from "../ConductorTranscriptContext";
 import type { SessionNode } from "../types";
 import {
@@ -229,7 +237,18 @@ export function BrigadeWaitIndicator({
       ? waveWaitLabelKey(liveWave.phase)
       : null;
 
-  const brigadeLine = visible || Boolean(waveWaitLabel) || Boolean(liveWave);
+  // The operator's hold on this conductor's new work. Offered where there
+  // is work to hold back from, and shown for as long as it is on: a hold
+  // nobody can see is one nobody lifts.
+  const held = useSyncExternalStore(
+    subscribeToConductorHolds,
+    () => conductorHeld(sessionId),
+    () => false,
+  );
+  const holdable = Boolean(sessionId) && isConductorSession(sessionId);
+
+  const brigadeLine =
+    visible || Boolean(waveWaitLabel) || Boolean(liveWave) || held;
   if (!brigadeLine && !jobsVisible) return null;
 
   const jobList =
@@ -284,6 +303,10 @@ export function BrigadeWaitIndicator({
             </button>
           ) : waveWaitLabel ? (
             <span className="min-w-0 truncate">{t(waveWaitLabel)}</span>
+          ) : held ? (
+            <span className="min-w-0 truncate" data-testid="brigade-hold-label">
+              {t("conductor.hold.label")}
+            </span>
           ) : null}
           {sessionId && visible ? (
             <Button
@@ -298,6 +321,22 @@ export function BrigadeWaitIndicator({
               {pokePending
                 ? t("conductor.poke.pending")
                 : t("conductor.poke.ask")}
+            </Button>
+          ) : null}
+          {sessionId && holdable && (held || brigadeLine) ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xxs"
+              className="shrink-0"
+              data-testid="brigade-hold-button"
+              aria-pressed={held}
+              title={t(
+                held ? "conductor.hold.liftHint" : "conductor.hold.setHint",
+              )}
+              onClick={() => setConductorHold(sessionId, !held)}
+            >
+              {t(held ? "conductor.hold.lift" : "conductor.hold.set")}
             </Button>
           ) : null}
           {sessionId && liveWave ? (
