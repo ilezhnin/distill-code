@@ -7,7 +7,10 @@
  * import-pure (the engine store pulls in Tauri-backed documents).
  */
 
+import { useAccountQuotaWaitStore } from "@/features/chat/lib/accountQuotaWait";
+import { sessionPulse } from "@/features/chat/lib/sessionPulse";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { isWorkingStatus } from "@/features/conductor/brigadeActivity";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { ConductorRoadmap } from "@/features/conductor/flockRoadmap";
 import {
@@ -69,7 +72,68 @@ export interface WaveStepWire {
   dispatch_note: string | null;
   resumed_from_session_id: string | null;
   report: { status: string; summary: string } | null;
+  /**
+   * How alive the step's executor is, while its run is not over: null
+   * for a step with no session and for one that finished.
+   */
+  activity: WaveStepActivityWire | null;
   subtask: string | null;
+}
+
+/**
+ * What the app last heard from a step's executor. A conductor used to
+ * see `running` for a step that worked and for one whose provider had
+ * gone silent an hour ago alike, and could only wait for a notice.
+ */
+export interface WaveStepActivityWire {
+  /** When the executor last sent anything: text, a thought, a tool call. */
+  last_event_at: string | null;
+  /** Whole seconds since then; null when nothing was heard this run. */
+  quiet_seconds: number | null;
+  /** Tool calls it started and has not heard the end of. */
+  tools_running: number;
+  /** Tokens the session has used so far, when the provider reports them. */
+  tokens_used: number | null;
+  /** Set while the session's message waits for its provider. */
+  provider_wait: {
+    reason: "allowance_spent" | "rate_limited";
+    until: string | null;
+  } | null;
+}
+
+function isoTime(at: number | null | undefined): string | null {
+  return typeof at === "number" && Number.isFinite(at) && at > 0
+    ? new Date(at).toISOString()
+    : null;
+}
+
+/** The activity of one live executor session, as of `now`. */
+export function waveStepActivity(
+  sessionId: string,
+  now = Date.now(),
+): WaveStepActivityWire {
+  const pulse = sessionPulse(sessionId);
+  const tokens =
+    useChatStore.getState().sessionStateById[sessionId]?.tokenState;
+  const used = tokens?.accumulatedTotal || tokens?.totalTokens;
+  const wait = useAccountQuotaWaitStore.getState().waits[sessionId];
+  return {
+    last_event_at: isoTime(pulse?.lastEventAt),
+    quiet_seconds: pulse
+      ? Math.max(0, Math.floor((now - pulse.lastEventAt) / 1000))
+      : null,
+    tools_running: pulse?.toolsInFlight ?? 0,
+    tokens_used: typeof used === "number" && used > 0 ? used : null,
+    provider_wait: wait
+      ? {
+          reason:
+            wait.reason === "rate_limit" ? "rate_limited" : "allowance_spent",
+          until: isoTime(
+            wait.reason === "rate_limit" ? wait.retryAt : wait.resetAt,
+          ),
+        }
+      : null,
+  };
 }
 
 export interface WaveWire {
@@ -171,6 +235,10 @@ export function waveToWire(
                 summary: truncate(report.summary, limit),
               }
             : null,
+          activity:
+            node && isWorkingStatus(node.status)
+              ? waveStepActivity(node.sessionId)
+              : null,
           subtask: detail === "full" ? truncate(step.subtask, limit) : null,
         };
       }),

@@ -95,7 +95,12 @@ are separate choices, and each model offers its own set of them.
   behind a free slot, and with `--include-closed` those parked for the
   operator — with the session running each step and that step's report
   status. `flockctl wave get --wave-id <id>` adds the step briefs and the
-  conductor's roadmap; an unambiguous prefix of the id is enough.
+  conductor's roadmap; an unambiguous prefix of the id is enough. A step
+  whose executor is at work carries an `activity`: when it last sent
+  anything (`last_event_at`, `quiet_seconds`), the tool calls it waits on
+  (`tools_running`), the tokens used, and a `provider_wait` when its
+  message waits for an allowance or a rate limit. Quiet for minutes with
+  no tool running and no provider wait is a step that may be stuck.
 - `flockctl wave validate --plan '<json>'` checks a plan the way the app
   would on receiving it, and runs nothing: it answers with the refusal the
   plan would get or with the executors it would start.

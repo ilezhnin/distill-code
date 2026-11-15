@@ -200,7 +200,67 @@ describe("wave commands", () => {
       access: "all",
       phase: "pending",
       session_id: null,
+      // A step with no session has nothing to be alive.
+      activity: null,
     });
+    // The running step says what was last heard from its executor.
+    expect(steps[0].activity).toEqual({
+      last_event_at: null,
+      quiet_seconds: null,
+      tools_running: 0,
+      tokens_used: null,
+      provider_wait: null,
+    });
+  });
+
+  it("tells a conductor how alive a running step's executor is", async () => {
+    const { noteSessionUpdate, resetSessionPulsesForTests } = await import(
+      "@/features/chat/lib/sessionPulse"
+    );
+    const { useAccountQuotaWaitStore } = await import(
+      "@/features/chat/lib/accountQuotaWait"
+    );
+    const { waveStepActivity } = await import("../../commands/runtime/waves");
+    resetSessionPulsesForTests();
+    const at = Date.UTC(2026, 10, 14, 18, 0, 0);
+    noteSessionUpdate("child", { sessionUpdate: "agent_message_chunk" }, at);
+    noteSessionUpdate(
+      "child",
+      { sessionUpdate: "tool_call", toolCallId: "t1", status: "in_progress" },
+      at + 1_000,
+    );
+    useChatStore.setState({
+      sessionStateById: {
+        child: { tokenState: { accumulatedTotal: 12_345, totalTokens: 900 } },
+      } as never,
+    });
+    expect(waveStepActivity("child", at + 61_000)).toEqual({
+      last_event_at: "2026-11-14T18:00:01.000Z",
+      quiet_seconds: 60,
+      tools_running: 1,
+      tokens_used: 12_345,
+      provider_wait: null,
+    });
+
+    // Its message waits for an allowance: said, with the reset time.
+    useAccountQuotaWaitStore.setState({
+      waits: {
+        child: {
+          retryAt: at + 120_000,
+          startedAt: at,
+          message: "usage limit reached",
+          reason: "quota",
+          resetAt: at + 3_600_000,
+          resetTokensAvailable: false,
+        },
+      },
+    });
+    expect(waveStepActivity("child", at + 61_000).provider_wait).toEqual({
+      reason: "allowance_spent",
+      until: "2026-11-14T19:00:00.000Z",
+    });
+    useAccountQuotaWaitStore.setState({ waits: {} });
+    resetSessionPulsesForTests();
   });
 
   it("reads one wave by an id prefix, with briefs and the conductor's roadmap", async () => {

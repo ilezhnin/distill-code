@@ -20,6 +20,7 @@ import {
 } from "@/features/chat/lib/accountQuotaWait";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
+import { sessionPulse } from "@/features/chat/lib/sessionPulse";
 import { useLocaleFormatting } from "@/shared/i18n";
 
 import { isWorkingStatus } from "../brigadeActivity";
@@ -33,6 +34,7 @@ import { isMonitorJobLive, type MonitorJob } from "../monitorJobs";
 import { useMonitorJobStore } from "../monitorJobStore";
 import type { SessionNode, StructuredReport } from "../types";
 import type { BrigadeGlyphStatus } from "./BrigadeChip";
+import { useNow } from "./MonitorJobList";
 
 export interface BrigadeChipSummary {
   status: BrigadeGlyphStatus;
@@ -125,12 +127,18 @@ export function formatBrigadeChipSummary(
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
+/** How often a row looks at the clock. */
+const CHIP_CLOCK_MS = 30_000;
+
 export function useBrigadeChipSummary(
   node: SessionNode,
   report: StructuredReport | undefined,
 ): BrigadeChipSummary {
   const { t } = useTranslation("chat");
   const { formatDate } = useLocaleFormatting();
+  // Silence is the absence of an event, so nothing would redraw the row
+  // to say it: a clock does.
+  const now = useNow(CHIP_CLOCK_MS);
   const runtime = useChatStore(
     (state) => state.sessionStateById[node.sessionId],
   );
@@ -198,9 +206,51 @@ export function useBrigadeChipSummary(
       ),
     };
   }
+  // A turn that runs and has sent nothing for a while, with no tool call
+  // it could be waiting on: said on the row, where a working executor
+  // and a silent one used to look the same.
+  const quietMs = quietTurnMs(
+    node.sessionId,
+    Boolean(runtime && isSessionRunning(runtime.chatState)),
+    now,
+  );
+  if (
+    quietMs !== null &&
+    facts.status !== "blocked" &&
+    isWorkingStatus(facts.status)
+  ) {
+    return {
+      status: facts.status,
+      summaryLabel,
+      reasonLabel: t("conductor.chip.quiet", {
+        duration: formatRunDuration(quietMs - (quietMs % 60_000)),
+      }),
+    };
+  }
   return {
     status: facts.status,
     summaryLabel: facts.lastStep ? throttled : summaryLabel,
     reasonLabel: formatBrigadeChipReason(facts.reason, t),
   };
+}
+
+/** How long a turn must be silent before its row says so. */
+export const CHIP_QUIET_AFTER_MS = 2 * 60_000;
+
+/**
+ * How long a running turn has sent nothing, once that is long enough to
+ * say: null for a turn that is not running, one that spoke recently, one
+ * with a tool call in flight (a build says nothing for as long as it
+ * runs), and a session nothing was heard from in this run of the app.
+ */
+export function quietTurnMs(
+  sessionId: string,
+  turnRunning: boolean,
+  now: number,
+): number | null {
+  if (!turnRunning) return null;
+  const pulse = sessionPulse(sessionId);
+  if (!pulse || pulse.toolsInFlight > 0) return null;
+  const quietFor = now - pulse.lastEventAt;
+  return quietFor >= CHIP_QUIET_AFTER_MS ? quietFor : null;
 }

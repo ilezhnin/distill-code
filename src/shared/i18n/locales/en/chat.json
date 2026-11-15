@@ -797,7 +797,8 @@
       "rateLimited": "Rate-limited by the provider (429)",
       "rateLimitWait": "Waiting for the provider (429), next try at {{time}}",
       "quotaWait": "Waiting for the provider's quota, next try at {{time}}",
-      "waitingOnJob": "Waiting on its job {{label}} · {{duration}}"
+      "waitingOnJob": "Waiting on its job {{label}} · {{duration}}",
+      "quiet": "Nothing from the model for {{duration}}"
     },
     "report": {
       "title": "Report · {{status}}",

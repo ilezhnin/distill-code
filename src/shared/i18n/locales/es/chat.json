@@ -797,7 +797,8 @@
       "rateLimited": "El proveedor limitó las solicitudes (429)",
       "rateLimitWait": "Esperando al proveedor (429), próximo intento a las {{time}}",
       "quotaWait": "Esperando la cuota del proveedor, próximo intento a las {{time}}",
-      "waitingOnJob": "Esperando su tarea {{label}} · {{duration}}"
+      "waitingOnJob": "Esperando su tarea {{label}} · {{duration}}",
+      "quiet": "Nada del modelo desde hace {{duration}}"
     },
     "report": {
       "title": "Informe · {{status}}",

@@ -46,10 +46,20 @@ Result:
                          "status": "running"|"completed"|...|null,
                          "stop_reason": "..."|null, "failure_reason": "..."|null,
                          "dispatch_note": "..."|null, "resumed_from_session_id": "..."|null,
-                         "report": null|{"status": "...", "summary": "..."}, "subtask": null}]}]}
+                         "report": null|{"status": "...", "summary": "..."},
+                         "activity": null|{"last_event_at": "..."|null, "quiet_seconds": 42|null,
+                                           "tools_running": 0, "tokens_used": 12345|null,
+                                           "provider_wait": null|{"reason": "allowance_spent"|"rate_limited",
+                                                                  "until": "..."|null}},
+                         "subtask": null}]}]}
   Newest first. "session_id" is the chat running the step; read it with
   \`flockctl session get\`. A step's "report" summary is truncated to 500
-  chars here; \`flockctl wave get\` gives 4000 and the step briefs.`,
+  chars here; \`flockctl wave get\` gives 4000 and the step briefs.
+  "activity" is set while a step's executor is at work: when it last sent
+  anything and how many seconds ago, the tool calls it is waiting on, and
+  whether its message waits for the provider. A step that has been quiet
+  for minutes with no tool running and no provider wait may be stuck;
+  \`flockctl wave restart\` runs it again.`,
   schema: listWavesSchema,
   execute: async (args) => {
     const [{ getWaveEngineState }, { waveToWire }] = await Promise.all([
