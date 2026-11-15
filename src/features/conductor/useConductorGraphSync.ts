@@ -12,6 +12,7 @@ import {
   isConductorGraphHydrated,
   useConductorGraphStore,
 } from "./conductorGraphStore";
+import { deliverEnvelope } from "./digestDelivery";
 import { publishTerminalGroupDigests } from "./digestPublisher";
 import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksStore";
 import {
@@ -37,6 +38,7 @@ import type { RunStatus, SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
 import { runWaveEngineTick } from "./waveRunner";
 import { WAVE_STOP_REASONS } from "./waveStop";
+import { WAVE_REPORT_NUDGE_PROMPT } from "./wavePrompts";
 import { readWorkerTranscript } from "./waveTranscripts";
 import {
   isBenchmarkSession,
@@ -46,6 +48,60 @@ import { ownedTaskExecution } from "@/features/benchmarks/lib/ownedTaskExecution
 
 /** Sessions seen executing at least once. Bounded — see BoundedSet. */
 const seenRunningBySession = new BoundedSet(5_000);
+
+/**
+ * How long a request for the missing report may wait for its turn to start
+ * before the step is read as it stands.
+ */
+export const REPORT_NUDGE_START_MS = 60_000;
+
+/**
+ * The requests for a missing report that are out: when each was sent, and
+ * whether its turn has been seen running. A step is held open from the
+ * request until that turn ends, so nothing is built on a step that is about
+ * to say what it came to.
+ */
+const reportNudges = new Map<string, { sentAt: number; sawRunning: boolean }>();
+
+/** Whether a request for `sessionId`'s report is still out. */
+function reportNudgeOut(sessionId: string, running: boolean): boolean {
+  const nudge = reportNudges.get(sessionId);
+  if (!nudge) return false;
+  if (running) {
+    nudge.sawRunning = true;
+    return true;
+  }
+  // Its turn ran and ended, or never started: the step is read as it is.
+  if (nudge.sawRunning || Date.now() - nudge.sentAt > REPORT_NUDGE_START_MS) {
+    reportNudges.delete(sessionId);
+    return false;
+  }
+  return true;
+}
+
+let reportNudgeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Asks a wave step for the report block its turn ended without, once.
+ * Returns whether the request went out, which holds the step open.
+ */
+function nudgeForReport(node: SessionNode): boolean {
+  reportNudges.set(node.sessionId, { sentAt: Date.now(), sawRunning: false });
+  useConductorGraphStore
+    .getState()
+    .patchNode(node.sessionId, { reportNudged: true });
+  void deliverEnvelope(node.sessionId, WAVE_REPORT_NUDGE_PROMPT).catch(() => {
+    reportNudges.delete(node.sessionId);
+  });
+  // A request whose turn never starts must not hold the step for ever.
+  if (reportNudgeTimer === null) {
+    reportNudgeTimer = setTimeout(() => {
+      reportNudgeTimer = null;
+      syncChildStatuses();
+    }, REPORT_NUDGE_START_MS + 100);
+  }
+  return true;
+}
 
 /**
  * The startup reconcile is one-shot per app start: module-level, so a remount of
@@ -418,13 +474,34 @@ function runSyncPass(): void {
       (handsOut ||
         (!(summary && hasReportFence(summary)) &&
           sessionBackgroundWorkLive(node.sessionId, runtime?.activeRunId)));
-    const nextStatus = statusFromRuntime(
+    const turnRunning = Boolean(runtime && isSessionRunning(runtime.chatState));
+    const nudgeOut = reportNudgeOut(node.sessionId, turnRunning);
+    let nextStatus = statusFromRuntime(
       node.sessionId,
       node.status,
       runtime,
       Boolean(summary),
-      heldOpen,
+      heldOpen || nudgeOut,
     );
+    // A wave step whose turn ended without the report block is asked for
+    // it once, in its own chat, before the wave reads anything into the
+    // silence. Only with its transcript in hand: a reply the cache does
+    // not hold is not a reply without a report. Not when the operator
+    // spoke to the step themselves, and not twice.
+    if (
+      nextStatus === "completed" &&
+      node.role === "worker" &&
+      node.managedBy === "wave" &&
+      !node.reportNudged &&
+      node.runId &&
+      messages !== undefined &&
+      !(summary && hasReportFence(summary)) &&
+      !graph.getReport(node.runId) &&
+      !childHadOperatorIntervention(messages) &&
+      nudgeForReport(node)
+    ) {
+      nextStatus = "running";
+    }
     if (nextStatus !== node.status) {
       graph.patchNode(node.sessionId, { status: nextStatus });
     }

@@ -403,6 +403,17 @@ ${JSON.stringify(boundedReportPayloads(ordered), null, 2)}
 }
 
 /**
+ * What a wave step is asked when its turn ended without the report block.
+ *
+ * Sent once, into the step's own chat, before anything is concluded from the
+ * silence: a step told to start work and wait ended its turn with nothing,
+ * and the wave went on with "The agent finished." (11-14). It is the same
+ * session finishing the same step, not a second attempt at it.
+ */
+export const WAVE_REPORT_NUDGE_PROMPT =
+  'Your turn on this step ended without the `distill-report` block the step must end with, so the app cannot tell what the step came to. Reply now with that block and nothing after it: "completed" if the work is done, "failed" if it did not succeed, "blocked" with a "reason" if it could not be done at all. If work you started is still running, do not report yet: say what is running and end your turn, and you are woken when it ends.';
+
+/**
  * How a worker starts something that must outlive its own shell.
  *
  * A Unity editor a worker launched as a plain child of its shell died with the

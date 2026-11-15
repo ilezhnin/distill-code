@@ -56,6 +56,11 @@ export interface SessionNode {
    */
   finishedAt?: number;
   anchorMessageId?: string;
+  /**
+   * The app asked this executor for the report block it ended a turn
+   * without. Asked once per run, so the mark outlives a restart.
+   */
+  reportNudged?: boolean;
   /** Wave that produced this node. Set only for `managedBy: "wave"` children. */
   waveId?: string;
   /** Zero-based index of the wave step this node executes. */
