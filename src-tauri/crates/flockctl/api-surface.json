@@ -1276,7 +1276,7 @@
           }
         },
         "steer": {
-          "description": "Send the same message into the chat of every executor of the wave that is still running — steered into its current turn when it is working, queued when it is between turns. Executors that already finished are left alone. Each message is visible in that executor's chat.",
+          "description": "Send the same message into the chat of every executor of the wave that is still running — steered into its current turn when it is working and its provider takes a message mid-turn (Claude Code and Kimi Code do), queued otherwise: a queued message is NOT delivered yet, the executor reads it when its current turn ends. Executors that already finished are left alone. Each message is visible in that executor's chat.",
           "fields": [
             {
               "name": "wave_id",

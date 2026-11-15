@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { checkSpawnAllowed } from "./spawnAcl";
+import { useConductorGraphStore } from "./conductorGraphStore";
+import { checkSpawnAllowed, sessionMaySpawn } from "./spawnAcl";
+import type { SessionNode } from "./types";
 
 describe("checkSpawnAllowed", () => {
   it("refuses a worker spawning anything, naming the facts", () => {
@@ -86,5 +88,35 @@ describe("named spawn allowlist (spawns_agents)", () => {
       targetAgentRefs: ["scout"],
     });
     expect(!check.allowed && check.refusal).toBe("agent");
+  });
+});
+
+describe("sessionMaySpawn", () => {
+  const node = (sessionId: string, role: SessionNode["role"]): SessionNode => ({
+    sessionId,
+    projectId: "project",
+    role,
+    managedBy: "wave",
+    parentSessionId: role === "conductor" ? null : "conductor-1",
+    rootConductorId: "conductor-1",
+    runId: null,
+    harnessId: "claude-acp",
+    displayName: sessionId,
+    status: "running",
+  });
+
+  it("is false for a wave worker and true for its conductor and a plain chat", () => {
+    useConductorGraphStore.setState({
+      nodesById: {
+        "conductor-1": node("conductor-1", "conductor"),
+        "worker-1": node("worker-1", "worker"),
+      },
+    });
+    expect(sessionMaySpawn("worker-1", null)).toBe(false);
+    expect(sessionMaySpawn("conductor-1", null)).toBe(true);
+    // No node and no persona: a chat that starts what its operator asks for.
+    expect(sessionMaySpawn("plain-chat", null)).toBe(true);
+    expect(sessionMaySpawn(null, undefined)).toBe(true);
+    useConductorGraphStore.setState({ nodesById: {} });
   });
 });

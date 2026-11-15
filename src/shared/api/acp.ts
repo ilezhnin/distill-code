@@ -174,7 +174,7 @@ async function acpSendMessageNow(
   // context are handed off in-band on the first prompt under that agent.
   // See acpPersonaHandoff.
   const [flockctlPreamble, styleGuidelines] = await Promise.all([
-    getFlockctlPreamble(sessionId),
+    getFlockctlPreamble(sessionId, personaId),
     sessionStyleGuidelinesPrompt(sessionId),
   ]);
   const appPreamble = [

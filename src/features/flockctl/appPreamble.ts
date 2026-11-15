@@ -45,13 +45,23 @@ Run \`flockctl <noun> <verb> --help\` for arguments. When asked to switch or mov
  * `--parent-session-id` the app cannot tell who started it, and the helper
  * lands in the sidebar as an unrelated chat whose result nobody delivers.
  */
-export function formatFlockctlPreamble(sessionId: string): string {
+export function formatFlockctlPreamble(
+  sessionId: string,
+  maySpawn = true,
+): string {
   const id = sessionId.trim();
   if (!id) return FLOCKCTL_PREAMBLE;
+  // A session whose layer starts nobody is told so here too. This line
+  // used to invite every session to start others, beside a spawn rule
+  // that forbade it: a worker read both and learned which held from
+  // `spawn_not_allowed` (11-14).
+  const spawning = maySpawn
+    ? `When you start a session to take on part of your work, pass \`--parent-session-id ${id}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit it only for an independent chat the user asked for.`
+    : `This session starts no other sessions: \`flockctl session create\` and \`flockctl session fork\` are not yours to run, under your own id or another chat's. If the work needs more hands than you have, say so in your report (\`needsOperator\`, \`nextSuggestedTask\`) and the chat that gave you the task decides.`;
   return `${FLOCKCTL_PREAMBLE}
 
 Your own session id is ${id}. Pass it explicitly as \`--session-id ${id}\` whenever a flockctl or flock-monitor command needs your session; there is no environment variable for it, \`flockctl info context\` without --session-id reports the chat the user is viewing (not necessarily this one), and the working directory never identifies a session. \`flockctl wave list --conductor-session-id ${id}\` lists the waves this chat planned with the session running each step.
-When you start a session to take on part of your work, pass \`--parent-session-id ${id}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit it only for an independent chat the user asked for.`;
+${spawning}`;
 }
 
 /** Set once an invoke rejection shows the plugin is not in this build or
@@ -70,13 +80,19 @@ let pluginUnavailable = false;
  */
 export async function getFlockctlPreamble(
   sessionId: string,
+  personaId?: string | null,
 ): Promise<string | null> {
   if (pluginUnavailable || !window.__TAURI_INTERNALS__) {
     return null;
   }
   try {
     const { running } = await getFlockctlBrokerStatus();
-    return running ? formatFlockctlPreamble(sessionId) : null;
+    if (!running) return null;
+    const { sessionMaySpawn } = await import("@/features/conductor/spawnAcl");
+    return formatFlockctlPreamble(
+      sessionId,
+      sessionMaySpawn(sessionId, personaId),
+    );
   } catch (error) {
     if (isPluginUnavailableError(error)) {
       pluginUnavailable = true;

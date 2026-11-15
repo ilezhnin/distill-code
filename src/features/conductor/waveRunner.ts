@@ -185,6 +185,15 @@ const inFlightPlans = new BoundedSet(MAX_REMEMBERED_PLAN_MESSAGES);
 const inFlightSpawns = new Set<string>();
 
 /**
+ * The pins a conductor was already warned about: its session, the role, the
+ * model the plan named and the one it ranks below. The warning says a fact
+ * about the operator's ranking, and saying it for every step of every wave
+ * told nobody anything new while each one woke the conductor (11-14: one per
+ * step, for a pin the operator had asked for).
+ */
+const warnedModelPins = new BoundedSet(2_000);
+
+/**
  * Settled conductor messages already scanned and found to carry no plan. The
  * sync subscription fires on every chat-store change, so without this the
  * engine would re-read every message of every conductor transcript per token.
@@ -880,7 +889,14 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           stepLabel: resolved.label,
           inheritedLabel: inheritedName ?? "",
         });
-        if (downgrade) {
+        const pin = [
+          wave.conductorSessionId,
+          request.step.role,
+          stepModelId,
+          inheritedId ?? "",
+        ].join("\0");
+        if (downgrade && !warnedModelPins.has(pin)) {
+          warnedModelPins.add(pin);
           appendConductorNotice(
             wave.conductorSessionId,
             waveStepModelDowngradeNoticeText({

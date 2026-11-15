@@ -412,7 +412,7 @@ ${JSON.stringify(boundedReportPayloads(ordered), null, 2)}
  * editor right the first time.
  */
 export const WAVE_DETACHED_PROCESS_GUIDANCE =
-  "If you start a long-lived external process — an editor, a server, a watcher, a build that outlives this step — start it detached from your own shell so it survives your session and an app restart: on Windows, PowerShell's Start-Process (or WMI Win32_Process.Create), elsewhere setsid or nohup with &. A process started as a plain child of your shell dies with the app.";
+  "A command that may outlive a tool call or this step — a long build, a commit of many files, a watcher — goes through `flock-monitor run` (see the flock-monitor skill): it detaches from your shell and from the app, survives an app restart, and its output lines come back to you as messages. A program that only has to stay open — an editor, a server — you may also start detached yourself: on Windows through WMI (Win32_Process.Create), elsewhere setsid or nohup with &. A process started as a plain child of your shell dies with the app or with the tool call's time limit, and a git command cut off that way leaves index.lock behind.";
 
 /**
  * The preamble of a step resumed after an app restart ended its executor.

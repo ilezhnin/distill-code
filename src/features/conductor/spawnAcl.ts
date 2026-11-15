@@ -288,6 +288,28 @@ export function formatSpawnPolicyPrompt(
   ].join("\n");
 }
 /**
+ * Whether a session may start others at all: false only where its layer
+ * permissions are empty (a wave worker, by default). A session with no
+ * conductor-graph node and no persona is a plain chat, which starts what
+ * its operator asks for.
+ */
+export function sessionMaySpawn(
+  sessionId: string | null | undefined,
+  personaId: string | null | undefined,
+): boolean {
+  const nodeRole = sessionId
+    ? useConductorGraphStore.getState().nodesById[sessionId]?.role
+    : undefined;
+  const persona = personaId
+    ? useAgentStore
+        .getState()
+        .personas.find((candidate) => candidate.id === personaId)
+    : undefined;
+  if (nodeRole === undefined && !persona) return true;
+  return effectiveSpawnLayers(nodeRole ?? "plain-chat", persona).length > 0;
+}
+
+/**
  * The spawn-policy insert for one session, or `undefined` when the session
  * gets none.
  *

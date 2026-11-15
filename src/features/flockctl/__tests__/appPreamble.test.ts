@@ -52,6 +52,26 @@ describe("getFlockctlPreamble", () => {
   });
 });
 
+describe("formatFlockctlPreamble", () => {
+  it("invites a session that may start others to name itself as their parent", () => {
+    expect(SESSION_PREAMBLE).toContain(
+      `pass \`--parent-session-id ${SESSION_ID}\` to \`flockctl session create\``,
+    );
+  });
+
+  it("tells a session that starts nobody so, and how to ask for more hands", () => {
+    const worker = formatFlockctlPreamble(SESSION_ID, false);
+    // Its own id is still the one thing nothing else tells it.
+    expect(worker).toContain(`Your own session id is ${SESSION_ID}.`);
+    // The line that invited it to spawn is gone: it contradicted the spawn
+    // rule the same session reads, and the worker learned which one held
+    // from a refusal.
+    expect(worker).not.toContain("--parent-session-id");
+    expect(worker).toContain("This session starts no other sessions");
+    expect(worker).toContain("`needsOperator`, `nextSuggestedTask`");
+  });
+});
+
 describe("FLOCKCTL_PREAMBLE content", () => {
   /**
    * Drift protection: every noun and verb the preamble names must exist in
