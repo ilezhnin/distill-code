@@ -1992,6 +1992,25 @@ impl SessionStore {
         Ok(true)
     }
 
+    /// Fold what the write-ahead log holds into the database without making
+    /// anyone wait: a passive checkpoint takes no write lock and stops at the
+    /// first page a reader still needs. Answers `(log pages, pages folded)`.
+    ///
+    /// The host runs it once after its start. SQLite checkpoints by itself
+    /// only once a commit leaves a thousand pages in the log, so a log an
+    /// earlier run left oversized and nearly empty (11.8 GB with 272 pages
+    /// after the VACUUM of 2026-11-14) stayed that size until a thousand
+    /// pages had been written. Folded in, it starts over at the next write,
+    /// which is where the size limit cuts the file (see [`Self::open`]).
+    pub async fn fold_wal(&self) -> Result<(i64, i64), String> {
+        let (_busy, log, folded) =
+            sqlx::query_as::<_, (i64, i64, i64)>("PRAGMA wal_checkpoint(PASSIVE)")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|error| db_error("failed to checkpoint the history database", error))?;
+        Ok((log, folded))
+    }
+
     /// Close the connection pool: for a tool that opened the database on its
     /// own and is done with it.
     pub async fn close(&self) {
@@ -2929,6 +2948,67 @@ mod tests {
             reopened.list_events("chat").await.unwrap().len(),
             burst.len() + 2
         );
+        dir.close().await;
+    }
+
+    /// And for the log the VACUUM of 2026-11-14 really left: oversized on
+    /// disk and nearly empty, far below the thousand pages SQLite's own
+    /// checkpoint waits for. The fold the host runs after its start is what
+    /// lets the next write start the log over.
+    #[tokio::test]
+    async fn folding_an_oversized_and_nearly_empty_log_lets_the_next_write_cut_it_back() {
+        let dir = crate::test_support::TempRoot::new();
+        let path = dir.path().join("first.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        store.insert_session(&record("chat")).await.unwrap();
+        store.close().await;
+        // A build without the size limit: its log keeps the size of its
+        // largest commit and is written over from the start.
+        let unlimited = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&path)
+                    .journal_mode(SqliteJournalMode::Wal),
+            )
+            .await
+            .unwrap();
+        dir.register(&unlimited);
+        let megabyte = "x".repeat(1024 * 1024);
+        let mut burst = unlimited.begin().await.unwrap();
+        for _ in 0..WAL_SIZE_LIMIT_BYTES / (1024 * 1024) + 8 {
+            sqlx::query("INSERT INTO session_events (session_id, created_at, payload_json) VALUES ('chat', 't', ?)")
+                .bind(&megabyte)
+                .execute(&mut *burst)
+                .await
+                .unwrap();
+        }
+        burst.commit().await.unwrap();
+        sqlx::query("INSERT INTO session_events (session_id, created_at, payload_json) VALUES ('chat', 't', 'after')")
+            .execute(&unlimited)
+            .await
+            .unwrap();
+        let left = dir.path().join("left.db");
+        let left_wal = left.with_extension("db-wal");
+        std::fs::copy(&path, &left).unwrap();
+        std::fs::copy(path.with_extension("db-wal"), &left_wal).unwrap();
+        let wal_len = || {
+            std::fs::metadata(&left_wal)
+                .map(|meta| meta.len())
+                .unwrap_or(0)
+        };
+        assert!(wal_len() > WAL_SIZE_LIMIT_BYTES, "{}", wal_len());
+
+        let reopened = SessionStore::open(&left).await.unwrap();
+        dir.register(&reopened.pool);
+        let (log, folded) = reopened.fold_wal().await.unwrap();
+        assert!(log < 1000, "{log}");
+        assert_eq!(folded, log);
+        reopened
+            .append_events("chat", &[json!({ "text": "next" })])
+            .await
+            .unwrap();
+        assert!(wal_len() <= WAL_SIZE_LIMIT_BYTES, "{}", wal_len());
         dir.close().await;
     }
 

@@ -2039,6 +2039,16 @@ impl Inner {
         let Some(host) = host.upgrade() else {
             return;
         };
+        // What an earlier run left in the write-ahead log goes into the
+        // database now, taking no write lock, so that the next write starts
+        // the log over and its size limit cuts the file back.
+        match host.store.fold_wal().await {
+            Ok((log, folded)) if folded < log => log::info!(
+                "[agent-host] history write-ahead log: {folded} of {log} pages folded in, the rest still read"
+            ),
+            Ok(_) => {}
+            Err(error) => log::warn!("[agent-host] history write-ahead log not folded in: {error}"),
+        }
         let started = std::time::Instant::now();
         let skip = {
             let host = Arc::clone(&host);
