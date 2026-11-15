@@ -46,8 +46,12 @@ export const MAX_WAVE_EXECUTORS = 64;
 /** How many of a wave's executors run at once when the plan does not say. */
 export const DEFAULT_WAVE_PARALLEL = 8;
 
-/** The most a plan may ask to run at once. */
-export const MAX_WAVE_PARALLEL = 16;
+/**
+ * The most a plan may ask to run at once. It was 16, and a conductor that
+ * had run 24 readers at once through its own dispatcher counted a wave as
+ * the slower way (11-16): the app's own fan-out must not be the narrow one.
+ */
+export const MAX_WAVE_PARALLEL = 32;
 
 /** The longest one shard's text may be. */
 export const MAX_WAVE_SHARD_LENGTH = 2_000;
