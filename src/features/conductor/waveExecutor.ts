@@ -31,6 +31,22 @@ import {
   resolveWaveStepTargets,
   waveExecutorRoleContext,
 } from "./waveStepTarget";
+import {
+  spentAllowance,
+  spentAllowanceNote,
+  type SpentAllowance,
+} from "./waveAllowance";
+
+/** The name an executor option is called by in what the conductor reads. */
+function executorOptionLabel(
+  option: ApplicationExecutorOption,
+  fallback: string,
+): string {
+  const model = advertisedModelForTarget(option.target);
+  return model
+    ? modelDisplayName(model)
+    : (option.target.modelName ?? String(option.target.modelId ?? fallback));
+}
 
 /** Explicit step settings constrain every automatic candidate, not only the prior. */
 function automaticOptionsForStep(
@@ -384,13 +400,37 @@ export async function prepareWaveExecutor(
     if (!configuration || rows.has(configuration.id)) continue;
     rows.set(configuration.id, { configuration, option });
   }
+  // The ranking read the status bar's numbers, which are one account per
+  // provider. The host is asked what its dispatch would meet: an executor
+  // whose every account has spent its allowance is no candidate, because
+  // its first message would only wait for the reset while the wave stood.
+  const spentByRow = new Map<string, SpentAllowance>();
+  await Promise.all(
+    [...rows.values()].map(async ({ configuration, option }) => {
+      const spent = await spentAllowance(
+        option.target.harnessId,
+        option.target.modelId,
+      );
+      if (spent) spentByRow.set(configuration.id, spent);
+    }),
+  );
+  const spentNote = (id: string): string | null => {
+    const spent = spentByRow.get(id);
+    const row = rows.get(id);
+    return spent && row
+      ? spentAllowanceNote(executorOptionLabel(row.option, id), spent)
+      : null;
+  };
+  const spentNotes = [...rows.keys()].flatMap((id) => spentNote(id) ?? []);
   const candidates = [...rows.values()].map(({ configuration, option }) => ({
     configuration,
     // The automatic pool already applied live inventory/quota/settings checks.
     // Avoid rebuilding that full pool for each row; the winner is rechecked
     // by waveExecutorAvailable immediately before dispatch.
-    available: Boolean(advertisedModelForTarget(option.target)),
-    reason: null,
+    available:
+      Boolean(advertisedModelForTarget(option.target)) &&
+      !spentByRow.has(configuration.id),
+    reason: spentNote(configuration.id),
   }));
   const baseKey = waveExecutorKey(wave.waveId, request.stepIndex);
   // A resumed step is a new dispatch of the same step and gets a key of its
@@ -485,12 +525,37 @@ export async function prepareWaveExecutor(
       };
     }
   }
+  if (selected && decision.chosen && spentByRow.has(decision.chosen.id)) {
+    // A choice made before its accounts ran out (a decision on record,
+    // resumed now). A step that named its model waits for nobody's
+    // guess: it fails and says why. Any other runs on the next row.
+    const fallback = request.step.model
+      ? undefined
+      : [...rows.values()].find(
+          ({ configuration, option }) =>
+            !spentByRow.has(configuration.id) &&
+            Boolean(advertisedModelForTarget(option.target)),
+        );
+    if (!fallback) {
+      return {
+        requestKey,
+        selected: undefined,
+        decision,
+        error: `No executor can run this step now. ${spentNotes.join("; ")}. Name another model for the step, or leave the model out so Flock picks one that can run.`,
+      };
+    }
+    fallbackNote = `Executor selection chose ${executorOptionLabel(selected, decision.chosen.id)}, whose accounts have used up their allowance; the step runs on ${executorOptionLabel(fallback.option, fallback.configuration.id)} instead.`;
+    selected = fallback.option;
+  }
   if (!selected && (baseline.target?.modelId || candidates.length > 0)) {
     return {
       requestKey,
       selected,
       decision,
-      error: `No executor selected: ${decision.reason}`,
+      error:
+        spentNotes.length > 0
+          ? `No executor selected: ${decision.reason} Out of allowance now: ${spentNotes.join("; ")}. Name another model for the step, or leave the model out so Flock picks one that can run.`
+          : `No executor selected: ${decision.reason}`,
     };
   }
   return {

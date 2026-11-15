@@ -81,9 +81,23 @@ beforeEach(() => {
     .mockImplementation(async (request) => decisionFor(request));
   executorSelection.observe.mockReset().mockResolvedValue(undefined);
   executorSelection.syncOutcome.mockReset().mockResolvedValue(undefined);
+  spentAllowance.mockReset().mockResolvedValue(null);
 });
 vi.mock("@/features/benchmarks/lib/executorSelection", () => ({
   executorSelection,
+}));
+
+const spentAllowance = vi.hoisted(() =>
+  vi.fn<
+    (
+      harnessId: string,
+      modelId?: string | null,
+    ) => Promise<{ resetAt: number | null } | null>
+  >(),
+);
+vi.mock("./waveAllowance", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./waveAllowance")>()),
+  spentAllowance,
 }));
 vi.mock("@/features/benchmarks/lib/ownedTaskExecution", () => ({
   ownedTaskExecution: {
@@ -417,6 +431,47 @@ describe("waveRunner", () => {
     await Promise.resolve();
     expect(getWaveEngineState().waves).toEqual([]);
     expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
+
+  it("offers a step no executor whose accounts have all spent their allowance", async () => {
+    selectionPlan();
+    const resetAt = Date.UTC(2026, 10, 14, 21, 30);
+    spentAllowance.mockImplementation(async (_harness, modelId) =>
+      modelId === "example-one" ? { resetAt } : null,
+    );
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("spawned"),
+    );
+    const offered = executorSelection.select.mock.calls[0][0].candidates;
+    const one = offered.find(
+      (row) => row.configuration.modelId === "example-one",
+    );
+    const two = offered.find(
+      (row) => row.configuration.modelId === "example-two",
+    );
+    // The first choice is told apart, with the time it comes back.
+    expect(one).toMatchObject({ available: false });
+    expect(one?.reason).toContain(
+      "used up its allowance until 2026-11-14T21:30",
+    );
+    expect(two).toMatchObject({ available: true, reason: null });
+    // The step runs on the one that can run now.
+    expect(spawnConductorChildSession.mock.calls[0][0]).toMatchObject({
+      executionTarget: { modelId: "example-two" },
+    });
+  });
+
+  it("starts no executor when every one is out of allowance, and says when they come back", async () => {
+    selectionPlan();
+    spentAllowance.mockResolvedValue({ resetAt: null });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(noticeTexts().join("\n")).toContain("used up its allowance"),
+    );
+    expect(noticeTexts().join("\n")).toContain("gives no reset time");
+    expect(spawnConductorChildSession).not.toHaveBeenCalled();
+    expect(getWaveEngineState().waves[0]?.steps[0]?.phase).not.toBe("spawned");
   });
 
   it("records the preference pool and reconciles dispatch notices with the returned model and settings", async () => {
