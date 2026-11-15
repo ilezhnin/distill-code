@@ -580,10 +580,12 @@ export async function dispatchPrompt(
           )?.metadata?.failureReason,
         );
       if (userMessageCommitted && !replyCarriesReason) {
-        liveStore.addMessage(
-          sessionId,
-          createSystemNotificationMessage(errorMessage, "error"),
-        );
+        const notice = createSystemNotificationMessage(errorMessage, "error");
+        notice.metadata = {
+          ...notice.metadata,
+          failedMessageId: userMessageId,
+        };
+        liveStore.addMessage(sessionId, notice);
       }
 
       // A model the harness refuses fails on the send path, so without this

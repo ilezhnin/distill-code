@@ -34,6 +34,11 @@ export async function steerPromptInSession(
   options: {
     throwOnError?: boolean;
     queueIfUnavailable?: boolean;
+    /**
+     * The caller delivers a rejected steer another way and says itself what
+     * came of that: a rejection posts no error notice in the chat.
+     */
+    rejectionHandledByCaller?: boolean;
     onDelivery?: (
       delivery: "queued" | "steer" | "steer_failed" | "steer_unconfirmed",
     ) => void;
@@ -228,10 +233,12 @@ export async function steerPromptInSession(
         liveStore.setPendingInterventionBoundary(sessionId, null);
       }
       const errorMessage = formatSteerErrorMessage(err);
-      liveStore.addMessage(
-        sessionId,
-        createSystemNotificationMessage(errorMessage, "error"),
-      );
+      if (!options.rejectionHandledByCaller) {
+        liveStore.addMessage(
+          sessionId,
+          createSystemNotificationMessage(errorMessage, "error"),
+        );
+      }
       if (options.throwOnError) {
         throw new Error(errorMessage);
       }

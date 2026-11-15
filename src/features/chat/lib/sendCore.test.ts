@@ -238,6 +238,8 @@ describe("dispatchPrompt withdrawn prompt", () => {
         text: "The provider refuses requests.",
       },
     ]);
+    // The notice names the message whose turn failed.
+    expect(messages[1].metadata?.failedMessageId).toBe(messages[0].id);
   });
 });
 

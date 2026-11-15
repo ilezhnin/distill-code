@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { createSystemNotificationMessage } from "@/shared/types/messages";
+import {
+  createSystemNotificationMessage,
+  createUserMessage,
+} from "@/shared/types/messages";
 
 const { deliverEnvelope, steerPromptInSession, conductors } = vi.hoisted(
   () => ({
@@ -44,6 +47,17 @@ function notice(
   const message = createSystemNotificationMessage(text, type);
   useChatStore.getState().addMessage(sessionId, message);
   return message.id;
+}
+
+/** The error notice a failed send leaves under the message it could not run. */
+function failedSendNotice(
+  sessionId: string,
+  failedMessageId: string,
+  text: string,
+): void {
+  const message = createSystemNotificationMessage(text, "error");
+  message.metadata = { ...message.metadata, failedMessageId };
+  useChatStore.getState().addMessage(sessionId, message);
 }
 
 function sentTexts(mock: { mock: { calls: unknown[][] } }): string[] {
@@ -148,5 +162,47 @@ describe("notices in a conductor's chat reach the conductor", () => {
 
     await vi.advanceTimersByTimeAsync(CONDUCTOR_NOTICE_RELAY_DELAY_MS * 2);
     expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not turn the failure of its own turn into another turn, and tells it with the next one", async () => {
+    conductors.add("conductor-f");
+    // The operator's message fails: the conductor is told, as a turn.
+    const sent = createUserMessage("Bring every stream back up.");
+    useChatStore.getState().addMessage("conductor-f", sent);
+    failedSendNotice("conductor-f", sent.id, "the history database is locked");
+    await vi.advanceTimersByTimeAsync(CONDUCTOR_NOTICE_RELAY_DELAY_MS + 10);
+    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+    const [relayText] = sentTexts(deliverEnvelope);
+    expect(relayText).toContain("(error) the history database is locked");
+
+    // That turn fails too. Its failure starts no turn of its own.
+    const relay = createUserMessage(relayText);
+    useChatStore.getState().addMessage("conductor-f", relay);
+    failedSendNotice("conductor-f", relay.id, "the relay turn was not saved");
+    await vi.advanceTimersByTimeAsync(CONDUCTOR_NOTICE_RELAY_DELAY_MS * 4);
+    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+    expect(steerPromptInSession).not.toHaveBeenCalled();
+
+    // The conductor's next turn gets the failure and what the failed turn
+    // carried.
+    useChatStore.getState().setChatState("conductor-f", "streaming");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+    expect(steerPromptInSession).toHaveBeenCalledTimes(1);
+    const [steered] = sentTexts(steerPromptInSession);
+    expect(steered).toContain("(error) the history database is locked");
+    expect(steered).toContain("(error) the relay turn was not saved");
+  });
+
+  it("keeps a rejected steer of its own out of the chat's notices", async () => {
+    conductors.add("conductor-g");
+    useChatStore.getState().setChatState("conductor-g", "streaming");
+    notice("conductor-g", "Step 1 (Scout) was resumed after the restart.");
+    await vi.advanceTimersByTimeAsync(CONDUCTOR_NOTICE_RELAY_DELAY_MS + 10);
+    expect(steerPromptInSession).toHaveBeenCalledTimes(1);
+    expect(steerPromptInSession.mock.calls[0]?.[4]).toMatchObject({
+      queueIfUnavailable: true,
+      rejectionHandledByCaller: true,
+    });
   });
 });

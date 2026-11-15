@@ -19,6 +19,13 @@
  *   it may change the plan, and nothing else would wake the conductor for it;
  * - an informational notice alone does not wake an idle conductor: it waits
  *   for the next time the conductor works, or rides with the next warning.
+ *
+ * A relay turn that fails does not start another. Its error is a notice like
+ * any other, but sent at once it is one more turn, which fails the same way:
+ * on 2026-11-14, with the history database locked for three minutes, the
+ * error of each relay turn became the next relay turn, a dozen in a row. The
+ * error, and the notices the failed turn carried, wait for the conductor's
+ * next turn instead, whatever starts it.
  */
 
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
@@ -29,6 +36,7 @@ import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { i18n } from "@/shared/i18n";
 import {
   createSystemNotificationMessage,
+  isTextContent,
   type Message,
   type SystemNotificationContent,
 } from "@/shared/types/messages";
@@ -45,6 +53,12 @@ const MAX_NOTICES_PER_RELAY = 20;
 /** The longest a single notice may be inside a relay message. */
 const MAX_NOTICE_LENGTH = 1_500;
 
+/** What every relay message starts with. */
+const RELAY_MARKER = "[flock-notice]";
+
+/** How many sent relay messages keep their notices, for a turn that fails. */
+const MAX_REMEMBERED_RELAYS = 50;
+
 type RelayedType = "info" | "warning" | "error";
 
 export interface RelayedNotice {
@@ -52,9 +66,16 @@ export interface RelayedNotice {
   at: number;
   type: RelayedType;
   text: string;
+  /**
+   * Waits for the conductor's next turn rather than starting one, whatever
+   * its type: what a failed relay turn leaves to be told.
+   */
+  held?: boolean;
 }
 
 const pendingBySession = new Map<string, RelayedNotice[]>();
+/** The notices of the relay messages sent lately, by the message's text. */
+const sentRelays = new Map<string, RelayedNotice[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const inFlight = new Set<string>();
 const seenNoticeIds = new BoundedSet(5_000);
@@ -68,6 +89,31 @@ let relayStartedAt = Date.now();
  */
 export function skipConductorNoticeRelay(messageId: string): void {
   skippedNoticeIds.add(messageId);
+}
+
+function rememberRelay(text: string, notices: RelayedNotice[]): void {
+  sentRelays.delete(text);
+  sentRelays.set(text, notices);
+  if (sentRelays.size > MAX_REMEMBERED_RELAYS) {
+    const oldest = sentRelays.keys().next().value;
+    if (oldest !== undefined) sentRelays.delete(oldest);
+  }
+}
+
+/**
+ * The text of the relay message whose failed turn `notice` reports, when it
+ * reports one: a send that fails names its message on the error it leaves.
+ */
+function failedRelayText(
+  notice: Message,
+  messages: readonly Message[],
+): string | null {
+  const failedMessageId = notice.metadata?.failedMessageId;
+  if (!failedMessageId) return null;
+  const failed = messages.find(({ id }) => id === failedMessageId);
+  if (failed?.role !== "user") return null;
+  const text = failed.content.find(isTextContent)?.text;
+  return text?.startsWith(RELAY_MARKER) ? text : null;
 }
 
 function relayableNotice(message: Message): RelayedNotice | null {
@@ -110,7 +156,7 @@ export function buildConductorNoticeRelay(
     return `- ${time} (${notice.type}) ${text.replace(/\n+/g, " ")}`;
   });
   return [
-    "[flock-notice]",
+    RELAY_MARKER,
     "Notices the Flock app just showed the operator in this chat. You get them too, so you have the same picture. This is not a digest: do not emit a distill-verdict for it. Act on a notice where it changes your plan — a model at or near its limit, a step the app could not start or had to stop, a wave parked for the operator — and otherwise carry on with what you were doing.",
     "",
     ...(dropped > 0
@@ -165,12 +211,16 @@ export async function flushConductorNotices(sessionId: string): Promise<void> {
   }
   pendingBySession.set(sessionId, notices);
   const running = conductorRunning(sessionId);
-  const urgent = notices.some((notice) => notice.type !== "info");
-  // Informational notices alone wait for the conductor's next turn; the
-  // watcher flushes them as soon as it sees that turn start.
+  const urgent = notices.some(
+    (notice) => notice.type !== "info" && !notice.held,
+  );
+  // Informational notices alone, and what a failed relay turn left, wait for
+  // the conductor's next turn; the watcher flushes them as soon as it sees
+  // that turn start.
   if (!running && !urgent) return;
   pendingBySession.delete(sessionId);
   const text = buildConductorNoticeRelay(notices);
+  rememberRelay(text, notices);
   inFlight.add(sessionId);
   try {
     if (running) {
@@ -182,6 +232,8 @@ export async function flushConductorNotices(sessionId: string): Promise<void> {
         flockctlCrossSessionSendOptions({ senderLabel: "Flock" }),
         {
           queueIfUnavailable: true,
+          // A rejected steer is delivered as a message of its own below.
+          rejectionHandledByCaller: true,
           onDelivery: (value) => {
             delivery = value;
           },
@@ -236,6 +288,17 @@ export function collectConductorNotices(
       if (!notice) continue;
       seenNoticeIds.add(notice.id);
       const queue = pendingBySession.get(sessionId) ?? [];
+      const relayText = failedRelayText(message, messages);
+      if (relayText !== null) {
+        // A relay turn failed: what it carried is told again, with the
+        // failure, the next time the conductor works.
+        for (const carried of sentRelays.get(relayText) ?? []) {
+          if (!queue.some(({ id }) => id === carried.id)) {
+            queue.push({ ...carried, held: true });
+          }
+        }
+        notice.held = true;
+      }
       queue.push(notice);
       pendingBySession.set(sessionId, queue);
       found = true;
@@ -272,6 +335,7 @@ export function startConductorNoticeRelay(): () => void {
 
 export function resetConductorNoticeRelayForTests(startedAt = 0): void {
   pendingBySession.clear();
+  sentRelays.clear();
   for (const timer of timers.values()) clearTimeout(timer);
   timers.clear();
   inFlight.clear();

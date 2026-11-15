@@ -304,6 +304,11 @@ export interface MessageMetadata {
    * a reload shows it again.
    */
   failureReason?: string;
+  /**
+   * On the error notice of a send that failed: the user message whose turn
+   * it was, so a reader of the notice can tell what it is about.
+   */
+  failedMessageId?: string;
 }
 
 export interface Message {
