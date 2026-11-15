@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
+import { IconChevronRight } from "@tabler/icons-react";
 
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { cn } from "@/shared/lib/cn";
@@ -90,6 +91,53 @@ function waveWaitLabelKey(phase: WavePhase): string | null {
 
 const NO_JOBS: readonly MonitorJob[] = [];
 
+/**
+ * What the operator last chose for each list above a chat's composer, kept
+ * while the app runs: opening an agent's chat from the list and coming back
+ * must not fold the list again.
+ */
+const listChoices = new Map<string, boolean>();
+
+/** Whether a list is open: what the operator chose for it, or its default. */
+function useListOpen(
+  key: string | undefined,
+  openByDefault: boolean,
+): [boolean, (open: boolean) => void] {
+  // The choice is held with the key it was made for: one indicator serves
+  // whichever chat is on screen.
+  const [choice, setChoice] = useState<{
+    key: string | undefined;
+    open: boolean;
+  }>();
+  const chosen =
+    choice && choice.key === key
+      ? choice.open
+      : key
+        ? listChoices.get(key)
+        : undefined;
+  const setOpen = useCallback(
+    (open: boolean) => {
+      if (key) listChoices.set(key, open);
+      setChoice({ key, open });
+    },
+    [key],
+  );
+  return [chosen ?? openByDefault, setOpen];
+}
+
+/** The mark on a count line that says it opens onto a list. */
+function ListChevron({ open }: { open: boolean }) {
+  return (
+    <IconChevronRight
+      aria-hidden
+      className={cn(
+        "size-3 shrink-0 transition-transform",
+        open && "rotate-90",
+      )}
+    />
+  );
+}
+
 export function BrigadeWaitIndicator({
   chatState,
   nodes,
@@ -116,8 +164,17 @@ export function BrigadeWaitIndicator({
   });
   const jobsVisible = jobs.length > 0 && !isSessionRunning(chatState);
   const { onOpenChild } = useConductorTranscript();
-  const [treeOpen, setTreeOpen] = useState(true);
-  const [jobsOpen, setJobsOpen] = useState(true);
+  // The agents start folded into their count line: a brigade of twenty drawn
+  // above the composer left no room for the conversation it works for. The
+  // line still counts them, and one click lists them.
+  const [treeOpen, setTreeOpen] = useListOpen(
+    sessionId && `${sessionId}:agents`,
+    false,
+  );
+  const [jobsOpen, setJobsOpen] = useListOpen(
+    sessionId && `${sessionId}:jobs`,
+    true,
+  );
   // A job is this chat's own unless one of its agents owns it: the jobs
   // handed in are this chat's and its agents', under whichever id each used.
   const agentName = useCallback(
@@ -175,6 +232,30 @@ export function BrigadeWaitIndicator({
   const brigadeLine = visible || Boolean(waveWaitLabel) || Boolean(liveWave);
   if (!brigadeLine && !jobsVisible) return null;
 
+  const jobList =
+    jobsVisible && jobsOpen ? (
+      <MonitorJobList
+        jobs={jobs}
+        agentName={agentName}
+        onOpenOwner={
+          onOpenChild
+            ? (ownerId) => onOpenChild(ownerId, "openInTab")
+            : undefined
+        }
+      />
+    ) : null;
+  const agentList =
+    visible && treeOpen && onOpenChild ? (
+      <AgentTreeView
+        forest={forest}
+        onOpen={(childSessionId) => onOpenChild(childSessionId, "openInTab")}
+        onStop={(childSessionId) => {
+          void stopOrchestratorSession(childSessionId, OPERATOR_STOP_REASON);
+        }}
+        renderDetail={renderDetail}
+      />
+    ) : null;
+
   return (
     <div
       aria-live="polite"
@@ -193,10 +274,13 @@ export function BrigadeWaitIndicator({
               type="button"
               data-testid="brigade-wait-toggle"
               aria-expanded={treeOpen}
-              onClick={() => setTreeOpen((open) => !open)}
-              className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
+              onClick={() => setTreeOpen(!treeOpen)}
+              className="flex min-w-0 items-center gap-1 text-left underline-offset-2 hover:text-foreground hover:underline"
             >
-              {t("conductor.waitingOnChildren", { count: workingCount })}
+              <span className="min-w-0 truncate">
+                {t("conductor.waitingOnChildren", { count: workingCount })}
+              </span>
+              {onOpenChild ? <ListChevron open={treeOpen} /> : null}
             </button>
           ) : waveWaitLabel ? (
             <span className="min-w-0 truncate">{t(waveWaitLabel)}</span>
@@ -238,35 +322,26 @@ export function BrigadeWaitIndicator({
             type="button"
             data-testid="monitor-job-toggle"
             aria-expanded={jobsOpen}
-            onClick={() => setJobsOpen((open) => !open)}
-            className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
+            onClick={() => setJobsOpen(!jobsOpen)}
+            className="flex min-w-0 items-center gap-1 text-left underline-offset-2 hover:text-foreground hover:underline"
           >
-            {t("conductor.jobs.waiting", { count: jobs.length })}
+            <span className="min-w-0 truncate">
+              {t("conductor.jobs.waiting", { count: jobs.length })}
+            </span>
+            <ListChevron open={jobsOpen} />
           </button>
         </div>
       ) : null}
-      {jobsVisible && jobsOpen ? (
-        <MonitorJobList
-          jobs={jobs}
-          agentName={agentName}
-          onOpenOwner={
-            onOpenChild
-              ? (ownerId) => onOpenChild(ownerId, "openInTab")
-              : undefined
-          }
-          className="mt-0.5"
-        />
-      ) : null}
-      {visible && treeOpen && onOpenChild ? (
-        <AgentTreeView
-          forest={forest}
-          className="mt-0.5"
-          onOpen={(childSessionId) => onOpenChild(childSessionId, "openInTab")}
-          onStop={(childSessionId) => {
-            void stopOrchestratorSession(childSessionId, OPERATOR_STOP_REASON);
-          }}
-          renderDetail={renderDetail}
-        />
+      {/* What the lines open onto takes a bounded share of the window and
+      scrolls past it, so no brigade crowds the conversation off screen. */}
+      {jobList || agentList ? (
+        <div
+          data-testid="brigade-wait-lists"
+          className="mt-0.5 max-h-[min(40vh,15rem)] overflow-y-auto overscroll-contain"
+        >
+          {jobList}
+          {agentList}
+        </div>
       ) : null}
     </div>
   );
