@@ -52,6 +52,12 @@ export interface BrigadeChipViewModel {
   /** Hover tooltip; falls back to the localized status label. */
   title?: string;
   /**
+   * What kind of agent this is, when the name says what it does instead:
+   * an in-harness subagent is named by its task, and its kind (`fork`,
+   * `Explore`, a configured agent) is drawn beside it, quieter.
+   */
+  kindLabel?: string;
+  /**
    * Zero-based wave step this child executes, rendered as a 1-based prefix.
    * Absent for chips that are not wave steps (legacy orchestrator children,
    * ephemeral harness subagents).
@@ -136,6 +142,7 @@ export function BrigadeChip({
   name,
   status,
   title,
+  kindLabel,
   stepIndex,
   accessLabel,
   modelLabel,
@@ -219,6 +226,14 @@ export function BrigadeChip({
         >
           {name}
         </span>
+        {kindLabel ? (
+          <span
+            data-testid="brigade-chip-kind"
+            className="rounded-sm bg-muted px-1 text-[11px] text-muted-foreground"
+          >
+            {kindLabel}
+          </span>
+        ) : null}
         {accessLabel ? (
           <span
             aria-hidden="true"

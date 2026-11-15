@@ -44,8 +44,18 @@ export interface HarnessBrigadeEntry {
    * the UI supplies a localized fallback.
    */
   name?: string;
-  /** Plain-language task, when the tool call carried one. Used as tooltip. */
+  /** Plain-language task, when the tool call carried one. */
   label?: string;
+  /**
+   * The agent the harness named: a configured agent, a Goose source, or
+   * only a kind such as `fork`. Six subagents of one kind share it, which
+   * is why the chip leads with the task and shows this beside it.
+   */
+  agentName?: string;
+  /** When the call that started the subagent began, for its running time. */
+  startedAt?: number;
+  /** What the subagent spent, when its result says. */
+  usage?: HarnessSubagentUsage;
   /** Stage-0 contract #4 status. */
   status: RunStatus;
   /**
@@ -53,6 +63,48 @@ export interface HarnessBrigadeEntry {
    * expands and scrolls to. Always a call from the projected content.
    */
   latestToolCallId: string;
+}
+
+/** What a finished subagent reports having spent. Any part may be absent. */
+export interface HarnessSubagentUsage {
+  tokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+}
+
+/**
+ * The usage a subagent's result ends with. Claude Code closes an agent's
+ * answer with a `<usage>` block, written as tags
+ * (`<subagent_tokens>105405</subagent_tokens>`) or as lines
+ * (`total_tokens: 105405`); both are read, and a result without one is
+ * nothing to show.
+ */
+export function subagentUsageFromResult(
+  result: string | undefined,
+): HarnessSubagentUsage | undefined {
+  if (!result) return undefined;
+  const start = result.lastIndexOf("<usage>");
+  if (start < 0) return undefined;
+  const end = result.indexOf("</usage>", start);
+  const block = result.slice(start, end < 0 ? undefined : end);
+  const read = (names: string): number | undefined => {
+    const match = new RegExp(`(?:${names})\\W{0,3}(\\d{1,12})`).exec(block);
+    return match ? Number(match[1]) : undefined;
+  };
+  const tokens = read("subagent_tokens|total_tokens");
+  const toolUses = read("tool_uses");
+  const durationMs = read("duration_ms");
+  if (
+    tokens === undefined &&
+    toolUses === undefined &&
+    durationMs === undefined
+  )
+    return undefined;
+  return {
+    ...(tokens !== undefined ? { tokens } : {}),
+    ...(toolUses !== undefined ? { toolUses } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
 }
 
 export interface HarnessBrigadeInput {
@@ -102,6 +154,8 @@ interface DraftEntry {
   agentName?: string;
   label?: string;
   taskId?: string;
+  startedAt?: number;
+  usage?: HarnessSubagentUsage;
   status: RunStatus;
   latestToolCallId: string;
 }
@@ -151,6 +205,8 @@ function upsert(
     agentName?: string;
     label?: string;
     taskId?: string;
+    startedAt?: number;
+    usage?: HarnessSubagentUsage;
   },
   status: RunStatus,
   toolCallId: string,
@@ -162,6 +218,10 @@ function upsert(
     existing.agentName ??= seed.agentName;
     existing.label ??= seed.label;
     existing.taskId ??= seed.taskId;
+    // The subagent started with its first call; what it spent is in
+    // whichever result came last.
+    existing.startedAt ??= seed.startedAt;
+    existing.usage = seed.usage ?? existing.usage;
     existing.status = status;
     existing.latestToolCallId = toolCallId;
     return;
@@ -171,6 +231,8 @@ function upsert(
     ...(seed.agentName ? { agentName: seed.agentName } : {}),
     ...(seed.label ? { label: seed.label } : {}),
     ...(seed.taskId ? { taskId: seed.taskId } : {}),
+    ...(seed.startedAt !== undefined ? { startedAt: seed.startedAt } : {}),
+    ...(seed.usage ? { usage: seed.usage } : {}),
     status,
     latestToolCallId: toolCallId,
   });
@@ -207,8 +269,13 @@ export function selectHarnessBrigade(
     });
     if (!info) continue;
 
-    const status = runStatusForCall(block, responsesById.get(block.id));
+    const response = responsesById.get(block.id);
+    const status = runStatusForCall(block, response);
     const label = firstNonEmpty(info.label, block.subagentTaskLabel);
+    const timing = {
+      ...(block.startedAt !== undefined ? { startedAt: block.startedAt } : {}),
+      usage: subagentUsageFromResult(response?.result),
+    };
 
     // Goose await/peek/cancel: the task id points back at the delegate that
     // announced it, and that delegate's request id is the entry identity.
@@ -230,6 +297,7 @@ export function selectHarnessBrigade(
           ),
           label: firstNonEmpty(label, delegateInfo?.label),
           taskId: info.taskId,
+          ...timing,
         },
         status,
         block.id,
@@ -246,6 +314,7 @@ export function selectHarnessBrigade(
         {
           agentName: firstNonEmpty(agentNames[0], block.subagentAgentName),
           label,
+          ...timing,
         },
         status,
         block.id,
@@ -260,7 +329,7 @@ export function selectHarnessBrigade(
       upsert(
         drafts,
         block.id,
-        { agentName: block.subagentAgentName, label },
+        { agentName: block.subagentAgentName, label, ...timing },
         status,
         block.id,
       );
@@ -273,7 +342,7 @@ export function selectHarnessBrigade(
         : agentNames.length > 1
           ? `${block.id}:${agentName}`
           : block.id;
-      upsert(drafts, key, { agentName, label }, status, block.id);
+      upsert(drafts, key, { agentName, label, ...timing }, status, block.id);
     }
   }
 
@@ -292,6 +361,9 @@ export function selectHarnessBrigade(
       key: draft.key,
       ...(name ? { name } : {}),
       ...(draft.label ? { label: draft.label } : {}),
+      ...(draft.agentName ? { agentName: draft.agentName } : {}),
+      ...(draft.startedAt !== undefined ? { startedAt: draft.startedAt } : {}),
+      ...(draft.usage ? { usage: draft.usage } : {}),
       status,
       latestToolCallId: draft.latestToolCallId,
     });
