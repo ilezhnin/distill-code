@@ -92,9 +92,11 @@ import {
   isTimelineNearLatest,
   isTimelinePinnedToLatest,
   shouldShowTimelineJumpToLatest,
+  shouldUserMessageResumeTimelineFollow,
   TIMELINE_AUTO_SCROLL_THRESHOLD_PX,
   type TimelineScrollIntent,
 } from "./timelineScrollIntent";
+import { operatorJustSubmitted } from "../lib/operatorSubmit";
 import { getVirtualTranscriptRowSpacingBlockSize } from "./virtualTranscriptRowSpacing";
 import {
   MAX_BLANK_VIEWPORT_RECOVERY_ATTEMPTS,
@@ -3246,6 +3248,21 @@ function VirtualMessageTimelineSession({
       return;
     }
     lastLatestUserAutoScrollKeyRef.current = latestUserKey;
+
+    // A reader scrolled back into history stays there. Agents' reports,
+    // monitor wake-ups and other chats' sends arrive as user messages,
+    // and a queued message goes out long after it was typed; each used
+    // to drag the reader to the end. Only their own message, right
+    // after they sent it, still does.
+    if (
+      userDetachedRef.current &&
+      !shouldUserMessageResumeTimelineFollow({
+        origin: latestMessage.metadata?.origin,
+        operatorJustSubmitted: operatorJustSubmitted(sessionId),
+      })
+    ) {
+      return;
+    }
 
     clearProgrammaticFollowResumeSuppression();
     setDetachedFromLatest(false);

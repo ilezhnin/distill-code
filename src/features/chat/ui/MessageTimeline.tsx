@@ -901,6 +901,11 @@ export function MessageTimeline({
     ) {
       return;
     }
+    // A reader scrolled back into history stays there; this timeline has
+    // no composer whose send could say otherwise.
+    if (userDetachedRef.current) {
+      return;
+    }
 
     clearProgrammaticFollowResumeSuppression();
     setDetachedFromLatest(false);

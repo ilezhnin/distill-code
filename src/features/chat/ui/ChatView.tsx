@@ -98,6 +98,7 @@ import {
 } from "@/features/chat/lib/chatCapabilityVisibility";
 import type { TranscriptSearchBackend } from "@/features/chat/lib/transcriptSearchBackend";
 import { liveActivity } from "@/features/chat/lib/agentWorkActivity";
+import { noteOperatorSubmit } from "@/features/chat/lib/operatorSubmit";
 import { scheduleAfterNextPaint } from "@/app/lib/scheduleAfterNextPaint";
 import type { GlobalComposerHandoffRect } from "@/shared/ui/GlobalComposerPill";
 import {
@@ -1170,6 +1171,7 @@ export function ChatView({
     workspaceSetup?.desired ?? [],
   );
 
+  const timelineSessionId = effectiveSession?.id ?? sessionId;
   const composerFooter = effectiveSession?.executionOwner ? (
     <div
       className="pointer-events-auto p-4 text-sm text-muted-foreground"
@@ -1242,15 +1244,22 @@ export function ChatView({
           fileMentionProjectDirs={controller.fileMentionProjectDirs}
           skillProviderId={controller.selectedProvider}
           composerActions={{
-            onSend: controller.handleSend,
+            // A send from this composer is what takes a reader who scrolled
+            // back into history to their own message.
+            onSend: (...args) => {
+              noteOperatorSubmit(timelineSessionId);
+              return controller.handleSend(...args);
+            },
             onLoadChat: loadChat,
-            onSteerMessage: (text, personaId, attachments, options) =>
-              controller.steerDraftMessage(
+            onSteerMessage: (text, personaId, attachments, options) => {
+              noteOperatorSubmit(timelineSessionId);
+              return controller.steerDraftMessage(
                 text,
                 personaId ?? undefined,
                 attachments,
                 options,
-              ),
+              );
+            },
             canSteerMessage: controller.canSteerMessage,
             onSteerQueuedMessage: controller.steerQueuedMessage,
             canSteerQueuedMessage: controller.canSteerQueuedMessage,
@@ -1413,7 +1422,6 @@ export function ChatView({
       </p>
     </div>
   );
-  const timelineSessionId = effectiveSession?.id ?? sessionId;
   const messageTimeline = (
     <VirtualMessageTimelineGate
       sessionId={timelineSessionId}

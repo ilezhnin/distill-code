@@ -88,6 +88,23 @@ export function shouldResumeTimelineFollowFromUserScroll({
 }
 
 /**
+ * Whether a user message that just arrived takes a reader who scrolled back
+ * into history to the end: only the operator's own message, sent from this
+ * chat's composer a moment ago. A message another session delivered (an
+ * agent's report, a monitor's wake-up) never does, and neither does a queued
+ * message going out long after it was typed.
+ */
+export function shouldUserMessageResumeTimelineFollow({
+  origin,
+  operatorJustSubmitted,
+}: {
+  origin: string | undefined;
+  operatorJustSubmitted: boolean;
+}): boolean {
+  return operatorJustSubmitted && origin !== "distillctl_cross_session";
+}
+
+/**
  * Every scroll write the virtual timeline makes is published back to its
  * geometry engine, so a scroll that lands away from the engine's last observed
  * position was made by something else: find-in-page, focus moving into an
