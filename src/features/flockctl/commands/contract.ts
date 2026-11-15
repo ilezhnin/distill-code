@@ -28,7 +28,7 @@ import type { AppCommand, ToolGroup } from "./types";
  *  Mirror of `PROTOCOL_VERSION` in both discovery.rs copies (a flockctl
  *  crate test pins the CLI copy, and a plugin crate test pins the broker
  *  copy); bump all copies together. */
-const WIRE_PROTOCOL_VERSION = 6;
+const WIRE_PROTOCOL_VERSION = 7;
 
 type FieldSpec = {
   /** snake_case wire field name. */
@@ -91,7 +91,8 @@ const API_COMMENT =
   "GENERATED FILE — do not hand-edit; run `pnpm generate:flockctl-contract`. " +
   "Client-neutral wire surface of the Flock desktop app's control API: " +
   'POST /v1/call {"command": "<group>", "args": {"action": "<action>", ' +
-  "...fields}} against the loopback endpoint in the flockctl discovery file. " +
+  "...fields}} against the loopback endpoint in the flockctl discovery file, " +
+  "with that file's token in the x-flock-token header. " +
   "protocolVersion mirrors PROTOCOL_VERSION in both discovery.rs copies " +
   "(flockctl and plugin crate tests pin them equal). Per action: " +
   "description, fields " +

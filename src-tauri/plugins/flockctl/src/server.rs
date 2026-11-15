@@ -118,6 +118,9 @@ pub struct ServerContext<D> {
     // against their own instance, never the next server's.
     inflight: Arc<Semaphore>,
     generation: u64,
+    // What a call must carry: written to the discovery file, which only
+    // the operator's own processes can read. Never logged, never echoed.
+    token: String,
     // Set by `start_server` once the listener is bound, before any request.
     port: OnceLock<u16>,
 }
@@ -128,12 +131,14 @@ impl<D: CommandDispatcher> ServerContext<D> {
         timeouts: Arc<TimeoutStore>,
         inflight: Arc<Semaphore>,
         generation: u64,
+        token: String,
     ) -> Self {
         Self {
             dispatcher,
             timeouts,
             inflight,
             generation,
+            token,
             port: OnceLock::new(),
         }
     }
@@ -206,6 +211,42 @@ fn forbidden_header_response<D>(ctx: &ServerContext<D>, headers: &HeaderMap) -> 
     })
 }
 
+/// The header a call carries the discovery file's token in.
+pub const TOKEN_HEADER: &str = "x-flock-token";
+
+/// Refuse a call that does not carry this broker's token. Loopback is
+/// reachable by every account on the machine, and a call starts sessions
+/// that run commands as the operator; the token is in a file only the
+/// operator's own processes read. An empty token never matches: a broker
+/// without one answers nobody.
+fn missing_token_response<D>(ctx: &ServerContext<D>, headers: &HeaderMap) -> Option<Response> {
+    let given = headers
+        .get(TOKEN_HEADER)
+        .map(|value| value.as_bytes())
+        .unwrap_or_default();
+    if !ctx.token.is_empty() && same_bytes(ctx.token.as_bytes(), given) {
+        return None;
+    }
+    log::warn!("[flockctl] rejected a call without this app's control token");
+    Some(error_response(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "the call does not carry this app's control token; flockctl reads it from \
+         the discovery file the app names in FLOCKCTL_LOCK",
+    ))
+}
+
+/// Compares without stopping at the first difference, so the time a
+/// refusal takes says nothing about how much of a guess was right.
+fn same_bytes(expected: &[u8], given: &[u8]) -> bool {
+    expected.len() == given.len()
+        && expected
+            .iter()
+            .zip(given)
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
+}
+
 async fn handle_ping<D: CommandDispatcher>(
     State(ctx): State<Arc<ServerContext<D>>>,
     headers: HeaderMap,
@@ -251,6 +292,9 @@ async fn handle_call<D: CommandDispatcher>(
     body: Bytes,
 ) -> Response {
     if let Some(rejection) = forbidden_header_response(&ctx, &headers) {
+        return rejection;
+    }
+    if let Some(rejection) = missing_token_response(&ctx, &headers) {
         return rejection;
     }
 
@@ -371,6 +415,7 @@ mod tests {
     use tokio::sync::{mpsc, Notify};
 
     const TEST_GENERATION: u64 = 3;
+    const TEST_TOKEN: &str = "invented-control-token";
 
     #[derive(Clone)]
     enum StubBehavior {
@@ -465,6 +510,7 @@ mod tests {
             timeouts,
             Arc::new(Semaphore::new(limits.permits)),
             TEST_GENERATION,
+            TEST_TOKEN.to_string(),
         ));
         let handle = start_server(ctx).await.unwrap();
         TestServer {
@@ -476,6 +522,7 @@ mod tests {
     async fn post_call(base: &str, body: &Value) -> reqwest::Response {
         reqwest::Client::new()
             .post(format!("{base}/v1/call"))
+            .header(TOKEN_HEADER, TEST_TOKEN)
             .json(body)
             .send()
             .await
@@ -524,6 +571,65 @@ mod tests {
         assert_eq!(call.status(), 403);
         let body: Value = call.json().await.unwrap();
         assert_eq!(body["error"]["code"], "forbidden");
+    }
+
+    /// A call is the operator's only with the token from the discovery
+    /// file: without it, or with another, nothing reaches the app, and the
+    /// refusal does not say what the token is. A ping needs none.
+    #[tokio::test]
+    async fn a_call_without_the_token_reaches_nothing() {
+        let server = spawn_server(StubBehavior::Echo, Limits::default()).await;
+        let client = reqwest::Client::new();
+        let body = call_body("sessions", json!({ "action": "list" }));
+        for token in [
+            None,
+            Some(""),
+            Some("another-token"),
+            Some("invented-control-toke"),
+        ] {
+            let mut request = client.post(format!("{}/v1/call", server.base));
+            if let Some(token) = token {
+                request = request.header(TOKEN_HEADER, token);
+            }
+            let response = request.json(&body).send().await.unwrap();
+            assert_eq!(response.status(), 401, "{token:?}");
+            let text = response.text().await.unwrap();
+            assert!(text.contains("\"unauthorized\""), "{text}");
+            assert!(!text.contains(TEST_TOKEN), "{text}");
+        }
+        let ping = reqwest::get(format!("{}/v1/ping", server.base))
+            .await
+            .unwrap();
+        assert_eq!(ping.status(), 200);
+        assert!(!ping.text().await.unwrap().contains(TEST_TOKEN));
+
+        let response = post_call(&server.base, &body).await;
+        assert_eq!(response.status(), 200);
+    }
+
+    /// A broker that was given no token answers nobody, rather than
+    /// everybody who sends none.
+    #[tokio::test]
+    async fn a_broker_without_a_token_answers_no_call() {
+        let timeouts = Arc::new(TimeoutStore::new());
+        let ctx = Arc::new(ServerContext::new(
+            StubDispatcher(StubBehavior::Echo),
+            timeouts,
+            Arc::new(Semaphore::new(IN_FLIGHT_LIMIT)),
+            TEST_GENERATION,
+            String::new(),
+        ));
+        let handle = start_server(ctx).await.unwrap();
+        let base = format!("http://127.0.0.1:{}", handle.port);
+        let body = call_body("sessions", json!({ "action": "list" }));
+        let client = reqwest::Client::new();
+        for token in [None, Some("")] {
+            let mut request = client.post(format!("{base}/v1/call"));
+            if let Some(token) = token {
+                request = request.header(TOKEN_HEADER, token);
+            }
+            assert_eq!(request.json(&body).send().await.unwrap().status(), 401);
+        }
     }
 
     #[tokio::test]
@@ -688,6 +794,7 @@ mod tests {
         // Not JSON at all.
         let response = client
             .post(format!("{}/v1/call", server.base))
+            .header(TOKEN_HEADER, TEST_TOKEN)
             .header("Content-Type", "application/json")
             .body("{not json")
             .send()

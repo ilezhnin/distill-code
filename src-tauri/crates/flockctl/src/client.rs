@@ -62,7 +62,12 @@ pub struct PingResponse {
 
 pub struct Endpoint {
     pub port: u16,
+    /// The discovery file's token, sent with every call.
+    pub token: String,
 }
+
+/// The header the broker reads the token from.
+const TOKEN_HEADER: &str = "x-flock-token";
 
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
@@ -125,7 +130,10 @@ pub fn handshake(lock_path: &Path) -> Result<Endpoint, Failure> {
             return Err(Failure::env(APP_UPDATED));
         }
         if ping.generation == file.generation {
-            return Ok(Endpoint { port: file.port });
+            return Ok(Endpoint {
+                port: file.port,
+                token: file.token,
+            });
         }
         if attempt == 0 {
             file = discovery::load(lock_path).map_err(|err| {
@@ -171,6 +179,7 @@ pub fn call(
     }
     let mut response = agent(CALL_TIMEOUT)
         .post(&url)
+        .header(TOKEN_HEADER, &endpoint.token)
         .send_json(Value::Object(payload))
         .map_err(|err| transport_error_failure(endpoint.port, &err))?;
     let status = response.status().as_u16();
@@ -263,6 +272,79 @@ fn error_parts(value: &Value) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The broker answers no call without the discovery file's token, so a
+    /// call must carry it: this listener plays the broker and keeps what it
+    /// was sent.
+    #[test]
+    fn a_call_carries_the_discovery_files_token() {
+        use std::io::{Read, Write};
+
+        const HEAD_END: &str = "\r\n\r\n";
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // A request that never completes must fail the test, not hang it.
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            // The headers, then the body their Content-Length names.
+            loop {
+                let Ok(read) = stream.read(&mut chunk) else {
+                    break;
+                };
+                request.extend_from_slice(&chunk[..read]);
+                let text = String::from_utf8_lossy(&request).to_string();
+                let complete = text.find(HEAD_END).is_some_and(|head_end| {
+                    let length = text[..head_end]
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    request.len() >= head_end + HEAD_END.len() + length
+                });
+                if complete || read == 0 {
+                    break;
+                }
+            }
+            let body = r#"{"ok":true,"result":{"listed":0}}"#;
+            let head = [
+                "HTTP/1.1 200 OK".to_string(),
+                "Content-Type: application/json".to_string(),
+                format!("Content-Length: {}", body.len()),
+                "Connection: close".to_string(),
+            ]
+            .join("\r\n");
+            write!(stream, "{head}{HEAD_END}{body}").expect("write");
+            String::from_utf8_lossy(&request).to_string()
+        });
+
+        let endpoint = Endpoint {
+            port,
+            token: "invented-control-token".to_string(),
+        };
+        let mut args = Map::new();
+        args.insert("action".into(), Value::String("list".into()));
+        let result = call(&endpoint, "sessions", args, None, None, true).expect("call succeeds");
+        assert_eq!(result["listed"], 0);
+
+        let request = server.join().expect("server thread");
+        let token_line = request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("x-flock-token:"))
+            .unwrap_or_else(|| panic!("no token header in: {request}"));
+        assert_eq!(
+            token_line.split_once(':').map(|(_, value)| value.trim()),
+            Some("invented-control-token")
+        );
+        // The agent-shell mark rides the same envelope.
+        let compact: String = request.split_whitespace().collect();
+        assert!(compact.contains(r#""agent":true"#), "{request}");
+    }
 
     #[test]
     fn ok_true_yields_the_result_verbatim() {

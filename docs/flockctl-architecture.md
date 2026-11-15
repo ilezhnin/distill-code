@@ -87,9 +87,17 @@ belongs in error messages, not generic help text.
 
 ## Safety model
 
-v1 has no auth tokens and no confirmation dialogs. That remains acceptable only
-while mutations are visible in the UI and either reversible or direct
-user-requested product actions, such as creating a session or sending a prompt.
+The broker listens on loopback, which every account on the machine can reach.
+A call must therefore carry the token the broker wrote into its discovery file
+(`x-flock-token`): a new one on every start, in a file under the operator's
+Flock root. It tells the operator's own processes from another account's; it
+does not tell them from each other. A Flock root moved outside the user
+profile is only as private as the folder it was moved to.
+
+Within the operator's own processes v1 has no confirmation dialogs. That
+remains acceptable only while mutations are visible in the UI and either
+reversible or direct user-requested product actions, such as creating a
+session or sending a prompt.
 
 Required command properties:
 
@@ -295,8 +303,8 @@ to agents for one release, as input only:
 ## Versioning
 
 The broker writes a discovery file (`<Flock root>/flockctl/control-<pid>.json`)
-with `protocolVersion`, generation, and port. The CLI verifies it via
-`/v1/ping` before calls. The file lives under the root rather than the OS app
+with `protocolVersion`, generation, port and the call token. The CLI verifies
+it via `/v1/ping` before calls, and sends the token with each call. The file lives under the root rather than the OS app
 data folder because on Windows that folder is not one folder for every
 process; [Flock data storage](flock-root-layout.md) explains the redirection.
 

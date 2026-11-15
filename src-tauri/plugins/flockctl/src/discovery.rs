@@ -1,5 +1,10 @@
 //! Per-instance discovery ("lock") file the flockctl CLI reads to find the
-//! running broker: `{port, pid, generation, protocolVersion}`.
+//! running broker: `{port, pid, generation, protocolVersion, token}`.
+//!
+//! The token is what a call must carry. The listener is on loopback, and
+//! loopback is open to every account on the machine; the file is not. A
+//! caller that can read it is the operator's own process, which is the
+//! boundary the broker was already documented to have.
 //!
 //! The file lives under a base folder the host app names at `init` (the Flock
 //! root: the one folder that is the same for every process on the machine,
@@ -18,7 +23,7 @@ use std::path::{Path, PathBuf};
 /// (src-tauri/crates/flockctl); the CLI does not depend on this crate —
 /// bump both together.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Directory under the host's base folder (the Flock root) holding the
 /// per-instance discovery files.
@@ -58,6 +63,7 @@ pub(crate) fn write_discovery_file(
     port: u16,
     pid: u32,
     generation: u64,
+    token: &str,
 ) -> std::io::Result<()> {
     use std::io::Write;
 
@@ -78,6 +84,7 @@ pub(crate) fn write_discovery_file(
         "pid": pid,
         "generation": generation,
         "protocolVersion": PROTOCOL_VERSION,
+        "token": token,
     });
 
     let mut tmp_name = path
@@ -161,13 +168,14 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
         let path = discovery_file_path(&base, 4242);
 
-        write_discovery_file(&path, 8080, 4242, 7).unwrap();
+        write_discovery_file(&path, 8080, 4242, 7, "first").unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(parsed["port"], 8080);
         assert_eq!(parsed["pid"], 4242);
         assert_eq!(parsed["generation"], 7);
         assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(parsed["token"], "first");
         // The temp file is renamed away, never left behind.
         assert!(!path.with_file_name("control-4242.json.tmp").exists());
 
@@ -184,11 +192,12 @@ mod tests {
         }
 
         // Restart case: a rewrite replaces the content atomically.
-        write_discovery_file(&path, 9090, 4242, 8).unwrap();
+        write_discovery_file(&path, 9090, 4242, 8, "second").unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(parsed["port"], 9090);
         assert_eq!(parsed["generation"], 8);
+        assert_eq!(parsed["token"], "second");
 
         remove_discovery_file(&path);
         assert!(!path.exists());

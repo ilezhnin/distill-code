@@ -169,6 +169,13 @@ mod plugin {
         let pid = std::process::id();
         let path = discovery::discovery_file_path(&base_dir, pid);
         let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        // A new token for every start: 244 random bits from the OS, known
+        // to whoever can read the discovery file and to nobody else.
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
         // Each server gets its own semaphore: graceful shutdown lets the
         // previous server's in-flight handlers outlive `stop`, and their
         // permits must release slots on that dead instance, not free up (and
@@ -181,6 +188,7 @@ mod plugin {
             state.timeouts.clone(),
             Arc::new(tokio::sync::Semaphore::new(IN_FLIGHT_LIMIT)),
             generation,
+            token.clone(),
         ));
         let handle = server::start_server(ctx)
             .await
@@ -188,7 +196,7 @@ mod plugin {
         let port = handle.port;
 
         // A failed write means a failed start, for the same reason.
-        if let Err(err) = discovery::write_discovery_file(&path, port, pid, generation) {
+        if let Err(err) = discovery::write_discovery_file(&path, port, pid, generation, &token) {
             handle.shutdown();
             return Err(format!(
                 "failed to write flockctl discovery file {}: {err}",

@@ -11,7 +11,7 @@ use crate::client::Failure;
 /// `PROTOCOL_VERSION` in the `tauri-plugin-flockctl` crate
 /// (src-tauri/plugins/flockctl) — the CLI does not depend on the plugin
 /// crate; bump both copies together.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Exact wording pinned by the implementation spec: the missing env var is the
 /// provenance signal that we are not running under the app.
@@ -41,6 +41,12 @@ pub struct DiscoveryFile {
     pub pid: u32,
     pub generation: u64,
     pub protocol_version: u32,
+    /// What every call must carry. The broker listens on loopback, which
+    /// every account on the machine can reach; this file it cannot. Absent
+    /// in a file an older app wrote, whose protocol version is refused
+    /// before the token is ever needed.
+    #[serde(default)]
+    pub token: String,
 }
 
 /// The lock path comes from `--lock-path` or `FLOCKCTL_LOCK` (clap merges
@@ -92,7 +98,8 @@ pub fn load_with_retry(path: &Path) -> Result<DiscoveryFile, Failure> {
 mod tests {
     use super::*;
 
-    const VALID: &str = r#"{"port":52341,"pid":4242,"generation":3,"protocolVersion":1}"#;
+    const VALID: &str =
+        r#"{"port":52341,"pid":4242,"generation":3,"protocolVersion":1,"token":"invented"}"#;
 
     #[test]
     fn parses_a_valid_discovery_file() {
@@ -104,13 +111,19 @@ mod tests {
                 pid: 4242,
                 generation: 3,
                 protocol_version: 1,
+                token: "invented".to_string(),
             }
         );
+        // A file from an app that wrote no token still parses: its protocol
+        // version is what refuses it, with words the operator can act on.
+        let old = parse(r#"{"port":1,"pid":2,"generation":3,"protocolVersion":6}"#)
+            .expect("a file without a token parses");
+        assert_eq!(old.token, "");
     }
 
     #[test]
     fn tolerates_unknown_fields_for_forward_compat() {
-        let file = parse(r#"{"port":1,"pid":2,"generation":3,"protocolVersion":1,"token":"x"}"#)
+        let file = parse(r#"{"port":1,"pid":2,"generation":3,"protocolVersion":1,"later":"x"}"#)
             .expect("unknown fields are ignored");
         assert_eq!(file.port, 1);
     }
