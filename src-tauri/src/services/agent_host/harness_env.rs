@@ -87,6 +87,14 @@ const FLOCK_MONITOR_BIN_ENV: &[&str] = &["FLOCK_MONITOR_BIN", "DISTILL_MONITOR_B
 /// release: a CLI from the previous build reads the old one.
 #[cfg(feature = "flockctl")]
 const FLOCKCTL_LOCK_ENV: &[&str] = &["FLOCKCTL_LOCK", "DISTILLCTL_LOCK"];
+/// Set in every harness the app starts, so a `flockctl` call from an
+/// agent's shell says it comes from an agent, and one from the operator's
+/// own terminal — which never gets the variable — does not. It cannot say
+/// WHICH session calls: one harness process serves every session of that
+/// harness. The name avoids the words a harness strips from the
+/// environment it hands its shells (KEY, SECRET, TOKEN).
+#[cfg(feature = "flockctl")]
+const FLOCK_AGENT_SHELL_ENV: &str = "FLOCK_AGENT_SHELL";
 
 #[cfg(feature = "flockctl")]
 fn install_flockctl_shims(
@@ -154,6 +162,7 @@ fn cli_env_exports(lock_path: &str, flockctl_bin: Option<&Path>) -> Vec<(String,
         ),
         None => log::warn!("Skipping FLOCKCTL_BIN: could not resolve the flockctl binary path"),
     }
+    exports.push((FLOCK_AGENT_SHELL_ENV.to_string(), "1".to_string()));
     exports
 }
 
@@ -523,6 +532,7 @@ mod tests {
                     "DISTILLCTL_BIN".to_string(),
                     "C:/app/flockctl.exe".to_string()
                 ),
+                ("FLOCK_AGENT_SHELL".to_string(), "1".to_string()),
             ]
         );
         let keys: std::collections::BTreeSet<_> =
@@ -539,6 +549,7 @@ mod tests {
             vec![
                 ("FLOCKCTL_LOCK".to_string(), "lock".to_string()),
                 ("DISTILLCTL_LOCK".to_string(), "lock".to_string()),
+                ("FLOCK_AGENT_SHELL".to_string(), "1".to_string()),
             ]
         );
     }

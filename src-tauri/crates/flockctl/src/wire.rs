@@ -19,6 +19,9 @@ pub struct Globals {
     /// The calling agent session's identity, from AGENT_SESSION_ID. Empty
     /// values are dropped here so the wire never carries an empty actor.
     pub actor: Option<String>,
+    /// Whether the call is made from an agent session's shell, from
+    /// FLOCK_AGENT_SHELL. Empty and "0" read as unset.
+    pub agent_shell: bool,
 }
 
 pub fn globals(matches: &ArgMatches) -> Globals {
@@ -31,6 +34,10 @@ pub fn globals(matches: &ArgMatches) -> Globals {
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
             .map(str::to_owned),
+        agent_shell: matches
+            .get_one::<String>("agent_shell")
+            .map(|value| value.trim())
+            .is_some_and(|value| !value.is_empty() && value != "0"),
     }
 }
 

@@ -235,6 +235,10 @@ struct CallBody {
     /// command knowledge.
     #[serde(default)]
     actor: Option<String>,
+    /// Whether the CLI ran in an agent session's shell. Transport-opaque
+    /// like `actor`: what an agent's call may do is the renderer's policy.
+    #[serde(default)]
+    agent: bool,
 }
 
 fn empty_object() -> Value {
@@ -292,6 +296,7 @@ async fn handle_call<D: CommandDispatcher>(
         // the broker waits on, so a request override cannot skew them apart.
         timeout_ms: timeout.as_millis() as u64,
         actor: call.actor,
+        agent: call.agent,
     };
     let outcome = ctx.dispatcher.dispatch(request, timeout).await;
 
@@ -402,6 +407,7 @@ mod tests {
                             "timeoutMs": timeout.as_millis() as u64,
                             "requestTimeoutMs": req.timeout_ms,
                             "actor": req.actor,
+                            "agent": req.agent,
                         })),
                         error: None,
                     }),
@@ -597,6 +603,27 @@ mod tests {
         )
         .await;
         let body: Value = response.json().await.unwrap();
+        assert_eq!(body["result"]["actor"], Value::Null);
+        assert_eq!(body["result"]["agent"], false);
+    }
+
+    /// The agent-shell mark is forwarded as sent, and a call that carries
+    /// none is not an agent's.
+    #[tokio::test]
+    async fn agent_mark_passes_through_untouched() {
+        let server = spawn_server(StubBehavior::Echo, Limits::default()).await;
+        let response = post_call(
+            &server.base,
+            &json!({
+                "command": "sessions",
+                "args": { "action": "list" },
+                "agent": true,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["result"]["agent"], true);
         assert_eq!(body["result"]["actor"], Value::Null);
     }
 

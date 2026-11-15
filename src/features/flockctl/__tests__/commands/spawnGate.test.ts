@@ -13,12 +13,22 @@ import type { Persona } from "@/shared/types/agents";
 
 import { createUserMessage } from "@/shared/types/messages";
 
+import {
+  __resetAllPersonaHandoffs,
+  claimPersonaHandoff,
+} from "@/shared/api/acpPersonaHandoff";
+
 import { CommandError } from "../../commands/types";
 import {
   enforceFlockctlSpawnAcl,
   registerFlockctlChildNode,
+  resolveFlockctlSpawnCaller,
   resolveFlockctlSpawnParent,
 } from "../../commands/runtime/spawnGate";
+import {
+  __resetSessionTokenKeyForTests,
+  sessionTokenFor,
+} from "../../sessionToken";
 
 const ACTOR_ID = "20260830_7";
 
@@ -243,6 +253,140 @@ describe("resolveFlockctlSpawnParent", () => {
     expect(() =>
       resolveFlockctlSpawnParent({ actor: "a", parentSessionId: "b" }),
     ).toThrow(CommandError);
+  });
+});
+
+describe("resolveFlockctlSpawnCaller", () => {
+  const refusal = async (
+    args: Parameters<typeof resolveFlockctlSpawnCaller>[0],
+  ): Promise<CommandError> => {
+    try {
+      await resolveFlockctlSpawnCaller(args);
+    } catch (error) {
+      expect(error).toBeInstanceOf(CommandError);
+      return error as CommandError;
+    }
+    throw new Error("the call was not refused");
+  };
+
+  beforeEach(() => {
+    __resetSessionTokenKeyForTests();
+    __resetAllPersonaHandoffs();
+  });
+
+  it("reads the operator's own terminal as before: no proof asked", async () => {
+    expect(
+      await resolveFlockctlSpawnCaller({
+        actor: undefined,
+        fromAgent: false,
+        parentSessionId: undefined,
+        sessionToken: undefined,
+      }),
+    ).toEqual({ actor: undefined, parentSessionId: undefined });
+    expect(
+      await resolveFlockctlSpawnCaller({
+        actor: undefined,
+        fromAgent: undefined,
+        parentSessionId: "conductor-1",
+        sessionToken: undefined,
+      }),
+    ).toEqual({ actor: "conductor-1", parentSessionId: "conductor-1" });
+  });
+
+  it("refuses an agent's call that names nobody: it is not the operator", async () => {
+    const error = await refusal({
+      actor: undefined,
+      fromAgent: true,
+      parentSessionId: undefined,
+      sessionToken: undefined,
+    });
+    expect(error.code).toBe("spawn_not_allowed");
+    expect(error.message).toContain("--session-token");
+  });
+
+  it("refuses an agent's call that names a session without proving it", async () => {
+    // The worker that may start nobody named its conductor.
+    const error = await refusal({
+      actor: undefined,
+      fromAgent: true,
+      parentSessionId: "conductor-1",
+      sessionToken: undefined,
+    });
+    expect(error.code).toBe("spawn_not_allowed");
+    expect(error.message).toContain('"conductor-1"');
+    expect(error.message).toContain("--session-token");
+  });
+
+  it("sends the named chat its context again, in case it is the caller that lost it", async () => {
+    expect(
+      claimPersonaHandoff("conductor-1", "claude-acp", "persona", "app"),
+    ).not.toBeNull();
+    expect(
+      claimPersonaHandoff("conductor-1", "claude-acp", "persona", "app"),
+    ).toBeNull();
+    await refusal({
+      actor: undefined,
+      fromAgent: true,
+      parentSessionId: "conductor-1",
+      sessionToken: undefined,
+    });
+    expect(
+      claimPersonaHandoff("conductor-1", "claude-acp", "persona", "app"),
+    ).not.toBeNull();
+  });
+
+  it("takes the session a token proves as the caller", async () => {
+    const token = await sessionTokenFor("conductor-1");
+    // Started under itself: its child.
+    expect(
+      await resolveFlockctlSpawnCaller({
+        actor: undefined,
+        fromAgent: true,
+        parentSessionId: "conductor-1",
+        sessionToken: token,
+      }),
+    ).toEqual({ actor: "conductor-1", parentSessionId: "conductor-1" });
+    // No parent named: an independent chat, still checked as its caller.
+    expect(
+      await resolveFlockctlSpawnCaller({
+        actor: undefined,
+        fromAgent: true,
+        parentSessionId: undefined,
+        sessionToken: token,
+      }),
+    ).toEqual({ actor: "conductor-1", parentSessionId: undefined });
+  });
+
+  it("refuses a token that is not this app's, and one used for another session", async () => {
+    const forged = await refusal({
+      actor: undefined,
+      fromAgent: true,
+      parentSessionId: "conductor-1",
+      // Shaped like a token, with a digest nobody signed.
+      sessionToken: `conductor-1.${"0".repeat(16)}`,
+    });
+    expect(forged.code).toBe("spawn_not_allowed");
+
+    // A real token, its owner naming another session as the parent.
+    const borrowed = await refusal({
+      actor: undefined,
+      fromAgent: true,
+      parentSessionId: "conductor-1",
+      sessionToken: await sessionTokenFor(ACTOR_ID),
+    });
+    expect(borrowed.code).toBe("invalid_args");
+    expect(borrowed.message).toContain("only start sessions under itself");
+  });
+
+  it("keeps a harness's own exported identity working without a token", async () => {
+    expect(
+      await resolveFlockctlSpawnCaller({
+        actor: ACTOR_ID,
+        fromAgent: true,
+        parentSessionId: undefined,
+        sessionToken: undefined,
+      }),
+    ).toEqual({ actor: ACTOR_ID, parentSessionId: ACTOR_ID });
   });
 });
 

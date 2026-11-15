@@ -145,14 +145,16 @@ pub fn handshake(lock_path: &Path) -> Result<Endpoint, Failure> {
 }
 
 /// POST one command. `args` already contains the `action` discriminator.
-/// `actor` rides the envelope, not `args`: it is transport identity, not a
-/// command flag, so it stays out of the generated contract and out of argv.
+/// `actor` and `agent_shell` ride the envelope, not `args`: they are
+/// transport identity, not command flags, so they stay out of the generated
+/// contract and out of argv.
 pub fn call(
     endpoint: &Endpoint,
     command: &str,
     args: Map<String, Value>,
     timeout_ms: Option<u64>,
     actor: Option<&str>,
+    agent_shell: bool,
 ) -> Result<Value, Failure> {
     let url = format!("http://127.0.0.1:{}/v1/call", endpoint.port);
     let mut payload = Map::new();
@@ -163,6 +165,9 @@ pub fn call(
     }
     if let Some(actor) = actor {
         payload.insert("actor".into(), Value::String(actor.into()));
+    }
+    if agent_shell {
+        payload.insert("agent".into(), Value::Bool(true));
     }
     let mut response = agent(CALL_TIMEOUT)
         .post(&url)

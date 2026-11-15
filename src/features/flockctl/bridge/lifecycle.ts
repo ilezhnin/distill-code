@@ -162,6 +162,7 @@ export async function handleFlockctlRequest(
     const ctx = {
       deadlineMs: Date.now() + request.timeoutMs,
       ...(request.actor ? { actor: request.actor } : {}),
+      ...(request.agent ? { fromAgent: true } : {}),
     };
     const data = await dispatchCommand(request.command, request.args, ctx);
     result = { id: request.id, ok: true, data };

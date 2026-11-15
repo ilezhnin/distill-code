@@ -83,6 +83,18 @@ const createSessionSchema = z
           "to your chat when its turn ends. Omit it only for an independent " +
           "chat the user asked for.",
       ),
+    session_token: z
+      .string()
+      .trim()
+      .min(1)
+      .max(FLOCKCTL_BOUNDS.id + 32)
+      .optional()
+      .describe(
+        "Your session's token (the Flock preamble states it beside your " +
+          "session id): the proof that the call is yours. Required when the " +
+          "command runs in an agent session's shell; the operator's own " +
+          "terminal needs none.",
+      ),
     from: z
       .string()
       .trim()
@@ -100,13 +112,12 @@ const createSessionSchema = z
 // never create a session the caller has already been told timed out.
 const CREATE_DEADLINE_MARGIN_MS = 3_000;
 
-// Spawn ACL (P42): the wire carries an optional `actor` — the calling
-// session's AGENT_SESSION_ID, read from the shell env when the harness sets
-// it — and this command enforces the same ACL as the in-app chokepoint
-// against it (runtime/spawnGate.ts). The built-in host exports no actor, so
-// a session names itself with `--parent-session-id` instead; that parent is
-// checked as the actor and the new session is registered as its child.
-// Calls that name no session are the operator and stay allowed.
+// Spawn ACL (P42): this command enforces the same ACL as the in-app
+// chokepoint against the calling session (runtime/spawnGate.ts). A call
+// from an agent's shell proves its session with `--session-token`; the
+// session it names with `--parent-session-id` is where the new one is
+// registered as a child. A call from the operator's own terminal needs no
+// token, and one that names no session there is the operator.
 
 interface CreateSessionResult {
   session_id: string;
@@ -142,6 +153,7 @@ export const createSessionCommand = defineCommand({
   helpFooter: `Examples:
   flockctl session create --prompt "Triage the failing nightly build" \\
     --harness-id claude-acp --parent-session-id <your-session-id> \\
+    --session-token <your-session-token> \\
     --from "the release orchestrator" --json
   flockctl session create --prompt "Plan the migration" \\
     --harness-id codex-acp --model-id gpt-5.6-sol --effort xhigh --fast-mode
@@ -186,7 +198,7 @@ Result:
       {
         enforceFlockctlSpawnAcl,
         registerFlockctlChildNode,
-        resolveFlockctlSpawnParent,
+        resolveFlockctlSpawnCaller,
       },
       { loadSessionForFlockctl },
       { acceptFirstSend },
@@ -225,10 +237,13 @@ Result:
       import("../runtime/providers"),
     ]);
     const harnessId = args.harness_id ?? DEFAULT_HARNESS_ID;
-    const parentSessionId = resolveFlockctlSpawnParent({
+    const caller = await resolveFlockctlSpawnCaller({
       actor: ctx.actor,
+      fromAgent: ctx.fromAgent,
       parentSessionId: args.parent_session_id,
+      sessionToken: args.session_token,
     });
+    const parentSessionId = caller.parentSessionId;
     // A child hangs under its parent's row, so a parent that is gone or put
     // away would make it invisible: both are refused before anything exists.
     const parentPromise = parentSessionId
@@ -268,7 +283,7 @@ Result:
     // allowlist needs to know WHO is being started) and before anything is
     // created, so a refusal still costs nothing to roll back.
     enforceFlockctlSpawnAcl({
-      actor: parentSessionId,
+      actor: caller.actor,
       verb: "create",
       targetLayer: "worker",
       targetPersona: persona,

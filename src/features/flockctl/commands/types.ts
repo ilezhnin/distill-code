@@ -8,6 +8,10 @@ export interface CommandContext {
   /** Calling agent session's identity (AGENT_SESSION_ID), when the call came
    *  from inside an agent session's shell. Absent means the operator. */
   actor?: string;
+  /** True when the call was made from an agent session's shell. It says
+   *  an agent is calling, not which one: a command that must know asks
+   *  the caller for its session token. */
+  fromAgent?: boolean;
 }
 
 export type CommandEffect = "read" | "create" | "update" | "archive";

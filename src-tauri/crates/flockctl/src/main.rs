@@ -62,6 +62,7 @@ fn run(command: &str, args: Map<String, Value>, globals: &wire::Globals) -> Resu
         args,
         globals.timeout_ms,
         globals.actor.as_deref(),
+        globals.agent_shell,
     )?;
     let rendered = if globals.json {
         serde_json::to_string(&result)
@@ -155,6 +156,25 @@ mod tests {
         assert!(
             !body.contains_key("actor"),
             "actor must ride the envelope, not the command args"
+        );
+    }
+
+    /// The agent-shell mark is transport identity too: off unless the
+    /// variable says so, never a command argument, and an empty or "0"
+    /// value is the operator's terminal rather than an agent's shell.
+    #[test]
+    fn agent_shell_global_parses_and_stays_out_of_wire_args() {
+        let plain = try_parse(&["flockctl", "session", "list"]).expect("parses");
+        assert!(!wire::globals(&plain).agent_shell);
+        for (value, expected) in [("1", true), ("true", true), ("0", false), ("", false)] {
+            let matches = try_parse(&["flockctl", "session", "list", "--agent-shell", value])
+                .expect("agent-shell global parses");
+            assert_eq!(wire::globals(&matches).agent_shell, expected, "{value:?}");
+        }
+        let (_, body) = wire_of(&["flockctl", "session", "list", "--agent-shell", "1"]);
+        assert!(
+            !body.contains_key("agent_shell") && !body.contains_key("agent"),
+            "the agent-shell mark must ride the envelope, not the command args"
         );
     }
 
@@ -632,6 +652,11 @@ Options:
           your chat when its turn ends. Omit it only for an independent chat the
           user asked for.
 
+      --session-token <SESSION_TOKEN>
+          Your session's token (the Flock preamble states it beside your session
+          id): the proof that the call is yours. Required when the command runs
+          in an agent session's shell; the operator's own terminal needs none.
+
       --from <FROM>
           Optional visible sender label for the initial message (1-120 chars).
 
@@ -649,6 +674,7 @@ Options:
 Examples:
   flockctl session create --prompt "Triage the failing nightly build" \
     --harness-id claude-acp --parent-session-id <your-session-id> \
+    --session-token <your-session-token> \
     --from "the release orchestrator" --json
   flockctl session create --prompt "Plan the migration" \
     --harness-id codex-acp --model-id gpt-5.6-sol --effort xhigh --fast-mode

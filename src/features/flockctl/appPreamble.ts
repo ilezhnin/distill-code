@@ -44,10 +44,16 @@ Run \`flockctl <noun> <verb> --help\` for arguments. When asked to switch or mov
  * The same id is what makes a session this one starts its child: without
  * `--parent-session-id` the app cannot tell who started it, and the helper
  * lands in the sidebar as an unrelated chat whose result nobody delivers.
+ *
+ * An id is a claim anyone can type, so a session that may start others is
+ * also told its token (`sessionToken.ts`): the proof the spawn gate asks
+ * of a call made from an agent's shell. A session that starts nobody is
+ * told none.
  */
 export function formatFlockctlPreamble(
   sessionId: string,
   maySpawn = true,
+  sessionToken?: string | null,
 ): string {
   const id = sessionId.trim();
   if (!id) return FLOCKCTL_PREAMBLE;
@@ -56,7 +62,9 @@ export function formatFlockctlPreamble(
   // that forbade it: a worker read both and learned which held from
   // `spawn_not_allowed` (11-14).
   const spawning = maySpawn
-    ? `When you start a session to take on part of your work, pass \`--parent-session-id ${id}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit it only for an independent chat the user asked for.`
+    ? sessionToken
+      ? `When you start a session to take on part of your work, pass \`--parent-session-id ${id} --session-token ${sessionToken}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit \`--parent-session-id\` only for an independent chat the user asked for. The token is how the app knows a call is yours: \`session create\` and \`session fork\` run from your shell are refused without it, and it is no other session's to use.`
+      : `When you start a session to take on part of your work, pass \`--parent-session-id ${id}\` to \`flockctl session create\`: it is shown under this chat, and its result is delivered back here when its turn ends. Omit it only for an independent chat the user asked for.`
     : `This session starts no other sessions: \`flockctl session create\` and \`flockctl session fork\` are not yours to run, under your own id or another chat's. If the work needs more hands than you have, say so in your report (\`needsOperator\`, \`nextSuggestedTask\`) and the chat that gave you the task decides.`;
   return `${FLOCKCTL_PREAMBLE}
 
@@ -88,10 +96,15 @@ export async function getFlockctlPreamble(
   try {
     const { running } = await getFlockctlBrokerStatus();
     if (!running) return null;
-    const { sessionMaySpawn } = await import("@/features/conductor/spawnAcl");
+    const [{ sessionMaySpawn }, { sessionTokenFor }] = await Promise.all([
+      import("@/features/conductor/spawnAcl"),
+      import("./sessionToken"),
+    ]);
+    const maySpawn = sessionMaySpawn(sessionId, personaId);
     return formatFlockctlPreamble(
       sessionId,
-      sessionMaySpawn(sessionId, personaId),
+      maySpawn,
+      maySpawn ? await sessionTokenFor(sessionId) : null,
     );
   } catch (error) {
     if (isPluginUnavailableError(error)) {

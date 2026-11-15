@@ -27,12 +27,16 @@ organized as `flockctl <noun> <verb>` (for example `flockctl session list`,
 ## Sessions you start for your own work
 
 A session you start to take on part of your task belongs under your chat.
-Pass your own session id, which the Flock preamble states, as
-`flockctl session create --parent-session-id <your id>`. The new session is
+Pass your own session id and token, which the Flock preamble states, as
+`flockctl session create --parent-session-id <your id> --session-token
+<your token>`. The token proves the call is yours: from an agent's shell
+`session create` and `session fork` are refused without it, and a session
+that was told it starts no other sessions has none. The new session is
 then shown under your chat in the sidebar instead of as a chat of its own,
 your chat shows it working, and its result is delivered back to your chat
-when its turn ends, so it does not need to be told to report back. Leave the
-flag out only when the user asks for an independent chat.
+when its turn ends, so it does not need to be told to report back. Leave
+`--parent-session-id` out only when the user asks for an independent chat;
+the token is still needed.
 
 Several sessions started on one account at once can meet the provider's
 rate limit (HTTP 429). A session whose first message the provider refused

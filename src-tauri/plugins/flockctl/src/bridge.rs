@@ -23,6 +23,10 @@ pub struct BridgeRequest {
     /// verbatim. Absent for operator calls and app-internal dispatches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
+    /// Whether the call was made from an agent session's shell. False for
+    /// the operator's own terminal and for app-internal dispatches.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +139,7 @@ mod tests {
             args: json!({ "action": "list" }),
             timeout_ms: 30_000,
             actor: None,
+            agent: false,
         }
     }
 

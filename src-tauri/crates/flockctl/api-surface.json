@@ -75,6 +75,14 @@
               "max": 200
             },
             {
+              "name": "session_token",
+              "required": false,
+              "kind": "string",
+              "description": "Your session's token (the Flock preamble states it beside your session id): the proof that the call is yours. Required when the command runs in an agent session's shell; the operator's own terminal needs none.",
+              "min": 1,
+              "max": 232
+            },
+            {
               "name": "from",
               "required": false,
               "kind": "string",
@@ -134,6 +142,12 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
+              },
+              "session_token": {
+                "description": "Your session's token (the Flock preamble states it beside your session id): the proof that the call is yours. Required when the command runs in an agent session's shell; the operator's own terminal needs none.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 232
               },
               "from": {
                 "description": "Optional visible sender label for the initial message (1-120 chars).",
@@ -477,6 +491,14 @@
               "description": "Optional title for the forked session. Defaults to the source title.",
               "min": 1,
               "max": 200
+            },
+            {
+              "name": "session_token",
+              "required": false,
+              "kind": "string",
+              "description": "Your session's token (the Flock preamble states it beside your session id): the proof that the call is yours. Required when the command runs in an agent session's shell; the operator's own terminal needs none.",
+              "min": 1,
+              "max": 232
             }
           ],
           "schema": {
@@ -493,6 +515,12 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
+              },
+              "session_token": {
+                "description": "Your session's token (the Flock preamble states it beside your session id): the proof that the call is yours. Required when the command runs in an agent session's shell; the operator's own terminal needs none.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 232
               }
             },
             "required": ["session_id"],

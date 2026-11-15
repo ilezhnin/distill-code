@@ -107,6 +107,21 @@ pub fn build_cli(contract: &Contract) -> Command {
                      read from AGENT_SESSION_ID, set by the harness)",
                 ),
         )
+        // The app sets FLOCK_AGENT_SHELL in every harness it starts. It says
+        // the call comes from an agent's shell without saying which
+        // session: the app then asks the caller to prove one before it
+        // starts a session, instead of reading the call as the operator's.
+        .arg(
+            Arg::new("agent_shell")
+                .long("agent-shell")
+                .global(true)
+                .env("FLOCK_AGENT_SHELL")
+                .hide(true)
+                .help(
+                    "Marks the call as made from an agent session's shell (internal \
+                     plumbing; read from FLOCK_AGENT_SHELL, set by the app)",
+                ),
+        )
         // display_order pushes the propagated globals below each
         // subcommand's own flags in help output.
         .arg(

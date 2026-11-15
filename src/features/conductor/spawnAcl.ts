@@ -193,15 +193,16 @@ export class SpawnAclDeniedError extends Error {
 const SPAWN_FORBIDDEN_PROMPT_LINE =
   "Flock starts other agents from the Agents catalog; do not spawn chats yourself. " +
   "That includes the `flockctl session create` and `flockctl session fork` commands " +
-  "the Flock app preamble lists: Flock cannot tell which session runs them, so " +
-  "this rule is not enforced in code for them — follow it anyway.";
+  "the Flock app preamble lists: run from your shell they must prove which session " +
+  "calls, and Flock refuses them for yours.";
 
 /** The clause that extends a layer/name permission to the flockctl spawn
- *  commands, stating honestly that they are not attributed to the caller. */
+ *  commands, and says what proves a call is this session's. */
 const FLOCKCTL_SPAWN_NOT_CHECKED_CLAUSE =
-  "The same limit applies to `flockctl session create` and `flockctl session fork`, " +
-  "which Flock cannot attribute to your session and therefore does not check in " +
-  "code — respect it anyway.";
+  "The same limit applies to `flockctl session create` and `flockctl session fork`: " +
+  "run from your shell they must carry your session token (`--session-token`, " +
+  "stated in the Flock app preamble), and Flock checks the limit against the " +
+  "session the token proves.";
 
 /**
  * The prompt insert stating a session's effective spawn permissions.

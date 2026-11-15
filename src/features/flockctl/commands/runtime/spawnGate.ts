@@ -18,24 +18,28 @@
  *   chokepoint: role + persona override → `checkSpawnAllowed`, refusal
  *   posted into the actor's own transcript first (D5), then a CommandError.
  *
- * What this gate does NOT do today: the built-in agent host never exports
- * AGENT_SESSION_ID — it runs one bridge process per harness, serving every
- * session of that harness, so a process-level env var cannot carry a
- * per-session id. Every production call therefore arrives anonymous and is
- * treated as the operator; the ACL reaches agents through the prompt insert
- * (`formatSpawnPolicyPrompt`), which says so honestly. The actor branch is
- * exercised by tests and by harnesses that do export the variable. Making
- * the identity real needs a per-session token minted by the host and passed
- * to the shell per session (P42's documented residue). Even then, the
- * identity is not secret: an agent that exports another session's id can
- * impersonate it.
+ * Who is calling: the built-in agent host never exports AGENT_SESSION_ID —
+ * it runs one bridge process per harness, serving every session of that
+ * harness, so a process-level env var cannot carry a per-session id. What
+ * it does export is FLOCK_AGENT_SHELL, which says the call comes from an
+ * agent's shell and not which one. Such a call must prove its session with
+ * `--session-token`, the token the app preamble gives every session that
+ * may start others (`sessionToken.ts`): the session it proves is the
+ * actor. Without the proof the call is refused — naming a session with
+ * `--parent-session-id` is a claim, and naming none is not the operator.
+ * Before, a worker that may start nobody did either and was obeyed (11-14).
  *
- * `session create` also lets the caller name itself: `--parent-session-id`
- * carries the id the app preamble gives every session, so a chat that starts
- * sessions to do part of its work gets them as its children — the same link
- * the conductor's own spawns record. A named parent is the actor for this
- * gate too: a call that names its session is checked like one that carried
- * AGENT_SESSION_ID, and one that names none is still the operator.
+ * A call that carries no agent-shell mark is the operator's own terminal
+ * or an app-internal dispatch and needs no token: there a named parent is
+ * the actor, and no parent is the operator.
+ *
+ * The proof is a guardrail, not a security boundary: an agent has a shell
+ * and can read another session's token from its transcript, or unset the
+ * variable. It ends the bypass by one flag, which is the one that happened.
+ *
+ * `session create` hangs the new session under `--parent-session-id`, so a
+ * chat that starts sessions to do part of its work gets them as its
+ * children — the same link the conductor's own spawns record.
  */
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
@@ -54,9 +58,11 @@ import {
   getWaveEngineState,
   isConductorHeld,
 } from "@/features/conductor/waveStore";
+import { resetPersonaHandoff } from "@/shared/api/acpPersonaHandoff";
 import { logRendererEvent } from "@/shared/api/rendererLog";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
+import { sessionTokensAvailable, verifySessionToken } from "../../sessionToken";
 import { CommandError } from "../types";
 
 /**
@@ -216,6 +222,72 @@ export function resolveFlockctlSpawnParent(args: {
     );
   }
   return parent ?? actor;
+}
+
+/** Who a flockctl spawn is made by, and where the new session hangs. */
+export interface FlockctlSpawnCaller {
+  /** The session the spawn ACL is checked against; none is the operator. */
+  actor: string | undefined;
+  /** The session the new one hangs under; none is an independent chat. */
+  parentSessionId: string | undefined;
+}
+
+const TOKEN_WHERE =
+  "Pass `--session-token` with the token from your app context, where it " +
+  "stands beside your session id.";
+const TOKEN_NONE_FOR_SOME =
+  "A session that was told it starts no other sessions has no token and " +
+  "may not start one.";
+
+/**
+ * Resolves the caller of one flockctl spawn.
+ *
+ * A valid `--session-token` proves the session; a call from an agent's
+ * shell without one is refused, whichever session it names. Everything
+ * else — the operator's terminal, a harness that exports its own actor, a
+ * renderer that cannot make tokens — is read as before.
+ */
+export async function resolveFlockctlSpawnCaller(args: {
+  actor: string | null | undefined;
+  fromAgent: boolean | undefined;
+  parentSessionId: string | null | undefined;
+  sessionToken: string | null | undefined;
+}): Promise<FlockctlSpawnCaller> {
+  const parent = resolveFlockctlSpawnParent(args);
+  const token = args.sessionToken?.trim() || undefined;
+  if (token) {
+    const proven = await verifySessionToken(token);
+    if (!proven) {
+      throw new CommandError(
+        "spawn_not_allowed",
+        "`--session-token` is not a token this app gave a session. Pass the one from your own app context, unchanged.",
+      );
+    }
+    if (parent && parent !== proven.sessionId) {
+      throw new CommandError(
+        "invalid_args",
+        `Session "${parent}" is not the session this token was given to ("${proven.sessionId}"); a session can only start sessions under itself.`,
+      );
+    }
+    return { actor: proven.sessionId, parentSessionId: parent };
+  }
+  const actor = args.actor?.trim() || undefined;
+  if (!args.fromAgent || actor || !(await sessionTokensAvailable())) {
+    return { actor: parent, parentSessionId: parent };
+  }
+  if (parent) {
+    // The named chat may be the caller with its context compacted away:
+    // its next message carries the context, and so the token, again.
+    resetPersonaHandoff(parent);
+    throw new CommandError(
+      "spawn_not_allowed",
+      `This call names session "${parent}" without proving it comes from it. ${TOKEN_WHERE} If you no longer have it, the app sends that context again with the next message your chat receives. ${TOKEN_NONE_FOR_SOME}`,
+    );
+  }
+  throw new CommandError(
+    "spawn_not_allowed",
+    `This call comes from an agent's shell and does not say which session makes it, so it is not read as the operator's. ${TOKEN_WHERE} Add \`--parent-session-id\` with your session id when the new session takes on part of your work. ${TOKEN_NONE_FOR_SOME}`,
+  );
 }
 
 /**

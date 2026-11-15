@@ -112,19 +112,25 @@ Required command properties:
 - one-way verbs are limited to visible product actions the caller explicitly
   asked for, such as creating a session or sending a prompt
 - broker protects app availability with in-flight caps and timeouts
-- session-creating verbs are ACL-enforced only for a caller that names
-  itself. The gate in `runtime/spawnGate.ts` checks the envelope's optional
-  `actor` (the calling session's `AGENT_SESSION_ID`) or the session a
-  `session create` call names with `--parent-session-id`, and treats a call
-  that names neither as the operator. The built-in agent host never exports
-  that variable: it runs one bridge process per harness serving every session
-  of that harness, so a process-level env var cannot carry a per-session id.
-  A call without `--parent-session-id` is therefore anonymous, allowed, and
-  logged to `flock.log`. The spawn rule reaches agents through the prompt
-  insert (`src/features/conductor/spawnAcl.ts`), which states plainly that
-  flockctl's spawn commands are not checked in code. Making the identity real
-  needs a per-session token minted by the host and delivered to the session's
-  shell per session, which v1 does not have
+- session-creating verbs are ACL-enforced against a caller that proves its
+  session. The built-in agent host cannot export a per-session id: it runs
+  one bridge process per harness serving every session of that harness. It
+  exports `FLOCK_AGENT_SHELL` instead, which the CLI forwards on the
+  envelope as `agent`: the call comes from an agent's shell, without saying
+  which. The gate in `runtime/spawnGate.ts` asks such a call for
+  `--session-token`, the token the app preamble gives every session that
+  may start others (`src/features/flockctl/sessionToken.ts`: the session id
+  and a keyed digest of it, checked without a record of what was issued).
+  The session the token proves is the one the ACL is checked against;
+  `--parent-session-id` only says where the new session hangs, and must be
+  that same session. An agent's call without the token is refused, whether
+  it names a session or none. A call that carries no `agent` mark is the
+  operator's own terminal or an app-internal dispatch: it needs no token, a
+  session it names is the actor, and one that names none is allowed and
+  logged to `flock.log`. A harness that exports `AGENT_SESSION_ID` is still
+  read by its `actor`. The proof is a guardrail, not a security boundary:
+  an agent has a shell, and can read another session's token from that
+  session's transcript or unset the variable
 
 Delete, bulk, silent, invisible, or destructive verbs require reopening the
 auth/confirmation design before implementation: until the broker can
@@ -319,7 +325,8 @@ bump. Adding a command or optional field is not a wire reshape.
 | rendered help reviewed | inline `EXPECTED_*_HELP` pins |
 | broker command-agnostic | `broker_source_stays_free_of_command_literals` |
 | safety metadata complete | flockctl command tests |
-| spawn ACL on create/fork (actor branch only — no production call carries an actor; see the safety model) | `spawnGate.test.ts` + `commands.test.ts` |
+| spawn ACL on create/fork | `spawnGate.test.ts` + `commands.test.ts` |
+| an agent's spawn proves its session | `sessionToken.test.ts` + `spawnGate.test.ts` + `commands.test.ts` |
 | anonymous spawns logged | `spawnGate.test.ts` |
 | each session learns its own id | `appPreamble.test.ts` |
 

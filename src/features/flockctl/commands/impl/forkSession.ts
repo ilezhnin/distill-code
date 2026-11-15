@@ -18,6 +18,18 @@ const forkSessionSchema = z
       .describe(
         "Optional title for the forked session. Defaults to the source title.",
       ),
+    session_token: z
+      .string()
+      .trim()
+      .min(1)
+      .max(FLOCKCTL_BOUNDS.id + 32)
+      .optional()
+      .describe(
+        "Your session's token (the Flock preamble states it beside your " +
+          "session id): the proof that the call is yours. Required when the " +
+          "command runs in an agent session's shell; the operator's own " +
+          "terminal needs none.",
+      ),
   })
   .strict();
 
@@ -53,7 +65,7 @@ Result:
   "harness_id", "model_id", "effort" and "fast_mode" are what the fork's model
   acknowledged when it opened; null means the model's own default.`,
   schema: forkSessionSchema,
-  // Spawn ACL (P42): enforced in execute against the wire `actor`, like
+  // Spawn ACL (P42): enforced in execute against the calling session, like
   // `session create` (runtime/spawnGate.ts). A fork reproduces a session of
   // the source's own rank, so the target layer is the source node's role.
   // Fork is a real backend round-trip that copies the conversation history.
@@ -69,6 +81,7 @@ Result:
         forkTargetLayer,
         forkTargetPersona,
         registerFlockctlChildNode,
+        resolveFlockctlSpawnCaller,
       },
       { acpDuplicateSession },
       { acpSessionToChatSession },
@@ -81,9 +94,15 @@ Result:
       import("@/features/chat/stores/chatSessionStore"),
       import("../runtime/sessions"),
     ]);
+    const caller = await resolveFlockctlSpawnCaller({
+      actor: ctx.actor,
+      fromAgent: ctx.fromAgent,
+      parentSessionId: undefined,
+      sessionToken: args.session_token,
+    });
     const targetLayer = forkTargetLayer(args.session_id);
     enforceFlockctlSpawnAcl({
-      actor: ctx.actor,
+      actor: caller.actor,
       verb: "fork",
       targetLayer,
       targetPersona: forkTargetPersona(args.session_id),
@@ -100,7 +119,7 @@ Result:
     const harnessId =
       chatSession.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID;
     registerFlockctlChildNode({
-      parentSessionId: ctx.actor,
+      parentSessionId: caller.parentSessionId,
       sessionId: forked.sessionId,
       role: targetLayer,
       harnessId,

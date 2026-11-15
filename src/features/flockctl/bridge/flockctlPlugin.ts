@@ -20,6 +20,10 @@ export interface BridgeRequest {
    *  from the wire envelope. Absent for operator calls and app-internal
    *  dispatches. */
   actor?: string;
+  /** Set when the CLI ran in an agent session's shell (FLOCK_AGENT_SHELL,
+   *  which the app exports into every harness). Absent for the operator's
+   *  own terminal and for app-internal dispatches. */
+  agent?: boolean;
 }
 
 /** Renderer → Rust response, submitted via plugin:flockctl|submit_result. */

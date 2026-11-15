@@ -1056,6 +1056,48 @@ describe("sessions.create", () => {
     });
   });
 
+  it("starts nothing for an agent's shell that does not prove its session", async () => {
+    const { sessionTokenFor } = await import("../../sessionToken");
+    seedSessions(makeSession({ id: "parent-chat", projectId: "project-9" }));
+    mocks.acpGetSessionInfo.mockResolvedValue(
+      makeAcpSession({ sessionId: "parent-chat", projectId: "project-9" }),
+    );
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    const fromAgent = { fromAgent: true };
+
+    // Naming a session is a claim, and naming none is not the operator.
+    for (const args of [
+      { action: "create", prompt: "hi", parent_session_id: "parent-chat" },
+      { action: "create", prompt: "hi" },
+      {
+        action: "create",
+        prompt: "hi",
+        parent_session_id: "parent-chat",
+        session_token: `parent-chat.${"0".repeat(16)}`,
+      },
+    ]) {
+      await expectCommandError(
+        dispatchCommand("sessions", args, fromAgent),
+        "spawn_not_allowed",
+      );
+    }
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+
+    // With the token the app told that chat, the agent's call is its own.
+    const result = await dispatchCommand(
+      "sessions",
+      {
+        action: "create",
+        prompt: "Draft the release notes",
+        parent_session_id: "parent-chat",
+        session_token: await sessionTokenFor("parent-chat"),
+      },
+      fromAgent,
+    );
+    expect(result).toMatchObject({ parent_session_id: "parent-chat" });
+    expect(mocks.acpCreateSession).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a parent that does not exist before creating anything", async () => {
     await expectCommandError(
       dispatchCommand(

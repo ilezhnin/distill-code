@@ -16,6 +16,10 @@ import {
   getFlockctlPreamble,
   __resetFlockctlPreambleForTests,
 } from "@/features/flockctl/appPreamble";
+import {
+  sessionTokenFor,
+  verifySessionToken,
+} from "@/features/flockctl/sessionToken";
 
 const SESSION_ID = "20260913_4";
 const SESSION_PREAMBLE = formatFlockctlPreamble(SESSION_ID);
@@ -47,7 +51,23 @@ describe("getFlockctlPreamble", () => {
 
     mocks.invoke.mockResolvedValueOnce({ running: true });
     await expect(getFlockctlPreamble(SESSION_ID)).resolves.toBe(
-      SESSION_PREAMBLE,
+      formatFlockctlPreamble(
+        SESSION_ID,
+        true,
+        await sessionTokenFor(SESSION_ID),
+      ),
+    );
+  });
+
+  it("tells a session that may start others the token that proves its calls", async () => {
+    mocks.invoke.mockResolvedValue({ running: true });
+    const preamble = (await getFlockctlPreamble(SESSION_ID)) as string;
+    const token = /--session-token (\S+)`/.exec(preamble)?.[1];
+    expect(await verifySessionToken(token)).toEqual({
+      sessionId: SESSION_ID,
+    });
+    expect(preamble).toContain(
+      `pass \`--parent-session-id ${SESSION_ID} --session-token ${token}\` to \`flockctl session create\``,
     );
   });
 });
@@ -67,6 +87,11 @@ describe("formatFlockctlPreamble", () => {
     // rule the same session reads, and the worker learned which one held
     // from a refusal.
     expect(worker).not.toContain("--parent-session-id");
+    // Nor is it given a token: it has no call to prove.
+    expect(worker).not.toContain("--session-token");
+    expect(formatFlockctlPreamble(SESSION_ID, false, "x.y")).not.toContain(
+      "--session-token",
+    );
     expect(worker).toContain("This session starts no other sessions");
     expect(worker).toContain("`needsOperator`, `nextSuggestedTask`");
   });
