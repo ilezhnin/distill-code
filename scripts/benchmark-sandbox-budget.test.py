@@ -1879,6 +1879,10 @@ class BudgetTests(unittest.TestCase):
         for name, value in (('PROC', root / 'proc'), ('KMSG', root / 'kmsg')):
             self.addCleanup(setattr, budget, name, getattr(budget, name))
             setattr(budget, name, value)
+        # Windows has no O_NONBLOCK. The log here is a regular file, which
+        # the flag does not change on Linux either, so no flag stands for it.
+        if not hasattr(budget.os, 'O_NONBLOCK'):
+            budget.os.O_NONBLOCK = 0
         leaf = budget.ROOT / 'session-fictional-oom'
         leaf.mkdir()
         tree = {700: (1, 'unshare'), 701: (700, 'grok-native'), 702: (701, 'bash'),
@@ -1894,7 +1898,10 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(budget.leaf_processes('session-fictional-gone'), {})
         (leaf / 'memory.events').write_text('oom 1\noom_kill 3\n')
         (leaf / 'memory.events.local').write_text('oom 1\noom_kill 3\n')
-        memcg = '/' + str(leaf.relative_to(budget.ROOT.parent)).replace('\\', '/')
+        # The leaf's path as the code under test derives it: the kernel's on
+        # Linux, and with this host's separator on Windows, where a record
+        # written with the kernel's would name no leaf at all.
+        memcg = '/' + str(leaf.relative_to(budget.ROOT.parent))
 
         def killed(*victims, group=memcg):
             # The kernel's pids (156000 and up) are not the distro's.
@@ -2017,6 +2024,10 @@ class BudgetTests(unittest.TestCase):
         production = budget.SCRATCH
         budget.SCRATCH = scratch
         self.addCleanup(setattr, budget, 'SCRATCH', production)
+        # Windows reports no st_blocks: there a file's size in whole
+        # 512-byte blocks stands for what it allocates.
+        if not hasattr(os.lstat(scratch), 'st_blocks'):
+            budget.os.lstat = lambda path: types.SimpleNamespace(st_blocks=-(-os.lstat(path).st_size // 512))
         used, inodes = budget.scratch_use('fictional-job')
         self.assertEqual(inodes, 3)
         self.assertGreaterEqual(used, 10001)

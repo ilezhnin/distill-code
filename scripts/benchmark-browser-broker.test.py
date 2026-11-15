@@ -48,19 +48,27 @@ class BrokerBounds(unittest.TestCase):
             with self.subTest(value=value),self.assertRaises(ValueError):
                 broker.validate_request(self.request(**value))
 
-    @unittest.skipUnless(hasattr(os,'O_NOFOLLOW'),'Requires POSIX bounded file reads')
-    def test_artifacts_reject_links_and_byte_overflow(self):
-        with tempfile.TemporaryDirectory() as root:
+    def test_artifacts_reject_hard_links_and_byte_overflow(self):
+        # Windows names neither open flag. The size and the link count come
+        # from fstat, which it has, so no flag stands for them there.
+        flags={name:getattr(os,name,0) for name in ('O_NOFOLLOW','O_NONBLOCK')}
+        with tempfile.TemporaryDirectory() as root,patch.multiple(broker.os,create=True,**flags):
             file=Path(root)/'image';file.write_bytes(b'12345')
             self.assertEqual(broker.read_regular(file,5),b'12345')
             with self.assertRaises(ValueError):
                 broker.read_regular(file,4)
-            link=Path(root)/'link';link.symlink_to(file)
-            with self.assertRaises(OSError):
-                broker.read_regular(link,5)
             hard=Path(root)/'hard';os.link(file,hard)
             with self.assertRaises(ValueError):
                 broker.read_regular(file,5)
+
+    @unittest.skipUnless(hasattr(os,'O_NOFOLLOW'),'Only POSIX refuses to open a symbolic link (O_NOFOLLOW)')
+    def test_artifacts_reject_symbolic_links(self):
+        with tempfile.TemporaryDirectory() as root:
+            file=Path(root)/'image';file.write_bytes(b'12345')
+            self.assertEqual(broker.read_regular(file,5),b'12345')
+            link=Path(root)/'link';link.symlink_to(file)
+            with self.assertRaises(OSError):
+                broker.read_regular(link,5)
 
     def test_supervision_caps_response_and_diagnostics_before_extension(self):
         class Selector:

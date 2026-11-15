@@ -42,7 +42,7 @@ class MetadataCacheTests(unittest.TestCase):
                    'policyFingerprint': 'b' * 64, 'receiptSha256': 'c' * 64,
                    'receipt': ['/opt/distill-tools/text-policy-proofs/codex.json', 1, 2, 3]}
         entries = {'/opt/distill-tools/toy': {'identity': [], 'sha256': 'd' * 64}}
-        with tempfile.TemporaryDirectory(prefix='distill-cache-context-toy-', dir=SOURCE.parents[3]) as directory:
+        with tempfile.TemporaryDirectory(prefix='distill-cache-context-toy-') as directory:
             cache = Path(directory)
             payload = json.dumps({'context': context, 'entries': entries})
             (cache / 'codex.json').write_text(payload)
@@ -56,7 +56,7 @@ class MetadataCacheTests(unittest.TestCase):
                     policy.HashCache('codex', context)
 
     def test_cold_reads_warm_skips_and_changed_file_rehashes(self):
-        with tempfile.TemporaryDirectory(prefix='distill-attestation-toy-', dir=SOURCE.parents[3]) as directory:
+        with tempfile.TemporaryDirectory(prefix='distill-attestation-toy-') as directory:
             root = Path(directory).resolve()
             executable = root / 'invented-executable'
             executable.write_bytes(b'invented synthetic binary\n')
