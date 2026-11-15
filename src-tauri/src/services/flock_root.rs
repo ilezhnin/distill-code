@@ -266,8 +266,39 @@ pub fn resolve_document_path(root: &Path, relative: &str) -> Result<PathBuf, Str
     if resolved.extension().and_then(|ext| ext.to_str()) != Some("json") {
         return Err("Only .json documents are stored here".into());
     }
+    if document_path_holds_credentials(candidate) {
+        return Err("This folder is not part of the document store".into());
+    }
     reject_document_links(root, &resolved)?;
     Ok(resolved)
+}
+
+/// Whether a document path names a folder the renderer has no business in.
+///
+/// The store is the renderer's: settings, planners, queues, the conductor's
+/// state. Three folders under the same root hold what a session runs on and
+/// the renderer never reads: `provider-accounts/` (each account's credential
+/// home — a signed-in Claude keeps `.credentials.json` there, which is a
+/// `.json` like any document), `flockctl/` (the control broker's discovery
+/// file, with the token a call must carry — and a document written there
+/// would redirect every `flockctl`), and `benchmarks/runtime/` (a benchmark
+/// bridge's sign-in files). The accounts page promises their tokens stay in
+/// the native layer; before this, any script in the window could read them
+/// by naming the file.
+///
+/// Names are compared without case: the Windows file system does the same.
+fn document_path_holds_credentials(relative: &Path) -> bool {
+    let mut parts = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        });
+    match parts.next().as_deref() {
+        Some("provider-accounts" | "flockctl") => true,
+        Some("benchmarks") => parts.next().as_deref() == Some("runtime"),
+        _ => false,
+    }
 }
 
 /// Check existing components too: lexical containment alone follows a junction
@@ -674,5 +705,37 @@ mod tests {
         }
         assert!(resolve_document_path(root, "/etc/passwd.json").is_err());
         assert!(resolve_document_path(root, "notes.txt").is_err());
+    }
+
+    /// A signed-in account's credentials and the control broker's token are
+    /// `.json` files under the same root as the renderer's documents, and
+    /// are not among them, to read or to write.
+    #[test]
+    fn the_document_store_does_not_reach_credentials() {
+        let dir = temp();
+        let root = dir.path();
+        for secret in [
+            "provider-accounts/0f3a/home/.credentials.json",
+            "provider-accounts/0f3a/home/.codex/auth.json",
+            "provider-accounts/accounts.json",
+            "Provider-Accounts/0f3a/home/.credentials.json",
+            "./provider-accounts/0f3a/home/.credentials.json",
+            "flockctl/control-4242.json",
+            "FLOCKCTL/control-4242.json",
+            "benchmarks/runtime/grok/sign-in/session.json",
+            "benchmarks/Runtime/grok/home/auth.json",
+        ] {
+            assert!(resolve_document_path(root, secret).is_err(), "{secret}");
+        }
+        // The documents beside them are the renderer's own.
+        for document in [
+            "benchmarks/settings.json",
+            "conductor/waves.json",
+            "state/usage-ledger.json",
+            "projects/provider-accounts/planner.json",
+            "memory.json",
+        ] {
+            assert!(resolve_document_path(root, document).is_ok(), "{document}");
+        }
     }
 }
