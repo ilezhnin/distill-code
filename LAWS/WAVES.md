@@ -40,6 +40,9 @@ expectations all have to agree on the same words.
 - A step whose executor ended a turn without reporting while work it left
   running in the background still runs MUST NOT be treated as finished until
   that work has ended.
+- A step whose executor reported while a session it started or a monitor job
+  it owns still runs MUST NOT be treated as finished until that work has
+  ended, and the report read then MUST be the step's report.
 - A step whose executor's background work still runs MUST be shown as working.
 
 ## The verdict

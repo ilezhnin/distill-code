@@ -17,6 +17,7 @@ import { useBackgroundTasksStore } from "@/features/chat/stores/backgroundTasksS
 import {
   onBackgroundWorkSettled,
   sessionBackgroundWorkLive,
+  sessionMonitorJobLive,
 } from "./backgroundWork";
 import { useMonitorJobStore } from "./monitorJobStore";
 import {
@@ -402,13 +403,21 @@ function runSyncPass(): void {
     const runtime = chat.sessionStateById[node.sessionId];
     const messages = chat.messagesBySession[node.sessionId];
     const summary = lastCompletedAssistantSummary(messages);
-    // A reply that carries the report block closes the run even while
-    // something it started still runs; a reply without one leaves the run
-    // open for as long as its background work lives.
+    // A reply without the report block leaves the run open for as long as
+    // any of its background work lives. A reply that carries the block
+    // closes the run over a background shell it left up, but not over
+    // the hands it still has out: a session it started that is still
+    // working, or a flock-monitor job that will wake it. Their end is
+    // the step's end, and the report read then is the one that counts.
+    const handsOut =
+      (workersByParent.get(node.sessionId) ?? NO_WORKERS).some((child) =>
+        isWorkingStatus(child.status),
+      ) || sessionMonitorJobLive(node.sessionId);
     const heldOpen =
       node.role === "worker" &&
-      !(summary && hasReportFence(summary)) &&
-      sessionBackgroundWorkLive(node.sessionId, runtime?.activeRunId);
+      (handsOut ||
+        (!(summary && hasReportFence(summary)) &&
+          sessionBackgroundWorkLive(node.sessionId, runtime?.activeRunId)));
     const nextStatus = statusFromRuntime(
       node.sessionId,
       node.status,

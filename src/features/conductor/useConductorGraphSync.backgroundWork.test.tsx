@@ -163,6 +163,86 @@ describe("a worker that ends its turn while its background work runs", () => {
     expect(graph().getReport("run-child-2")?.status).toBe("completed");
   });
 
+  it("stays open over its report while a flock-monitor job it owns runs", async () => {
+    vi.useFakeTimers();
+    try {
+      const { graph, useChatStore, useMonitorJobStore } = await loadModules();
+      act(() => {
+        graph().registerNode(workerNode("child-5"));
+        useChatStore.getState().setChatState("child-5", "streaming");
+      });
+      // The agent starts the readers under flock-monitor and reports the
+      // step done on the same turn: "leaving the workflow running".
+      act(() => {
+        useMonitorJobStore.setState({ liveOwnerIds: new Set(["child-5"]) });
+        useChatStore.getState().addMessage("child-5", reply("m1", REPORT));
+        useChatStore.getState().setChatState("child-5", "idle");
+      });
+      expect(graph().getNode("child-5")?.status).toBe("running");
+      expect(graph().getReport("run-child-5")).toBeUndefined();
+
+      // The job ends and wakes the agent, which reports what it came to.
+      act(() => {
+        useMonitorJobStore.setState({ liveOwnerIds: new Set() });
+        useChatStore.getState().setChatState("child-5", "streaming");
+      });
+      act(() => {
+        useChatStore
+          .getState()
+          .addMessage(
+            "child-5",
+            reply(
+              "m2",
+              REPORT.replace(
+                "Recompiled the corpus; 207,900 files pass.",
+                "All 317,083 files pass.",
+              ),
+            ),
+          );
+        useChatStore.getState().setChatState("child-5", "idle");
+      });
+      act(() => {
+        vi.advanceTimersByTime(16_000);
+      });
+      expect(graph().getNode("child-5")?.status).toBe("completed");
+      expect(graph().getReport("run-child-5")?.summary).toBe(
+        "All 317,083 files pass.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays open over its report while a session it started still works", async () => {
+    const { graph, useChatStore } = await loadModules();
+    act(() => {
+      graph().registerNode(workerNode("child-6"));
+      graph().registerNode({
+        ...workerNode("reader-1"),
+        parentSessionId: "child-6",
+        status: "running",
+      });
+      useChatStore.getState().setChatState("child-6", "streaming");
+      useChatStore.getState().setChatState("reader-1", "streaming");
+    });
+    act(() => {
+      useChatStore.getState().addMessage("child-6", reply("m1", REPORT));
+      useChatStore.getState().setChatState("child-6", "idle");
+    });
+    expect(graph().getNode("child-6")?.status).toBe("running");
+
+    // Its reader finishes: nothing of the step is left running.
+    act(() => {
+      useChatStore
+        .getState()
+        .addMessage("reader-1", reply("r1", "Read the slice."));
+      useChatStore.getState().setChatState("reader-1", "idle");
+    });
+    expect(graph().getNode("reader-1")?.status).toBe("completed");
+    expect(graph().getNode("child-6")?.status).toBe("completed");
+    expect(graph().getReport("run-child-6")?.status).toBe("completed");
+  });
+
   it("keeps working while a flock-monitor job it owns runs", async () => {
     vi.useFakeTimers();
     try {

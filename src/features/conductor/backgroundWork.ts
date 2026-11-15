@@ -15,6 +15,7 @@ import { useMonitorJobStore } from "./monitorJobStore";
 export const BACKGROUND_WORK_SETTLE_MS = 15_000;
 
 const lastLiveAt = new Map<string, number>();
+const lastJobLiveAt = new Map<string, number>();
 const settleListeners = new Set<() => void>();
 let settleTimer: ReturnType<typeof setTimeout> | null = null;
 let settleAt = Number.POSITIVE_INFINITY;
@@ -86,8 +87,40 @@ export function sessionBackgroundWorkLive(
   return false;
 }
 
+/**
+ * True while a flock-monitor job the session owns runs, and for the settle
+ * window after it ended: the work a report does not close.
+ *
+ * A job wakes its session with what it prints, so a step whose job still
+ * runs has more to do and more to say, whatever it reported. On 11-14 an
+ * executor reported `completed` with "leaving the workflow running, I'll
+ * resume when…", the step closed on those words, and the next step
+ * started on a third of the work. A background shell is not such work: a
+ * server a step leaves up is meant to outlive it, and the report closes
+ * the step over it as before.
+ */
+export function sessionMonitorJobLive(
+  sessionId: string,
+  now = Date.now(),
+): boolean {
+  if (useMonitorJobStore.getState().liveOwnerIds.has(sessionId)) {
+    lastJobLiveAt.set(sessionId, now);
+    return true;
+  }
+  const last = lastJobLiveAt.get(sessionId);
+  if (last === undefined) return false;
+  const settlesAt = last + BACKGROUND_WORK_SETTLE_MS;
+  if (now < settlesAt) {
+    scheduleSettle(settlesAt);
+    return true;
+  }
+  lastJobLiveAt.delete(sessionId);
+  return false;
+}
+
 export function resetBackgroundWorkForTests(): void {
   lastLiveAt.clear();
+  lastJobLiveAt.clear();
   settleListeners.clear();
   if (settleTimer !== null) clearTimeout(settleTimer);
   settleTimer = null;

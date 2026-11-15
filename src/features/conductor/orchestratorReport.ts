@@ -109,7 +109,7 @@ Do this step and stop. Do not carry on into the next piece of work, and do not k
 
 Put in "decisions" every choice and assumption you made that someone continuing from your report would otherwise have to guess. They get this report, never your conversation.
 
-Work you leave running in the background — a background shell, or a flock-monitor job registered to your own session — keeps this step open after your turn ends: the app shows the step as still working and you are woken when that work ends. End a turn without the report block only while such work runs, and write the report once the result is known, success or failure. The report closes the step; anything still running after it is no longer part of this step.
+Work you leave running in the background — a background shell, or a flock-monitor job registered to your own session — keeps this step open after your turn ends: the app shows the step as still working and you are woken when that work ends. End a turn without the report block only while such work runs, and write the report once the result is known, success or failure. Never report "completed" for work that is still going: a flock-monitor job you own, or a session you started, keeps the step open whatever you reported, the app wakes you when it ends, and your last report is the one that counts. Only a background shell you deliberately leave up, such as a server a later step needs, is closed over by the report.
 
 When you finish, end with this report block and no extra commentary after it:
 
@@ -125,7 +125,7 @@ When you finish, end with this report block and no extra commentary after it:
 }
 \`\`\`
 
-"artifacts" is your evidence trail: list every file you created, changed, ran, or inspected, each as an object like {"label": "x.md", "path": "src/x.md"} (use "url" instead of "path" for a link). Bare strings are dropped by the reader — always the object form. An empty list reads as "I never touched the work", so leave it empty only when that is literally true.
+"artifacts" is your evidence trail: list every file you created, changed, ran, or inspected, each as an object like {"label": "x.md", "path": "src/x.md"} (use "url" instead of "path" for a link). An empty list reads as "I never touched the work", so leave it empty only when that is literally true.
 
 The report block belongs in your reply and nowhere else: never write it — or any other fenced protocol block — into the files you create or edit. A file that ends up holding your report is a defect the next step will have to clean up.`;
 }
