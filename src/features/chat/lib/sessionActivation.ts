@@ -408,6 +408,14 @@ async function performSessionMessagesLoad(
 
   const t0 = performance.now();
   perfLog(`[perf:load] ${sid} start`);
+  // Whether this renderer was driving a run of the chat when the load was
+  // asked for. Such a load waits its turn behind that run's own prompt, so
+  // what the host and the session list said of the run before the wait is
+  // old by the time the transcript arrives.
+  const runtimeAtRequest = useChatStore.getState().sessionStateById[sessionId];
+  const ranAtRequest =
+    runtimeAtRequest?.activeRunId != null ||
+    isSessionRunning(runtimeAtRequest?.chatState ?? "idle");
   useChatStore.getState().setSessionLoading(sessionId, true);
   try {
     const [
@@ -551,12 +559,19 @@ async function performSessionMessagesLoad(
       runtimeBeforeCompletion?.activeRunId != null ||
       isSessionRunning(runtimeBeforeCompletion?.chatState ?? "idle") ||
       Boolean(runtimeBeforeCompletion?.isRunCancellationPending);
+    // A run this renderer drove and has since seen end is over, whatever
+    // was said of it before the load waited out its turn. Read as still
+    // going, it left the last reply open for good: the update that would
+    // have closed it had already passed (2026-11-14, a wave step whose
+    // report then read as not written).
     const knownActiveRunId =
-      sessionInfo?.activeRunId !== undefined
-        ? sessionInfo.activeRunId
-        : rendererKnowsOfARun
-          ? undefined
-          : latestSessionBeforeReplay?.activeRunId;
+      ranAtRequest && !rendererKnowsOfARun
+        ? null
+        : sessionInfo?.activeRunId !== undefined
+          ? sessionInfo.activeRunId
+          : rendererKnowsOfARun
+            ? undefined
+            : latestSessionBeforeReplay?.activeRunId;
     if (knownActiveRunId === null && !taskBindingId(sessionId)) {
       completeReplayAssistantMessage(sessionId, { fromHistory: true });
       // Nothing is running, so a call the transcript leaves open belongs to a

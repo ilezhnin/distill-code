@@ -361,6 +361,36 @@ describe("loadSessionMessages", () => {
     });
   });
 
+  // A load asked for during a turn waits behind that turn's own prompt. By
+  // the time the host answers, the run is over and so is every update that
+  // would have closed the reply: left open, a wave step's report read as not
+  // yet written.
+  it("closes the last reply when the run this renderer drove ended while the load waited", async () => {
+    const sessionId = "ended-under-load";
+    // The list still names the run, as it did when the load was asked for.
+    seedSession({ id: sessionId, activeRunId: "run-1" }, { replay: false });
+    useChatStore.getState().setChatState(sessionId, "streaming");
+    useChatStore.getState().setActiveRunId(sessionId, "run-1");
+    const host = deferred<undefined>();
+    acpLoadSession.mockReturnValue(host.promise);
+
+    const loading = loadSessionMessages(sessionId);
+    await vi.waitFor(() => expect(acpLoadSession).toHaveBeenCalled());
+    useChatStore.getState().setChatState(sessionId, "idle");
+    useChatStore.getState().setActiveRunId(sessionId, null);
+    ensureReplayAssistantMessage(sessionId, "assistant-1").content.push({
+      type: "text",
+      text: "Done",
+    });
+    host.resolve(undefined);
+
+    await expect(loading).resolves.toBe(true);
+    expect(messagesFor(sessionId).at(-1)).toMatchObject({
+      role: "assistant",
+      metadata: { completionStatus: "completed" },
+    });
+  });
+
   it.each([
     "claude-acp",
     "grok-acp",
