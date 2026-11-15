@@ -285,18 +285,17 @@ impl DiscoveredJudgePanel {
                 issues
                     .iter()
                     .filter(|issue| {
+                        let account = issue.account.as_deref();
                         issue.provider == provider
-                            && pool.iter().any(|entry| {
-                                entry.provider_id == provider.harness_id()
-                                    && entry.sits_on(issue.account.as_deref())
-                                    && issue.model.as_ref().is_none_or(|model| {
-                                        concrete_model(&entry.provider_id, &entry.model_id)
-                                            .is_some_and(|eligible| {
-                                                concrete_model(&entry.provider_id, model).as_deref()
-                                                    == Some(eligible.as_str())
-                                            })
-                                    })
-                            })
+                            && match &issue.model {
+                                Some(model) => {
+                                    pool_names(pool, provider.harness_id(), account, model)
+                                }
+                                None => pool.iter().any(|entry| {
+                                    entry.provider_id == provider.harness_id()
+                                        && entry.sits_on(account)
+                                }),
+                            }
                     })
                     .map(|issue| issue.cause)
                     .min()
@@ -1284,6 +1283,25 @@ pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
         None if matches!(model.to_lowercase().as_str(), "default" | "current") => None,
         None => Some(model.to_lowercase()),
     }
+}
+
+/// Whether an entry of `pool` names `model` of `provider` on `account`: the
+/// rows a panel can seat. An account's listing also carries rows no entry
+/// names (a lane's alias, a release nobody calibrated), and what the runtime
+/// says of those says nothing about a panel.
+fn pool_names(
+    pool: &[super::judge_pool::Entry],
+    provider: &str,
+    account: Option<&str>,
+    model: &str,
+) -> bool {
+    pool.iter().any(|entry| {
+        entry.provider_id == provider
+            && entry.sits_on(account)
+            && concrete_model(&entry.provider_id, &entry.model_id).is_some_and(|eligible| {
+                concrete_model(&entry.provider_id, model).as_deref() == Some(eligible.as_str())
+            })
+    })
 }
 
 /// A session opened on a context lane that its bridge acknowledges under the
@@ -3804,7 +3822,7 @@ impl NativeBackend {
                 &format!("attempt {}", attempt.id),
                 // The pool holds only entries that may judge this rubric, a
                 // visual one's those that see images.
-                |provider| pool.iter().any(|entry| entry.provider_id == provider),
+                &pool,
                 Some((store, attempt)),
             )
             .await?;
@@ -3904,20 +3922,21 @@ impl NativeBackend {
     }
 
     /// Every enabled account's available native text models of the providers
-    /// `admit` takes, with their account's usage headroom. An account whose
-    /// usage is spent, or ran out in `run`, cannot be asked now, but its rows
-    /// still distinguish a temporary missing seat from an impossible panel.
-    /// Judges never draw on credits.
+    /// `pool` has an entry of, with their account's usage headroom. An account
+    /// whose usage is spent, or ran out in `run`, cannot be asked now, but its
+    /// rows still distinguish a temporary missing seat from an impossible
+    /// panel. Judges never draw on credits.
     async fn offered_judges(
         &self,
         run: &str,
         subject: &str,
-        admit: impl Fn(&str) -> bool,
+        pool: &[super::judge_pool::Entry],
         diagnostic_target: Option<(&Store, &Attempt)>,
     ) -> Result<JudgeOffers> {
+        let admit = |provider: &str| pool.iter().any(|entry| entry.provider_id == provider);
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
-        let accounts = judge_accounts(&snapshot.accounts, &admit, |provider| {
+        let accounts = judge_accounts(&snapshot.accounts, admit, |provider| {
             crate::services::provider_accounts::cli_login_account_id(provider)
                 .and_then(|id| crate::services::provider_accounts::account(&self.app, &id).ok())
         });
@@ -4016,7 +4035,19 @@ impl NativeBackend {
                 }
             };
             for model in models {
-                if !model.available && model.configuration.execution_profile == "native_text" {
+                // Journalled for the rows a panel can seat. The listing's other
+                // rows were journalled too, on every pass of every answer that
+                // waited for judges: twelve rows a pass buried the cause the
+                // answer was waiting for (11-14).
+                if !model.available
+                    && model.configuration.execution_profile == "native_text"
+                    && pool_names(
+                        pool,
+                        &account.provider_id,
+                        Some(&account.id),
+                        &model.configuration.model_id,
+                    )
+                {
                     let error = host_error(model.reason.clone().unwrap_or_else(|| {
                         "capability_missing: Native text runtime is unavailable".into()
                     }));
@@ -5201,7 +5232,7 @@ impl ExecutionBackend for NativeBackend {
                 .offered_judges(
                     &format!("judge-calibration:{calibration}"),
                     &format!("judge calibration {calibration}"),
-                    |provider| provider == entry.provider_id,
+                    std::slice::from_ref(entry),
                     None,
                 )
                 .await?;

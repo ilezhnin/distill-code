@@ -170,3 +170,44 @@ async fn judge_inventory_diagnostics_failed_journal_cannot_hide_behind_cached_su
     );
     directory.close().await;
 }
+
+/// A listing's refusals are journalled for the rows the pool names: an
+/// account lists a lane's aliases and releases nobody calibrated beside its
+/// judges, and each of them was journalled on every pass.
+#[test]
+fn judge_inventory_diagnostics_concern_only_the_rows_the_pool_names() {
+    let pool: Vec<super::super::judge_pool::Entry> = serde_json::from_value(json!([
+        {"providerId":"claude-acp","modelId":"opus[1m]","effort":"high"},
+        {"providerId":"claude-acp","modelId":"sonnet","effort":"high",
+            "accounts":["invented-account"]},
+        {"providerId":"codex-acp","modelId":"gpt-6-sol","effort":"high"},
+    ]))
+    .unwrap();
+    let names = |provider: &str, account: &str, model: &str| {
+        pool_names(&pool, provider, Some(account), model)
+    };
+    // A pool's judge, by its lane and by the lane's declared alias.
+    assert!(names("claude-acp", "invented-account", "opus[1m]"));
+    assert!(names("claude-acp", "other-account", "opus"));
+    assert!(names("codex-acp", "invented-account", "gpt-6-sol"));
+    // An entry kept to its accounts names its row there only.
+    assert!(names("claude-acp", "invented-account", "sonnet"));
+    assert!(!names("claude-acp", "other-account", "sonnet"));
+    // Rows nobody calibrated: another lane's alias, an older release, a
+    // moving alias, another provider's row of the same name.
+    for model in [
+        "claude-fable-5-1",
+        "claude-opus-5",
+        "claude-haiku-4-5-20251001",
+        "default",
+    ] {
+        assert!(!names("claude-acp", "invented-account", model), "{model}");
+    }
+    assert!(!names("grok-acp", "invented-account", "opus[1m]"));
+    assert!(!pool_names(
+        &[],
+        "claude-acp",
+        Some("invented-account"),
+        "opus[1m]"
+    ));
+}
