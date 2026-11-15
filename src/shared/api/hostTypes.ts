@@ -208,6 +208,16 @@ export interface ComputerUseState {
   driverVersion: string;
 }
 
+/**
+ * A session's context window as its harness last reported it, read from the
+ * stored transcript. `size` is absent when the harness never named one.
+ */
+export interface HostContextUsage {
+  sessionId: string;
+  used: number;
+  size?: number | null;
+}
+
 export interface HostSessionInfo {
   sessionId: string;
   cwd: string;

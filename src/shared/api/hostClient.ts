@@ -11,6 +11,7 @@ import type { SessionNotification } from "@agentclientprotocol/sdk";
 import type {
   ComputerUseState,
   CreateSourceRequest,
+  HostContextUsage,
   HostSessionInfo,
   ListSourcesRequest,
   McpExtension,
@@ -49,6 +50,12 @@ export class HostExt {
   // Sessions
   sessionInfo(params: { sessionId: string }) {
     return this.call<{ session: HostSessionInfo }>("session/info", params);
+  }
+  sessionsContextUsage(params: { sessionIds: string[] }) {
+    return this.call<{ usage: HostContextUsage[] }>(
+      "sessions/context_usage",
+      params,
+    );
   }
   sessionRename(params: { sessionId: string; title: string }) {
     return this.call<Params>("session/rename", params);

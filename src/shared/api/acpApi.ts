@@ -19,6 +19,7 @@ import {
 } from "./acpSessionConfigSnapshots";
 import type {
   ComputerUseState,
+  HostContextUsage,
   SessionMessageRemoveResponse,
   SessionMessageUpdateResponse,
   SessionTranscript,
@@ -162,6 +163,19 @@ export async function getSessionInfo(
     await reconcileOwnedTaskSession(session.sessionId);
   }
   return session;
+}
+
+/**
+ * The context window each of these sessions last reported, read from the
+ * stored transcripts in one call. A session that reported nothing is absent.
+ */
+export async function getSessionsContextUsage(
+  sessionIds: string[],
+): Promise<HostContextUsage[]> {
+  if (sessionIds.length === 0) return [];
+  const client = await getClient();
+  const result = await client.host.sessionsContextUsage({ sessionIds });
+  return result.usage ?? [];
 }
 
 export async function listSessionsPage({

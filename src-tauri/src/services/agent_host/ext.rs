@@ -12,6 +12,11 @@ use super::sources;
 use super::store::{MessagePart, MessageSide, SessionStore};
 use crate::services::provider_accounts::{self, ProviderAccount};
 
+/// Sessions one `sessions/context_usage` call may ask about. A brigade is a
+/// few dozen agents at most; the bound keeps a malformed call from becoming a
+/// scan of every chat.
+const CONTEXT_USAGE_MAX_SESSIONS: usize = 128;
+
 fn session_id(params: &Value) -> Result<String, Value> {
     protocol::session_id(params).ok_or_else(|| invalid_params("sessionId required"))
 }
@@ -64,6 +69,40 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             let record = host.session_record(&id).await?;
             let active = host.active_run_id(&id).await;
             Ok(json!({ "session": Inner::session_info(&record, active.as_deref()) }))
+        }
+        "sessions/context_usage" => {
+            // One call for a whole brigade: the rail asks about every agent
+            // under a conductor at once. Ids that name no session, or one that
+            // has reported nothing, are simply absent from the answer.
+            let ids = params
+                .get("sessionIds")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_params("sessionIds required"))?;
+            if ids.len() > CONTEXT_USAGE_MAX_SESSIONS {
+                return Err(invalid_params(format!(
+                    "sessionIds accepts at most {CONTEXT_USAGE_MAX_SESSIONS} ids"
+                )));
+            }
+            let mut usage = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for id in ids.iter().filter_map(Value::as_str) {
+                if id.is_empty() || !seen.insert(id) {
+                    continue;
+                }
+                if let Some(found) = host
+                    .store
+                    .latest_context_usage(id)
+                    .await
+                    .map_err(protocol::internal)?
+                {
+                    usage.push(json!({
+                        "sessionId": id,
+                        "used": found.used,
+                        "size": found.size,
+                    }));
+                }
+            }
+            Ok(json!({ "usage": usage }))
         }
         "session/rename" => {
             let id = session_id(&params)?;

@@ -8,6 +8,7 @@ import type {
   AcpSessionsPage,
   AcpSteerResponse,
 } from "./acpApi";
+import type { HostContextUsage } from "./hostTypes";
 import * as sessionRegistry from "./acpSessionRegistry";
 import type {
   AcpRunSettingsPlanner,
@@ -499,6 +500,12 @@ export async function acpGetSessionInfo(
   sessionId: string,
 ): Promise<AcpSessionInfo> {
   return directAcp.getSessionInfo(sessionId);
+}
+
+export async function acpGetSessionsContextUsage(
+  sessionIds: string[],
+): Promise<HostContextUsage[]> {
+  return directAcp.getSessionsContextUsage(sessionIds);
 }
 
 export interface AcpSessionSearchResult {

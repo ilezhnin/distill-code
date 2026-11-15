@@ -444,6 +444,22 @@ const FREED_HISTORY_KEY: &str = "freed_history";
 /// database (see [`SessionStore::open`]). A burst of streaming turns stays
 /// below it, so the file is not cut and grown again turn after turn.
 const WAL_SIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+/// How far back from a session's newest event its last usage report is
+/// looked for (see [`SessionStore::latest_context_usage`]). A turn reports
+/// usage as it goes, so the report sits near the end; the bound is for a
+/// harness that reports none.
+const CONTEXT_USAGE_TAIL_EVENTS: i64 = 2000;
+/// How many of those reports are read to find both figures.
+const CONTEXT_USAGE_TAIL_UPDATES: i64 = 16;
+
+/// A session's context window as its harness last reported it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextUsage {
+    /// Tokens in the window.
+    pub used: i64,
+    /// The window's size, when the harness has said.
+    pub size: Option<i64>,
+}
 
 /// A session owner row that belongs to a benchmark and that the host has no
 /// further use for: no turn of it is reserved, running or of unknown outcome,
@@ -1051,6 +1067,64 @@ impl SessionStore {
     pub async fn execution_policy_violation(&self, session_id: &str) -> Result<bool, String> {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id=? AND json_extract(payload_json,'$.update._meta.executionViolation') IS NOT NULL)")
             .bind(session_id).fetch_one(&self.pool).await.map_err(|e|db_error("read execution policy violations",e))
+    }
+
+    /// How full a session's context window was when it last said: the `used`
+    /// and `size` of its latest `usage_update`s.
+    ///
+    /// The renderer keeps this only for chats that reported while it was
+    /// running, so after a restart a conductor's finished executors had no
+    /// figure until each transcript was replayed. Reading the tail here costs
+    /// a bounded scan instead of a replay per chat.
+    ///
+    /// A bridge may leave either field out of an update, so the two are taken
+    /// separately, each from the newest update that names it. Only the last
+    /// [`CONTEXT_USAGE_TAIL_EVENTS`] events are searched: a harness that never
+    /// reports usage must not turn this into a parse of its whole transcript.
+    pub async fn latest_context_usage(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ContextUsage>, String> {
+        let rows = sqlx::query(
+            "SELECT json_extract(payload_json,'$.update.used') AS used, \
+             json_extract(payload_json,'$.update.size') AS size FROM \
+             (SELECT id, payload_json FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?) \
+             WHERE json_valid(payload_json) \
+             AND json_extract(payload_json,'$.update.sessionUpdate') = 'usage_update' \
+             ORDER BY id DESC LIMIT ?",
+        )
+        .bind(session_id)
+        .bind(CONTEXT_USAGE_TAIL_EVENTS)
+        .bind(CONTEXT_USAGE_TAIL_UPDATES)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to read context usage", error))?;
+        let mut used = None;
+        let mut size = None;
+        for row in &rows {
+            // A JSON number is an integer or a real depending on how the
+            // bridge wrote it; anything else (a string, a null) is no figure.
+            // Read as an option: a bare integer decodes SQL NULL as 0, which
+            // would turn "this update names no window" into an empty one.
+            let number = |column: &str| {
+                row.try_get::<Option<i64>, _>(column)
+                    .ok()
+                    .flatten()
+                    .or_else(|| {
+                        row.try_get::<Option<f64>, _>(column)
+                            .ok()
+                            .flatten()
+                            .map(|value| value as i64)
+                    })
+                    .filter(|value| *value >= 0)
+            };
+            used = used.or_else(|| number("used"));
+            size = size.or_else(|| number("size"));
+            if used.is_some() && size.is_some() {
+                break;
+            }
+        }
+        Ok(used.map(|used| ContextUsage { used, size }))
     }
 
     pub async fn request_execution_cancel(&self, key: &str) -> Result<(), String> {
@@ -3346,6 +3420,71 @@ mod tests {
             .await
             .unwrap();
         assert!(store.execution_policy_violation("a").await.unwrap());
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn context_usage_is_the_newest_report_of_each_figure() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("host.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        store.insert_session(&record("a")).await.unwrap();
+        store.insert_session(&record("b")).await.unwrap();
+        let usage = |update: Value| {
+            let mut update = update;
+            update["sessionUpdate"] = json!("usage_update");
+            json!({ "sessionId": "a", "update": update })
+        };
+
+        // Nothing reported: no figure, rather than an empty window.
+        store.append_events("a", &[event("one")]).await.unwrap();
+        assert_eq!(store.latest_context_usage("a").await.unwrap(), None);
+        // A report of cost alone names no window either.
+        store
+            .append_events(
+                "a",
+                &[usage(json!({"cost":{"amount":0.1,"currency":"USD"}}))],
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.latest_context_usage("a").await.unwrap(), None);
+
+        store
+            .append_events(
+                "a",
+                &[
+                    usage(json!({"used":120000,"size":200000})),
+                    event("two"),
+                    // The newer report leaves the size out; it is still the
+                    // window the older one named. A real is read as its integer.
+                    usage(json!({"used":150500.0})),
+                    event("three"),
+                ],
+            )
+            .await
+            .unwrap();
+        // Another chat's report is not this chat's.
+        store
+            .append_events("b", &[usage(json!({"used":7,"size":9}))])
+            .await
+            .unwrap();
+        assert_eq!(
+            store.latest_context_usage("a").await.unwrap(),
+            Some(ContextUsage {
+                used: 150_500,
+                size: Some(200_000),
+            })
+        );
+        assert_eq!(
+            store.latest_context_usage("b").await.unwrap(),
+            Some(ContextUsage {
+                used: 7,
+                size: Some(9),
+            })
+        );
+        assert_eq!(store.latest_context_usage("missing").await.unwrap(), None);
         dir.close().await;
     }
 
