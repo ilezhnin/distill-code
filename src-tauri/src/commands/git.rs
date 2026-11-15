@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
@@ -584,16 +584,24 @@ async fn run_git_output_with_env_source_async(
 ///
 /// * A command-line `-c` outranks every config file, so the four keys spelled
 ///   out here cannot run code through the app, whatever the repository says.
-/// * The vectors that need no user action at all — the sidebar's `status` and
-///   `diff` on mount and on window focus — are closed by the `core.fsmonitor`
-///   override, which every git command the app issues carries.
-/// * Keys with no `-c` spelling that would neutralise them are *not* covered:
-///   `credential.helper`, `filter.<driver>.smudge`/`clean` (checkout filters)
-///   and `core.gitProxy` still run what the repository names. Disabling them
-///   would break the user's own global setup (Git Credential Manager, Git LFS),
-///   which is the reason `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_GLOBAL` are
-///   deliberately not used either. They all need a fetch, push or checkout the
-///   user asked for, so none of them is a zero-click vector.
+/// * The sidebar runs `status` and `diff` on mount and on window focus, with
+///   no action of the user's. Three things in a repository's own config run
+///   a program during those two, and each is closed for them:
+///   `core.fsmonitor` by its override; the `post-index-change` hook, which
+///   `status` fires when it refreshes the index, by `core.hooksPath`, which
+///   every command now carries; and a `filter.<driver>.clean` the
+///   repository defines, which `diff` and `status` run on a changed file,
+///   by [`repository_filter_overrides`]. `diff` also takes `--no-ext-diff`
+///   and `--no-textconv`. All three were seen running on git 2.56.
+/// * Keys with no `-c` spelling that would neutralise them are *not* covered
+///   for the commands the user asks for: `credential.helper`,
+///   `filter.<driver>.smudge`/`clean` on a checkout, and `core.gitProxy` still
+///   run what the repository names there. Disabling them would break the
+///   user's own setup (Git Credential Manager, Git LFS), which is the reason
+///   `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_GLOBAL` are deliberately not used
+///   either, and why only drivers the repository itself defines are switched
+///   off for `status` and `diff`: the user's own, from the global or system
+///   config, keep working.
 const GIT_FSMONITOR_OVERRIDE: &str = "core.fsmonitor=false";
 const GIT_EXT_PROTOCOL_OVERRIDE: &str = "protocol.ext.allow=never";
 /// The remote-side program `fetch`/`pull` ask for, spelled out so
@@ -647,13 +655,16 @@ fn git_args_mutate_repository(args: &[&str]) -> bool {
 }
 
 pub(crate) fn git_hardening_args(args: &[&str]) -> Vec<String> {
-    let mut hardening = vec!["-c".to_string(), GIT_FSMONITOR_OVERRIDE.to_string()];
+    // No command the app issues needs a repository's hooks, and a read is
+    // not exempt: `status` writes the index it refreshed and fires
+    // `post-index-change`, which the sidebar would run on its own.
+    let mut hardening = vec![
+        "-c".to_string(),
+        GIT_FSMONITOR_OVERRIDE.to_string(),
+        "-c".to_string(),
+        format!("core.hooksPath={}", disabled_git_hooks_dir().display()),
+    ];
     if git_args_mutate_repository(args) {
-        hardening.push("-c".to_string());
-        hardening.push(format!(
-            "core.hooksPath={}",
-            disabled_git_hooks_dir().display()
-        ));
         hardening.push("-c".to_string());
         hardening.push(GIT_EXT_PROTOCOL_OVERRIDE.to_string());
     }
@@ -666,8 +677,133 @@ pub(crate) fn git_hardening_args(args: &[&str]) -> Vec<String> {
 fn git_transport_args(args: &[&str]) -> &'static [&'static str] {
     match args {
         ["fetch", ..] | ["pull", ..] => std::slice::from_ref(&GIT_UPLOAD_PACK_OVERRIDE),
+        // `diff.external` and a `diff.<driver>.textconv` in the repository's
+        // config name programs a diff runs; the app reads numbers and
+        // patches, and needs neither.
+        ["diff", ..] => &GIT_DIFF_OVERRIDES,
         _ => &[],
     }
+}
+
+const GIT_DIFF_OVERRIDES: [&str; 2] = ["--no-ext-diff", "--no-textconv"];
+
+/// The commands the app runs on its own, with no action of the user's, that
+/// read changed files through the repository's filters.
+fn git_args_read_changed_files_unasked(args: &[&str]) -> bool {
+    matches!(args, ["status", ..] | ["diff", ..])
+}
+
+/// Each repository's filter drivers and when they were listed.
+type FilterListings = HashMap<PathBuf, (Instant, Vec<String>)>;
+
+/// How long one listing of a repository's filter drivers stands: the sidebar
+/// asks for status and diff together, and again on every window focus.
+const FILTER_LISTING_TTL: Duration = Duration::from_secs(5);
+
+/// The filter drivers a repository's own config defines, from one line each
+/// of `git config --show-scope --name-only --get-regexp ^filter\.`:
+/// `<scope>\tfilter.<driver>.<variable>`. Drivers from the user's global or
+/// the system config are the user's own and are left out. A driver's name may
+/// hold dots, spaces and `=`, never a line break.
+fn repository_filter_drivers(listing: &str) -> Vec<String> {
+    let mut drivers: Vec<String> = Vec::new();
+    for line in listing.lines() {
+        let Some((scope, key)) = line.split_once('\t') else {
+            continue;
+        };
+        if scope != "local" && scope != "worktree" {
+            continue;
+        }
+        let driver = key
+            .get(..7)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("filter."))
+            .and_then(|_| key[7..].rsplit_once('.'))
+            .map(|(driver, _)| driver);
+        if let Some(driver) = driver.filter(|driver| !driver.is_empty()) {
+            if !drivers.iter().any(|known| known == driver) {
+                drivers.push(driver.to_string());
+            }
+        }
+    }
+    drivers
+}
+
+/// The config that switches those drivers off, as the `GIT_CONFIG_KEY_n` /
+/// `GIT_CONFIG_VALUE_n` pairs git reads from the environment. The environment
+/// and not `-c`, because `-c` splits a key at its first `=` and a driver's
+/// name may hold one. An empty command is no filter; `required` goes with
+/// it, or git would fail the read for a filter it was told not to run.
+fn filter_overrides_for(drivers: &[String]) -> Vec<(String, String)> {
+    drivers
+        .iter()
+        .flat_map(|driver| {
+            ["clean", "smudge", "process"]
+                .into_iter()
+                .map(move |variable| (format!("filter.{driver}.{variable}"), String::new()))
+                .chain(std::iter::once((
+                    format!("filter.{driver}.required"),
+                    "false".to_string(),
+                )))
+        })
+        .collect()
+}
+
+/// The overrides that keep `status` and `diff` from running a filter the
+/// repository itself names.
+///
+/// A folder that came with its `.git` — an archive, a shared or synced
+/// folder — can define `filter.<driver>.clean` in its config and assign the
+/// driver to every path in `.gitattributes`. Git then runs that program on
+/// each changed file whenever it compares the working tree, which the
+/// sidebar does when the folder is opened. Reading the config runs nothing,
+/// so the drivers are listed first and switched off for the read.
+///
+/// What this costs an honest repository: one with a filter in its own
+/// config (`git-crypt`, `git lfs install --local`) has its touched files
+/// compared unfiltered in the app's own status and diff, so they can show as
+/// changed there when their content is not. Nothing is written with the
+/// filter off: staging, committing and checking out are the user's own
+/// commands and keep every filter.
+async fn repository_filter_overrides(git: &Path, path: &Path) -> Vec<(String, String)> {
+    static LISTINGS: std::sync::OnceLock<std::sync::Mutex<FilterListings>> =
+        std::sync::OnceLock::new();
+    let listings = LISTINGS.get_or_init(Default::default);
+    if let Some((listed_at, drivers)) = listings
+        .lock()
+        .ok()
+        .and_then(|known| known.get(path).cloned())
+    {
+        if listed_at.elapsed() < FILTER_LISTING_TTL {
+            return filter_overrides_for(&drivers);
+        }
+    }
+    let mut command = build_git_command(
+        git,
+        path,
+        &[
+            "config",
+            "--show-scope",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\.",
+        ],
+    );
+    apply_lite_git_env(&mut command);
+    force_non_interactive(&mut command);
+    pin_c_locale(&mut command);
+    detach_from_ctty(&mut command);
+    crate::services::process::apply_no_window_async(&mut command);
+    // No match is exit 1 with nothing printed; a folder that is no
+    // repository fails the same way. Either has no driver to switch off.
+    let drivers = match timeout(Duration::from_secs(5), command.output()).await {
+        Ok(Ok(output)) => repository_filter_drivers(&String::from_utf8_lossy(&output.stdout)),
+        _ => Vec::new(),
+    };
+    if let Ok(mut known) = listings.lock() {
+        known.retain(|_, (listed_at, _)| listed_at.elapsed() < FILTER_LISTING_TTL);
+        known.insert(path.to_path_buf(), (Instant::now(), drivers.clone()));
+    }
+    filter_overrides_for(&drivers)
 }
 
 /// Everything the app hands to git: the `-c` overrides first (they have to
@@ -717,6 +853,18 @@ async fn run_git_once_async(
         dir_env_capture_timeout(command_timeout),
     )
     .await;
+    // After the environment: every inherited `GIT_*` control was removed
+    // there, and these are the app's own.
+    if git_args_read_changed_files_unasked(args) {
+        let overrides = repository_filter_overrides(&git, path).await;
+        if !overrides.is_empty() {
+            command.env("GIT_CONFIG_COUNT", overrides.len().to_string());
+            for (index, (key, value)) in overrides.iter().enumerate() {
+                command.env(format!("GIT_CONFIG_KEY_{index}"), key);
+                command.env(format!("GIT_CONFIG_VALUE_{index}"), value);
+            }
+        }
+    }
 
     crate::services::process::apply_no_window_async(&mut command);
     timeout(command_timeout, command.output())
@@ -1290,6 +1438,17 @@ mod tests {
                 "git {} must start with the fsmonitor override, got {built:?}",
                 args.join(" ")
             );
+            // No command needs the repository's hooks: `status` itself fires
+            // `post-index-change` when it refreshes the index.
+            assert_eq!(
+                built[2..4],
+                [
+                    "-c".to_string(),
+                    format!("core.hooksPath={}", disabled_git_hooks_dir().display())
+                ],
+                "git {} must disable repository hooks, got {built:?}",
+                args.join(" ")
+            );
             assert!(
                 built.ends_with(
                     &args[1..]
@@ -1393,6 +1552,8 @@ mod tests {
             );
         }
 
+        // A read is not exempt from the hooks override, and takes no ext::
+        // override, which is for the commands that reach a remote.
         for args in [
             ["status", "--porcelain"].as_slice(),
             ["for-each-ref", "refs/heads"].as_slice(),
@@ -1400,10 +1561,243 @@ mod tests {
         ] {
             let built = command_args(&build_git_command(git, repo, args));
             assert!(
-                !built.iter().any(|arg| arg.starts_with("core.hooksPath=")),
-                "read-only git {} needs no hooks override, got {built:?}",
+                built.contains(&hooks_override),
+                "read-only git {} must disable repository hooks too, got {built:?}",
                 args.join(" ")
             );
+            assert!(
+                !built.iter().any(|arg| arg == "protocol.ext.allow=never"),
+                "read-only git {} reaches no remote, got {built:?}",
+                args.join(" ")
+            );
+        }
+    }
+
+    /// A folder that came with its own `.git` plants a hook and a filter; the
+    /// two reads the sidebar makes on its own must run neither. The same
+    /// reads made without the app's hardening run both, which is what shows
+    /// the plant works and the test can fail.
+    #[tokio::test]
+    async fn status_and_diff_run_neither_the_repositorys_hook_nor_its_filter() {
+        let Some(git) = dir_env::resolve_control_executable("git") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let scratch = tempfile::tempdir().expect("scratch folder");
+        let repo = scratch.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo folder");
+        // The planted programs are shell lines; they want forward slashes.
+        let marks = scratch.path().to_string_lossy().replace('\\', "/");
+        let hook_mark = scratch.path().join("hook-ran");
+        let filter_mark = scratch.path().join("filter-ran");
+
+        let plain = |args: &[&str]| {
+            let output = std::process::Command::new(&git)
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .expect("git runs");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        plain(&["init", "-q", "."]);
+        plain(&["config", "user.email", "invented@example.invalid"]);
+        plain(&["config", "user.name", "Invented"]);
+        plain(&["config", "core.autocrlf", "false"]);
+        std::fs::write(repo.join("tracked.txt"), "one\n").expect("write");
+        plain(&["add", "tracked.txt"]);
+        plain(&["commit", "-q", "-m", "first"]);
+
+        let hooks = repo.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("hooks folder");
+        let hook = hooks.join("post-index-change");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\necho hook >> \"{marks}/hook-ran\"\n"),
+        )
+        .expect("write hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+                .expect("mark hook executable");
+        }
+        plain(&[
+            "config",
+            "filter.planted.clean",
+            &format!("sh -c 'echo clean >> {marks}/filter-ran; cat'"),
+        ]);
+        std::fs::write(repo.join(".gitattributes"), "* filter=planted\n").expect("write");
+
+        // A file whose timestamp moved and whose content did not: git must
+        // read it again, through the filter, and then writes the index it
+        // refreshed, which is what fires the hook.
+        let age = |hours: u64| {
+            std::fs::write(repo.join("tracked.txt"), "one\n").expect("write");
+            std::fs::File::options()
+                .write(true)
+                .open(repo.join("tracked.txt"))
+                .and_then(|file| {
+                    file.set_modified(
+                        std::time::SystemTime::now() - Duration::from_secs(hours * 3600),
+                    )
+                })
+                .expect("set the file's time");
+        };
+        let change = |round: &str| {
+            std::fs::write(repo.join("tracked.txt"), format!("two {round}\n")).expect("write");
+        };
+        let clear = || {
+            let _ = std::fs::remove_file(&hook_mark);
+            let _ = std::fs::remove_file(&filter_mark);
+        };
+
+        // The control: git as anything else would run it.
+        age(2);
+        plain(&["status", "--porcelain"]);
+        assert!(
+            hook_mark.exists(),
+            "the planted hook did not run in the control"
+        );
+        assert!(
+            filter_mark.exists(),
+            "the planted filter did not run in the control"
+        );
+        clear();
+        change("control diff");
+        plain(&["diff", "HEAD", "--numstat"]);
+        assert!(
+            filter_mark.exists(),
+            "the planted filter did not run in the control diff"
+        );
+
+        // The app's own reads of the same two states.
+        clear();
+        age(3);
+        let status =
+            run_git_output_async(&repo, &["status", "--porcelain"], Duration::from_secs(30))
+                .await
+                .expect("the app's status runs");
+        assert!(
+            status.status.success(),
+            "{}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+        assert!(
+            !hook_mark.exists(),
+            "the app's status ran the repository's hook"
+        );
+        assert!(
+            !filter_mark.exists(),
+            "the app's status ran the repository's filter"
+        );
+
+        change("app diff");
+        let diff = run_git_output_async(
+            &repo,
+            &["diff", "HEAD", "--numstat", "-z"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("the app's diff runs");
+        assert!(
+            diff.status.success(),
+            "{}",
+            String::from_utf8_lossy(&diff.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&diff.stdout).contains("tracked.txt"),
+            "the app's diff did not report the changed file"
+        );
+        assert!(
+            !hook_mark.exists(),
+            "the app's diff ran the repository's hook"
+        );
+        assert!(
+            !filter_mark.exists(),
+            "the app's diff ran the repository's filter"
+        );
+    }
+
+    #[test]
+    fn a_diff_runs_no_program_the_repository_names() {
+        let built = command_args(&build_git_command(
+            Path::new("git"),
+            Path::new("/repo"),
+            &["diff", "HEAD", "--numstat", "-z"],
+        ));
+        assert_eq!(
+            built[built.len() - 6..],
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "HEAD",
+                "--numstat",
+                "-z"
+            ]
+        );
+        // They are options of `diff` alone.
+        let status = command_args(&build_git_command(
+            Path::new("git"),
+            Path::new("/repo"),
+            &["status", "--porcelain"],
+        ));
+        assert!(!status.iter().any(|arg| arg.starts_with("--no-")));
+    }
+
+    #[test]
+    fn only_the_repositorys_own_filter_drivers_are_switched_off() {
+        // As `git config --show-scope --name-only --get-regexp` prints them.
+        let listing = [
+            "system\tfilter.lfs.clean",
+            "system\tfilter.lfs.smudge",
+            "global\tfilter.mine.clean",
+            "local\tfilter.planted.clean",
+            "local\tfilter.planted.smudge",
+            "local\tfilter.odd=name with.dots.process",
+            "worktree\tFilter.per-tree.required",
+            "local\tcore.bare",
+            "local\tfilter..clean",
+            "no scope here",
+        ]
+        .join("\n");
+        let drivers = repository_filter_drivers(&listing);
+        assert_eq!(drivers, ["planted", "odd=name with.dots", "per-tree"]);
+
+        let overrides = filter_overrides_for(&drivers[..1]);
+        assert_eq!(
+            overrides,
+            [
+                ("filter.planted.clean".to_string(), String::new()),
+                ("filter.planted.smudge".to_string(), String::new()),
+                ("filter.planted.process".to_string(), String::new()),
+                ("filter.planted.required".to_string(), "false".to_string()),
+            ]
+        );
+        assert!(filter_overrides_for(&[]).is_empty());
+
+        // The two reads the sidebar makes on its own, and nothing the
+        // operator asks for: a commit made with a filter off would write
+        // what the filter was there to change.
+        assert!(git_args_read_changed_files_unasked(&[
+            "status",
+            "--porcelain"
+        ]));
+        assert!(git_args_read_changed_files_unasked(&["diff", "HEAD"]));
+        for asked in [
+            ["add", "-A"].as_slice(),
+            ["commit", "-m", "x"].as_slice(),
+            ["stash"].as_slice(),
+            ["switch", "main"].as_slice(),
+            ["checkout", "main"].as_slice(),
+        ] {
+            assert!(!git_args_read_changed_files_unasked(asked), "{asked:?}");
         }
     }
 
