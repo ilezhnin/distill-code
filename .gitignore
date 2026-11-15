@@ -41,6 +41,9 @@ test-results/
 # Testing coverage
 coverage/
 
+# Python bytecode cache (left by the scripts/*.test.py suites)
+__pycache__/
+
 # Logs
 *.log
 
