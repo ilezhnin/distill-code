@@ -35,6 +35,10 @@ import {
 } from "./waveExecutor";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
+import {
+  noteSessionTurnEnded,
+  sessionPulse,
+} from "@/features/chat/lib/sessionPulse";
 import { sessionBackgroundWorkLive } from "./backgroundWork";
 import { skipConductorNoticeRelay } from "./conductorNoticeRelay";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -104,6 +108,7 @@ import {
   persistFailureNoticeText,
   waveRejectionNoticeText,
   waveReportDegradedNoticeText,
+  waveStepSilentNoticeText,
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
   waveStepModelDowngradeNoticeText,
@@ -355,6 +360,95 @@ export const WAVE_STALL_SAMPLE_MS = 60_000;
  * digest/verdict cycle that already exists, with the conductor told why.
  */
 export const WAVE_STALL_THRESHOLD = 2;
+
+/**
+ * How long a step's running turn may send nothing, with no tool call of its
+ * own in flight, before the app says so. Long on purpose: a model at high
+ * effort thinks for minutes without a token, and saying so early is the
+ * noise that taught everyone to ignore the stall detector.
+ */
+export const WAVE_STEP_SILENCE_MS = 15 * 60_000;
+
+/**
+ * Since when each running step has been quiet, by session, and the quiet
+ * it was already announced for. A step first seen running by this process
+ * (after a restart) starts its clock then.
+ */
+const stepQuietSince = new Map<string, number>();
+const stepSilenceAnnounced = new Map<string, number>();
+let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleSilenceTick(delayMs: number): void {
+  if (silenceTimer !== null) return;
+  silenceTimer = setTimeout(() => {
+    silenceTimer = null;
+    runWaveEngineTick();
+  }, delayMs + 50);
+}
+
+/**
+ * The steps of `wave` whose model has gone quiet: a turn that runs, is not
+ * waiting on its provider's allowance or on a tool it started, and has sent
+ * nothing for [`WAVE_STEP_SILENCE_MS`]. Each quiet spell is returned once.
+ * The step is not stopped: silence is not proof, and the conductor or the
+ * operator decides (see `waveStepSilentNoticeText`).
+ */
+export function quietWaveSteps(
+  wave: WaveState,
+  now = Date.now(),
+): Array<{ stepIndex: number; sessionId: string; minutes: number }> {
+  const chat = useChatStore.getState();
+  const quiet: Array<{
+    stepIndex: number;
+    sessionId: string;
+    minutes: number;
+  }> = [];
+  let nextCheckIn = Number.POSITIVE_INFINITY;
+  for (const step of wave.steps) {
+    if (step.phase !== "spawned" || !step.sessionId) continue;
+    const sessionId = step.sessionId;
+    const state = chat.sessionStateById[sessionId]?.chatState;
+    const pulse = sessionPulse(sessionId);
+    // A turn waiting on its provider's allowance is already shown as
+    // waiting, and one with a tool call in flight waits on that tool.
+    if (
+      !state ||
+      !isSessionRunning(state) ||
+      state === "waiting" ||
+      (pulse?.toolsInFlight ?? 0) > 0
+    ) {
+      stepQuietSince.delete(sessionId);
+      stepSilenceAnnounced.delete(sessionId);
+      // A turn that ended left no tool call running, whatever it reported.
+      if (!state || !isSessionRunning(state)) noteSessionTurnEnded(sessionId);
+      continue;
+    }
+    const firstSeen = stepQuietSince.get(sessionId) ?? now;
+    stepQuietSince.set(sessionId, firstSeen);
+    const since = Math.max(firstSeen, pulse?.lastEventAt ?? 0);
+    const quietFor = now - since;
+    if (quietFor < WAVE_STEP_SILENCE_MS) {
+      nextCheckIn = Math.min(nextCheckIn, WAVE_STEP_SILENCE_MS - quietFor);
+      continue;
+    }
+    if (stepSilenceAnnounced.get(sessionId) === since) continue;
+    stepSilenceAnnounced.set(sessionId, since);
+    quiet.push({
+      stepIndex: step.stepIndex,
+      sessionId,
+      minutes: Math.floor(quietFor / 60_000),
+    });
+  }
+  if (Number.isFinite(nextCheckIn)) scheduleSilenceTick(nextCheckIn);
+  return quiet;
+}
+
+export function resetWaveStepSilenceForTests(): void {
+  stepQuietSince.clear();
+  stepSilenceAnnounced.clear();
+  if (silenceTimer !== null) clearTimeout(silenceTimer);
+  silenceTimer = null;
+}
 
 /** Single pending wake-up so a silent wave still gets its stall samples. */
 let stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1562,6 +1656,28 @@ function advanceWaves(state: WaveEngineState): {
           ...(step?.verificationDetail
             ? { detail: step.verificationDetail }
             : {}),
+        }),
+        false,
+        "warning",
+      );
+    }
+    // A step whose model has gone quiet is said so, to the operator and
+    // through the relay to the conductor: either can steer it, stop it or
+    // have it restarted, and until now neither was told anything.
+    for (const quiet of quietWaveSteps(advanced.wave)) {
+      const step = advanced.wave.steps.find(
+        (candidate) => candidate.stepIndex === quiet.stepIndex,
+      );
+      const child = waveStepNode(advanced.wave, quiet.stepIndex, nodes);
+      appendConductorNotice(
+        wave.conductorSessionId,
+        waveStepSilentNoticeText({
+          stepIndex: quiet.stepIndex,
+          name:
+            child?.displayName ??
+            (step ? roleDisplayName(step.role) : `#${quiet.stepIndex + 1}`),
+          minutes: quiet.minutes,
+          ...(child?.modelId ? { model: child.modelId } : {}),
         }),
         false,
         "warning",

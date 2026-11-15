@@ -618,6 +618,10 @@
         }
       },
       "reportDegraded": "El paso {{step}} ({{name}}) terminó sin informe. La ola continúa con un comodín de «resultado desconocido»: los pasos posteriores y el resumen verán ese comodín, no lo que ese ejecutor hizo realmente. Su propio chat es el único registro.",
+      "stepSilent": {
+        "withModel": "El paso {{step}} ({{name}}) no ha enviado nada en {{minutes}} min mientras su turno corre en {{model}}: ni texto, ni razonamiento, ni llamadas a herramientas. Un proveedor en su límite puede terminar un turno sin avisar. Redirige el paso, detenlo o reinícialo.",
+        "plain": "El paso {{step}} ({{name}}) no ha enviado nada en {{minutes}} min mientras su turno corre: ni texto, ni razonamiento, ni llamadas a herramientas. Un proveedor en su límite puede terminar un turno sin avisar. Redirige el paso, detenlo o reinícialo."
+      },
       "stop": "Detener la ola",
       "digest": {
         "protocolText": "Texto de protocolo entregado al conductor",

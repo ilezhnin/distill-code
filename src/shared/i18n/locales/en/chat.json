@@ -618,6 +618,10 @@
         }
       },
       "reportDegraded": "Step {{step}} ({{name}}) finished without a report. The wave is continuing on a «result unknown» stub — later steps and the digest will see the stub, not what that worker actually did. Its own chat is the only record.",
+      "stepSilent": {
+        "withModel": "Step {{step}} ({{name}}) has sent nothing for {{minutes}} min while its turn runs on {{model}}: no text, no thought, no tool call. A provider at its limit can end a turn without saying so. Steer the step, stop it, or restart it.",
+        "plain": "Step {{step}} ({{name}}) has sent nothing for {{minutes}} min while its turn runs: no text, no thought, no tool call. A provider at its limit can end a turn without saying so. Steer the step, stop it, or restart it."
+      },
       "stop": "Stop the wave",
       "digest": {
         "protocolText": "Protocol text the conductor was given",

@@ -109,6 +109,7 @@ import {
   taskBindingId,
 } from "@/features/chat/lib/executionOwnership";
 import { handleSessionEvent } from "./acpSessionEvents";
+import { noteSessionUpdate } from "../lib/sessionPulse";
 import { setStreamedToolOutputOnMessage } from "../lib/terminalOutput";
 import {
   appendTerminalOutput,
@@ -505,6 +506,8 @@ export async function handleSessionNotification(
     // display is restored by `handleShared` on the replay path instead.
     recordUsageNotification(sessionId, update);
     observeWorkspaceToolCall(sessionId, update);
+    // Anything a live turn sends is its pulse; replayed history is none.
+    noteSessionUpdate(sessionId, update);
     if (update.sessionUpdate === "agent_message_chunk") {
       recordLiveAgentMessageChunk(sessionId);
     }

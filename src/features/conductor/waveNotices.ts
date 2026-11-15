@@ -712,6 +712,34 @@ export function waveBlockedNoteUndeliveredText(detail: string): string {
  * account should have been. The stop control next to the wait indicator is
  * the operator's lever if that is not acceptable.
  */
+/**
+ * Warning posted when a step's turn runs and nothing has come from its
+ * model for a long while, with no tool call of its own in flight.
+ *
+ * Not a stop and not a verdict on the step: a model at high effort is
+ * quiet for minutes, and only the conductor or the operator can tell a
+ * long thought from a provider that stopped answering. What the app does
+ * know is how long it has heard nothing, and that used to be said nowhere.
+ */
+export function waveStepSilentNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  minutes: number;
+  model?: string;
+}): string {
+  return i18n.t(
+    facts.model
+      ? "chat:conductor.wave.stepSilent.withModel"
+      : "chat:conductor.wave.stepSilent.plain",
+    {
+      step: facts.stepIndex + 1,
+      name: facts.name,
+      minutes: facts.minutes,
+      model: facts.model,
+    },
+  );
+}
+
 export function waveReportDegradedNoticeText(
   stepIndex: number,
   name: string,
