@@ -288,10 +288,17 @@ describe("advanceWave scheduling", () => {
       (stepIndex) => (stepIndex === 0 ? "completed" : undefined),
     );
     expect(digest[0].report.status).toBe("blocked");
+    // And it says which step stopped the wave, and why: the conductor reads
+    // the cause of its idle steps in the digest itself.
     expect(digest[1].report).toMatchObject({
       status: "cancelled",
-      summary: NOT_STARTED_STEP_REPORT_SUMMARY,
+      summary:
+        "This step was never started, so it did none of its work: step 1 (the file the subtask names does not exist) reported being blocked, and the wave started nothing after that.",
     });
+    // A wave that merely ended early names no blocker.
+    expect(
+      collectWaveStepReports(advanced.wave, () => undefined)[1].report.summary,
+    ).toBe(NOT_STARTED_STEP_REPORT_SUMMARY);
     // The flag is the exactly-once: a later advance does not announce it again.
     const again = advanceWave(advanced.wave, context);
     expect(again.blocked).toEqual([]);
@@ -612,6 +619,26 @@ describe("advanceWave verification gate (P62)", () => {
     expect(carried?.status).toBe("failed");
     expect(carried?.summary).toContain("failed verification");
     expect(carried?.summary).not.toContain("trust me");
+
+    // The conductor's digest carries what the executor wrote, under the
+    // gate's finding and still failed; every other reader keeps the stub.
+    const reportOf = (runId: string | null | undefined) =>
+      runId === "run-0"
+        ? { ...evidenceFree("run-0"), risks: ["No test was run"] }
+        : undefined;
+    const digest = collectWaveStepReports(
+      second.wave,
+      reportOf,
+      undefined,
+      "written",
+    )[0].report;
+    expect(digest.status).toBe("failed");
+    expect(digest.needsOperator).toBe(true);
+    expect(digest.summary).toContain("failed verification: no evidence");
+    expect(digest.summary).toContain("All done, trust me");
+    expect(digest.risks).toEqual(["No test was run"]);
+    const record = collectWaveStepReports(second.wave, reportOf)[0].report;
+    expect(record.summary).not.toContain("trust me");
   });
 
   it("judges nothing while the step's run works, and judges again once it ends", () => {

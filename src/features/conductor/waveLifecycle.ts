@@ -219,6 +219,9 @@ function digestEntriesFor(wave: WaveState): DigestEntry[] {
     wave,
     graph.getReport,
     (stepIndex) => byStep.get(stepIndex)?.status,
+    // The conductor reads what a quarantined step wrote, under the gate's
+    // finding; later steps and the task record keep the stub.
+    "written",
   ).map((entry) => {
     const node = byStep.get(entry.stepIndex);
     const step = wave.steps.find(

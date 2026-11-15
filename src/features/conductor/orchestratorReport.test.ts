@@ -27,6 +27,28 @@ describe("orchestratorReport", () => {
     ]);
     expect(report.risks).toEqual(["No e2e"]);
   });
+
+  it("reads an artifact named as a bare path or without a label", () => {
+    const report = parseStructuredReport(
+      "run-1",
+      "completed",
+      `\`\`\`distill-report
+{"status":"completed","summary":"Names are written","decisions":[],"artifacts":["out/names_g02.csv","C:\\\\work\\\\notes.md","the table of renamed functions",{"path":"out/report.json"},{"url":"https://example.invalid/run/1"},"  ",{},7],"risks":[],"needsOperator":false,"nextSuggestedTask":null}
+\`\`\``,
+    );
+
+    expect(report.artifacts).toEqual([
+      { label: "out/names_g02.csv", path: "out/names_g02.csv" },
+      { label: "C:\\work\\notes.md", path: "C:\\work\\notes.md" },
+      // Prose names an artifact too, but is no path to look for on disk.
+      { label: "the table of renamed functions" },
+      { label: "out/report.json", path: "out/report.json" },
+      {
+        label: "https://example.invalid/run/1",
+        url: "https://example.invalid/run/1",
+      },
+    ]);
+  });
 });
 
 describe("a report's size", () => {

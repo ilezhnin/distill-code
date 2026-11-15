@@ -133,6 +133,36 @@ describe("useConductorGraphSync re-entrancy", () => {
     expect(report?.summary).not.toBe("");
   });
 
+  it("keeps a blocked report when the cache has dropped the worker's transcript", async () => {
+    const { useConductorGraphSync, useConductorGraphStore, useChatStore } =
+      await loadModules();
+    const blocked = `\`\`\`distill-report\n{"status":"blocked","reason":"spawn_not_allowed","summary":"Could not start the readers","decisions":[],"artifacts":[],"risks":[],"needsOperator":true,"nextSuggestedTask":null}\n\`\`\``;
+
+    useChatStore.setState({
+      messagesBySession: { [WORKER_ID]: [assistant("m-1", blocked)] },
+      sessionStateById: {},
+    });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    useConductorGraphStore.getState().registerNode(workerNode());
+    renderHook(() => useConductorGraphSync());
+    expect(useConductorGraphStore.getState().getReport(RUN_ID)?.status).toBe(
+      "blocked",
+    );
+
+    // The cache holds ten chats: this worker's is dropped, and nothing of
+    // its transcript is left to read. The run itself completed, so the
+    // pass used to write "The agent finished." over the report.
+    act(() => {
+      useChatStore.setState({ messagesBySession: {} });
+    });
+
+    const report = useConductorGraphStore.getState().getReport(RUN_ID);
+    expect(report?.status).toBe("blocked");
+    expect(report?.reason).toBe("spawn_not_allowed");
+    expect(report?.summary).toBe("Could not start the readers");
+    expect(report?.synthesized).toBeUndefined();
+  });
+
   it("never re-enters the pass, whatever a listener writes", async () => {
     const { useConductorGraphSync, useConductorGraphStore, useChatStore } =
       await loadModules();

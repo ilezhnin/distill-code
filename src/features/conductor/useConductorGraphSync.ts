@@ -444,7 +444,20 @@ function runSyncPass(): void {
     // every streamed token, the cache holds ten chats, and eighteen stopped
     // steps evicted each other forever (2026-11-04), until the renderer was
     // too busy to answer `flockctl` at all.
-    if (!summary && existing?.status === reportStatus) continue;
+    //
+    // And a report the executor wrote is never given up for a stand-in.
+    // One that says `blocked` or `failed` differs from its run's status
+    // by design, so comparing the two let a cache that had dropped the
+    // text trade the report for "The agent finished.": on 11-14 a step's
+    // "blocked: spawn_not_allowed" reached its conductor as that, and
+    // the conductor never learned why the wave had stopped.
+    if (
+      !summary &&
+      existing &&
+      (!existing.synthesized || existing.status === reportStatus)
+    ) {
+      continue;
+    }
     if (!summary && node.managedBy === "wave") {
       const transcript = readWorkerTranscript(node.sessionId, () => undefined);
       if (transcript.kind === "unknown") continue;

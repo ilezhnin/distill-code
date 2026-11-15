@@ -423,6 +423,48 @@ export const UNSTARTED_STEP_REPORT_SUMMARY =
 export const NOT_STARTED_STEP_REPORT_SUMMARY =
   "This step was never started, so it did none of its work: the wave ended before its turn came.";
 
+/**
+ * The never-started summary, naming the steps that reported being blocked:
+ * a wave starts nothing after one, and the conductor has to read why its
+ * later steps did no work in the digest itself (11-14: it read only that
+ * "the wave ended before its turn came").
+ */
+function notStartedStepSummary(
+  blocked: readonly { stepIndex: number; reason?: string }[],
+): string {
+  if (blocked.length === 0) return NOT_STARTED_STEP_REPORT_SUMMARY;
+  const named = blocked
+    .map(
+      (step) =>
+        `step ${step.stepIndex + 1}${step.reason ? ` (${step.reason})` : ""}`,
+    )
+    .join(", ");
+  return `This step was never started, so it did none of its work: ${named} reported being blocked, and the wave started nothing after that.`;
+}
+
+/**
+ * A report the verification gate refused, as the digest carries it: the
+ * gate's finding, then what the executor wrote. The gate refuses the claim
+ * of success; a digest still delivers every report's text as its executor
+ * wrote it (LAWS/WAVES.md), and a step that did its work and named no
+ * files used to reach its conductor as a bare failure.
+ */
+export function quarantinedReportAsWritten(
+  runId: string,
+  detail: string | undefined,
+  written: StructuredReport,
+): StructuredReport {
+  return {
+    ...written,
+    runId,
+    status: "failed",
+    summary: `The step reported success, but its report failed verification${
+      detail ? `: ${detail}` : ""
+    }. What it wrote follows, unverified.\n\n${written.summary}`,
+    needsOperator: true,
+  };
+}
+
 /** The unstarted summary, with the refusal the app recorded when it has one. */
 function unstartedStepSummary(step: Pick<WaveStepState, "failureReason">) {
   return step.failureReason
@@ -913,7 +955,24 @@ export function collectWaveStepReports(
    * working exactly as before.
    */
   statusOf?: (stepIndex: number) => RunStatus | undefined,
+  /**
+   * What stands for a report the verification gate refused: the stub, for
+   * a step or a record that must not build on unverified claims, or the
+   * report as written under the gate's finding, for the conductor's digest.
+   */
+  quarantined: "stub" | "written" = "stub",
 ): CompletedWaveStepReport[] {
+  const blocked = wave.steps.flatMap((step) => {
+    const report = step.runId ? reportOf(step.runId) : undefined;
+    return report?.status === "blocked"
+      ? [
+          {
+            stepIndex: step.stepIndex,
+            ...(report.reason ? { reason: report.reason } : {}),
+          },
+        ]
+      : [];
+  });
   return [...wave.steps]
     .sort((left, right) => left.stepIndex - right.stepIndex)
     .map((step) => {
@@ -921,14 +980,24 @@ export function collectWaveStepReports(
         step.runId ?? `${wave.waveId}:step:${step.stepIndex}`;
       const childStatus = statusOf?.(step.stepIndex);
       if (step.verificationFailed) {
+        const written =
+          quarantined === "written" && step.runId
+            ? reportOf(step.runId)
+            : undefined;
         return {
           stepIndex: step.stepIndex,
           role: step.role,
           subtask: step.subtask,
-          report: synthesizeFailedVerificationReport(
-            fallbackRunId,
-            step.verificationDetail,
-          ),
+          report: written
+            ? quarantinedReportAsWritten(
+                fallbackRunId,
+                step.verificationDetail,
+                written,
+              )
+            : synthesizeFailedVerificationReport(
+                fallbackRunId,
+                step.verificationDetail,
+              ),
         };
       }
       const report =
@@ -943,7 +1012,7 @@ export function collectWaveStepReports(
             ? synthesizeMissingStepReport(
                 fallbackRunId,
                 "cancelled",
-                NOT_STARTED_STEP_REPORT_SUMMARY,
+                notStartedStepSummary(blocked),
               )
             : synthesizeMissingStepReport(
                 fallbackRunId,

@@ -147,6 +147,16 @@ export type ReportFenceBody = Omit<StructuredReport, "runId">;
  * then recorded as a risk, so a typo can neither invent a `blocked` nor
  * un-invent a failure in silence.
  */
+/**
+ * Whether a bare artifact string reads as a file path: no white space, and
+ * a separator or an extension. Only such a string is probed on disk.
+ */
+function looksLikePath(text: string): boolean {
+  return (
+    !/\s/.test(text) && (/[\\/]/.test(text) || /\.[A-Za-z0-9]{1,8}$/.test(text))
+  );
+}
+
 export function parseReportFenceBody(
   body: string,
   status: StructuredReport["status"],
@@ -195,13 +205,37 @@ export function parseReportFenceBody(
         : [],
     ),
     artifacts: (Array.isArray(parsed.artifacts)
-      ? parsed.artifacts.flatMap((item) => {
+      ? parsed.artifacts.flatMap((item: unknown) => {
+          // A file named as a bare string, or as an object with its path
+          // and no label, names an artifact as well as the declared form
+          // does. Dropping those left a report that listed its files
+          // with none, and the verification gate failed it (11-14).
+          if (typeof item === "string") {
+            const named = item.trim();
+            if (!named) return [];
+            return [
+              {
+                label: cappedText(named, MAX_REPORT_ENTRY_LENGTH),
+                ...(looksLikePath(named)
+                  ? { path: cappedText(named, MAX_REPORT_ENTRY_LENGTH) }
+                  : {}),
+              },
+            ];
+          }
           if (!item || typeof item !== "object") return [];
           const artifact = item as StructuredReport["artifacts"][number];
-          if (typeof artifact.label !== "string") return [];
+          const label =
+            typeof artifact.label === "string"
+              ? artifact.label
+              : typeof artifact.path === "string"
+                ? artifact.path
+                : typeof artifact.url === "string"
+                  ? artifact.url
+                  : null;
+          if (label === null) return [];
           return [
             {
-              label: cappedText(artifact.label, MAX_REPORT_ENTRY_LENGTH),
+              label: cappedText(label, MAX_REPORT_ENTRY_LENGTH),
               ...(typeof artifact.path === "string"
                 ? { path: cappedText(artifact.path, MAX_REPORT_ENTRY_LENGTH) }
                 : {}),
