@@ -39,7 +39,10 @@ import { BoundedSet } from "./boundedSet";
 import { runWaveEngineTick } from "./waveRunner";
 import { WAVE_STOP_REASONS } from "./waveStop";
 import { WAVE_REPORT_NUDGE_PROMPT } from "./wavePrompts";
-import { readWorkerTranscript } from "./waveTranscripts";
+import {
+  finishedTranscriptReady,
+  readWorkerTranscript,
+} from "./waveTranscripts";
 import {
   isBenchmarkSession,
   taskBindingId,
@@ -492,6 +495,16 @@ function runSyncPass(): void {
       Boolean(summary),
       heldOpen || nudgeOut || queuedSend,
     );
+    // A turn that ended while its chat was being loaded is read from the
+    // transcript that load writes, not from the cache it is about to
+    // replace: the run stays open until then.
+    if (
+      isWorkingStatus(node.status) &&
+      reportStatusFromRun(nextStatus) !== null &&
+      !finishedTranscriptReady(node.sessionId, syncChildStatuses)
+    ) {
+      continue;
+    }
     // A wave step whose turn ended without the report block is asked for
     // it once, in its own chat, before the wave reads anything into the
     // silence. Only with its transcript in hand: a reply the cache does
@@ -737,7 +750,7 @@ export function useConductorGraphSync(): void {
       syncChildStatuses();
     };
     // Selected rather than "any change at all". The pass derives statuses and
-    // reports from exactly these five slices, while both stores are written for
+    // reports from exactly these six slices, while both stores are written for
     // many other reasons — a draft keystroke, a scroll target, a read flag —
     // and the chat store is written per streamed token. Each slice gets its own
     // subscription because zustand compares the selected value with `Object.is`
@@ -757,6 +770,13 @@ export function useConductorGraphSync(): void {
     );
     const unsubRuntimes = useChatStore.subscribe(
       (state) => state.sessionStateById,
+      onStateChanged,
+    );
+    // A turn that ended under a load of its chat is read when the load is
+    // done, and the loader clears this flag after it has written the
+    // transcript.
+    const unsubLoading = useChatStore.subscribe(
+      (state) => state.loadingSessionIds,
       onStateChanged,
     );
     // The queued first send is what tells the stale-status reconcile that a
@@ -792,6 +812,7 @@ export function useConductorGraphSync(): void {
       unsubGraphReports();
       unsubMessages();
       unsubRuntimes();
+      unsubLoading();
       unsubQueued();
       unsubSessions();
       unsubBackgroundTasks();

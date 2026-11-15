@@ -23,6 +23,7 @@
 
 import { loadSessionMessages } from "@/features/chat/lib/sessionActivation";
 import { hasConversationMessages } from "@/features/chat/lib/sessionReplayReplacement";
+import { isTranscriptHydrated } from "@/features/chat/lib/transcriptHydration";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { Message } from "@/shared/types/messages";
 
@@ -154,6 +155,77 @@ export function readWorkerTranscript(
   return { kind: "unknown" };
 }
 
+/** Sessions whose turn ended while a load of their chat was in flight. */
+const endedUnderLoad = new Set<string>();
+
+/** Loads of such a session that settled without writing its transcript. */
+const staleAttempts = new Map<string, number>();
+
+/** Sessions with a look at their transcript already scheduled. */
+const scheduledLooks = new Set<string>();
+
+/**
+ * Whether the turn a session just ended can be read from the message cache.
+ *
+ * While a load of a chat is in flight the store keeps the chat's live updates
+ * for the replay, so the cache holds what it held when the load was asked
+ * for; and a load asked for during a turn waits behind that turn's own prompt.
+ * On 2026-11-14 an acceptor's chat had been loading for the last eleven
+ * minutes of its turn. The sync pass read the cache the moment the turn ended
+ * and took five lines of narration from the middle of the work for the
+ * report. The report itself, which named its evidence, was written to the
+ * cache by the replay a moment later and never read: the verification gate
+ * refused the stand-in for naming no artifacts, and the wave stopped.
+ *
+ * So a turn that ends under a load is read once that load has written the
+ * transcript. A load that fails leaves the cache as it was: the transcript is
+ * asked for again, {@link TRANSCRIPT_HYDRATION_MAX_ATTEMPTS} times at most,
+ * and only then is the cache read as it stands. `onReady` is called when it
+ * is worth looking again.
+ */
+export function finishedTranscriptReady(
+  sessionId: string,
+  onReady: () => void,
+): boolean {
+  if (useChatStore.getState().loadingSessionIds.has(sessionId)) {
+    endedUnderLoad.add(sessionId);
+    return false;
+  }
+  if (!endedUnderLoad.has(sessionId)) return true;
+  if (
+    isTranscriptHydrated(sessionId) ||
+    (staleAttempts.get(sessionId) ?? 0) >= TRANSCRIPT_HYDRATION_MAX_ATTEMPTS
+  ) {
+    endedUnderLoad.delete(sessionId);
+    staleAttempts.delete(sessionId);
+    return true;
+  }
+  const last = lastAttemptAt.get(sessionId);
+  const wait =
+    last === undefined
+      ? 0
+      : TRANSCRIPT_HYDRATION_RETRY_MS - (Date.now() - last);
+  if (wait > 0) {
+    // The pass runs on store changes, and a wave waiting on this one step
+    // may make none: look again when the backoff is over.
+    if (!hydrating.has(sessionId) && !scheduledLooks.has(sessionId)) {
+      scheduledLooks.add(sessionId);
+      setTimeout(() => {
+        scheduledLooks.delete(sessionId);
+        onReady();
+      }, wait + 1);
+    }
+    return false;
+  }
+  requestHydration(sessionId, () => {
+    if (!isTranscriptHydrated(sessionId)) {
+      staleAttempts.set(sessionId, (staleAttempts.get(sessionId) ?? 0) + 1);
+    }
+    onReady();
+  });
+  return false;
+}
+
 /** True while a hydration started here has not settled. Tests only. */
 export function isHydratingTranscriptForTests(sessionId: string): boolean {
   return hydrating.has(sessionId);
@@ -164,4 +236,7 @@ export function resetConductorTranscriptsForTests(): void {
   hydrating.clear();
   lastAttemptAt.clear();
   emptyAttempts.clear();
+  endedUnderLoad.clear();
+  staleAttempts.clear();
+  scheduledLooks.clear();
 }
