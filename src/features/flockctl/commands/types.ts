@@ -97,6 +97,8 @@ export const COMMAND_ERROR_CODES = [
   "spawn_not_allowed",
   "wave_not_found",
   "wave_step_not_pending",
+  "wave_step_not_dispatched",
+  "wave_not_running",
   "timed_out",
   "internal_error",
 ] as const;

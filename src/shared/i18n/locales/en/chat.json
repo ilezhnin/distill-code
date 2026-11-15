@@ -690,6 +690,10 @@
       "adopted": "Step {{step}} ({{name}}) already had a session started for it by another Flock process, so that session was adopted instead of starting a second one.",
       "amended": "Step {{step}} of this wave had text added to its brief before it started.",
       "stepSkipped": "Step {{step}} of this wave was skipped on the operator's order; later steps treat it as not done.",
+      "stepRestarted": {
+        "plain": "Step {{step}} of this wave is being run again in a new session on the operator's order; the session that ran it was stopped.",
+        "corrected": "Step {{step}} of this wave is being run again in a new session on the operator's order, with a correction added to its brief; the session that ran it was stopped."
+      },
       "roadmap": {
         "updated": "Roadmap: {{goal}} — {{done}} of {{total}} stages done, status {{status}}.",
         "invalid": "The conductor's roadmap block could not be read, so the roadmap was not changed: {{detail}}",

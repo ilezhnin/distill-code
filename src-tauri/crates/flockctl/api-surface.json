@@ -1348,7 +1348,7 @@
               "kind": "number",
               "description": "The step to extend, 1-based as `flockctl wave list` numbers them.",
               "min": 1,
-              "max": 5
+              "max": 64
             },
             {
               "name": "text",
@@ -1372,7 +1372,7 @@
               "step": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 5,
+                "maximum": 64,
                 "description": "The step to extend, 1-based as `flockctl wave list` numbers them."
               },
               "text": {
@@ -1403,7 +1403,7 @@
               "kind": "number",
               "description": "The step to skip, 1-based as `flockctl wave list` numbers them.",
               "min": 1,
-              "max": 5
+              "max": 64
             }
           ],
           "schema": {
@@ -1419,8 +1419,63 @@
               "step": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 5,
+                "maximum": 64,
                 "description": "The step to skip, 1-based as `flockctl wave list` numbers them."
+              }
+            },
+            "required": ["wave_id", "step"],
+            "additionalProperties": false
+          }
+        },
+        "restart": {
+          "description": "Run one step of a running wave again: its executor is stopped if it is still working, and the step is dispatched afresh in a new session with its brief, plus the correction when one is given. For a step that went wrong, went quiet, or was given the wrong task — `wave amend` only reaches a step that has not started, and `wave steer` waits for a turn to end on providers that take no message mid-turn. The stopped session stays in the sidebar; files it wrote stay as they are. The conductor chat shows a notice. Refused for a step that has not been dispatched and for a wave that is no longer running its steps.",
+          "fields": [
+            {
+              "name": "wave_id",
+              "required": true,
+              "kind": "string",
+              "description": "Id of the wave; an unambiguous prefix is accepted.",
+              "min": 1,
+              "max": 200
+            },
+            {
+              "name": "step",
+              "required": true,
+              "kind": "number",
+              "description": "The step to run again, 1-based as `flockctl wave list` numbers them.",
+              "min": 1,
+              "max": 64
+            },
+            {
+              "name": "text",
+              "required": false,
+              "kind": "string",
+              "description": "Optional correction appended to the step's brief, after a blank line (1-20000 chars).",
+              "min": 1,
+              "max": 20000
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "wave_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "Id of the wave; an unambiguous prefix is accepted."
+              },
+              "step": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64,
+                "description": "The step to run again, 1-based as `flockctl wave list` numbers them."
+              },
+              "text": {
+                "description": "Optional correction appended to the step's brief, after a blank line (1-20000 chars).",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 20000
               }
             },
             "required": ["wave_id", "step"],

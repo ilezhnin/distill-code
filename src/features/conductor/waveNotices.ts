@@ -315,6 +315,19 @@ export function waveStepAmendedNoticeText(stepIndex: number): string {
   return i18n.t("chat:conductor.wave.amended", { step: stepIndex + 1 });
 }
 
+/** The notice posted when flockctl has a dispatched step run again. */
+export function waveStepRestartedNoticeText(
+  stepIndex: number,
+  corrected: boolean,
+): string {
+  return i18n.t(
+    corrected
+      ? "chat:conductor.wave.stepRestarted.corrected"
+      : "chat:conductor.wave.stepRestarted.plain",
+    { step: stepIndex + 1 },
+  );
+}
+
 /** The notice posted when flockctl skips a pending step. */
 export function waveStepSkippedNoticeText(stepIndex: number): string {
   return i18n.t("chat:conductor.wave.stepSkipped", { step: stepIndex + 1 });

@@ -10,15 +10,18 @@
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { ConductorRoadmap } from "@/features/conductor/flockRoadmap";
+import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import {
   waveStepNode,
   withAmendedPendingStep,
+  withRestartedStep,
   withWaveStepPhase,
   type WaveState,
   type WaveStepState,
 } from "@/features/conductor/waveEngine";
 import {
   waveStepAmendedNoticeText,
+  waveStepRestartedNoticeText,
   waveStepSkippedNoticeText,
 } from "@/features/conductor/waveNotices";
 import { runWaveEngineTick } from "@/features/conductor/waveRunner";
@@ -240,6 +243,76 @@ export function skipWaveStep(wave: WaveState, step: number): void {
     waveStepSkippedNoticeText(target.stepIndex),
   );
   runWaveEngineTick();
+}
+
+/** Why a session a restart replaced was stopped, as its chip says it. */
+const STEP_RESTART_STOP_REASON =
+  "Stopped by the operator through flockctl: its step is being run again.";
+
+/**
+ * Runs a dispatched step again in a new session: stops the one at work on
+ * it, sends the step back to pending with the correction, and lets the
+ * engine dispatch it. Returns the session that was replaced, when the
+ * step had one.
+ */
+export async function restartWaveStep(
+  wave: WaveState,
+  step: number,
+  text?: string,
+): Promise<string | null> {
+  const target = wave.steps.find((row) => row.stepIndex === step - 1);
+  if (!target) {
+    throw new CommandError(
+      "invalid_args",
+      `Wave "${wave.waveId}" has ${wave.steps.length} steps; there is no step ${step}.`,
+    );
+  }
+  if (wave.phase !== "running") {
+    throw new CommandError(
+      "wave_not_running",
+      `Wave "${wave.waveId}" is ${wave.phase}: its steps are no longer being run, so none can be run again. Plan a new wave for the work.`,
+    );
+  }
+  if (target.phase !== "spawned" && target.phase !== "failed") {
+    throw new CommandError(
+      "wave_step_not_dispatched",
+      `Step ${step} of wave "${wave.waveId}" is ${target.phase}; only a step that was dispatched can be run again. Use \`wave amend\` to change one that has not started.`,
+    );
+  }
+  const nodes = Object.values(useConductorGraphStore.getState().nodesById);
+  const node = waveStepNode(wave, target.stepIndex, nodes);
+  const replaced = node?.sessionId ?? target.sessionId ?? null;
+  if (
+    node &&
+    (node.status === "running" ||
+      node.status === "starting" ||
+      node.status === "waiting")
+  ) {
+    await stopOrchestratorSession(node.sessionId, STEP_RESTART_STOP_REASON);
+  }
+  updateWaveEngineState((state) => {
+    const current = state.waves.find((row) => row.waveId === wave.waveId);
+    if (!current) return state;
+    // The step's record of the session it is taken from is what keeps
+    // the engine from reading that session as its executor again.
+    const withSession =
+      replaced && target.sessionId !== replaced
+        ? withWaveStepPhase(current, target.stepIndex, {
+            phase: "spawned",
+            sessionId: replaced,
+          })
+        : current;
+    return withWave(
+      state,
+      withRestartedStep(withSession, target.stepIndex, text),
+    );
+  });
+  postConductorNotice(
+    wave.conductorSessionId,
+    waveStepRestartedNoticeText(target.stepIndex, Boolean(text?.trim())),
+  );
+  runWaveEngineTick();
+  return replaced;
 }
 
 function requirePendingStep(wave: WaveState, step: number): WaveStepState {

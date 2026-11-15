@@ -14,7 +14,7 @@ const skipWaveStepSchema = z
       .number()
       .int()
       .min(1)
-      .max(5)
+      .max(64)
       .describe(
         "The step to skip, 1-based as `flockctl wave list` numbers them.",
       ),

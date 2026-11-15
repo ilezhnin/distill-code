@@ -287,6 +287,87 @@ describe("wave commands", () => {
     expect(notices).toHaveLength(1);
   });
 
+  it("runs a dispatched step again in a new session, with a correction", async () => {
+    const { live } = seed();
+    const child = `${live.waveId}-child-0`;
+    useConductorGraphStore.setState({
+      nodesById: {
+        [CONDUCTOR]: conductorNode(),
+        [child]: workerNode(live.waveId, 0),
+      },
+    });
+    const result = await dispatchCommand(
+      "waves",
+      {
+        action: "restart",
+        wave_id: live.waveId,
+        step: 1,
+        text: "Use the 2020 register.",
+      },
+      ctx,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      step: 1,
+      stopped_session_id: child,
+    });
+    // The session at work on the step is stopped, and says why.
+    expect(stopOrchestratorSession).toHaveBeenCalledWith(
+      child,
+      expect.stringContaining("run again"),
+    );
+    const step = getWaveEngineState().waves.find(
+      (wave) => wave.waveId === live.waveId,
+    )?.steps[0];
+    // The step waits to be dispatched afresh: no session, no run, and the
+    // one it is taken from is never read as its executor again.
+    expect(step).toMatchObject({
+      phase: "pending",
+      resumedFromSessionId: child,
+    });
+    expect(step?.sessionId).toBeUndefined();
+    expect(step?.runId).toBeUndefined();
+    expect(step?.subtask).toContain("Find callers");
+    expect(step?.subtask).toContain("started again on the operator's order");
+    expect(step?.subtask.endsWith("Use the 2020 register.")).toBe(true);
+    expect(runWaveEngineTick).toHaveBeenCalled();
+    const notices = (useChatStore.getState().messagesBySession[CONDUCTOR] ?? [])
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === "systemNotification");
+    expect(notices).toHaveLength(1);
+
+    // A step that has not started is amended, not restarted.
+    await expectCommandError(
+      dispatchCommand(
+        "waves",
+        { action: "restart", wave_id: live.waveId, step: 2 },
+        ctx,
+      ),
+      "wave_step_not_dispatched",
+    );
+  });
+
+  it("refuses to run again a step of a wave that is past its steps", async () => {
+    const { live } = seed();
+    setWaveEngineState({
+      ...getWaveEngineState(),
+      waves: getWaveEngineState().waves.map((wave) =>
+        wave.waveId === live.waveId
+          ? { ...wave, phase: "awaitingVerdict" as const }
+          : wave,
+      ),
+    });
+    await expectCommandError(
+      dispatchCommand(
+        "waves",
+        { action: "restart", wave_id: live.waveId, step: 1 },
+        ctx,
+      ),
+      "wave_not_running",
+    );
+    expect(stopOrchestratorSession).not.toHaveBeenCalled();
+  });
+
   it("skips a pending step so its dependents proceed", async () => {
     const { live } = seed();
     await dispatchCommand(

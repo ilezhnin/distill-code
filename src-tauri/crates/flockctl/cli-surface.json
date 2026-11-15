@@ -195,6 +195,11 @@
           "about": "Skip a step that has not started yet",
           "afterHelp": "Example:\n  flockctl wave skip --wave-id <wave-id> --step 3\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 3}\n  Refused with \"wave_step_not_pending\" once the step has been dispatched."
         },
+        "restart": {
+          "action": "restart",
+          "about": "Stop a dispatched step and run it again in a new session",
+          "afterHelp": "Example:\n  flockctl wave restart --wave-id <wave-id> --step 2 --text \"Use the 2020 register, not the 1998 one.\"\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 2, \"stopped_session_id\": \"...\"|null}\n  Refused with \"wave_step_not_dispatched\" for a pending step (use `wave amend`)\n  and with \"wave_not_running\" once the wave has gone to its digest."
+        },
         "roadmap": {
           "action": "roadmap",
           "about": "Read a conductor's roadmap: its goal, stages and loop state",

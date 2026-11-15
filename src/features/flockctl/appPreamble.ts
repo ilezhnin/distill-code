@@ -26,7 +26,7 @@ Usage: flockctl <noun> <verb> [--json]
 - project: create, list, get, archive
 - agent: create, list
 - skill: create, list, get
-- wave: list, get, cancel, steer, amend, skip, roadmap
+- wave: list, get, cancel, steer, amend, skip, restart, roadmap
 - info: context, harnesses, models
 
 Run \`flockctl <noun> <verb> --help\` for arguments. When asked to switch or move this chat to a new worktree/folder, use \`folder replace\` on the current cwd attachment so the old folder is removed from context. Use \`folder set-cwd\` to select an already attached folder, or only when the old folder should remain additional context. Use \`folder attach\` only to add context without changing cwd; \`folder detach\` removes context without deleting files.`;

@@ -690,6 +690,10 @@
       "adopted": "El paso {{step}} ({{name}}) ya tenía una sesión iniciada por otro proceso de Flock, así que se adoptó esa sesión en lugar de iniciar una segunda.",
       "amended": "Al paso {{step}} de esta ola se le añadió texto al encargo antes de empezar.",
       "stepSkipped": "El paso {{step}} de esta ola se omitió por orden del operador; los pasos posteriores lo tratan como no hecho.",
+      "stepRestarted": {
+        "plain": "El paso {{step}} de esta ola se ejecuta de nuevo en una sesión nueva por orden del operador; la sesión que lo ejecutaba se detuvo.",
+        "corrected": "El paso {{step}} de esta ola se ejecuta de nuevo en una sesión nueva por orden del operador, con una corrección añadida a su encargo; la sesión que lo ejecutaba se detuvo."
+      },
       "roadmap": {
         "updated": "Hoja de ruta: {{goal}} — {{done}} de {{total}} etapas hechas, estado {{status}}.",
         "invalid": "El bloque de hoja de ruta del conductor no se pudo leer, así que la hoja de ruta no cambió: {{detail}}",

@@ -13,7 +13,9 @@ import {
   admitWavePlan,
   advanceWave,
   collectWaveStepReports,
+  RESTARTED_STEP_NOTE,
   createWaveState,
+  withRestartedStep,
   hasAttestedWaveStepReport,
   waveInterruptedBeforeReport,
   withWaveStepPhase,
@@ -561,6 +563,45 @@ describe("advanceWave stub degradation (5b)", () => {
     });
     expect(resumed.complete).toBe(true);
     expect(resumed.degraded).toEqual([]);
+  });
+});
+
+describe("a step run again", () => {
+  it("is dispatched afresh, and never reads the session it was taken from as its executor", () => {
+    const spawned = withWaveStepPhase(
+      waveOf([step("brigade", "build it"), step("qa", "check it", "all")]),
+      0,
+      { phase: "spawned", sessionId: "child-0", runId: "run-0" },
+    );
+    const restarted = withRestartedStep(spawned, 0, "Build the other target.");
+    expect(restarted.steps[0]).toMatchObject({
+      phase: "pending",
+      resumedFromSessionId: "child-0",
+    });
+    expect(restarted.steps[0].subtask).toBe(
+      `build it\n\n${RESTARTED_STEP_NOTE}\n\nBuild the other target.`,
+    );
+    // The stopped session is still in the graph; the step is pending and
+    // is spawned again, not folded back onto that session.
+    const advanced = advanceWave(restarted, {
+      nodes: [workerNode(0, "cancelled")],
+      reportOf: () => undefined,
+    });
+    expect(advanced.spawn.map((request) => request.stepIndex)).toEqual([0]);
+    expect(advanced.wave.steps[0].phase).toBe("pending");
+    // A second restart says the note once.
+    const again = withRestartedStep(
+      withWaveStepPhase(restarted, 0, {
+        phase: "spawned",
+        sessionId: "child-0b",
+        runId: "run-0b",
+      }),
+      0,
+    );
+    expect(again.steps[0].subtask.split(RESTARTED_STEP_NOTE)).toHaveLength(2);
+    expect(again.steps[0].resumedFromSessionId).toBe("child-0b");
+    // A step that has not been dispatched is left alone.
+    expect(withRestartedStep(spawned, 1)).toBe(spawned);
   });
 });
 

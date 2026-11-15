@@ -26,6 +26,7 @@ import { listProjectsCommand } from "./impl/listProjects";
 import { listSessionsCommand } from "./impl/listSessions";
 import { listSkillsCommand } from "./impl/listSkills";
 import { amendWaveStepCommand } from "./impl/amendWaveStep";
+import { restartWaveStepCommand } from "./impl/restartWaveStep";
 import { cancelWaveCommand } from "./impl/cancelWave";
 import { getRoadmapCommand } from "./impl/getRoadmap";
 import { getWaveCommand } from "./impl/getWave";
@@ -172,6 +173,7 @@ export const ALL_TOOL_GROUPS = {
         steer: "steer",
         amend: "amend",
         skip: "skip",
+        restart: "restart",
         roadmap: "roadmap",
       },
     },
@@ -182,6 +184,7 @@ export const ALL_TOOL_GROUPS = {
       steer: steerWaveCommand,
       amend: amendWaveStepCommand,
       skip: skipWaveStepCommand,
+      restart: restartWaveStepCommand,
       roadmap: getRoadmapCommand,
     },
   },

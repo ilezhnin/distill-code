@@ -95,8 +95,12 @@ are separate choices, and each model offers its own set of them.
 - `flockctl wave cancel` is the operator's stop control: a live wave is parked
   and its running executors are told to stop, a queued wave is dropped.
   `flockctl wave steer` sends one message to every running executor of a
-  wave; `flockctl wave amend` and `flockctl wave skip` change a step that has
-  not been dispatched yet. Each posts a notice in the conductor chat.
+  wave; a delivery marked `delivered_after_turn` is queued behind a turn in
+  progress and has not been read yet. `flockctl wave amend` and
+  `flockctl wave skip` change a step that has not been dispatched yet, and
+  `flockctl wave restart` stops a dispatched step and runs it again in a new
+  session, with a correction to its brief when one is given. Each posts a
+  notice in the conductor chat.
 - `flockctl wave roadmap --conductor-session-id <id>` reads the goal a
   conductor published with a `distill-roadmap` block; the conductor changes
   it by publishing a new block.

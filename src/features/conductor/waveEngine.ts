@@ -1133,6 +1133,56 @@ export function withAmendedPendingStep(
     : wave;
 }
 
+/**
+ * What a restarted step's new executor is told before its brief's own
+ * words: another session was at this step, and what it left is not to be
+ * trusted as done.
+ */
+export const RESTARTED_STEP_NOTE =
+  "Note from the app: this step was started again on the operator's order. An earlier session worked on it and was stopped; files it wrote may be half done, so check what is there before building on it.";
+
+/**
+ * Sends a dispatched step back to `pending`, to be run again in a new
+ * session: the same plan fields, the restart note, and the correction when
+ * one is given. The session that ran it is remembered as the one it was
+ * taken from, so the engine never reads that session as the step's
+ * executor again. Its report flags and failure are gone with it: the
+ * step has not been done yet.
+ *
+ * Unchanged for a step that is pending or being started.
+ */
+export function withRestartedStep(
+  wave: WaveState,
+  stepIndex: number,
+  addendum?: string,
+): WaveState {
+  const text = addendum?.trim();
+  const steps = wave.steps.map((step): WaveStepState => {
+    if (
+      step.stepIndex !== stepIndex ||
+      (step.phase !== "spawned" && step.phase !== "failed")
+    ) {
+      return step;
+    }
+    const base = step.subtask.includes(RESTARTED_STEP_NOTE)
+      ? step.subtask
+      : `${step.subtask}\n\n${RESTARTED_STEP_NOTE}`;
+    const takenFrom = step.sessionId ?? step.resumedFromSessionId;
+    return {
+      stepIndex: step.stepIndex,
+      role: step.role,
+      subtask: text ? `${base}\n\n${text}` : base,
+      access: step.access,
+      ...optionalPlanFields(step),
+      phase: "pending",
+      ...(takenFrom ? { resumedFromSessionId: takenFrom } : {}),
+    };
+  });
+  return steps.some((step, index) => step !== wave.steps[index])
+    ? { ...wave, steps }
+    : wave;
+}
+
 /** The resume bookkeeping a step carries across its phase changes. */
 function resumeFields(
   step: Pick<WaveStepState, "resumeCount" | "resumedFromSessionId">,
