@@ -47,13 +47,26 @@ shape survives only as legacy input that is read, never written (see
   Claude's extra models are declared in `harness.rs` because each needs its
   own bridge session to read.
 - **Models granted to an account alone.** A provider can serve a model to
-  the accounts it has approved and leave it out of its CLI's menu: Claude
-  Code never lists Mythos. Such a model is declared `granted_only`, and a
-  model probe of a Claude subscription account also reads the provider's
-  own model list (`/v1/models`, with the account's sign-in) and adds a
-  `granted` row for each of them it names. The lane is offered only where
-  that row stands, so Mythos 5.2 and 5.1 appear for the account that has
-  them and for no other; a read that fails keeps the rows of the last one.
+  the accounts it has approved: Claude serves Mythos that way, and Claude
+  Code lists it only for such an account, or not at all in an older build.
+  Such a model is declared `granted_only`, and a model probe of a Claude
+  subscription account also reads the provider's own model list
+  (`/v1/models`, with the account's sign-in) and adds a `granted` row for
+  each of them the bridge left out. The lane stands where Claude's own app
+  lists the model, at the end of More models, and only where the account's
+  list names it; a read that fails keeps the rows of the last one.
+- **One catalogue across a provider's accounts.** The list a chat picks its
+  model from (`providers/supported_models/list`) is its account's own
+  models and, among them, the models the provider's other enabled accounts
+  of the same billing serve that this one does not, each row naming that
+  account in `accountId`. Choosing such a model moves the chat to that
+  account, as an account change does (the transcript goes with the next
+  prompt), and puts it on the model; the picker says which account it runs
+  on and holds the row back while a turn runs. A new chat that names no
+  account opens on the account that serves its model. Another account's
+  list is read from its last probe and probed again behind the request
+  when it is missing or over an hour old. Benchmark candidates read one
+  account's own list.
 - **Session answers.** `session/new`, `session/load`, `session/fork` and
   session info carry `_meta.modelId`, `_meta.reasoningEffort` and
   `_meta.fastMode`.

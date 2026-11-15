@@ -143,6 +143,11 @@ export interface ProviderInventoryModel {
   supportsFast?: boolean | null;
   /** The harness runs this model only in a session opened on it. */
   opensOnModel?: boolean;
+  /**
+   * Another account of the provider serves this model and the one asked
+   * about does not; choosing the model moves the chat to that account.
+   */
+  accountId?: string | null;
   /** Where `efforts`/`supportsFast` came from. Absent on older hosts. */
   capabilitySource?: "probed" | "declared" | "unknown";
 }

@@ -71,6 +71,11 @@ export interface ModelOption {
    * to it reopens the bridge session and cannot happen mid-turn.
    */
   opensOnModel?: boolean;
+  /**
+   * The account that serves this model when the chat's own does not;
+   * choosing the model moves the chat there, which cannot happen mid-turn.
+   */
+  accountId?: string;
   /** Where `efforts` and `supportsFast` came from. */
   capabilitySource?: ModelCapabilitySource;
 }

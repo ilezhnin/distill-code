@@ -285,6 +285,39 @@ describe("AgentModelPicker", () => {
     expect(modelRow("more", "Fable 5")).toBeEnabled();
   });
 
+  it("offers a model another account serves, and holds it back while a turn runs", async () => {
+    // Sonnet as only another account of the provider serves it: the same row,
+    // naming that account. Choosing it moves the chat there, which the host
+    // refuses mid-turn.
+    const models = claudeModels.map((model) =>
+      model.id === "sonnet" ? { ...model, accountId: "granted" } : model,
+    );
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    const { rerender } = render(
+      <PickerHarness
+        models={models}
+        initialModelId="opus[1m]"
+        onModelChange={onModelChange}
+        runActive
+      />,
+    );
+    await openPicker(user);
+    expect(modelRow("model", "Sonnet 5")).toBeDisabled();
+    expect(modelRow("model", "Opus 5")).toBeEnabled();
+
+    rerender(
+      <PickerHarness
+        models={models}
+        initialModelId="opus[1m]"
+        onModelChange={onModelChange}
+      />,
+    );
+    expect(modelRow("model", "Sonnet 5")).toBeEnabled();
+    await user.click(modelRow("model", "Sonnet 5") as HTMLButtonElement);
+    expect(onModelChange).toHaveBeenCalledWith("sonnet");
+  });
+
   it("offers another agent between turns only, and keeps a setup row reachable mid-turn", async () => {
     const user = userEvent.setup();
     const agents: AgentPickerOption[] = [

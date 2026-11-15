@@ -20,6 +20,7 @@ import { SearchBar } from "@/shared/ui/SearchBar";
 import { Button } from "@/shared/ui/button";
 import { ScrollArea } from "@/shared/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
 import { isModelAlias } from "../lib/modelAliases";
 import type { ModelOption } from "../types";
 import { PickerItem } from "./AgentModelPickerItem";
@@ -101,10 +102,23 @@ function ModelRow({
     isModelAlias(model.id) && !label.toLowerCase().startsWith("default")
       ? t("toolbar.defaultModelRow", { model: label })
       : label;
-  // Such a model runs only in a session opened on it, and the host refuses to
-  // reopen a session mid-turn, so the click could only fail. The current row
-  // stays enabled: choosing it again changes nothing.
-  const blocked = runActive && model.opensOnModel === true && !selected;
+  // The account that serves a model the chat's own account does not.
+  const servedBy = useProviderAccountsStore((state) =>
+    model.accountId
+      ? (state.statuses[model.accountId]?.accountLabel ??
+        state.accounts.find((account) => account.id === model.accountId)
+          ?.label ??
+        null)
+      : null,
+  );
+  // Such a model runs only in a session opened on it, or on another account
+  // the chat has to move to, and the host refuses both mid-turn, so the
+  // click could only fail. The current row stays enabled: choosing it again
+  // changes nothing.
+  const blocked =
+    runActive &&
+    (model.opensOnModel === true || model.accountId != null) &&
+    !selected;
   const row = (
     <PickerItem
       onClick={() => onSelect(model)}
@@ -120,7 +134,7 @@ function ModelRow({
     </PickerItem>
   );
 
-  if (!blocked) {
+  if (!blocked && !servedBy) {
     return row;
   }
 
@@ -132,7 +146,9 @@ function ModelRow({
         <span className="block">{row}</span>
       </TooltipTrigger>
       <TooltipContent side="right">
-        {t("toolbar.modelNeedsIdleSession", { model: name })}
+        {blocked
+          ? t("toolbar.modelNeedsIdleSession", { model: name })
+          : t("toolbar.modelOnAccount", { account: servedBy })}
       </TooltipContent>
     </Tooltip>
   );

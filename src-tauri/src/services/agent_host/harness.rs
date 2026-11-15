@@ -193,37 +193,6 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 supports_fast: None,
                 granted_only: false,
             },
-            // Mythos: the same model as Fable without Fable's added
-            // safeguards, which the provider serves to approved accounts
-            // only. Claude Code's menu does not list it, so its lane is
-            // offered where the account's own model list names it and is
-            // opened like the other unlisted lanes.
-            ModelDecl {
-                id: "claude-mythos-5-2[1m]",
-                name: Some("Mythos 5.2"),
-                description: Some("Mythos 5.2 with 1M context"),
-                group: ModelGroup::Main,
-                order: 12,
-                alias_of: None,
-                opens_on_model: true,
-                efforts: Some(CLAUDE_EFFORTS),
-                supports_fast: Some(false),
-                granted_only: true,
-            },
-            // The id the provider's model list names it by.
-            ModelDecl {
-                id: "claude-mythos-5-2",
-                name: None,
-                description: None,
-                group: ModelGroup::Main,
-                order: 12,
-                alias_of: Some("claude-mythos-5-2[1m]"),
-                opens_on_model: false,
-                efforts: None,
-                supports_fast: None,
-                granted_only: true,
-            },
-            // Opus at its 1M context: the model Opus chats, judges and
             // benchmark rows name. Claude Code 2.1.312 (bridge 0.99.1) gives
             // Opus 5.5 a native 1M window and lists it as plain `opus`, so
             // the bridge stopped listing this id but still runs it (10-31);
@@ -320,32 +289,6 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: None,
                 supports_fast: None,
                 granted_only: false,
-            },
-            // The previous Mythos, beside the previous Fable.
-            ModelDecl {
-                id: "claude-mythos-5-1[1m]",
-                name: Some("Mythos 5.1"),
-                description: Some("Mythos 5.1 with 1M context"),
-                group: ModelGroup::More,
-                order: 47,
-                alias_of: None,
-                opens_on_model: true,
-                efforts: Some(CLAUDE_EFFORTS),
-                supports_fast: Some(false),
-                granted_only: true,
-            },
-            // The id the provider's model list names it by.
-            ModelDecl {
-                id: "claude-mythos-5-1",
-                name: None,
-                description: None,
-                group: ModelGroup::More,
-                order: 47,
-                alias_of: Some("claude-mythos-5-1[1m]"),
-                opens_on_model: false,
-                efforts: None,
-                supports_fast: None,
-                granted_only: true,
             },
             ModelDecl {
                 id: "claude-fable-5[1m]",
@@ -458,6 +401,62 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 efforts: None,
                 supports_fast: None,
                 granted_only: false,
+            },
+            // Mythos: the same model as Fable without Fable's added
+            // safeguards, which the provider serves to approved accounts
+            // only. Its lanes stand where Claude's own app lists the model,
+            // after the older ones, are offered only where an account's own
+            // list names it, and open like the other models the bridge may
+            // leave out of its menu.
+            ModelDecl {
+                id: "claude-mythos-5-2[1m]",
+                name: Some("Mythos 5.2"),
+                description: Some("Mythos 5.2 with 1M context"),
+                group: ModelGroup::More,
+                order: 97,
+                alias_of: None,
+                opens_on_model: true,
+                efforts: Some(CLAUDE_EFFORTS),
+                supports_fast: Some(false),
+                granted_only: true,
+            },
+            // The id the provider's model list names it by.
+            ModelDecl {
+                id: "claude-mythos-5-2",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 97,
+                alias_of: Some("claude-mythos-5-2[1m]"),
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+                granted_only: true,
+            },
+            ModelDecl {
+                id: "claude-mythos-5-1[1m]",
+                name: Some("Mythos 5.1"),
+                description: Some("Mythos 5.1 with 1M context"),
+                group: ModelGroup::More,
+                order: 98,
+                alias_of: None,
+                opens_on_model: true,
+                efforts: Some(CLAUDE_EFFORTS),
+                supports_fast: Some(false),
+                granted_only: true,
+            },
+            // The id the provider's model list names it by.
+            ModelDecl {
+                id: "claude-mythos-5-1",
+                name: None,
+                description: None,
+                group: ModelGroup::More,
+                order: 98,
+                alias_of: Some("claude-mythos-5-1[1m]"),
+                opens_on_model: false,
+                efforts: None,
+                supports_fast: None,
+                granted_only: true,
             },
         ],
         session_model_meta: Some(claude_session_model_meta),
@@ -1134,7 +1133,7 @@ mod tests {
         let row = |id: &str| models.iter().find(|row| row["id"] == id).unwrap();
         let lane = row("claude-mythos-5-2[1m]");
         assert_eq!(lane["name"], "Mythos 5.2");
-        assert_eq!(lane["group"], "main");
+        assert_eq!(lane["group"], "more");
         assert_eq!(lane["opensOnModel"], true);
         assert_eq!(
             lane["efforts"].as_array().unwrap().len(),
@@ -1144,10 +1143,16 @@ mod tests {
         // The provider's id is another name for the lane, never a second model.
         assert_eq!(row("claude-mythos-5-2")["aliasOf"], "claude-mythos-5-2[1m]");
         assert_eq!(row("claude-mythos-5-2")["opensOnModel"], false);
-        // Mythos sits right after the Fable of its release.
-        let position = |id: &str| models.iter().position(|row| row["id"] == id).unwrap();
-        assert!(position("claude-fable-5-2[1m]") < position("claude-mythos-5-2[1m]"));
-        assert!(position("claude-mythos-5-2[1m]") < position("opus[1m]"));
+        // Both stand where Claude's own app lists them: last, the newer first.
+        let ids: Vec<&str> = models
+            .iter()
+            .filter(|row| row["aliasOf"].is_null())
+            .filter_map(|row| row["id"].as_str())
+            .collect();
+        assert_eq!(
+            ids[ids.len() - 2..],
+            ["claude-mythos-5-2[1m]", "claude-mythos-5-1[1m]"]
+        );
         // One release granted is one lane.
         let mut rows = claude_bridge_rows();
         rows.push(granted_row("claude-mythos-5-1"));

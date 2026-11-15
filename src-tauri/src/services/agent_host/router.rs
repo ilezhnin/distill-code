@@ -4484,10 +4484,8 @@ impl Inner {
         })?;
         let spec = harness::harness(&harness_id)
             .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
-        let account_id = self.resolve_account_id(
-            &harness_id,
-            Self::meta_string(&params, "accountId").as_deref(),
-        )?;
+        let named_account = Self::meta_string(&params, "accountId");
+        let mut account_id = self.resolve_account_id(&harness_id, named_account.as_deref())?;
         let cwd = params
             .get("cwd")
             .and_then(Value::as_str)
@@ -4497,6 +4495,17 @@ impl Inner {
         // A model this harness runs only in a session opened on it decides how
         // the session is opened; every other one is written afterwards.
         let wanted = Self::wanted_from_meta(&params);
+        // A chat that names no account opens on the one that serves its model.
+        if let (None, Some(current), Some(model_id)) =
+            (&named_account, account_id.clone(), wanted.model.as_deref())
+        {
+            if let Some(serving) = self
+                .account_for_model(&harness_id, &current, model_id)
+                .await
+            {
+                account_id = Some(serving);
+            }
+        }
         let open_meta = wanted
             .model
             .as_deref()
@@ -5863,6 +5872,19 @@ impl Inner {
                 return self.move_to_harness(&session_id, requested).await;
             }
         }
+        if config_id == "model" {
+            let model_id = params.get("value").and_then(Value::as_str).unwrap_or("");
+            if let Some(current) = record.account_id.as_deref() {
+                if let Some(serving) = self
+                    .account_for_model(&record.harness, current, model_id)
+                    .await
+                {
+                    return self
+                        .move_session_to_account(&session_id, &serving, Some(model_id))
+                        .await;
+                }
+            }
+        }
         let (bridge, bridge_session_id) = self.attach_session(&record).await?;
         let (mut snapshot, has_model_option, standing) = {
             let sessions = self.sessions.lock().await;
@@ -6159,12 +6181,48 @@ impl Inner {
         Ok(response)
     }
 
+    /// The account a chat on `account_id` has to move to for `model_id`:
+    /// another of the provider's accounts whose list names the model, when
+    /// this account's own list does not (a model the provider grants account
+    /// by account). `None` leaves the chat where it is: its account lists the
+    /// model, or nothing read so far says another one does.
+    async fn account_for_model(
+        self: &Arc<Self>,
+        harness_id: &str,
+        account_id: &str,
+        model_id: &str,
+    ) -> Option<String> {
+        if ext::account_lists_model(self, harness_id, account_id, model_id).await != Some(false) {
+            return None;
+        }
+        for other in ext::pool_accounts(&self.app, harness_id, account_id) {
+            if ext::account_lists_model(self, harness_id, &other.id, model_id).await == Some(true) {
+                return Some(other.id);
+            }
+        }
+        None
+    }
+
     /// Switch only an idle chat. A new CLI session receives context as text;
     /// historical commands are never dispatched as live tool invocations.
     pub(super) async fn set_session_account(
         self: &Arc<Self>,
         session_id: &str,
         account_id: &str,
+    ) -> Result<Value, Value> {
+        self.move_session_to_account(session_id, account_id, None)
+            .await
+    }
+
+    /// [`Self::set_session_account`], for a chat that moves because it was
+    /// put on `model`, which only the new account serves. An account change
+    /// alone keeps everything the chat runs with or is refused; one made for
+    /// a model keeps what that model offers and says what it does not.
+    async fn move_session_to_account(
+        self: &Arc<Self>,
+        session_id: &str,
+        account_id: &str,
+        model: Option<&str>,
     ) -> Result<Value, Value> {
         let lock = self.attach_lock(session_id).await;
         let _moving = lock.lock().await;
@@ -6204,7 +6262,9 @@ impl Inner {
         let spec =
             harness::harness(&record.harness).ok_or_else(|| invalid_params("Unknown provider"))?;
         let wanted = Selection {
-            model: record.model_id.clone(),
+            model: model
+                .map(str::to_string)
+                .or_else(|| record.model_id.clone()),
             effort: record.reasoning_effort.clone(),
             fast: record.fast_mode,
         };
@@ -6231,12 +6291,11 @@ impl Inner {
                 open_meta.is_some(),
             )
             .await;
-        if !substitutions.is_empty()
-            || wanted
-                .model
-                .as_ref()
-                .is_some_and(|model| Self::current_model(&snapshot).as_ref() != Some(model))
-        {
+        let model_refused = wanted
+            .model
+            .as_ref()
+            .is_some_and(|model| Self::current_model(&snapshot).as_ref() != Some(model));
+        if model_refused || (model.is_none() && !substitutions.is_empty()) {
             bridge.close_session(&bridge_session_id).await;
             return Err(protocol::error_with_data(
                 protocol::INVALID_PARAMS,
@@ -6282,6 +6341,19 @@ impl Inner {
         if let Some(runtime) = previously {
             self.let_go_of(&runtime).await;
         }
+        if let Some(model) = model {
+            // As after any model change: what the bridge answered is kept.
+            let acknowledged = Self::selection_from(&snapshot["configOptions"]);
+            let _ = self.store.set_model(session_id, Some(model)).await;
+            let _ = self
+                .store
+                .set_run_settings(
+                    session_id,
+                    acknowledged.effort.as_deref(),
+                    acknowledged.fast,
+                )
+                .await;
+        }
         let has_model_option = Self::has_model_option(&snapshot);
         self.sessions.lock().await.insert(
             session_id.to_string(),
@@ -6298,7 +6370,7 @@ impl Inner {
                 native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
                 has_model_option,
-                substitutions: Vec::new(),
+                substitutions: substitutions.clone(),
                 last_active: std::time::Instant::now(),
             },
         );
@@ -6307,7 +6379,7 @@ impl Inner {
         let mut response = Self::presented_snapshot(&record.harness, &snapshot, has_model_option);
         self.notify_frontend("session/update", json!({"sessionId":session_id,"update":{"sessionUpdate":"config_option_update","configOptions":response["configOptions"],"_meta":meta}}));
         response["_meta"] = meta;
-        Ok(response)
+        Ok(Self::with_substitutions(response, &substitutions))
     }
 
     /// The text of a prompt block the user can see: a text block addressed to
@@ -7004,6 +7076,21 @@ impl Inner {
             .is_some();
         let automatic = !owned && self.automatic_account_switching(&record.harness)?;
         let mut unavailable = std::collections::HashSet::new();
+        // A spare whose list lacks a model this account lists cannot take the
+        // chat: the provider grants some models account by account.
+        if let Some(model_id) = record.model_id.as_deref().filter(|_| automatic) {
+            if ext::account_lists_model(self, &record.harness, account_id, model_id).await
+                == Some(true)
+            {
+                for spare in ext::pool_accounts(&self.app, &record.harness, account_id) {
+                    if ext::account_lists_model(self, &record.harness, &spare.id, model_id).await
+                        == Some(false)
+                    {
+                        unavailable.insert(spare.id);
+                    }
+                }
+            }
+        }
         loop {
             let selection = if owned || provider_accounts::uses_cli_login(&record.harness) {
                 crate::services::provider_account_status::select_owned_account(

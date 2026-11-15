@@ -331,6 +331,7 @@ function inventoryCapabilities(
       : {}),
     ...(entry.supportsFast != null ? { supportsFast: entry.supportsFast } : {}),
     ...(entry.opensOnModel != null ? { opensOnModel: entry.opensOnModel } : {}),
+    ...(entry.accountId ? { accountId: entry.accountId } : {}),
   };
 }
 

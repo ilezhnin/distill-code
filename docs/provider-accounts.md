@@ -160,7 +160,14 @@ the account index is read, while each provider's saved switch stays unchanged.
 The current account remains selected while usable. A quota failure can select
 another available account for the same provider and billing mode; a subscription
 chat does not automatically become a paid API chat. An API chat can switch to
-another API account in its provider group.
+another API account in its provider group. A spare whose own model list lacks
+the chat's model is passed over: a model the provider grants to one account
+(Claude's Mythos) runs only there, so such a chat waits for that account.
+
+A chat's model menu covers every account of its provider and billing mode.
+Choosing a model only another account serves moves the chat to that account,
+whatever the switch says: the operator asked for the model, and that account
+is the one that runs it.
 
 **Purchased Codex credits keep an account usable**, as in the Codex app. A
 spent plan window of a bucket whose credits snapshot reports credits (the

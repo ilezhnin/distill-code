@@ -866,6 +866,7 @@
     "moreModels": "More models",
     "backToModels": "Back",
     "modelNeedsIdleSession": "Finish or stop the current turn to switch to {{model}}",
+    "modelOnAccount": "Runs on {{account}}",
     "defaultModelRow": "Default ({{model}})",
     "effortUnavailable": "{{model}} does not offer {{wanted}} — running at {{actual}}",
     "effortControlUnavailable": "{{model}} has no reasoning effort control",

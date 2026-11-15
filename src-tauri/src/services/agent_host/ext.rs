@@ -10,6 +10,7 @@ use super::protocol::{self, invalid_params};
 use super::router::Inner;
 use super::sources;
 use super::store::{MessagePart, MessageSide, SessionStore};
+use crate::services::provider_accounts::{self, ProviderAccount};
 
 fn session_id(params: &Value) -> Result<String, Value> {
     protocol::session_id(params).ok_or_else(|| invalid_params("sessionId required"))
@@ -428,7 +429,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 &provider_id,
                 params.get("accountId").and_then(Value::as_str),
             )?;
-            model_inventory(host, &provider_id, account_id.as_deref(), false).await
+            chat_model_inventory(host, &provider_id, account_id.as_deref(), false).await
         }
         "providers/inventory/refresh" => {
             let provider_id = params
@@ -440,7 +441,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 &provider_id,
                 params.get("accountId").and_then(Value::as_str),
             )?;
-            model_inventory(host, &provider_id, account_id.as_deref(), true).await
+            chat_model_inventory(host, &provider_id, account_id.as_deref(), true).await
         }
 
         // --- sources -------------------------------------------------------
@@ -488,7 +489,7 @@ const INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// whenever the models Flock itself contributes change -- those are merged
 /// in at request time and never touch the probe's `updatedAt`, so without this
 /// a renderer holding a cached list has no way to notice them.
-const SHAPE_REVISION: u32 = 12;
+const SHAPE_REVISION: u32 = 13;
 
 /// One account catalogue for chats and benchmark candidates. Runtime probes
 /// validate this list; they do not own a second list of model identities.
@@ -524,6 +525,138 @@ pub(super) async fn model_inventory(
     let mut response = inventory_response(provider, models, updated_at.as_deref());
     response["accountId"] = json!(account);
     Ok(response)
+}
+
+/// How old another account's cached list may be before it is read again
+/// behind a request for this one's.
+const POOL_INVENTORY_MAX_AGE_SECS: i64 = 3600;
+
+/// The catalogue a chat picks its model from: `account`'s own models and,
+/// among them, the models the provider's other accounts serve that this one
+/// does not, each naming the account that serves it (`accountId`). A model
+/// granted to one account is thus offered in every chat of the provider;
+/// choosing it moves the chat to that account (`Inner::account_for_model`).
+/// A benchmark candidate runs on one account, so it reads `model_inventory`.
+pub(super) async fn chat_model_inventory(
+    host: &Arc<Inner>,
+    provider: &str,
+    account: Option<&str>,
+    refresh: bool,
+) -> Result<Value, Value> {
+    let mut response = model_inventory(host, provider, account, refresh).await?;
+    let Some(account) = account else {
+        return Ok(response);
+    };
+    let now = chrono::Utc::now().timestamp();
+    let mut others = Vec::new();
+    for other in pool_accounts(&host.app, provider, account) {
+        let cached = cached_inventory(host, provider, Some(&other.id)).await;
+        let current = cached
+            .updated_at
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .is_some_and(|read| {
+                (0..POOL_INVENTORY_MAX_AGE_SECS).contains(&(now - read.timestamp()))
+            });
+        if cached.models.is_empty() || !current {
+            // Never on this request's time: the next one reads the result.
+            let (host, provider) = (Arc::clone(host), provider.to_string());
+            let other = other.id.clone();
+            tokio::spawn(async move {
+                if model_inventory(&host, &provider, Some(&other), false)
+                    .await
+                    .is_err()
+                {
+                    log::info!(
+                        "[agent-host] the models of {provider} account {other} were not read"
+                    );
+                }
+            });
+        }
+        others.push((other.id, cached.models));
+    }
+    if let Some(rows) = response["models"].as_array_mut() {
+        add_pool_rows(provider, rows, others);
+    }
+    Ok(response)
+}
+
+/// Files the rows other accounts list and this one does not among `rows`,
+/// in menu order, each under the first account that lists it.
+fn add_pool_rows(harness_id: &str, rows: &mut Vec<Value>, others: Vec<(String, Vec<Value>)>) {
+    for (account_id, probed) in others {
+        if probed.is_empty() {
+            continue;
+        }
+        for mut row in harness::merge_inventory(harness_id, probed) {
+            if rows.iter().any(|known| known["id"] == row["id"]) {
+                continue;
+            }
+            row["accountId"] = json!(account_id);
+            rows.push(row);
+        }
+    }
+    rows.sort_by_key(|row| row["order"].as_u64().unwrap_or(u64::MAX));
+}
+
+/// The provider's other enabled accounts billed the way `account_id` is,
+/// its default first: the accounts a chat on `account_id` can be moved to.
+pub(super) fn pool_accounts(
+    app: &tauri::AppHandle,
+    harness_id: &str,
+    account_id: &str,
+) -> Vec<ProviderAccount> {
+    let Ok(registry) = provider_accounts::snapshot(app) else {
+        return Vec::new();
+    };
+    pool_of(
+        registry.accounts,
+        registry.defaults.get(harness_id).map(String::as_str),
+        harness_id,
+        account_id,
+    )
+}
+
+fn pool_of(
+    accounts: Vec<ProviderAccount>,
+    default: Option<&str>,
+    harness_id: &str,
+    account_id: &str,
+) -> Vec<ProviderAccount> {
+    let Some(billing) = accounts
+        .iter()
+        .find(|account| account.id == account_id && account.provider_id == harness_id)
+        .map(|account| account.auth_method)
+    else {
+        return Vec::new();
+    };
+    let mut others: Vec<_> = accounts
+        .into_iter()
+        .filter(|account| {
+            account.id != account_id
+                && account.enabled
+                && account.provider_id == harness_id
+                && account.auth_method == billing
+        })
+        .collect();
+    others.sort_by_key(|account| Some(account.id.as_str()) != default);
+    others
+}
+
+/// Whether `account_id`'s own model list names `model_id`; `None` while the
+/// account has never been probed, which says nothing either way.
+pub(super) async fn account_lists_model(
+    host: &Arc<Inner>,
+    harness_id: &str,
+    account_id: &str,
+    model_id: &str,
+) -> Option<bool> {
+    let cached = cached_inventory(host, harness_id, Some(account_id)).await;
+    (!cached.models.is_empty()).then(|| {
+        harness::merge_inventory(harness_id, cached.models)
+            .iter()
+            .any(|row| row["id"] == model_id)
+    })
 }
 
 /// The account catalogue owns model identities and capabilities for every
@@ -1063,6 +1196,108 @@ mod tests {
             inventory_response("codex-acp", Vec::new(), None)["revision"],
             format!("{SHAPE_REVISION}:")
         );
+    }
+
+    #[test]
+    fn a_chats_catalogue_adds_what_the_providers_other_accounts_list() {
+        let probed = |ids: &[&str]| -> Vec<Value> {
+            ids.iter()
+                .map(|id| json!({ "id": id, "name": id }))
+                .collect()
+        };
+        // The chat's account lists no Mythos; another account of the provider
+        // does, and a third was never probed.
+        let own = inventory_response("claude-acp", probed(&["sonnet", "haiku"]), None);
+        let mut rows = own["models"].as_array().unwrap().clone();
+        let own_ids: Vec<Value> = rows.iter().map(|row| row["id"].clone()).collect();
+        add_pool_rows(
+            "claude-acp",
+            &mut rows,
+            vec![
+                ("never-probed".into(), Vec::new()),
+                (
+                    "granted".into(),
+                    probed(&["sonnet", "haiku", "claude-mythos-5-2"]),
+                ),
+                (
+                    "granted-too".into(),
+                    probed(&["sonnet", "claude-mythos-5-2", "claude-mythos-5-1"]),
+                ),
+            ],
+        );
+        let added: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|row| !own_ids.contains(&row["id"]))
+            .map(|row| {
+                (
+                    row["id"].as_str().unwrap(),
+                    row["accountId"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        // Each under the first account that lists it, in menu order.
+        assert_eq!(
+            added,
+            [
+                ("claude-mythos-5-2[1m]", "granted"),
+                ("claude-mythos-5-2", "granted"),
+                ("claude-mythos-5-1[1m]", "granted-too"),
+                ("claude-mythos-5-1", "granted-too"),
+            ]
+        );
+        // The account's own rows name no account and keep their places.
+        assert!(rows
+            .iter()
+            .filter(|row| own_ids.contains(&row["id"]))
+            .all(|row| row.get("accountId").is_none()));
+        let orders: Vec<u64> = rows
+            .iter()
+            .map(|row| row["order"].as_u64().unwrap())
+            .collect();
+        assert!(orders.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn a_chat_moves_only_among_the_providers_enabled_accounts_billed_the_same() {
+        let account = |id: &str, provider: &str, auth, enabled| ProviderAccount {
+            id: id.into(),
+            provider_id: provider.into(),
+            label: id.into(),
+            auth_method: auth,
+            enabled,
+            auto_switch: true,
+            created_at: 0,
+            updated_at: 0,
+        };
+        use provider_accounts::AuthMethod::{ApiKey, OAuth};
+        let accounts = vec![
+            account("chat", "claude-acp", OAuth, true),
+            account("spare", "claude-acp", OAuth, true),
+            account("default", "claude-acp", OAuth, true),
+            account("off", "claude-acp", OAuth, false),
+            account("metered", "claude-acp", ApiKey, true),
+            account("codex", "codex-acp", OAuth, true),
+        ];
+        let ids = |pool: Vec<ProviderAccount>| -> Vec<String> {
+            pool.into_iter().map(|account| account.id).collect()
+        };
+        // The provider's default goes first; a subscription chat never moves
+        // to a metered key, a disabled account or another provider.
+        assert_eq!(
+            ids(pool_of(
+                accounts.clone(),
+                Some("default"),
+                "claude-acp",
+                "chat"
+            )),
+            ["default", "spare"]
+        );
+        assert_eq!(
+            ids(pool_of(accounts.clone(), None, "claude-acp", "metered")),
+            Vec::<String>::new()
+        );
+        // An account Flock does not store has no pool.
+        assert!(pool_of(accounts, None, "claude-acp", "cli-login-claude").is_empty());
     }
 
     #[test]
