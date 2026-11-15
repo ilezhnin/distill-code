@@ -100,6 +100,7 @@ fn install_flockctl_shims(
         return;
     };
     let shim_dir = root.join("cache").join("bin");
+    sweep_replaced_shims(&shim_dir);
     let mut installed_any = false;
     for (cli_path, stems) in [
         (flockctl_bin.as_deref(), FLOCKCTL_SHIM_STEMS),
@@ -128,7 +129,7 @@ fn install_flockctl_shims(
 fn create_cli_shims(shim_dir: &Path, cli_path: &Path, stems: &[&str]) -> bool {
     let mut installed_any = false;
     for stem in stems {
-        match create_cli_shim(shim_dir, cli_path, shim_name(stem)) {
+        match create_cli_shim(shim_dir, cli_path, binary_name(stem)) {
             Ok(()) => installed_any = true,
             Err(error) => log::warn!("Skipping {stem} PATH shim: {error}"),
         }
@@ -200,18 +201,10 @@ fn binary_name(stem: &str) -> String {
     }
 }
 
-#[cfg(feature = "flockctl")]
-fn shim_name(stem: &str) -> String {
-    if cfg!(windows) {
-        format!("{stem}.cmd")
-    } else {
-        stem.to_string()
-    }
-}
-
 /// Create or refresh the PATH shim that lets harness children run a bare
 /// `flockctl`. Unix uses a symlink so the bundled binary stays authoritative;
-/// Windows uses a `.cmd` wrapper because symlinks need elevated shells.
+/// Windows, where symlinks need elevated shells, keeps a copy of the binary
+/// (see [`create_cli_shim_file`]).
 #[cfg(feature = "flockctl")]
 fn create_cli_shim(shim_dir: &Path, cli_path: &Path, shim_name: String) -> Result<(), String> {
     if !cli_path.exists() {
@@ -222,8 +215,12 @@ fn create_cli_shim(shim_dir: &Path, cli_path: &Path, shim_name: String) -> Resul
     }
     std::fs::create_dir_all(shim_dir)
         .map_err(|error| format!("failed to create {}: {error}", shim_dir.display()))?;
-    let link = shim_dir.join(shim_name);
-    match std::fs::remove_file(&link) {
+    create_cli_shim_file(cli_path, &shim_dir.join(shim_name))
+}
+
+#[cfg(all(feature = "flockctl", unix))]
+fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
+    match std::fs::remove_file(link) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -233,11 +230,6 @@ fn create_cli_shim(shim_dir: &Path, cli_path: &Path, shim_name: String) -> Resul
             ));
         }
     }
-    create_cli_shim_file(cli_path, &link)
-}
-
-#[cfg(all(feature = "flockctl", unix))]
-fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
     std::os::unix::fs::symlink(cli_path, link).map_err(|error| {
         format!(
             "failed to symlink {} -> {}: {error}",
@@ -247,17 +239,61 @@ fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
     })
 }
 
+/// The CLI itself, copied to `link`. A `.cmd` wrapper stood here and ran the
+/// binary through cmd.exe, which ends an argument at its first line break and
+/// reads `& | < > ^ %` as its own: a prompt of several lines reached the app
+/// as its first line (11-14). An executable takes its arguments as they are
+/// given. The copy is replaced when the binary changed; one still running (a
+/// detached `flock-monitor`) cannot be overwritten, so it is moved aside.
 #[cfg(all(feature = "flockctl", windows))]
 fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
-    let content = format!("@echo off\r\n\"{}\" %*\r\n", cli_path.to_string_lossy());
-    std::fs::write(link, content).map_err(|error| {
+    // The wrapper an earlier build left would still answer `<name>.cmd`.
+    let _ = std::fs::remove_file(link.with_extension("cmd"));
+    let stamp = |path: &Path| {
+        std::fs::metadata(path)
+            .ok()
+            .map(|meta| (meta.len(), meta.modified().ok()))
+    };
+    // A copy keeps its source's size and modification time.
+    if stamp(link).is_some() && stamp(link) == stamp(cli_path) {
+        return Ok(());
+    }
+    if link.exists() && std::fs::remove_file(link).is_err() {
+        let aside = link.with_extension(format!("old-{}", std::process::id()));
+        let _ = std::fs::remove_file(&aside);
+        std::fs::rename(link, &aside).map_err(|error| {
+            format!(
+                "failed to move the running {} aside: {error}",
+                link.display()
+            )
+        })?;
+    }
+    std::fs::copy(cli_path, link).map(|_| ()).map_err(|error| {
         format!(
-            "failed to write {} wrapper for {}: {error}",
-            link.display(),
-            cli_path.display()
+            "failed to copy {} to {}: {error}",
+            cli_path.display(),
+            link.display()
         )
     })
 }
+
+/// Removes the copies earlier starts moved aside (see
+/// [`create_cli_shim_file`]) once nothing runs them any more.
+#[cfg(all(feature = "flockctl", windows))]
+fn sweep_replaced_shims(shim_dir: &Path) {
+    for entry in std::fs::read_dir(shim_dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension.to_string_lossy().starts_with("old-"))
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(all(feature = "flockctl", not(windows)))]
+fn sweep_replaced_shims(_shim_dir: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -308,7 +344,9 @@ mod tests {
     }
 
     /// Both CLIs land on PATH under their current name and the previous
-    /// build's: four shims, every one running the current binary.
+    /// build's: four shims, every one running the current binary, and on
+    /// Windows none of them a `.cmd` wrapper, which cut a prompt of several
+    /// lines at its first.
     #[cfg(feature = "flockctl")]
     #[test]
     fn the_shims_cover_the_current_and_the_previous_names() {
@@ -318,6 +356,11 @@ mod tests {
         std::fs::write(&flockctl, "cli").unwrap();
         std::fs::write(&monitor, "monitor").unwrap();
         let shim_dir = dir.path().join("cache").join("bin");
+        // What an earlier build left: its wrapper is retired.
+        std::fs::create_dir_all(&shim_dir).unwrap();
+        if cfg!(windows) {
+            std::fs::write(shim_dir.join("flockctl.cmd"), "@echo off\r\n").unwrap();
+        }
 
         assert!(create_cli_shims(&shim_dir, &flockctl, FLOCKCTL_SHIM_STEMS));
         assert!(create_cli_shims(
@@ -337,7 +380,7 @@ mod tests {
         let mut expected: Vec<String> =
             ["distill-monitor", "distillctl", "flock-monitor", "flockctl"]
                 .iter()
-                .map(|stem| shim_name(stem))
+                .map(|stem| binary_name(stem))
                 .collect();
         expected.sort();
         assert_eq!(names, expected);
@@ -348,24 +391,44 @@ mod tests {
             ("distill-monitor", &monitor),
         ] {
             assert!(
-                shim_runs(&shim_dir.join(shim_name(stem)), target),
+                shim_runs(&shim_dir.join(binary_name(stem)), target),
                 "{stem} runs {}",
                 target.display()
             );
         }
     }
 
-    /// What a shim at `link` runs: the `.cmd` wrapper's quoted path on
-    /// Windows, the symlink's target elsewhere.
+    /// What a shim at `link` runs: the binary's own bytes on Windows, the
+    /// symlink's target elsewhere.
     #[cfg(feature = "flockctl")]
     fn shim_runs(link: &Path, target: &Path) -> bool {
         if cfg!(windows) {
-            std::fs::read_to_string(link)
-                .unwrap()
-                .contains(&format!("\"{}\"", target.to_string_lossy()))
+            std::fs::read(link).unwrap() == std::fs::read(target).unwrap()
         } else {
             std::fs::read_link(link).unwrap() == target
         }
+    }
+
+    /// A binary an update replaced reaches its shim, a shim that is current
+    /// is left alone, and the copies moved aside are swept.
+    #[cfg(all(feature = "flockctl", windows))]
+    #[test]
+    fn a_shim_follows_its_binary_through_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let flockctl = dir.path().join(binary_name("flockctl"));
+        let shim_dir = dir.path().join("bin");
+        let shim = shim_dir.join(binary_name("flockctl"));
+        std::fs::write(&flockctl, "first build").unwrap();
+        assert!(create_cli_shims(&shim_dir, &flockctl, &["flockctl"]));
+        assert_eq!(std::fs::read_to_string(&shim).unwrap(), "first build");
+        std::fs::write(&flockctl, "the second build").unwrap();
+        assert!(create_cli_shims(&shim_dir, &flockctl, &["flockctl"]));
+        assert_eq!(std::fs::read_to_string(&shim).unwrap(), "the second build");
+        let aside = shim.with_extension("old-1");
+        std::fs::write(&aside, "moved aside").unwrap();
+        sweep_replaced_shims(&shim_dir);
+        assert!(!aside.exists());
+        assert!(shim.exists());
     }
 
     /// A shim whose binary is missing is skipped; the one beside it is still

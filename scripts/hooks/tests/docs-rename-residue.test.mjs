@@ -99,7 +99,7 @@ const residue = {
   ],
   "docs/flockctl-architecture.md": [
     "The CLIs were `distillctl` and `distill-monitor` while the product was called\nDistill",
-    "compatibility shims `distillctl.cmd` and\n  `distill-monitor.cmd`",
+    "compatibility shims\n  `distillctl.exe` and `distill-monitor.exe`",
     "also through `DISTILLCTL_LOCK` with the same value",
     "`FLOCKCTL_LOCK`, then `DISTILLCTL_LOCK`",
     "`<app data>/distillctl/` directory are swept too",

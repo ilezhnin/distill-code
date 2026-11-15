@@ -249,11 +249,14 @@ to agents for one release, as input only:
 
 - Binaries: `flockctl` and `flock-monitor` (`crates/flockctl`,
   `crates/flock-monitor`), staged as the app's sidecars.
-- `PATH` shims: the agent host writes `cache/bin/flockctl.cmd` and
-  `cache/bin/flock-monitor.cmd` in the Flock folder (symlinks on Unix) and,
-  beside them, the compatibility shims `distillctl.cmd` and
-  `distill-monitor.cmd`, which run the same binaries. The root adoption pass
-  never retires them.
+- `PATH` shims: the agent host keeps a copy of each binary in the Flock
+  folder, `cache/bin/flockctl.exe` and `cache/bin/flock-monitor.exe`
+  (symlinks on Unix), and beside them the compatibility shims
+  `distillctl.exe` and `distill-monitor.exe`, copies of the same binaries. A
+  copy takes its arguments as they are given: the `.cmd` wrappers earlier
+  builds wrote ran the binary through cmd.exe, which cut a prompt of several
+  lines at its first, and are removed. The root adoption pass never retires
+  the shims.
 - Discovery: the broker writes `<Flock root>/flockctl/control-<pid>.json`.
   The app tells each session where the file is through `FLOCKCTL_LOCK`, and
   for one release also through `DISTILLCTL_LOCK` with the same value, so a
