@@ -6195,7 +6195,7 @@ impl Inner {
         if ext::account_lists_model(self, harness_id, account_id, model_id).await != Some(false) {
             return None;
         }
-        for other in ext::pool_accounts(&self.app, harness_id, account_id) {
+        for other in ext::pool_accounts(&self.app, harness_id, account_id).await {
             if ext::account_lists_model(self, harness_id, &other.id, model_id).await == Some(true) {
                 return Some(other.id);
             }
@@ -7082,7 +7082,7 @@ impl Inner {
             if ext::account_lists_model(self, &record.harness, account_id, model_id).await
                 == Some(true)
             {
-                for spare in ext::pool_accounts(&self.app, &record.harness, account_id) {
+                for spare in ext::pool_accounts(&self.app, &record.harness, account_id).await {
                     if ext::account_lists_model(self, &record.harness, &spare.id, model_id).await
                         == Some(false)
                     {

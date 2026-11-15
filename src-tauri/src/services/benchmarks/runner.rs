@@ -80,7 +80,7 @@ pub(super) const HOUSEKEEPING_EVERY: Duration = if cfg!(test) {
 fn judging_deferred(attempt: &Attempt) -> bool {
     matches!(
         attempt.reason.as_deref(),
-        Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY | JUDGE_RESELECTING)
+        Some(JUDGING_STOPPED | JUDGES_BUSY | RENDERER_BUSY | JUDGE_RESELECTING | JUDGE_REPLACING)
     ) || judge_discovery_waiting(attempt)
         || judge_quota_waiting(attempt)
         || judge_policy_waiting(attempt)
@@ -94,6 +94,15 @@ fn judge_policy_waiting(attempt: &Attempt) -> bool {
 }
 
 const JUDGE_RESELECTING: &str = "Selecting a replacement judge after a usage limit";
+/// A judge of an ordinary panel failed on its own: it gave no valid sheet,
+/// its provider refused the request, or its runtime would not take the
+/// selection. Its run takes the panel up again with another judge in that
+/// seat, or with the judges it has when nobody can take it (see
+/// [`ordinary_judging::judge_interrupted`]).
+const JUDGE_REPLACING: &str = "Selecting a replacement judge after a judge failed";
+/// How the reason of a judge turn an interruption cut off begins. Such a
+/// turn is nobody's failure: its seat asks the same judge again.
+const JUDGE_INTERRUPTED: &str = "Judge turn interrupted by a restart";
 
 fn judge_quota_waiting(attempt: &Attempt) -> bool {
     attempt.reason.as_deref() == Some(JUDGE_QUOTA_REASON)
@@ -1435,28 +1444,6 @@ pub(crate) fn ordinary_judges(
     panel
 }
 
-/// Pick an ordinary panel from accounts that can work now, keeping the size
-/// of the eligible panel. Another idle account may cover a busy account,
-/// but temporary occupancy must not silently remove the third judge.
-fn ordinary_available_judges(
-    candidates: &[&Configuration],
-    draft: &BenchmarkDraft,
-    offered: Vec<(Option<f64>, Configuration)>,
-    available: impl Fn(&Configuration) -> bool,
-) -> Result<Vec<Configuration>> {
-    let ready = offered
-        .iter()
-        .filter(|(_, judge)| available(judge))
-        .cloned()
-        .collect();
-    let panel = ordinary_judges(candidates, draft, ready);
-    let eligible_size = ordinary_judges(candidates, draft, offered).len();
-    if eligible_size >= MIN_JUDGES && panel.len() < eligible_size {
-        return Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGES_BUSY));
-    }
-    Ok(panel)
-}
-
 /// The vendors of the candidates, or none when one is unknown.
 fn candidate_vendors(
     candidates: &[&Configuration],
@@ -2138,12 +2125,14 @@ fn in_flight(evaluation: &Evaluation) -> bool {
 /// partial usage; failed recovery preserves it. The reply never becomes a vote.
 fn settle_interrupted_judge(evaluation: &mut Evaluation, usage: Option<TokenUsage>) {
     let complete = usage.is_some();
-    evaluation.reason = if complete {
-        "Judge turn interrupted by a restart; usage recovered from the host"
-    } else {
-        "Judge turn interrupted by a restart; complete usage is unknown"
-    }
-    .into();
+    evaluation.reason = format!(
+        "{JUDGE_INTERRUPTED}; {}",
+        if complete {
+            "usage recovered from the host"
+        } else {
+            "complete usage is unknown"
+        }
+    );
     if let Some(usage) = usage {
         evaluation.usage = Some(usage);
     }
@@ -3847,55 +3836,20 @@ impl NativeBackend {
                 )
             })
             .collect();
-        // Frozen panels returned above keep their exact seats. Ordinary panels
-        // may choose another idle account for an unfilled seat. The checks
-        // before/inside a batch remain the
-        // race guard if an account becomes busy after this snapshot.
-        let host = self
-            .app
-            .state::<AgentHost>()
-            .get_or_start(&self.app)
-            .await
-            .map_err(host_error)?;
-        let mut availability = std::collections::BTreeMap::new();
-        for (_, judge) in &offered {
-            let Some(account) = judge.account_id.as_deref() else {
-                continue;
-            };
-            let key = (judge.provider_id.clone(), account.to_owned());
-            if let std::collections::btree_map::Entry::Vacant(entry) = availability.entry(key) {
-                let activity = host
-                    .account_activity(&judge.provider_id, account)
-                    .await
-                    .map_err(host_error)?;
-                entry.insert(activity.active_sessions.is_empty());
-            }
-        }
+        // Frozen panels returned above keep their exact seats. A judge sits
+        // whatever else its account is doing: its turn is a session of its
+        // own, and the work beside it changes neither its answer nor its
+        // pace (owner, 11-14). Judges used to wait for their accounts to
+        // fall idle, and a day of chats on those accounts paused the run.
         let offered = offered
             .into_iter()
             .filter(|(_, judge)| !judge_recovery::excluded(judge, rejected))
             .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
             .collect();
-        let available = |judge: &Configuration| {
-            judge.account_id.as_ref().is_some_and(|account| {
-                availability
-                    .get(&(judge.provider_id.clone(), account.clone()))
-                    .copied()
-                    .unwrap_or(false)
-            })
-        };
         let panel = if let Some(open) = open {
-            ordinary_judging::available_panel(
-                open,
-                &candidates,
-                draft,
-                offered,
-                available,
-                quota,
-                deferred,
-            )?
+            ordinary_judging::available_panel(open, &candidates, draft, offered, quota, deferred)?
         } else {
-            let panel = ordinary_available_judges(&candidates, draft, offered, available)?;
+            let panel = ordinary_judges(&candidates, draft, offered);
             resolve_quota_panel(panel, &candidates, draft, quota, deferred)?
         };
         log::info!(
@@ -3936,10 +3890,16 @@ impl NativeBackend {
         let admit = |provider: &str| pool.iter().any(|entry| entry.provider_id == provider);
         let snapshot =
             crate::services::provider_accounts::snapshot(&self.app).map_err(host_error)?;
-        let accounts = judge_accounts(&snapshot.accounts, admit, |provider| {
+        let mut accounts = Vec::new();
+        for account in judge_accounts(&snapshot.accounts, admit, |provider| {
             crate::services::provider_accounts::cli_login_account_id(provider)
                 .and_then(|id| crate::services::provider_accounts::account(&self.app, &id).ok())
-        });
+        }) {
+            // A signed-out account seats nobody and is asked for nothing.
+            if crate::services::provider_account_status::signed_in(&self.app, &account).await {
+                accounts.push(account);
+            }
+        }
         let host = self
             .app
             .state::<AgentHost>()
@@ -4087,30 +4047,6 @@ impl NativeBackend {
             deferred,
             diagnostics,
         })
-    }
-
-    /// Whether every judge's account is free before a batch starts or
-    /// continues. A judge that turns busy mid-panel also defers the batch.
-    async fn judges_idle(&self, panel: &[Configuration]) -> Result<bool> {
-        let host = self
-            .app
-            .state::<AgentHost>()
-            .get_or_start(&self.app)
-            .await
-            .map_err(host_error)?;
-        for judge in panel {
-            let Some(account) = judge.account_id.as_deref() else {
-                return Ok(false);
-            };
-            let activity = host
-                .account_activity(&judge.provider_id, account)
-                .await
-                .map_err(host_error)?;
-            if !activity.active_sessions.is_empty() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     /// One judge's evaluation. A placeholder is saved before the turn is sent,
@@ -4276,17 +4212,6 @@ impl NativeBackend {
                     Some(&judge.model_id),
                 )
                 .await,
-            ));
-        }
-        let activity = host
-            .account_activity(&judge.provider_id, &account)
-            .await
-            .map_err(host_error)?;
-        // Interactive work has priority; the batch waits and nothing is paid.
-        if !activity.active_sessions.is_empty() {
-            return Err(BenchmarkError::new(
-                ACCOUNT_BUSY,
-                "Judge account became busy",
             ));
         }
         // A judge turn flies on its account too, so a stretch of judging alone
@@ -4929,12 +4854,6 @@ impl NativeBackend {
                 }
                 let samples = open.expected / open.panel.len().max(1);
                 let judges = seat_samples(&open.panel, samples, &open.asked);
-                let waiting: Vec<Configuration> =
-                    judges.iter().map(|(_, judge)| judge.clone()).collect();
-                if !self.judges_idle(&waiting).await? {
-                    attempt.reason = Some(JUDGES_BUSY.into());
-                    return Ok(attempt);
-                }
                 (open.id, judges, open.expected, open.asked.len(), png)
             }
             None => {
@@ -4988,10 +4907,6 @@ impl NativeBackend {
                         return Ok(attempt);
                     }
                     attempt.reason = Some(issue);
-                    return Ok(attempt);
-                }
-                if !self.judges_idle(&panel).await? {
-                    attempt.reason = Some(JUDGES_BUSY.into());
                     return Ok(attempt);
                 }
                 if !textual && installed_renderer.is_none() {
@@ -5188,6 +5103,14 @@ impl NativeBackend {
             attempt.reason = Some(
                 if ordinary && ordinary_judging::quota_interrupted(&attempt, &batch) {
                     JUDGE_RESELECTING.into()
+                } else if ordinary
+                    && stop.continues_batches()
+                    && ordinary_judging::judge_interrupted(&attempt, &batch)
+                {
+                    // Its run asks again at once: the failed judge is left
+                    // out (see `rejected_judges`), so each such pass seats
+                    // one judge fewer of a pool that has an end.
+                    JUDGE_REPLACING.into()
                 } else {
                     incomplete_panel_reason(&attempt, &batch)
                 },
@@ -6015,13 +5938,15 @@ impl ExecutionBackend for NativeBackend {
                 .iter()
                 .filter(|account| account.provider_id == provider && account.enabled)
             {
-                // An account whose last status shows a spent limit has no room.
-                if !crate::services::provider_account_status::usage_spent(
-                    &self.app,
-                    &account.id,
-                    credits,
-                )
-                .await
+                // A signed-out account is no account to run on, and one
+                // whose last status shows a spent limit has no room.
+                if crate::services::provider_account_status::signed_in(&self.app, account).await
+                    && !crate::services::provider_account_status::usage_spent(
+                        &self.app,
+                        &account.id,
+                        credits,
+                    )
+                    .await
                 {
                     accounts.push(account.id.clone());
                 }
@@ -7680,13 +7605,16 @@ pub(super) fn effective_timeout_seconds(requested: u32, draft: &BenchmarkDraft) 
 /// ACP's `auth_required` error code.
 const ACP_AUTH_REQUIRED: i64 = -32000;
 
-/// The outcome of a turn that ended with `error` on `model_id`: a provider
-/// that refuses the model to this account ([`refuses_model`]) makes the
-/// configuration unsupported; anything else as [`terminal_error_outcome`]
-/// reads it.
+/// The outcome of a turn that ended with `error` on `model_id`: a task the
+/// provider refused as content ([`refused_task`]) is the candidate's failed
+/// answer; a provider that refuses the model to this account
+/// ([`refuses_model`]) makes the configuration unsupported; anything else
+/// as [`terminal_error_outcome`] reads it.
 fn terminal_outcome(error: &Value, model_id: &str) -> &'static str {
     if exceeded_output_cap(error) {
         "budget_reached"
+    } else if refused_task(error) {
+        "fail"
     } else if refuses_model(error, model_id) {
         "unsupported"
     } else {
@@ -7731,6 +7659,31 @@ fn exceeded_output_cap(error: &Value) -> bool {
         && (said(failure.and_then(|f| f["title"].as_str()))
             || said(error["message"].as_str())
             || said(error.pointer("/data/message").and_then(Value::as_str)))
+}
+
+/// Whether the candidate's provider refused the task itself as content it
+/// will not work on. OpenAI's safeguards answer a prompt they flag with a
+/// failed turn in place of an answer ("This content was flagged for possible
+/// cybersecurity risk", "Invalid prompt: your prompt was flagged as
+/// potentially violating our usage policy"; 11-14). The refusal is the
+/// candidate's answer to the case, as a Claude refusal is: a model that
+/// will not do the work failed the test, scored 0, and the cell is measured
+/// (owner, 11-14). It was an unscored infrastructure failure, which left
+/// the cell open and scored one lab's refusals and not another's. The
+/// reason keeps the provider's words. A turn the provider never took, a
+/// usage limit and a refusal of the account or of the model are none.
+fn refused_task(error: &Value) -> bool {
+    let data = &error["data"];
+    let failure = &data["sessionFailure"];
+    let said = |text: &Value| {
+        text.as_str()
+            .is_some_and(|text| text.to_ascii_lowercase().contains("was flagged"))
+    };
+    data["errorKind"] == "provider_failure"
+        && data["dispatchStarted"] == true
+        && data["promptNotAccepted"] != true
+        && failure["severity"] == "error"
+        && (said(&failure["title"]) || said(&error["message"]))
 }
 
 /// The words with which a provider's message refuses the model it names:
@@ -15090,6 +15043,58 @@ mod tests {
         let other = json!({"code":-32603,"message":"exceeded the output token maximum"});
         assert!(!exceeded_output_cap(&other));
         assert_eq!(terminal_outcome(&other, "haiku"), "infrastructure_failure");
+    }
+
+    #[test]
+    fn a_task_the_providers_safeguards_refuse_is_the_candidates_failed_answer() {
+        // The two live Codex receipts (2026-11-14), with their account id.
+        let refusal = |category: &str, words: &str| {
+            json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+                "errorKind":"provider_failure","promptNotAccepted":false,"sessionFailure":{
+                "actions":[],"category":category,"id":"invented:error","revision":1,
+                "severity":"error","title":words}},"message":words,"nativeExecutionMs":11420})
+        };
+        let cyber = refusal(
+            "request",
+            "This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.",
+        );
+        let policy = refusal(
+            "service",
+            "Invalid prompt: your prompt was flagged as potentially violating our usage policy.",
+        );
+        for error in [&cyber, &policy] {
+            assert!(refused_task(error));
+            assert_eq!(terminal_outcome(error, "gpt-6-sol"), "fail");
+        }
+        // The refusal scores the attempt 0 and measures its cell.
+        let configuration: Configuration = serde_json::from_value(json!({
+            "id":"invented","providerId":"codex-acp","accountId":"invented","modelId":"gpt-6-sol",
+            "effort":"high","fastMode":false,"billingMode":"subscription",
+            "executionProfile":"native_text","inventoryRevision":"invented"}))
+        .unwrap();
+        let mut attempt = super::super::pending_attempt("run", "version", &configuration, 0);
+        attempt.phase = "terminal".into();
+        attempt.outcome = Some(terminal_outcome(&cyber, "gpt-6-sol").into());
+        attempt.reason = Some(cyber.to_string());
+        assert_eq!(super::super::analysis::score(&attempt), Some(0.0));
+        // Another failed request is no refusal of the task, nor is a turn
+        // the provider never took, a usage limit, or the same words
+        // outside a provider's failure.
+        let other = refusal("request", "The request could not be completed");
+        let mut withdrawn = cyber.clone();
+        withdrawn["data"]["promptNotAccepted"] = json!(true);
+        let mut unsent = cyber.clone();
+        unsent["data"]["dispatchStarted"] = json!(false);
+        let mut limit = cyber.clone();
+        limit["data"]["errorKind"] = json!("quota_exhausted");
+        let words = json!({"code":-32603,"message":"This content was flagged"});
+        for error in [&other, &withdrawn, &unsent, &limit, &words] {
+            assert!(!refused_task(error), "{error}");
+        }
+        assert_eq!(
+            terminal_outcome(&other, "gpt-6-sol"),
+            "infrastructure_failure"
+        );
     }
 
     #[test]

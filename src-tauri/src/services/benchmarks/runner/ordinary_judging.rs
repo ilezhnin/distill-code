@@ -63,33 +63,23 @@ fn same_model(left: &Configuration, right: &Configuration) -> bool {
         }
 }
 
-/// Already completed seats do not need available accounts again. The combined
+/// The offered judges that may take a seat of a saved panel. The combined
 /// replacement panel below still has to keep every original seat and sample.
 pub(super) fn available_replacements(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
     offered: Vec<(Option<f64>, Configuration)>,
-    available: impl Fn(&Configuration) -> bool,
 ) -> Vec<Configuration> {
     if candidate_vendors(candidates).is_none() {
         return Vec::new();
     }
     // A new panel's one-per-lab shortlist hides same-lab replacements needed
     // to finish a saved three-seat panel after one provider runs out of quota.
-    seatable(
-        draft,
-        by_headroom(
-            offered
-                .into_iter()
-                .filter(|(_, judge)| available(judge))
-                .collect(),
-        ),
-        &[],
-    )
-    .into_iter()
-    .map(|(judge, _)| judge)
-    .filter(|judge| super::super::judge_pool::vendor(&judge.provider_id).is_some())
-    .collect()
+    seatable(draft, by_headroom(offered), &[])
+        .into_iter()
+        .map(|(judge, _)| judge)
+        .filter(|judge| super::super::judge_pool::vendor(&judge.provider_id).is_some())
+        .collect()
 }
 
 /// Complete the saved panel before classifying a wait. Paid seats require no
@@ -99,33 +89,51 @@ pub(super) fn available_panel(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
     offered: Vec<(Option<f64>, Configuration)>,
-    available: impl Fn(&Configuration) -> bool,
     mut quota: Vec<(i64, Configuration)>,
     deferred: Option<BenchmarkError>,
 ) -> Result<Vec<Configuration>> {
-    let ready = available_replacements(candidates, draft, offered.clone(), available);
-    if let Some(panel) = replacement_panel(open, ready) {
+    let ready = available_replacements(candidates, draft, offered.clone());
+    if let Some(panel) = replacement_panel(open, ready.clone()) {
         return Ok(panel);
-    }
-    let all = available_replacements(candidates, draft, offered.clone(), |_| true);
-    if replacement_panel(open, all).is_some() {
-        return Err(BenchmarkError::new(ACCOUNT_BUSY, JUDGES_BUSY));
     }
     quota.sort_by_key(|(until, _)| *until);
     let mut potential = offered;
     for (until, judge) in quota {
         potential.push((None, judge));
-        let eligible = available_replacements(candidates, draft, potential.clone(), |_| true);
+        let eligible = available_replacements(candidates, draft, potential.clone());
         if replacement_panel(open, eligible).is_some() {
             return Err(judge_quota_wait(Some(until)));
         }
     }
-    Err(deferred.unwrap_or_else(|| {
+    if let Some(deferred) = deferred {
+        return Err(deferred);
+    }
+    // Nobody can take the missing seat, now or after a reset: the panel
+    // goes on with the judges it has, marked, while two remain.
+    reduced_panel(open, &ready).ok_or_else(|| {
         BenchmarkError::new(
             "judge_panel_unavailable",
             "The saved panel needs another eligible calibrated judge; add one to the judge pool",
         )
-    }))
+    })
+}
+
+/// The saved panel without the seats nobody can take: its paid seats and
+/// those still offered, while at least [`MIN_JUDGES`] remain. Its scores
+/// are marked `reducedPanel` (see [`reseat`]), so boards can show or leave
+/// them out (owner, 11-14: a failed judge gives way to another, or the
+/// panel goes on with two).
+pub(super) fn reduced_panel(
+    open: &OpenBatch,
+    offered: &[Configuration],
+) -> Option<Vec<Configuration>> {
+    let panel: Vec<_> = open
+        .panel
+        .iter()
+        .filter(|judge| open.asked.contains(judge) || offered.contains(judge))
+        .cloned()
+        .collect();
+    (panel.len() >= MIN_JUDGES && panel.len() < open.panel.len()).then_some(panel)
 }
 
 /// Paid seats stay. Only unfilled seats may take a currently eligible judge.
@@ -158,6 +166,26 @@ pub(super) fn replacement_panel(
         }
     }
     (panel.len() == open.panel.len()).then_some(panel)
+}
+
+/// Whether a judge of `batch` failed on its own (see
+/// [`judge_recovery::judge_failed`]) and holds no valid vote in it: the
+/// seat moves to another judge. A judge with a vote in the batch keeps its
+/// seat, so its failed sample waits for an explicit recovery.
+pub(super) fn judge_interrupted(attempt: &Attempt, batch: &str) -> bool {
+    let of_batch = |e: &Evaluation| {
+        e.details
+            .as_ref()
+            .is_some_and(|d| d["judgeBatchId"] == batch)
+    };
+    attempt.evaluations.iter().any(|failure| {
+        of_batch(failure)
+            && judge_recovery::judge_failed(failure)
+            && !attempt
+                .evaluations
+                .iter()
+                .any(|vote| of_batch(vote) && valid_vote(vote) && vote.judge == failure.judge)
+    })
 }
 
 pub(super) fn quota_interrupted(attempt: &Attempt, batch: &str) -> bool {
@@ -209,12 +237,16 @@ pub(super) fn reseat(
         .unwrap_or_default();
     let batch = uuid::Uuid::new_v4().to_string();
     let samples = open.expected / open.panel.len();
+    // A panel that goes on without a seat nobody can take expects fewer
+    // sheets, and says so on its scores.
+    let expected = panel.len() * samples;
+    let reduced = panel.len() < open.panel.len();
     let mut protocol = protocol(draft, &panel);
     // The old pixels/text and rubric are exactly what the retained votes saw.
     protocol["prompt"] = json!(prompt);
     protocol["renderer"] = json!(renderer);
     protocol["samplesPerJudge"] = json!(samples);
-    protocol["expectedJudges"] = json!(open.expected);
+    protocol["expectedJudges"] = json!(expected);
     if let Some(installed) = previous["protocol"].get("installedRendererRevision") {
         protocol["installedRendererRevision"] = installed.clone();
     }
@@ -262,10 +294,10 @@ pub(super) fn reseat(
     next.created_at = at;
     next.reason = "Saved artifact retained for the current judge panel".into();
     next.details = Some(json!({
-        "judgeBatchId":batch,"expectedJudges":open.expected,"protocolHash":hash,"protocol":protocol,
+        "judgeBatchId":batch,"expectedJudges":expected,"protocolHash":hash,"protocol":protocol,
         "judgeRecovery":{"recipe":POLICY,"sourceBatchId":open.id},
         "sameVendor":same_vendor(candidates,&panel),"ownModel":own_model(candidates,&panel),
-        "authorModel":author_model_judges(draft,&panel),
+        "authorModel":author_model_judges(draft,&panel),"reducedPanel":reduced,
     }));
     attempt.evaluations.push(next);
     attempt.evaluations.extend(retained);
@@ -273,7 +305,7 @@ pub(super) fn reseat(
         id: batch,
         panel,
         asked: open.asked.clone(),
-        expected: open.expected,
+        expected,
         rendering: open.rendering.clone(),
         rendering_hash: open.rendering_hash.clone(),
     })

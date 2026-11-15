@@ -9,15 +9,23 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 
-/** The marks a render records on a panel that sits close to the candidate. */
-export const JUDGE_FLAGS = ["sameVendor", "ownModel", "authorModel"] as const;
+/**
+ * The marks a render records on a panel that sits close to the candidate, or
+ * that went on a judge short after one of its judges failed.
+ */
+export const JUDGE_FLAGS = [
+  "sameVendor",
+  "ownModel",
+  "authorModel",
+  "reducedPanel",
+] as const;
 export type JudgeFlag = (typeof JUDGE_FLAGS)[number];
 
 /**
  * Which judged scores a board shows: a panel that seated a judge of the
- * candidate's lab, the candidate's own model or the case author's model
- * marks its scores, and each mark can be left out. Every score shows by
- * default.
+ * candidate's lab, the candidate's own model or the case author's model, or
+ * that settled a judge short, marks its scores, and each mark can be left
+ * out. Every score shows by default.
  */
 export function JudgeFlagFilter({
   hidden,

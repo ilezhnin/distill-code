@@ -1,5 +1,5 @@
-//! Invented ordinary panels: use idle accounts without silently shrinking
-//! an eligible three-judge panel while an account is temporarily occupied.
+//! Invented ordinary panels: a judge sits whatever else its account is doing,
+//! so a panel is chosen from what the accounts offer and nothing else.
 use super::*;
 
 fn judge(provider: &str, model: &str, account: &str) -> Configuration {
@@ -27,163 +27,76 @@ fn brief() -> BenchmarkDraft {
     draft
 }
 
-fn idle(judge: &Configuration) -> bool {
-    judge.account_id.as_deref() != Some("interactive-busy")
-}
-
 #[test]
-fn busy_third_lab_defers_the_panel_instead_of_silently_using_two_judges() {
+fn a_panel_seats_its_judges_whatever_their_accounts_are_doing() {
+    // The roomiest account is the one the operator's chats run on. Nothing
+    // about a panel asks what else an account does, so its judge sits first.
     let candidate = judge("grok-acp", "invented-candidate", "candidate");
-    let busy = judge("claude-acp", "invented-judge-a", "interactive-busy");
-    let first = judge("codex-acp", "invented-judge-b", "idle-first");
-    let second = judge("grok-acp", "invented-judge-c", "idle-second");
+    let working = judge("claude-acp", "invented-judge-a", "account-with-open-chats");
+    let first = judge("codex-acp", "invented-judge-b", "first");
+    let second = judge("grok-acp", "invented-judge-c", "second");
     let offered = vec![
-        (Some(99.0), busy.clone()),
+        (Some(99.0), working.clone()),
         (Some(80.0), first.clone()),
         (Some(60.0), second.clone()),
     ];
-    assert!(ordinary_judges(&[&candidate], &brief(), offered.clone()).contains(&busy));
-    let error =
-        ordinary_available_judges(&[&candidate], &brief(), offered.clone(), idle).unwrap_err();
-    assert_eq!(error.code, ACCOUNT_BUSY);
-    assert_eq!(error.message, JUDGES_BUSY);
     assert_eq!(
-        ordinary_available_judges(&[&candidate], &brief(), offered, |_| true).unwrap(),
-        vec![busy, first, second]
+        ordinary_judges(&[&candidate], &brief(), offered),
+        vec![working, first, second]
     );
 }
 
 #[test]
-fn a_busy_lab_can_be_replaced_by_another_calibrated_model_without_losing_a_seat() {
+fn authors_duplicates_and_unknown_candidates_seat_nobody_extra() {
     let candidate = judge("grok-acp", "invented-candidate", "candidate");
-    let first = judge("claude-acp", "invented-first", "idle-first");
-    let replacement = judge("claude-acp", "invented-replacement", "idle-first");
-    let other = judge("grok-acp", "invented-other", "idle-other");
-    let busy = judge("codex-acp", "invented-busy", "interactive-busy");
-    let offered = vec![
-        (Some(99.0), busy),
-        (Some(90.0), first.clone()),
-        (Some(80.0), replacement.clone()),
-        (Some(70.0), other.clone()),
-    ];
+    let ready = judge("claude-acp", "invented-first", "first");
+    let duplicate = judge("claude-acp", "invented-first", "second");
+    // One model sits once, on its roomiest account.
     assert_eq!(
-        ordinary_available_judges(&[&candidate], &brief(), offered, idle).unwrap(),
-        vec![first, other, replacement]
-    );
-}
-
-#[test]
-fn busy_roomiest_account_does_not_hide_an_idle_account_of_the_same_model() {
-    let candidate = judge("grok-acp", "invented-candidate", "candidate");
-    let busy = judge("claude-acp", "invented-judge", "interactive-busy");
-    let alternate = judge("claude-acp", "invented-judge", "idle-alternate");
-    let other = judge("codex-acp", "invented-other", "idle-other");
-    let third = judge("grok-acp", "invented-third", "idle-third");
-    let offered = vec![
-        (Some(99.0), busy.clone()),
-        (Some(70.0), alternate.clone()),
-        (Some(50.0), other.clone()),
-        (Some(40.0), third.clone()),
-    ];
-    assert!(ordinary_judges(&[&candidate], &brief(), offered.clone()).contains(&busy));
-    assert_eq!(
-        ordinary_available_judges(&[&candidate], &brief(), offered, idle).unwrap(),
-        vec![alternate, other, third]
-    );
-}
-
-#[test]
-fn insufficient_idle_panel_uses_the_existing_account_wait_not_resource_refusal() {
-    let candidate = judge("grok-acp", "invented-candidate", "candidate");
-    let ready = judge("claude-acp", "invented-first", "idle-first");
-    let busy = judge("codex-acp", "invented-second", "interactive-busy");
-    for available in [true, false] {
-        let error = ordinary_available_judges(
+        ordinary_judges(
             &[&candidate],
             &brief(),
-            vec![(Some(80.0), ready.clone()), (Some(70.0), busy.clone())],
-            |judge| available && idle(judge),
-        )
-        .unwrap_err();
-        assert_eq!(error.code, ACCOUNT_BUSY);
-        assert!(!unstarted_refusal(&error));
-        let mut attempt = super::super::pending_attempt("invented-run", "v", &candidate, 0);
-        attempt.reason = Some(judge_error_reason(&error));
-        assert_eq!(attempt.reason.as_deref(), Some(JUDGES_BUSY));
-        assert!(judging_deferred(&attempt));
-    }
-}
-
-#[test]
-fn busy_authors_duplicates_and_unknown_candidates_do_not_invent_a_wait() {
-    let candidate = judge("grok-acp", "invented-candidate", "candidate");
-    let ready = judge("claude-acp", "invented-first", "idle-first");
-    let duplicate = judge("claude-acp", "invented-first", "interactive-busy");
-    assert_eq!(
-        ordinary_available_judges(
-            &[&candidate],
-            &brief(),
-            vec![(Some(80.0), ready.clone()), (Some(99.0), duplicate)],
-            idle,
-        )
-        .unwrap(),
-        vec![ready.clone()]
+            vec![(Some(80.0), ready.clone()), (Some(99.0), duplicate.clone())],
+        ),
+        vec![duplicate]
     );
-    let author = judge("codex-acp", "invented-author", "interactive-busy");
+    let author = judge("codex-acp", "invented-author", "author");
     let mut authored = brief();
     authored.environment["authoredBy"] = json!([author]);
     assert_eq!(
-        ordinary_available_judges(
+        ordinary_judges(
             &[&candidate],
             &authored,
             vec![(Some(80.0), ready.clone()), (Some(99.0), author.clone())],
-            idle,
-        )
-        .unwrap(),
+        ),
         vec![ready.clone()]
     );
     let unknown = judge("invented-provider", "invented-candidate", "candidate");
-    assert!(ordinary_available_judges(
+    assert!(ordinary_judges(
         &[&unknown],
         &brief(),
         vec![(Some(80.0), ready), (Some(99.0), author)],
-        idle,
     )
-    .unwrap()
     .is_empty());
-}
-
-#[test]
-fn idle_selection_keeps_headroom_order_and_same_lab_fallback() {
-    let candidate = judge("claude-acp", "invented-first", "candidate");
-    let first = judge("claude-acp", "invented-first", "idle-first");
-    let second = judge("claude-acp", "invented-second", "idle-second");
-    let offered = vec![(Some(60.0), first), (Some(80.0), second)];
-    assert_eq!(
-        ordinary_available_judges(&[&candidate], &brief(), offered.clone(), idle).unwrap(),
-        ordinary_judges(&[&candidate], &brief(), offered)
-    );
 }
 
 #[test]
 fn unavailable_quota_seat_keeps_other_discovery_deferrals_optional() {
     let candidate = judge("grok-acp", "invented-candidate", "candidate");
-    let first = judge("claude-acp", "invented-first", "idle-first");
-    let second = judge("codex-acp", "invented-second", "idle-second");
-    let busy = judge("grok-acp", "invented-busy", "interactive-busy");
-    let panel = ordinary_available_judges(
+    let first = judge("claude-acp", "invented-first", "first");
+    let second = judge("codex-acp", "invented-second", "second");
+    let limited = judge("grok-acp", "invented-limited", "limited");
+    let panel = ordinary_judges(
         &[&candidate],
         &brief(),
         vec![(Some(80.0), first.clone()), (Some(60.0), second.clone())],
-        idle,
-    )
-    .unwrap();
+    );
     assert_eq!(
         resolve_quota_panel(
             panel,
             &[&candidate],
             &brief(),
-            vec![(now() + QUOTA_RETRY_MS, busy)],
+            vec![(now() + QUOTA_RETRY_MS, limited)],
             Some(BenchmarkError::new("resource_busy", "Invented listing")),
         )
         .unwrap(),

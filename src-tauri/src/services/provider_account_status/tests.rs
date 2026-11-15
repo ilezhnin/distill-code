@@ -1188,3 +1188,25 @@ fn a_failed_refresh_keeps_the_credits_state_it_had() {
     assert_eq!(merged.state, AccountState::Error);
     assert!(merged.limits[0].covered_by_credits);
 }
+
+/// A signed-out account is offered nowhere: one whose status says so, and one
+/// that stores no sign-in whatever its status says.
+#[test]
+fn an_account_without_a_sign_in_is_not_put_to_work() {
+    for state in [AccountState::NeedsAuth, AccountState::Disabled] {
+        assert!(!signed_in_by(Some(state), || true));
+    }
+    for state in [
+        AccountState::Ready,
+        AccountState::Limited,
+        AccountState::Unknown,
+        AccountState::Error,
+    ] {
+        assert!(signed_in_by(Some(state), || true));
+        // A status read that failed leaves a missing sign-in missing.
+        assert!(!signed_in_by(Some(state), || false));
+    }
+    // Before the first read, what the account stores decides.
+    assert!(signed_in_by(None, || true));
+    assert!(!signed_in_by(None, || false));
+}

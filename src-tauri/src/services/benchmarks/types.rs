@@ -912,9 +912,9 @@ pub struct ResultQuery {
     pub as_of: Option<i64>,
     pub offset: Option<u32>,
     pub limit: Option<u32>,
-    /// Judge panel marks (`sameVendor`, `ownModel`, `authorModel`) whose
-    /// scores a board leaves out: an attempt judged by a panel carrying one
-    /// of them counts as unmeasured there.
+    /// Judge panel marks (`sameVendor`, `ownModel`, `authorModel`,
+    /// `reducedPanel`) whose scores a board leaves out: an attempt judged by
+    /// a panel carrying one of them counts as unmeasured there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_judge_flags: Option<Vec<String>>,
 }

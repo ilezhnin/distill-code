@@ -15,6 +15,9 @@ import type { Capability, InventoryModel, SandboxSignInClosed } from "../types";
 import { BenchmarkRunDialog } from "../ui/BenchmarkRunDialog";
 import { configuration, definition, run } from "./fixtures";
 
+import type { ProviderAccountStatus } from "@/features/providers/api/providerAccounts";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
+
 vi.mock("@/features/providers/api/providerAccounts", () => ({
   listProviderAccounts: vi.fn(async () => ({
     accounts: [
@@ -647,6 +650,43 @@ it("offers the CLI sign-in of a provider without managed accounts and preselects
   await user.click(screen.getByRole("combobox", { name: "Account" }));
   expect(screen.getByRole("option", { name: "Test account" })).toBeVisible();
   expect(screen.queryByRole("option", { name: "CLI sign-in" })).toBeNull();
+});
+
+it("does not offer an account that is signed out", async () => {
+  const user = userEvent.setup();
+  vi.mocked(benchmarkApi.getCapabilities).mockResolvedValue([
+    {
+      providerId: "claude-acp",
+      executionProfile: "native_text",
+      supported: true,
+      reason: "Verified",
+      cliAccountId: null,
+    },
+  ]);
+  useProviderAccountsStore.setState({
+    statuses: {
+      "account-1": { state: "needs_auth" } as ProviderAccountStatus,
+    },
+  });
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <BenchmarkRunDialog
+        definitions={[definition]}
+        selectedVersionIds={["version-1"]}
+        onClose={vi.fn()}
+        onStarted={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  await user.click(screen.getByRole("combobox", { name: "Provider" }));
+  await user.click(await screen.findByRole("option", { name: "Claude Code" }));
+  await user.click(screen.getByRole("combobox", { name: "Account" }));
+  expect(screen.queryByRole("option", { name: "Test account" })).toBeNull();
+  useProviderAccountsStore.setState({ statuses: {} });
 });
 
 it("selects the CLI sign-in whenever the capabilities naming it arrive", async () => {

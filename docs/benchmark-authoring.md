@@ -337,14 +337,23 @@ recipe, panel size and set of labs is one ruler. Calibrations count for their
 own recipe (`strong-pool-v1`). A qualification or preregistered workflow panel
 names its own seats and is not subject to this rule.
 
-A new ordinary panel chooses idle eligible accounts and preserves the eligible
-panel size: a busy third lab can be covered by another idle calibrated model,
-or another idle account of the same model. Without such a replacement, judging
-waits instead of silently using only two judges. Other candidate attempts
-continue while judging waits.
+A judge sits whatever else its account is doing: its turn is a session of its
+own, and the operator's chats on the same account change neither its answer
+nor its pace, so a panel never waits for an account to fall idle. An account
+that is signed out seats nobody and is asked for nothing: only an enabled
+account with a sign-in its provider takes is listed for judges, candidates or
+a chat's model list.
 An ordinary open panel retains paid votes
 and can replace unfilled seats with currently eligible judges; qualification
-and preregistered workflow panels keep their exact seats. Waiting answers take
+and preregistered workflow panels keep their exact seats. A judge of an
+ordinary panel that fails on its own (no score sheet that can be read, a
+request its provider refused, a selection its runtime would not take) gives its
+seat to another calibrated judge, and its run asks again by itself. When
+nobody can take the seat, the panel settles with the judges it has while two
+remain, and its evaluation is marked `reducedPanel` so boards can show or
+leave out those scores. A usage limit still waits for its reset, an abstention
+on unresolved critical checks is still a verdict, and a turn an interruption
+cut off asks the same judge again. Waiting answers take
 turns by their last scheduling opportunity, and a selected panel reserves preparation
 capacity before fresh candidate work can use it.
 

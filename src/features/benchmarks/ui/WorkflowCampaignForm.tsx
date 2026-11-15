@@ -2,6 +2,8 @@ import { useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
+import { accountIsSignedOut } from "@/features/providers/lib/providerAccountStatus";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
 import { Alert, AlertDescription } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
@@ -68,6 +70,7 @@ export function WorkflowCampaignForm({
   const [error, setError] = useState<string | null>(null);
   const [rejected, setRejected] = useState(false);
   const inFlight = useRef(false);
+  const statuses = useProviderAccountsStore((state) => state.statuses);
   const accountQuery = useQuery({
     queryKey: ["benchmark-run-accounts"],
     queryFn: listProviderAccounts,
@@ -90,7 +93,12 @@ export function WorkflowCampaignForm({
     );
     const options =
       accountQuery.data?.accounts
-        .filter((a) => a.enabled && a.providerId === configuration.providerId)
+        .filter(
+          (a) =>
+            a.enabled &&
+            a.providerId === configuration.providerId &&
+            !accountIsSignedOut(statuses[a.id]),
+        )
         .map((a) => ({ value: a.id, label: a.label })) ?? [];
     const cli = capability?.cliAccountId;
     if (cli && !options.some((o) => o.value === cli))

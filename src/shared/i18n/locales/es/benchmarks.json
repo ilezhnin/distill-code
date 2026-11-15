@@ -1183,7 +1183,8 @@
     "flags": {
       "sameVendor": "Un juez del propio laboratorio del modelo",
       "ownModel": "El propio modelo en el panel",
-      "authorModel": "El modelo autor del caso en el panel"
+      "authorModel": "El modelo autor del caso en el panel",
+      "reducedPanel": "Dos jueces tras fallar uno"
     }
   },
   "runIssues": {

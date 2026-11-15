@@ -33,6 +33,16 @@ export function accountIsConnected(
   );
 }
 
+/**
+ * Whether an account holds no sign-in its provider takes. Such an account
+ * is offered nowhere work is chosen for an account: it can do none.
+ */
+export function accountIsSignedOut(
+  status: ProviderAccountStatus | undefined,
+): boolean {
+  return status?.state === "needs_auth";
+}
+
 export function earliestAccountReset(
   accounts: ProviderAccount[],
   statuses: Record<string, ProviderAccountStatus>,

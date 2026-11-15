@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconX } from "@tabler/icons-react";
 import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
+import { accountIsSignedOut } from "@/features/providers/lib/providerAccountStatus";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
 import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { Button } from "@/shared/ui/button";
@@ -142,12 +144,17 @@ export function BenchmarkRunDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [renewingPolicy, setRenewingPolicy] = useState(false);
-  // Managed accounts, and for a provider whose CLI keeps its own sign-in the
-  // fixed identity that names it.
+  const statuses = useProviderAccountsStore((state) => state.statuses);
+  // Managed accounts that can run a test (a signed-out one is not offered),
+  // and for a provider whose CLI keeps its own sign-in the fixed identity
+  // that names it.
   const managedAccounts = (id: string) =>
     accounts.data?.accounts.filter(
       (entry) =>
-        entry.providerId === id && entry.enabled && entry.id !== cliAccount(id),
+        entry.providerId === id &&
+        entry.enabled &&
+        !accountIsSignedOut(statuses[entry.id]) &&
+        entry.id !== cliAccount(id),
     ) ?? [];
   const cliAccount = (id: string) =>
     capabilities.data?.find(

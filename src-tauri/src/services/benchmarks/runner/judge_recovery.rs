@@ -1,6 +1,8 @@
-//! A rejected request is not a candidate verdict. On explicit recovery an
-//! ordinary panel is selected afresh, without that judge for the same answer
-//! and scoring instructions. Preregistered panels and calibrations never substitute.
+//! A rejected request is not a candidate verdict, and neither is a sheet
+//! nobody can read. An ordinary panel goes on without that judge for the
+//! same answer and scoring instructions: another calibrated judge takes its
+//! seat, or the panel settles with the judges it has, marked. Preregistered
+//! panels and calibrations never substitute.
 use super::*;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -16,6 +18,31 @@ pub(super) struct Rejection {
 /// a malformed score sheet, a quota response, or a generic internal error.
 pub(super) fn request_rejected(error: &Value) -> bool {
     error.pointer("/data/http_status").and_then(Value::as_u64) == Some(403)
+}
+
+/// Whether a seat's failure is the judge's own: a turn it finished without
+/// a sheet that can be read, a request its provider refused, or a selection
+/// its runtime would not take after the retries (owner, 11-14: such a judge
+/// gives way to another, where it used to stop the panel until the operator
+/// asked again). Not its own: a usage limit, which waits for its reset; an
+/// abstention on unresolved critical checks, which is a verdict; a turn an
+/// interruption cut off or that never started, which asks the judge again.
+pub(super) fn judge_failed(evaluation: &Evaluation) -> bool {
+    let Some(details) = evaluation.details.as_ref() else {
+        return false;
+    };
+    let refused_selection = details["selectionNotAcknowledged"] == true;
+    evaluation.provenance == "judge_failure"
+        && evaluation.score.is_none()
+        && evaluation.judge.is_some()
+        && !in_flight(evaluation)
+        && details["usageComplete"] == true
+        && details["sessionId"].as_str().is_some()
+        && (refused_selection
+            || (details["requestKey"].as_str().is_some() && details["dispatched"] != false))
+        && details["criticalCheckStatus"] != "unknown"
+        && !judge_quota_stop(&details["providerError"])
+        && !evaluation.reason.starts_with(JUDGE_INTERRUPTED)
 }
 
 fn same_judge(left: &Configuration, right: &Configuration) -> bool {
@@ -113,6 +140,9 @@ impl NativeBackend {
         if !recovery_allowed(draft, evidence) {
             return Ok(Vec::new());
         }
+        // A workflow's panel keeps what a failed judge leaves to an explicit
+        // recovery; only an ordinary panel moves the seat by itself.
+        let ordinary = matches!(evidence, JudgeEvidence::OrdinaryAttempt);
         let mut rejected = Vec::new();
         for evaluation in attempt
             .evaluations
@@ -125,7 +155,9 @@ impl NativeBackend {
                 continue;
             }
             let details = evaluation.details.as_ref().expect("matched batch");
-            let reason = if request_rejected(&details["providerError"]) {
+            let reason = if request_rejected(&details["providerError"])
+                || (ordinary && judge_failed(evaluation))
+            {
                 Some(evaluation.reason.clone())
             } else if let (Some(key), Some(_)) = (
                 details["requestKey"].as_str(),

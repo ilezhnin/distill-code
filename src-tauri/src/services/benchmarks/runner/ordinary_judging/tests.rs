@@ -116,16 +116,12 @@ fn rotation_preserves_panel_size_and_does_not_duplicate_models() {
 }
 
 #[test]
-fn paid_seats_do_not_need_idle_accounts_again() {
+fn paid_seats_do_not_need_to_be_offered_again() {
     let (draft, attempt, open) = fixture();
     let replacement = judge("sonnet");
-    let offered = vec![
-        (Some(90.0), judge("opus[1m]")),
-        (Some(80.0), replacement.clone()),
-    ];
-    let available = available_replacements(&[&attempt.configuration], &draft, offered, |j| {
-        j.model_id == "sonnet"
-    });
+    // The paid judge's account lists nothing now; its vote stands.
+    let offered = vec![(Some(80.0), replacement.clone())];
+    let available = available_replacements(&[&attempt.configuration], &draft, offered);
     assert_eq!(available, vec![replacement.clone()]);
     assert_eq!(
         replacement_panel(&open, available).unwrap(),
@@ -155,7 +151,6 @@ fn a_third_seat_can_move_to_another_calibrated_model_of_a_remaining_lab() {
             &[&attempt.configuration],
             &draft,
             offered.clone(),
-            |_| true,
             vec![],
             None,
         )
@@ -169,13 +164,13 @@ fn a_third_seat_can_move_to_another_calibrated_model_of_a_remaining_lab() {
             3 - open.asked.len()
         );
     }
-    // An unavailable paid account does not prevent the one outstanding call.
+    // A paid account that offers nothing now does not prevent the one
+    // outstanding call.
     let panel = available_panel(
         &open,
         &[&attempt.configuration],
         &draft,
-        offered.clone(),
-        |j| j.model_id == "sonnet",
+        vec![(Some(90.0), judge("sonnet"))],
         vec![],
         None,
     )
@@ -185,51 +180,202 @@ fn a_third_seat_can_move_to_another_calibrated_model_of_a_remaining_lab() {
         vec![(2, judge("sonnet"))]
     );
 
-    // The fallback remains subject to author exclusion, not just model count.
+    // The fallback remains subject to author exclusion, not just model
+    // count: with the author's model out, nobody can take the third seat,
+    // and the panel goes on with its two paid seats.
     let mut authored = draft;
     authored.environment["authoredBy"] = json!([judge("sonnet")]);
-    let error = available_panel(
+    let panel = available_panel(
         &open,
         &[&attempt.configuration],
         &authored,
         offered,
-        |_| true,
         vec![],
         None,
     )
-    .unwrap_err();
-    assert_eq!(error.code, "judge_panel_unavailable");
+    .unwrap();
+    assert_eq!(panel, vec![judge("opus[1m]"), codex]);
 }
 
 #[test]
-fn missing_replacement_reports_quota_busy_or_unavailable_from_actual_seats() {
+fn a_panel_nobody_can_complete_goes_on_with_two_judges_and_says_so() {
+    let (draft, mut attempt, mut open) = fixture();
+    let mut codex = judge("gpt-6-sol");
+    codex.provider_id = "codex-acp".into();
+    let mut grok = judge("grok-4.7");
+    grok.provider_id = "grok-acp".into();
+    // Three seats, the first two paid; the third judge failed and the pool
+    // holds nobody else.
+    let panel = vec![judge("opus[1m]"), codex.clone(), grok.clone()];
+    let marker = attempt.evaluations[0].details.as_mut().unwrap();
+    marker["expectedJudges"] = json!(3);
+    marker["protocol"]["panel"] = json!(panel);
+    let mut second = attempt.evaluations[1].clone();
+    second.id = "second-paid-vote".into();
+    second.judge = Some(codex.clone());
+    second.score = Some(0.4);
+    attempt.evaluations.push(second);
+    open.panel = panel;
+    open.expected = 3;
+    open.asked = vec![judge("opus[1m]"), codex.clone()];
+    let offered = vec![(Some(95.0), codex.clone()), (Some(90.0), judge("opus[1m]"))];
+    let reduced = available_panel(
+        &open,
+        &[&attempt.configuration],
+        &draft,
+        offered,
+        vec![],
+        None,
+    )
+    .unwrap();
+    assert_eq!(reduced, vec![judge("opus[1m]"), codex.clone()]);
+    assert!(needs_reseating(&attempt, &open, &reduced));
+    assert_eq!(crate::services::benchmarks::analysis::score(&attempt), None);
+    let next = reseat(&mut attempt, &draft, &open, reduced, &[]).unwrap();
+    // Both seats are paid: nobody is asked, and the batch settles on the
+    // two votes it kept, marked.
+    assert_eq!(next.expected, 2);
+    assert!(seat_samples(&next.panel, 1, &next.asked).is_empty());
+    let marker = attempt
+        .evaluations
+        .iter()
+        .rev()
+        .find(|e| e.provenance == "render")
+        .unwrap()
+        .details
+        .as_ref()
+        .unwrap();
+    assert_eq!(marker["reducedPanel"], true);
+    assert_eq!(marker["expectedJudges"], 2);
+    assert_eq!(marker["protocol"]["expectedJudges"], 2);
+    assert!((crate::services::benchmarks::analysis::score(&attempt).unwrap() - 0.6).abs() < 1e-9);
+    // A panel that keeps its size is not marked, and one seat cannot judge.
+    let (draft, mut attempt, open) = fixture();
+    let panel = replacement_panel(&open, vec![judge("opus[1m]"), judge("haiku")]).unwrap();
+    reseat(&mut attempt, &draft, &open, panel, &[]).unwrap();
+    let marker = attempt.evaluations[2].details.as_ref().unwrap();
+    assert_eq!(marker["reducedPanel"], false);
+    assert!(reduced_panel(&open, &[judge("opus[1m]")]).is_none());
+    assert!(reduced_panel(&open, &open.panel).is_none());
+}
+
+#[test]
+fn a_judge_that_failed_on_its_own_gives_its_seat_to_another() {
+    let (_, mut attempt, open) = fixture();
+    let revision = attempt.evaluations[0].evaluator_revision.clone();
+    let failure = |details: Value, reason: &str| -> Evaluation {
+        serde_json::from_value(json!({
+            "id":"failure","evaluatorRevision":revision,
+            "verdict":"abstained","reason":reason,"createdAt":3,"provenance":"judge_failure",
+            "artifacts":[],"judge":judge("sonnet"),"details":details
+        }))
+        .unwrap()
+    };
+    let paid = json!({"judgeBatchId":open.id,"sessionId":"session","requestKey":"request",
+        "usageComplete":true,"inFlight":false,"providerError":null});
+    let with = |key: &str, value: Value| {
+        let mut details = paid.clone();
+        details[key] = value;
+        details
+    };
+    let sheet = "Judge returned no valid score sheet: The score sheet does not match the required JSON structure";
+    // The judge's own: no sheet that can be read, a request its provider
+    // refused, a selection its runtime would not take.
+    assert!(judge_recovery::judge_failed(&failure(paid.clone(), sheet)));
+    assert!(judge_recovery::judge_failed(&failure(
+        with(
+            "providerError",
+            json!({"message":"This content was flagged"})
+        ),
+        "This content was flagged"
+    )));
+    assert!(judge_recovery::judge_failed(&failure(
+        json!({"judgeBatchId":open.id,"sessionId":"session","usageComplete":true,
+            "inFlight":false,"dispatched":false,"selectionNotAcknowledged":true}),
+        "Judge selection was not acknowledged"
+    )));
+    // Not its own: a turn still in flight or of unknown end, one that never
+    // started, an interruption, a usage limit, and an abstention on
+    // unresolved critical checks, which is a verdict.
+    for (details, reason) in [
+        (with("inFlight", json!(true)), sheet),
+        (with("usageComplete", json!(false)), sheet),
+        (
+            with("dispatched", json!(false)),
+            "Calibration stopped before dispatch",
+        ),
+        (
+            json!({"judgeBatchId":open.id,"usageComplete":true}),
+            "Invented sandbox refusal",
+        ),
+        (
+            paid.clone(),
+            "Judge turn interrupted by a restart; usage recovered from the host",
+        ),
+        (
+            with(
+                "providerError",
+                json!({"data":{"errorKind":"quota_exhausted"}}),
+            ),
+            "You've hit your session limit",
+        ),
+        (
+            with("criticalCheckStatus", json!("unknown")),
+            "Critical checks unresolved; judge abstained. Invented notes",
+        ),
+    ] {
+        assert!(
+            !judge_recovery::judge_failed(&failure(details, reason)),
+            "{reason}"
+        );
+    }
+    // The failed judge holds no vote in the batch: its seat moves, and the
+    // run takes the panel up again by itself.
+    assert!(!judge_interrupted(&attempt, &open.id));
+    attempt.evaluations.push(failure(paid.clone(), sheet));
+    assert!(judge_interrupted(&attempt, &open.id));
+    assert!(!judge_interrupted(&attempt, "another-batch"));
+    attempt.reason = Some(JUDGE_REPLACING.into());
+    assert!(judging_deferred(&attempt));
+    // A judge that already voted in the batch keeps its seat.
+    let mut voted = failure(paid, sheet);
+    voted.judge = Some(judge("opus[1m]"));
+    attempt.evaluations.pop();
+    attempt.evaluations.push(voted);
+    assert!(!judge_interrupted(&attempt, &open.id));
+}
+
+#[test]
+fn missing_replacement_reports_quota_or_unavailable_from_actual_seats() {
     let (draft, attempt, open) = fixture();
     let reset = now() + 60_000;
-    let select = |offered, quota, idle| {
+    let select = |offered, quota, deferred| {
         available_panel(
             &open,
             &[&attempt.configuration],
             &draft,
             offered,
-            |_| idle,
             quota,
-            None,
+            deferred,
         )
     };
-    let error = select(vec![], vec![(reset, judge("sonnet"))], true).unwrap_err();
+    let error = select(vec![], vec![(reset, judge("sonnet"))], None).unwrap_err();
     assert_eq!(error.code, JUDGE_QUOTA_WAIT);
     assert_eq!(error.details.unwrap()["nextReset"], reset);
-    let error = select(vec![(None, judge("sonnet"))], vec![], false).unwrap_err();
-    assert_eq!(error.code, ACCOUNT_BUSY);
-    // A second account or alias of the already paid model cannot fill a seat.
-    let error = select(vec![], vec![(reset, judge("opus"))], true).unwrap_err();
+    // A second account or alias of the already paid model cannot fill a
+    // seat, and one judge is no panel to go on with.
+    let error = select(vec![], vec![(reset, judge("opus"))], None).unwrap_err();
     assert_eq!(error.code, "judge_panel_unavailable");
     assert!(select(
         vec![(None, judge("sonnet"))],
         vec![(reset, judge("haiku"))],
-        true
+        None
     )
     .is_ok());
+    // A listing the machine deferred is a wait, never a smaller panel.
+    let deferred = BenchmarkError::new("resource_busy", "Invented listing");
+    let error = select(vec![], vec![], Some(deferred)).unwrap_err();
+    assert_eq!(error.code, "resource_busy");
 }
 
 #[test]

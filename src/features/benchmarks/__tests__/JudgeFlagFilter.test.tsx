@@ -18,6 +18,13 @@ describe("judge flag filter", () => {
     expect(lab).toHaveAttribute("aria-checked", "true");
     await userEvent.click(lab);
     expect(onChange).toHaveBeenLastCalledWith(["sameVendor"]);
+    // A panel that settled a judge short is a mark of its own.
+    await userEvent.click(
+      screen.getByRole("menuitemcheckbox", {
+        name: "Two judges after one failed",
+      }),
+    );
+    expect(onChange).toHaveBeenLastCalledWith(["reducedPanel"]);
   });
 
   it("counts hidden marks and shows one again", async () => {

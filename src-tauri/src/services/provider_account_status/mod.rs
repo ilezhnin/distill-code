@@ -278,6 +278,39 @@ pub async fn record_signed_out(app: &AppHandle, account: &ProviderAccount) {
     }
 }
 
+/// Whether `account` can be put to work at all: it is enabled and holds a
+/// sign-in its provider takes. A signed-out account is offered nowhere: no
+/// judge panel, no benchmark run and no chat's model list asks it anything
+/// (owner, 11-14; a Codex account never signed in was asked for its models
+/// on every pass of every answer that waited for judges). Decided by the
+/// last known status and, where Flock keeps the sign-in itself, by whether
+/// one is stored, so such an account is out before its first status read.
+/// Reads the cache and the account's own folder only.
+pub(crate) async fn signed_in(app: &AppHandle, account: &ProviderAccount) -> bool {
+    let known = {
+        let state = app.state::<ProviderAccountStatusState>();
+        let cache = state.native.cache.lock().await;
+        cache.get(&account.id).map(|status| status.state)
+    };
+    account.enabled
+        && signed_in_by(known, || {
+            // A sign-in its CLI keeps is known from its status alone, and
+            // one that cannot be inspected is not called missing.
+            provider_accounts::spec(&account.provider_id)
+                .is_some_and(|spec| spec.connection == ConnectionFlow::Cli)
+                || provider_accounts::account_has_credentials(app, account).unwrap_or(true)
+        })
+}
+
+/// [`signed_in`] from what is known of the account: its last status, and
+/// whether it stores a sign-in.
+fn signed_in_by(known: Option<AccountState>, stores_sign_in: impl FnOnce() -> bool) -> bool {
+    !matches!(
+        known,
+        Some(AccountState::NeedsAuth | AccountState::Disabled)
+    ) && stores_sign_in()
+}
+
 /// Whether the last known status of `account_id` has a usage window spent
 /// now, counting a plan window its credits cover as spent unless `credits`
 /// may be used; false while nothing is known. Reads the cache only.

@@ -549,7 +549,7 @@ pub(super) async fn chat_model_inventory(
     };
     let now = chrono::Utc::now().timestamp();
     let mut others = Vec::new();
-    for other in pool_accounts(&host.app, provider, account) {
+    for other in pool_accounts(&host.app, provider, account).await {
         let cached = cached_inventory(host, provider, Some(&other.id)).await;
         let current = cached
             .updated_at
@@ -599,9 +599,11 @@ fn add_pool_rows(harness_id: &str, rows: &mut Vec<Value>, others: Vec<(String, V
     rows.sort_by_key(|row| row["order"].as_u64().unwrap_or(u64::MAX));
 }
 
-/// The provider's other enabled accounts billed the way `account_id` is,
-/// its default first: the accounts a chat on `account_id` can be moved to.
-pub(super) fn pool_accounts(
+/// The provider's other enabled, signed-in accounts billed the way
+/// `account_id` is, its default first: the accounts a chat on `account_id`
+/// can be moved to. A signed-out account is none of them: nothing reads its
+/// models or weighs it as a spare.
+pub(super) async fn pool_accounts(
     app: &tauri::AppHandle,
     harness_id: &str,
     account_id: &str,
@@ -609,12 +611,18 @@ pub(super) fn pool_accounts(
     let Ok(registry) = provider_accounts::snapshot(app) else {
         return Vec::new();
     };
-    pool_of(
+    let mut pool = Vec::new();
+    for account in pool_of(
         registry.accounts,
         registry.defaults.get(harness_id).map(String::as_str),
         harness_id,
         account_id,
-    )
+    ) {
+        if crate::services::provider_account_status::signed_in(app, &account).await {
+            pool.push(account);
+        }
+    }
+    pool
 }
 
 fn pool_of(

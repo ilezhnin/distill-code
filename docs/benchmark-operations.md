@@ -788,7 +788,9 @@ mode before any scoring prompt is dispatched, setup retries that exact seat
 at most twice. Each refused session is retained, a fresh session owner is used,
 and any completed votes and the sealed candidate answer stay in the same batch.
 Paid or uncertain requests and invalid score sheets are not retried by this
-setup recovery. Frozen runtime mismatches stop qualification and preregistered
+setup recovery: an ordinary panel moves that seat to another calibrated judge,
+or goes on with two judges, marked `reducedPanel`, when nobody can take it.
+Frozen runtime mismatches stop qualification and preregistered
 workflow panels, with a specific refusal instead of only missing scores.
 
 Ordinary benchmark runs score the retained artifact with the current eligible
@@ -797,11 +799,12 @@ a judge's account, model or runtime do not invalidate the candidate answer.
 On recovery, completed votes keep their original attribution; only unfilled
 seats rotate. A replacement batch references the same sealed rendering and
 each reused vote, without repeating its provider call or counting usage twice.
-The panel size and sample count stay within the existing run's reservation.
-If one lab is unavailable, another distinct calibrated model from a remaining
-lab may finish a saved panel. Completed votes need no free account or remaining
-quota. Missing seats report their actual quota, busy-account or eligibility
-condition rather than treating every shortage as busy judges.
+The panel size and sample count stay within the existing run's reservation,
+but for the one call a judge that failed on its own costs before its seat
+moves. If one lab is unavailable, another distinct calibrated model from a
+remaining lab may finish a saved panel. Completed votes need no account that
+offers the judge now and no remaining quota. Missing seats report their actual
+quota or eligibility condition.
 Actual judge settings and runtime are recorded with new scores. These ordinary
 panels do not inherit a frozen calibration's authority for research certification.
 
@@ -825,7 +828,12 @@ model's answer and is not counted: a model, effort or fast mode it changed
 settles as a changed selection, a hook it ran or a mode it changed as an
 infrastructure failure. A model refusal (Claude's safeguards stopping the
 answer) is the model's answer, the provider's explanation as its text, and is
-graded like any other. No other model answers for it: every owned Claude session runs with
+graded like any other. A task the provider's safeguards refuse outright, with
+a failed turn in place of an answer (OpenAI: "This content was flagged for
+possible cybersecurity risk", "your prompt was flagged as potentially
+violating our usage policy"), is the candidate's answer too: the attempt fails
+its test, scored 0, and its cell is measured, never left open as an
+infrastructure failure. No other model answers for it: every owned Claude session runs with
 `CLAUDE_CODE_NO_MODEL_FALLBACK=1`, which keeps Claude Code from retrying a
 refused turn on another model and moving the session there (10-31: Sonnet 5.5
 declined a cyber-flagged task and Claude Code went on with claude-sonnet-5). If a
