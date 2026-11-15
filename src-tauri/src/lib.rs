@@ -143,6 +143,7 @@ pub fn run() {
                 ])
                 .build(),
         )
+        .plugin(services::navigation_guard::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())

@@ -21,6 +21,7 @@ pub(crate) mod identifier_migration;
 pub(crate) mod log_redaction;
 pub(crate) mod managed_acp_tools;
 pub(crate) mod managed_node;
+pub(crate) mod navigation_guard;
 pub mod path_env;
 pub(crate) mod process;
 pub(crate) mod provider_account_status;
