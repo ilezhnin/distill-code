@@ -436,9 +436,14 @@ const HISTORY_COMPACTION_VERSION: u64 = 1;
 const VACUUM_WORTH_BYTES: usize = 256 * 1024 * 1024;
 const VACUUM_SHARE_FLOOR_BYTES: usize = 64 * 1024 * 1024;
 /// History deleted since the last VACUUM (finished benchmark sessions), as
-/// `{"bytes": n}`: once it reaches [`VACUUM_WORTH_BYTES`] the next start
-/// gives the space back the way a compaction pass does.
+/// `{"bytes": n}`. New history reuses the space; once the count reaches
+/// [`VACUUM_WORTH_BYTES`], `flock-history compact` gives it back to the
+/// file system the way it does after a compaction pass.
 const FREED_HISTORY_KEY: &str = "freed_history";
+/// What the write-ahead log file may keep on disk once its pages are in the
+/// database (see [`SessionStore::open`]). A burst of streaming turns stays
+/// below it, so the file is not cut and grown again turn after turn.
+const WAL_SIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A session owner row that belongs to a benchmark and that the host has no
 /// further use for: no turn of it is reserved, running or of unknown outcome,
@@ -545,7 +550,12 @@ impl SessionStore {
             // A slow WAL sync must delay a session insert, not fail it as
             // "database is locked" after the 5 s default. Matches the
             // benchmark store.
-            .busy_timeout(std::time::Duration::from_secs(10));
+            .busy_timeout(std::time::Duration::from_secs(10))
+            // SQLite keeps a write-ahead log at the largest size it reached
+            // and writes over it. With a limit it cuts the file back itself,
+            // on the first commit after the log starts over, so no one has to
+            // hold the write lock for a truncating checkpoint.
+            .pragma("journal_size_limit", WAL_SIZE_LIMIT_BYTES.to_string());
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(options)
@@ -1917,16 +1927,6 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Whether a completed compaction pass left a VACUUM pending, or deleted
-    /// history (see [`Self::record_freed_history`]) has grown worth one.
-    pub async fn vacuum_pending(&self) -> Result<bool, String> {
-        Ok(self
-            .kv_get(KV_HOST, HISTORY_COMPACTION_KEY)
-            .await?
-            .is_some_and(|state| state["vacuumPending"] == true)
-            || self.freed_history_bytes().await? >= VACUUM_WORTH_BYTES as u64)
-    }
-
     async fn freed_history_bytes(&self) -> Result<u64, String> {
         Ok(self
             .kv_get(KV_HOST, FREED_HISTORY_KEY)
@@ -1935,8 +1935,9 @@ impl SessionStore {
             .unwrap_or(0))
     }
 
-    /// Count `bytes` of deleted history toward the next VACUUM: SQLite reuses
-    /// the freed pages, and only a VACUUM gives them back to the file system.
+    /// Count `bytes` of deleted history toward the next VACUUM
+    /// ([`Self::vacuum_if_pending`]): SQLite reuses the freed pages, and only
+    /// a VACUUM gives them back to the file system.
     pub async fn record_freed_history(&self, bytes: usize) -> Result<(), String> {
         if bytes == 0 {
             return Ok(());
@@ -1953,20 +1954,18 @@ impl SessionStore {
         .await
     }
 
-    /// Fold the write-ahead log into the file and truncate it: after a
-    /// VACUUM the log holds a copy of the whole database until this runs.
-    /// Answers SQLite's `(busy, log pages, checkpointed pages)`.
-    pub async fn truncate_wal(&self) -> Result<(i64, i64, i64), String> {
-        sqlx::query_as::<_, (i64, i64, i64)>("PRAGMA wal_checkpoint(TRUNCATE)")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|error| db_error("failed to checkpoint the history database", error))
-    }
-
-    /// Run the VACUUM a completed compaction pass left pending, which rewrites
-    /// the file without the freed pages. It holds the write lock for as long
-    /// as the copy takes, so the host runs it in the background once the
-    /// window is up, never on the start path. Says whether it ran.
+    /// Run the VACUUM a completed compaction pass left pending, or that
+    /// deleted history (see [`Self::record_freed_history`]) has grown worth:
+    /// it rewrites the file without the freed pages. Says whether it ran.
+    ///
+    /// Only for a database no app has open (`flock-history compact`). The
+    /// rewrite holds the write lock for as long as the copy takes, and every
+    /// other writer gives up after the busy timeout: run by the host 20 s
+    /// after its start on 2026-11-14, it kept a 12 GB database locked for
+    /// 163 s to return 0.3 GB, and each send, steer and wave step in that
+    /// time failed with "database is locked". The running host never calls
+    /// this; the pages a live database frees are reused by what it stores
+    /// next.
     pub async fn vacuum_if_pending(&self) -> Result<bool, String> {
         let compaction = self
             .kv_get(KV_HOST, HISTORY_COMPACTION_KEY)
@@ -2696,11 +2695,7 @@ mod tests {
         assert_eq!(state["complete"], json!(true));
         // Two rows of a test database are not worth rewriting the file.
         assert_eq!(state["vacuumPending"], json!(false));
-        assert!(!store.vacuum_pending().await.unwrap());
         assert!(!store.vacuum_if_pending().await.unwrap());
-        // The checkpoint answers even with nothing to fold back.
-        let (busy, _, _) = store.truncate_wal().await.unwrap();
-        assert_eq!(busy, 0);
 
         // A complete pass is not repeated.
         let mut seen = Vec::new();
@@ -2850,14 +2845,46 @@ mod tests {
             .record_freed_history(VACUUM_WORTH_BYTES - 1)
             .await
             .unwrap();
-        assert!(!store.vacuum_pending().await.unwrap());
         assert!(!store.vacuum_if_pending().await.unwrap());
         store.record_freed_history(1).await.unwrap();
-        assert!(store.vacuum_pending().await.unwrap());
         assert!(store.vacuum_if_pending().await.unwrap());
         // The count starts again after the VACUUM.
-        assert!(!store.vacuum_pending().await.unwrap());
         assert!(!store.vacuum_if_pending().await.unwrap());
+        dir.close().await;
+    }
+
+    /// A write-ahead log that grew past its limit (a long turn, a VACUUM by
+    /// `flock-history`) goes back under it by itself, with no checkpoint that
+    /// would hold the write lock: 11.8 GB stayed on disk after the VACUUM of
+    /// 2026-11-14 because the truncating checkpoint found the log busy.
+    #[tokio::test]
+    async fn the_write_ahead_log_is_cut_back_once_its_pages_are_in_the_database() {
+        let dir = crate::test_support::TempRoot::new();
+        let path = dir.path().join("wal.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        dir.register(&store.pool);
+        let wal = path.with_extension("db-wal");
+        let wal_len = || std::fs::metadata(&wal).map(|meta| meta.len()).unwrap_or(0);
+        store.insert_session(&record("chat")).await.unwrap();
+        // One commit larger than the limit: the log has to hold all of it.
+        let megabyte = "x".repeat(1024 * 1024);
+        let burst: Vec<Value> = (0..WAL_SIZE_LIMIT_BYTES / (1024 * 1024) + 8)
+            .map(|_| json!({ "text": megabyte }))
+            .collect();
+        store.append_events("chat", &burst).await.unwrap();
+        assert!(wal_len() > WAL_SIZE_LIMIT_BYTES, "{}", wal_len());
+
+        // The commit above folded its pages into the database; the next
+        // write starts the log over and leaves the file at the limit.
+        store
+            .append_events("chat", &[json!({ "text": "after" })])
+            .await
+            .unwrap();
+        assert!(wal_len() <= WAL_SIZE_LIMIT_BYTES, "{}", wal_len());
+        assert_eq!(
+            store.list_events("chat").await.unwrap().len(),
+            burst.len() + 1
+        );
         dir.close().await;
     }
 

@@ -844,8 +844,6 @@ impl ClientRequest {
 pub struct Inner {
     pub app: tauri::AppHandle,
     pub store: SessionStore,
-    /// The history database file, for the sizes its maintenance reports.
-    history_db: PathBuf,
     pub roots: SourceRoots,
     ws_url: String,
     bridges: Mutex<HashMap<String, Arc<Bridge>>>,
@@ -1075,13 +1073,13 @@ impl Inner {
             log::warn!("[agent-host] benchmark sign-in copies were not removed: {error}");
         }
         let host_dir = flock_root.join("sessions");
-        let history_db = host_dir.join("agent-host.db");
-        let store = SessionStore::open(&history_db).await?;
+        let store = SessionStore::open(&host_dir.join("agent-host.db")).await?;
         store.reconcile_execution_dispatches().await?;
-        // A VACUUM a completed compaction pass left pending ran here once, before
-        // the host listened: 6.7 GB took four minutes with the window black
-        // (2026-10-25). It runs in the background now, announced
-        // (`vacuum_history_if_pending`).
+        // No VACUUM here or anywhere else in the running host: before the host
+        // listened it kept the window black for four minutes (6.7 GB,
+        // 2026-10-25), and from the background it failed every write for
+        // three (12 GB, 2026-11-14). `flock-history compact` runs it on a
+        // closed database.
         if !isolated {
             match legacy_import::import_goose_sessions_once(&store).await {
                 Ok(0) => {}
@@ -1112,7 +1110,6 @@ impl Inner {
         let inner = Arc::new(Inner {
             app,
             store,
-            history_db,
             roots,
             ws_url,
             bridges: Mutex::new(HashMap::new()),
@@ -2023,100 +2020,25 @@ impl Inner {
         live.is_none_or(|generation| generation == exited)
     }
 
-    /// The write-ahead log folded into the file and cut back when it has
-    /// grown large (a VACUUM leaves a copy of the whole database in it).
-    /// Quick when its pages are already in the file; busy readers make it
-    /// answer `busy`, which is logged and left for another start.
-    async fn truncate_large_wal(&self) {
-        let wal = self.history_db.with_extension("db-wal");
-        let size = std::fs::metadata(&wal).map(|meta| meta.len()).unwrap_or(0);
-        if size < 256 * 1024 * 1024 {
-            return;
-        }
-        match self.store.truncate_wal().await {
-            Ok((busy, log, checkpointed)) => {
-                let after = std::fs::metadata(&wal).map(|meta| meta.len()).unwrap_or(0);
-                log::info!(
-                    "[agent-host] history write-ahead log {:.2} -> {:.2} GB (busy {busy}, {checkpointed} of {log} pages folded in)",
-                    size as f64 / 1_073_741_824.0,
-                    after as f64 / 1_073_741_824.0
-                );
-            }
-            Err(error) => log::warn!("[agent-host] history write-ahead log not truncated: {error}"),
-        }
-    }
-
-    /// The VACUUM a completed compaction pass left pending, off the start
-    /// path: it rewrites the whole file (6.7 GB took four minutes on
-    /// 2026-10-25) and, run inside `start`, kept the window black for as
-    /// long. Here the window is up and an OS toast names the wait; chats
-    /// stay readable, and a send waits for the write lock the way any write
-    /// does.
-    async fn vacuum_history_if_pending(&self) {
-        let pending = match self.store.vacuum_pending().await {
-            Ok(pending) => pending,
-            Err(error) => {
-                log::warn!("[agent-host] history vacuum state unreadable: {error}");
-                return;
-            }
-        };
-        if !pending {
-            return;
-        }
-        let size = |path: &std::path::Path| {
-            std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) as f64 / 1_073_741_824.0
-        };
-        let before = size(&self.history_db);
-        log::info!("[agent-host] history database vacuum starting: {before:.2} GB");
-        crate::commands::notifications::show_maintenance_notification(
-            self.app.clone(),
-            format!(
-                "Compacting the chat history database ({before:.1} GB). Chats stay open; a send waits until it is done."
-            ),
-        );
-        let started = std::time::Instant::now();
-        match self.store.vacuum_if_pending().await {
-            Ok(true) => {
-                self.truncate_large_wal().await;
-                let after = size(&self.history_db);
-                let minutes = (started.elapsed().as_secs_f64() / 60.0).ceil() as u64;
-                log::info!(
-                    "[agent-host] history database vacuumed: {before:.2} -> {after:.2} GB in {:.0?}",
-                    started.elapsed()
-                );
-                crate::commands::notifications::show_maintenance_notification(
-                    self.app.clone(),
-                    format!(
-                        "Chat history database compacted: {before:.1} GB to {after:.1} GB in {minutes} min."
-                    ),
-                );
-            }
-            Ok(false) => {}
-            Err(error) => {
-                log::warn!("[agent-host] history vacuum left for the next start: {error}");
-                crate::commands::notifications::show_maintenance_notification(
-                    self.app.clone(),
-                    "Compacting the chat history database did not finish; Flock retries on its next start."
-                        .into(),
-                );
-            }
-        }
-    }
-
     /// One pass over the stored history in its replay form (see
     /// `SessionStore::compact_history`), a session at a time between the
     /// host's other work, so a database written before turns were compacted
     /// shrinks to what its chats show. A chat with a running turn is left for
-    /// the next start; once every session is done and the pass freed enough,
-    /// the next start vacuums here, in the background, with a toast.
+    /// the next start.
+    ///
+    /// The pass rewrites one session at a time and nothing here rewrites the
+    /// whole file: a VACUUM holds the write lock for as long as the copy
+    /// takes (163 s for 12 GB on 2026-11-14, run from this task), and every
+    /// send, steer and wave step of that time failed with "database is
+    /// locked". The pages a pass or a removed benchmark chat frees are
+    /// reused by new history; `flock-history compact` gives them back to
+    /// the file system, on a database no app has open.
     async fn compact_history_in_background(host: Weak<Inner>) {
         // Let the renderer open its first chat before the pass reads the log.
         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         let Some(host) = host.upgrade() else {
             return;
         };
-        host.truncate_large_wal().await;
-        host.vacuum_history_if_pending().await;
         let started = std::time::Instant::now();
         let skip = {
             let host = Arc::clone(&host);
@@ -8934,8 +8856,9 @@ impl Inner {
     }
     /// Delete finished benchmark sessions: a session with a turn loading or
     /// running here is left, any other lets go of its bridge session the way
-    /// a deleted chat does, and the store removes it with its records. The
-    /// space counts toward the next start's VACUUM.
+    /// a deleted chat does, and the store removes it with its records. New
+    /// history reuses the space, which also counts toward the VACUUM of the
+    /// next `flock-history compact`.
     pub async fn purge_benchmark_sessions(
         &self,
         ids: &[String],
