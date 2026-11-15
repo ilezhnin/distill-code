@@ -200,6 +200,11 @@
           "about": "Stop a dispatched step and run it again in a new session",
           "afterHelp": "Example:\n  flockctl wave restart --wave-id <wave-id> --step 2 --text \"Use the 2020 register, not the 1998 one.\"\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 2, \"stopped_session_id\": \"...\"|null}\n  Refused with \"wave_step_not_dispatched\" for a pending step (use `wave amend`)\n  and with \"wave_not_running\" once the wave has gone to its digest."
         },
+        "validate": {
+          "action": "validate",
+          "about": "Check a wave plan without running it",
+          "afterHelp": "Example:\n  flockctl wave validate --plan '{\"steps\":[{\"role\":\"scout\",\"subtask\":\"Read the slice\",\"access\":[],\"shards\":[\"g01\",\"g02\"]}]}' --json\n\nResult:\n  {\"ok\": true, \"executors\": 2, \"parallel\": 8,\n   \"steps\": [{\"step\": 1, \"role\": \"...\", \"label\": \"...\"|null, \"access\": \"none\"|\"all\", \"model\": \"...\"|null}]}\n  {\"ok\": false, \"reason\": \"malformed-json\"|\"shards-invalid\"|..., \"detail\": \"...\", \"step\": 1|null}"
+        },
         "roadmap": {
           "action": "roadmap",
           "about": "Read a conductor's roadmap: its goal, stages and loop state",

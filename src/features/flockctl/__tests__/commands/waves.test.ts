@@ -368,6 +368,90 @@ describe("wave commands", () => {
     expect(stopOrchestratorSession).not.toHaveBeenCalled();
   });
 
+  it("checks a plan without running it, and says why one would be refused", async () => {
+    const before = getWaveEngineState();
+    const good = await dispatchCommand(
+      "waves",
+      {
+        action: "validate",
+        plan: JSON.stringify({
+          parallel: 2,
+          steps: [
+            {
+              role: "scout",
+              subtask: "Read your slice",
+              access: [],
+              label: "read",
+              shards: ["g01", "g02", "g03"],
+            },
+            { role: "qa", subtask: "Check the notes", access: "all" },
+          ],
+        }),
+      },
+      ctx,
+    );
+    expect(good).toMatchObject({ ok: true, executors: 4, parallel: 2 });
+    expect((good as { steps: unknown[] }).steps).toEqual([
+      {
+        step: 1,
+        role: "scout",
+        label: "read 1/3",
+        access: "none",
+        model: null,
+      },
+      {
+        step: 2,
+        role: "scout",
+        label: "read 2/3",
+        access: "none",
+        model: null,
+      },
+      {
+        step: 3,
+        role: "scout",
+        label: "read 3/3",
+        access: "none",
+        model: null,
+      },
+      { step: 4, role: "qa", label: null, access: "all", model: null },
+    ]);
+
+    // The whole message a conductor would send is read the same way.
+    const fenced = await dispatchCommand(
+      "waves",
+      {
+        action: "validate",
+        plan: 'Here is the plan.\n\n```distill-wave\n{"steps":[{"role":"scout","subtask":"Look","access":[]}]}\n```',
+      },
+      ctx,
+    );
+    expect(fenced).toMatchObject({ ok: true, executors: 1, parallel: 8 });
+
+    const broken = await dispatchCommand(
+      "waves",
+      {
+        action: "validate",
+        plan: '{"steps":[{"role":"scout","subtask":"Look","access":[],"shards":["only one"]}]}',
+      },
+      ctx,
+    );
+    expect(broken).toMatchObject({
+      ok: false,
+      reason: "shards-invalid",
+      step: 1,
+    });
+    expect(
+      await dispatchCommand(
+        "waves",
+        { action: "validate", plan: '{"steps":[' },
+        ctx,
+      ),
+    ).toMatchObject({ ok: false, reason: "malformed-json", step: null });
+    // Nothing was admitted, started or recorded.
+    expect(getWaveEngineState()).toEqual(before);
+    expect(runWaveEngineTick).not.toHaveBeenCalled();
+  });
+
   it("skips a pending step so its dependents proceed", async () => {
     const { live } = seed();
     await dispatchCommand(

@@ -1482,6 +1482,47 @@
             "additionalProperties": false
           }
         },
+        "validate": {
+          "description": "Parse a wave plan exactly as the app would when a conductor sends it, and check each step's model, effort and fast mode against what this installation can run now. Nothing is started and nothing is recorded. A plan that would be refused comes back with the refusal's reason and detail, so it can be corrected before it costs a turn; a plan that would run comes back with its executors as the app would deal them out.",
+          "fields": [
+            {
+              "name": "plan",
+              "required": true,
+              "kind": "string",
+              "description": "The plan to check: the JSON object of a distill-wave block, or a whole message that carries the block (1-200000 chars).",
+              "min": 1,
+              "max": 200000
+            },
+            {
+              "name": "conductor_session_id",
+              "required": false,
+              "kind": "string",
+              "description": "The conductor that would send the plan; lets a step without a model of its own be checked against that chat's model.",
+              "min": 1,
+              "max": 200
+            }
+          ],
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "plan": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200000,
+                "description": "The plan to check: the JSON object of a distill-wave block, or a whole message that carries the block (1-200000 chars)."
+              },
+              "conductor_session_id": {
+                "description": "The conductor that would send the plan; lets a step without a model of its own be checked against that chat's model.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": ["plan"],
+            "additionalProperties": false
+          }
+        },
         "roadmap": {
           "description": "Read the roadmap a conductor published with a distill-roadmap block — the goal it pursues on its own, its stages and their status, and where the autonomous continue loop stands; does not change anything on screen.",
           "fields": [

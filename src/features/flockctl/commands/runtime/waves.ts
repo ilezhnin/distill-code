@@ -10,8 +10,18 @@
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { ConductorRoadmap } from "@/features/conductor/flockRoadmap";
+import {
+  DEFAULT_WAVE_PARALLEL,
+  openingFencePattern,
+  parseFlockWave,
+  parseWavePlanBody,
+  WAVE_FENCE_TAG,
+  type FlockWaveParse,
+  type WaveStep,
+} from "@/features/conductor/flockWave";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import {
+  admitWavePlan,
   waveStepNode,
   withAmendedPendingStep,
   withRestartedStep,
@@ -25,6 +35,10 @@ import {
   waveStepSkippedNoticeText,
 } from "@/features/conductor/waveNotices";
 import { runWaveEngineTick } from "@/features/conductor/waveRunner";
+import {
+  checkExplicitWaveStepModel,
+  checkWaveStepRunSettings,
+} from "@/features/conductor/waveStepTarget";
 import { stopWaveByOperator } from "@/features/conductor/waveStop";
 import {
   getWaveEngineState,
@@ -243,6 +257,58 @@ export function skipWaveStep(wave: WaveState, step: number): void {
     waveStepSkippedNoticeText(target.stepIndex),
   );
   runWaveEngineTick();
+}
+
+/**
+ * Checks a plan as admission would, and runs nothing: the parse, then each
+ * step's model and run settings against what this installation offers now.
+ * `text` is the JSON of a plan block or a whole message carrying one.
+ */
+export function validateWavePlan(text: string, conductorSessionId?: string) {
+  const body = text.trim();
+  const bare = parseWavePlanBody(body);
+  const parse: FlockWaveParse = openingFencePattern(WAVE_FENCE_TAG).test(text)
+    ? parseFlockWave(text)
+    : bare.kind === "plan"
+      ? { ...bare, planText: body, prose: "" }
+      : bare;
+  if (parse.kind === "none") {
+    return {
+      ok: false as const,
+      reason: "steps-empty",
+      detail: "There is no wave plan in this text to check.",
+      step: null,
+    };
+  }
+  const admission = admitWavePlan(parse, {
+    checkStepModel: checkExplicitWaveStepModel,
+    ...(conductorSessionId
+      ? {
+          checkStepRunSettings: (step: WaveStep) =>
+            checkWaveStepRunSettings(step, conductorSessionId),
+        }
+      : {}),
+  });
+  if (admission.kind === "rejected") {
+    return {
+      ok: false as const,
+      reason: admission.reason,
+      detail: admission.detail,
+      step: admission.stepIndex === undefined ? null : admission.stepIndex + 1,
+    };
+  }
+  return {
+    ok: true as const,
+    executors: admission.steps.length,
+    parallel: admission.parallel ?? DEFAULT_WAVE_PARALLEL,
+    steps: admission.steps.map((step, index) => ({
+      step: index + 1,
+      role: step.role,
+      label: step.label ?? null,
+      access: step.access === "all" ? "all" : "none",
+      model: step.model ?? null,
+    })),
+  };
 }
 
 /** Why a session a restart replaced was stopped, as its chip says it. */

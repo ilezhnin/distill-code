@@ -121,6 +121,7 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - "fast" is optional: true runs the step in its model's fast mode, false keeps fast mode off. A plan asking for fast mode on a model without one is refused whole. Leave it out unless speed matters more than cost for this step.
 - "budget" is optional: an object with any of "usd", "tokens" or "minutes", all positive numbers. The step is stopped the moment it passes the first of them, and the wave carries on with what it has. Give one when a step could plausibly loop or run long — a broad search, an open-ended refactor — and leave it out for work whose size you can see from here. It is a ceiling, not an estimate: set it where stopping is better than continuing, not where you expect the step to land.
 - Anything you want the operator to read goes outside the block, as ordinary prose.
+- A plan you are not sure of can be checked before you send it: \`flockctl wave validate --plan '<the JSON object>'\` parses it exactly as the app will and answers with the refusal it would get, or with the executors it would start. Nothing runs. Worth it for a long plan or one with shards; a refused plan costs you a turn.
 
 ## Access semantics
 

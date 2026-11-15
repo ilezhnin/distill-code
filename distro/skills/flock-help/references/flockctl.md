@@ -92,6 +92,9 @@ are separate choices, and each model offers its own set of them.
   operator — with the session running each step and that step's report
   status. `flockctl wave get --wave-id <id>` adds the step briefs and the
   conductor's roadmap; an unambiguous prefix of the id is enough.
+- `flockctl wave validate --plan '<json>'` checks a plan the way the app
+  would on receiving it, and runs nothing: it answers with the refusal the
+  plan would get or with the executors it would start.
 - `flockctl wave cancel` is the operator's stop control: a live wave is parked
   and its running executors are told to stop, a queued wave is dropped.
   `flockctl wave steer` sends one message to every running executor of a

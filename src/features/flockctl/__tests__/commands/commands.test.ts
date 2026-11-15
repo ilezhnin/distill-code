@@ -594,6 +594,7 @@ describe("action schemas", () => {
       "waves.amend": { wave_id: "wave-1", step: 2, text: "also check" },
       "waves.skip": { wave_id: "wave-1", step: 2 },
       "waves.restart": { wave_id: "wave-1", step: 2, text: "use the new file" },
+      "waves.validate": { plan: '{"steps":[]}' },
       "waves.roadmap": { conductor_session_id: "s1" },
       "jobs.list": {},
       "jobs.report": {

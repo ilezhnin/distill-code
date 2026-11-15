@@ -332,6 +332,7 @@ mod tests {
             ("wave", "amend") => vec!["--wave-id", "w", "--step", "1", "--text", "t"],
             ("wave", "skip") => vec!["--wave-id", "w", "--step", "1"],
             ("wave", "restart") => vec!["--wave-id", "w", "--step", "1"],
+            ("wave", "validate") => vec!["--plan", "p"],
             ("wave", "roadmap") => vec!["--conductor-session-id", "s"],
             ("job", "list") => vec![],
             ("job", "report") => vec![
