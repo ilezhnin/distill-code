@@ -1,5 +1,6 @@
 """Invented admission fixtures. No WSL changes, provider calls or private tasks."""
 import contextlib
+import errno
 import importlib.machinery
 import importlib.util
 import io
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -2151,6 +2153,158 @@ source "$launcher" "$@"
                 self.assertEqual((done.returncode, done.stdout), (97, ''))
                 self.assertEqual(done.stderr.strip(), 'unexpected install')
                 self.assertEqual(list(Path(self.temporary.name).iterdir()), [])
+
+
+def _cgroupv2_available():
+    """True when the host has cgroupv2 with a writable subtree we can test in."""
+    if sys.platform != 'linux':
+        return False
+    try:
+        with open('/proc/mounts') as mounts:
+            return any('cgroup2' in line for line in mounts)
+    except OSError:
+        return False
+
+
+def _is_root():
+    return os.geteuid() == 0 if hasattr(os, 'geteuid') else False
+
+
+@unittest.skipUnless(sys.platform == 'linux', 'cgroup containment requires Linux')
+@unittest.skipUnless(_cgroupv2_available(), 'cgroupv2 not available')
+@unittest.skipUnless(_is_root(), 'cgroup containment tests require root')
+class CgroupContainmentTests(unittest.TestCase):
+    """Live cgroup containment tests: memory OOM, fork-bomb pids.max, disk fill.
+
+    These run only on Linux with cgroupv2 and root. They create a temporary
+    cgroup subtree, set hard limits, and verify the kernel enforces them."""
+
+    CGROUP_ROOT = Path('/sys/fs/cgroup')
+
+    def setUp(self):
+        self.group_name = 'bench-test-containment-' + secrets.token_hex(8)
+        self.group_path = self.CGROUP_ROOT / self.group_name
+        self.group_path.mkdir()
+        self.addCleanup(self._cleanup_group)
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+
+    def _cleanup_group(self):
+        if not self.group_path.exists():
+            return
+        for child in sorted(self.group_path.glob('**'), reverse=True):
+            if child == self.group_path:
+                continue
+            if child.is_dir():
+                try:
+                    child.rmdir()
+                except OSError:
+                    pass
+        try:
+            self.group_path.rmdir()
+        except OSError:
+            pass
+
+    def _write_limit(self, filename, value):
+        (self.group_path / filename).write_text(str(value))
+        actual = (self.group_path / filename).read_text().strip()
+        self.assertEqual(actual, str(value),
+                         f'{filename} did not accept {value}: got {actual}')
+
+    def _enable_controllers(self):
+        needed = {'memory', 'pids'}
+        available = set((self.CGROUP_ROOT / 'cgroup.controllers').read_text().split())
+        missing = needed - available
+        if missing:
+            self.skipTest(f'controllers not available: {missing}')
+        for ctrl in needed:
+            try:
+                (self.CGROUP_ROOT / 'cgroup.subtree_control').write_text(f'+{ctrl}')
+            except OSError:
+                self.skipTest(f'cannot enable {ctrl} controller')
+
+    def test_memory_hog_is_oom_killed(self):
+        self._enable_controllers()
+        limit = 16 * MIB
+        self._write_limit('memory.max', limit)
+        (self.group_path / 'memory.swap.max').write_text('0')
+        (self.group_path / 'memory.oom.group').write_text('1')
+        allocator = (
+            'import ctypes, os\n'
+            f'open("{self.group_path}/cgroup.procs", "w").write(str(os.getpid()))\n'
+            'blocks = []\n'
+            'try:\n'
+            '    while True:\n'
+            '        blocks.append(ctypes.create_string_buffer(1048576))\n'
+            'except (MemoryError, OSError):\n'
+            '    pass\n'
+        )
+        result = subprocess.run(
+            [sys.executable, '-c', allocator],
+            capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0,
+                            'memory hog should have been killed by OOM')
+        events = (self.group_path / 'memory.events').read_text()
+        self.assertRegex(events, r'oom_kill [1-9]',
+                         'kernel should report at least one oom_kill')
+
+    def test_fork_bomb_is_stopped_by_pids_max(self):
+        self._enable_controllers()
+        self._write_limit('pids.max', 5)
+        forker = (
+            'import os, sys\n'
+            f'open("{self.group_path}/cgroup.procs", "w").write(str(os.getpid()))\n'
+            'children = []\n'
+            'for _ in range(100):\n'
+            '    try:\n'
+            '        pid = os.fork()\n'
+            '        if pid == 0:\n'
+            '            import time; time.sleep(10); os._exit(0)\n'
+            '        children.append(pid)\n'
+            '    except OSError:\n'
+            '        break\n'
+            'for c in children:\n'
+            '    try:\n'
+            '        os.waitpid(c, 0)\n'
+            '    except ChildProcessError:\n'
+            '        pass\n'
+            'sys.exit(0 if len(children) < 100 else 1)\n'
+        )
+        result = subprocess.run(
+            [sys.executable, '-c', forker],
+            capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0,
+                         'fork bomb should have been contained (fewer than 100 forks)')
+        current = int((self.group_path / 'pids.current').read_text().strip())
+        self.assertLessEqual(current, 5,
+                             'pids.current should not exceed pids.max')
+
+    def test_disk_fill_gets_enospc(self):
+        scratch = Path(self.scratch.name)
+        loop_file = scratch / 'loop.img'
+        mount_point = scratch / 'mnt'
+        mount_point.mkdir()
+        loop_file.write_bytes(b'\0' * (4 * MIB))
+        subprocess.check_call(['mkfs.ext4', '-q', '-F', str(loop_file)])
+        subprocess.check_call(['mount', '-o', 'loop', str(loop_file), str(mount_point)])
+        self.addCleanup(lambda: subprocess.call(['umount', '-l', str(mount_point)]))
+        filler = mount_point / 'fill.bin'
+        hit_enospc = False
+        try:
+            with open(filler, 'wb') as f:
+                while True:
+                    f.write(b'\x00' * (1 * MIB))
+                    f.flush()
+                    os.fsync(f.fileno())
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                hit_enospc = True
+            else:
+                raise
+        self.assertTrue(hit_enospc, 'writing past the loop device should raise ENOSPC')
+        vfs = os.statvfs(str(mount_point))
+        self.assertLess(vfs.f_bavail, 16,
+                        'almost no free blocks should remain after fill')
 
 
 if __name__ == '__main__':

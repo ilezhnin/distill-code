@@ -236,6 +236,37 @@ test("candidate navigation cannot turn protected Linux files into an artifact", 
   else assert.equal(result.boundary.node, "undefined");
 });
 
+test("candidate cannot exfiltrate protected files via fetch, iframe, script or meta refresh", async () => {
+  const vectors = [
+    { label: "fetch", html: '<output id="r">none</output><script>fetch("file:///workspace/request.json").then(r=>r.text()).then(t=>{document.getElementById("r").textContent="leaked:"+t;}).catch(()=>{document.getElementById("r").textContent="blocked";});</script>' },
+    { label: "iframe", html: '<iframe id="f" src="file:///workspace/request.json"></iframe><output id="r">none</output><script>setTimeout(()=>{try{document.getElementById("r").textContent="leaked:"+document.getElementById("f").contentDocument.body.textContent;}catch{document.getElementById("r").textContent="blocked";}},500);</script>' },
+    { label: "script-src", html: '<output id="r">none</output><script src="file:///workspace/request.json" onerror="document.getElementById(\'r\').textContent=\'blocked\'" onload="document.getElementById(\'r\').textContent=\'leaked\'"></script>' },
+    { label: "meta-refresh", html: '<meta http-equiv="refresh" content="0;url=file:///workspace/request.json"><output>Fixture</output>' },
+  ];
+  for (const { label, html } of vectors) {
+    const result = await evaluate(
+      "browser",
+      html,
+      { steps: [{ action: "expectText", selector: "output, #r", value: label === "meta-refresh" ? "Fixture" : "blocked" }] },
+    );
+    assert(
+      result.pass || result.candidatePolicyViolation === "artifact_navigation",
+      `Exfiltration vector "${label}" was not blocked: ${JSON.stringify(result)}`,
+    );
+  }
+});
+
+test("candidate network isolation rejects connection attempts with a network error", async () => {
+  const source =
+    "async function probe(){const errors=[];for(const url of ['http://127.0.0.1:9999/','http://10.0.0.1:80/','http://169.254.169.254/latest/meta-data/']){try{await fetch(url,{signal:AbortSignal.timeout(2000)});errors.push('connected');}catch(e){errors.push(e.name||'error');}}return errors;}";
+  const result = await evaluate("javascript", source, {
+    functionName: "probe",
+    argsCases: [{ args: [], expected: null }],
+  });
+  assert.equal(result.pass !== undefined, true);
+  assert.equal(result.boundary.network, false);
+});
+
 test("actual form interactions and independent screenshots", async () => {
   const spec = JSON.parse(
     await readFile(

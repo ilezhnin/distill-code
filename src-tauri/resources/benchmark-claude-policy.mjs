@@ -7,6 +7,10 @@ import { pathToFileURL } from "node:url";
 
 const expected = new Map([
   [
+    "index.js",
+    "f766071bfb432f79036ca90c67efc5306373be6b5129a240820d03146d2f4cb9",
+  ],
+  [
     "v1/acp-agent.js",
     "dcbb889abd7cc10a3ecb233750b2b324078af122d3379720363d95ba5e8238e5",
   ],

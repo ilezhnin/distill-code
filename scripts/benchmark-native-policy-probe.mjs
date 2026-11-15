@@ -365,7 +365,7 @@ try {
     );
   } else {
     // Let the idle-triggered title sidechain run if the adapter failed to suppress it.
-    await new Promise((resolve) => setTimeout(resolve, 750));
+    await new Promise((resolve) => setTimeout(resolve, 3500));
     assert.equal(
       requests.length,
       1,
@@ -486,6 +486,11 @@ try {
       await exists(marker),
       "Positive control must execute the hostile hook or MCP fixture",
     );
+    const markerContent = await readFile(marker, "utf8");
+    assert(
+      ["escaped", "mcp"].includes(markerContent),
+      `Positive control marker must carry the expected label, got ${JSON.stringify(markerContent)}`,
+    );
     const automaticTitleControl = await new Promise(
       (resolveControl, reject) => {
         const control = spawn(
@@ -521,7 +526,7 @@ try {
     );
     await writeFile(
       join(changedPackage, "session-titles.js"),
-      `${await readFile(join(installed, "dist", "session-titles.js"), "utf8")}\n`,
+      await readFile(join(installed, "dist", "session-titles.js")),
     );
     const adapter = await readFile(
       new URL(

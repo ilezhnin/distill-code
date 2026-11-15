@@ -747,7 +747,7 @@ async function probeCodex(root, children) {
         })
         .catch((error) => ({ error: String(error) }));
       // A title or summary request would follow the turn.
-      await sleep(1500);
+      await sleep(3500);
       return {
         answered,
         requests: stub.requests
@@ -1013,6 +1013,11 @@ async function probeCodex(root, children) {
     assert(
       await exists(marker),
       "Positive control must execute the hostile MCP fixture",
+    );
+    const markerLabel = await readFile(marker, "utf8");
+    assert(
+      ["mcp-json", "home-mcp", "project-mcp", "tool"].includes(markerLabel),
+      `Positive control marker must carry a known label, got ${JSON.stringify(markerLabel)}`,
     );
     assert(
       controlRequests.some((entry) => isTitle(entry.body)),
@@ -1584,7 +1589,7 @@ async function probeGrok(root, children) {
       await rm(signIn, { force: true });
     }
     // Long enough for Grok to notice the file is gone before the session.
-    await sleep(1500);
+    await sleep(3500);
     const opened = await client.call("session/new", {
       cwd: workspace,
       mcpServers: [],
@@ -1602,7 +1607,7 @@ async function probeGrok(root, children) {
       .catch((error) => ({ error: String(error) }));
     const answeredAt = client.marks.get("session/prompt");
     // A title, summary or recap request would follow the turn.
-    await sleep(1500);
+    await sleep(3500);
     return {
       client,
       answered,
@@ -1769,7 +1774,7 @@ async function probeGrok(root, children) {
         _meta: promptMeta,
       })
       .catch((error) => ({ error: String(error) }));
-    await sleep(1500);
+    await sleep(3500);
     assert(!(await exists(marker)), "A tool, hook or MCP process executed");
     const hostileRequests = stub.requests
       .slice(hostileStart)
@@ -1882,6 +1887,11 @@ async function probeGrok(root, children) {
     assert(
       await exists(marker),
       "Positive control must run the hostile hook or MCP fixture",
+    );
+    const grokMarkerLabel = await readFile(marker, "utf8");
+    assert(
+      ["grok-hook", "grok-mcp", "mcp-json", "SessionStart", "tool"].includes(grokMarkerLabel),
+      `Positive control marker must carry a known label, got ${JSON.stringify(grokMarkerLabel)}`,
     );
     assert(
       controlRequests.some(
@@ -2266,7 +2276,7 @@ async function probeKimi(root, children) {
       prompt: [{ type: "text", text: task }],
     });
     // A title or other auxiliary request would follow the turn.
-    await sleep(1500);
+    await sleep(3500);
     const turnRequests = stub.requests
       .slice(turnStart)
       .filter((entry) => entry.url.includes("/chat/completions"));
@@ -2345,7 +2355,7 @@ async function probeKimi(root, children) {
         ],
       })
       .catch((error) => ({ error: String(error) }));
-    await sleep(1500);
+    await sleep(3500);
     assert(!(await exists(marker)), "A tool, hook or MCP process executed");
     const hostileRequests = stub.requests
       .slice(hostileStart)
@@ -2415,6 +2425,11 @@ async function probeKimi(root, children) {
     assert(
       await exists(marker),
       "Positive control must run the hostile hook or MCP fixture",
+    );
+    const kimiMarkerLabel = await readFile(marker, "utf8");
+    assert(
+      ["home-mcp", "mcp-json", "project-mcp", "SessionStart", "UserPromptSubmit", "tool"].includes(kimiMarkerLabel),
+      `Positive control marker must carry a known label, got ${JSON.stringify(kimiMarkerLabel)}`,
     );
     assert(
       controlRequests.some((entry) =>
@@ -2745,7 +2760,7 @@ async function probeZai(root, children) {
       prompt: [{ type: "text", text: task }],
     });
     // A title or other auxiliary request would follow the turn.
-    await sleep(1500);
+    await sleep(3500);
     const turnRequests = stub.requests
       .slice(turnStart)
       .filter((entry) => entry.url.endsWith("/chat/completions"));
@@ -2830,7 +2845,7 @@ async function probeZai(root, children) {
         ],
       })
       .catch((error) => ({ error: String(error) }));
-    await sleep(1500);
+    await sleep(3500);
     assert(!(await exists(marker)), "A tool, MCP server or plugin executed");
     const hostileRequests = stub.requests
       .slice(hostileStart)
@@ -2904,7 +2919,7 @@ async function probeZai(root, children) {
     });
     const deadline = Date.now() + 10000;
     while (!(await exists(marker)) && Date.now() < deadline) await sleep(50);
-    await sleep(1500);
+    await sleep(3500);
     const controlRequests = stub.requests
       .slice(restrictedRequests)
       .filter((entry) => entry.url.endsWith("/chat/completions"));
@@ -2938,6 +2953,11 @@ async function probeZai(root, children) {
     assert(
       await exists(marker),
       "Positive control must run the hostile MCP fixture",
+    );
+    const zaiMarkerLabel = await readFile(marker, "utf8");
+    assert(
+      ["user-mcp", "project-mcp", "tool"].includes(zaiMarkerLabel),
+      `Positive control marker must carry a known label, got ${JSON.stringify(zaiMarkerLabel)}`,
     );
     assert(
       controlRequests.some(

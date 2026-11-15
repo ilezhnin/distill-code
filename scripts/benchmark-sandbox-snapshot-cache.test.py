@@ -356,6 +356,86 @@ class CacheTests(unittest.TestCase):
                     self.run_main('--cached', tree, self.directory('t-' + str(len(list(self.root.iterdir())))))
 
 
+class ArchiveLimitTests(unittest.TestCase):
+    """Exercises the safety limits in unpack() that reject oversized, too-deep,
+    device, FIFO, setuid, and duplicate-entry archives."""
+
+    def test_entry_count_limit_is_enforced(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as tar:
+            for i in range(32769):
+                entry = tarfile.TarInfo(f'f{i}')
+                entry.size = 0
+                tar.addfile(entry)
+        with self.assertRaises(ValueError):
+            unpack.unpack(io.BytesIO(stream.getvalue()), None, 'sha1')
+
+    def test_total_size_limit_is_enforced(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as tar:
+            entry = tarfile.TarInfo('big')
+            entry.size = unpack.LIMIT + 1
+            tar.addfile(entry, io.BytesIO(b'\x00' * (unpack.LIMIT + 1)))
+        with self.assertRaises(ValueError):
+            unpack.unpack(io.BytesIO(stream.getvalue()), None, 'sha1')
+
+    def test_per_file_size_limit_is_enforced(self):
+        limit = 256 * 1024 ** 2 + 1
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as tar:
+            entry = tarfile.TarInfo('huge')
+            entry.size = limit
+            tar.addfile(entry, io.BytesIO(b'\x00' * limit))
+        with self.assertRaises(ValueError):
+            unpack.unpack(io.BytesIO(stream.getvalue()), None, 'sha1')
+
+    def test_directory_depth_limit_is_enforced(self):
+        deep = '/'.join(f'd{i}' for i in range(65)) + '/file'
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as tar:
+            for depth in range(1, 66):
+                d = '/'.join(f'd{i}' for i in range(depth)) + '/'
+                entry = tarfile.TarInfo(d)
+                entry.type = tarfile.DIRTYPE
+                tar.addfile(entry)
+            entry = tarfile.TarInfo(deep)
+            entry.size = 1
+            tar.addfile(entry, io.BytesIO(b'x'))
+        with self.assertRaises(ValueError):
+            unpack.unpack(io.BytesIO(stream.getvalue()), None, 'sha1')
+
+    def test_device_and_fifo_entries_are_rejected(self):
+        for kind in (tarfile.CHRTYPE, tarfile.BLKTYPE, tarfile.FIFOTYPE):
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode='w') as tar:
+                entry = tarfile.TarInfo('special')
+                entry.type = kind
+                tar.addfile(entry)
+            with self.assertRaises(ValueError, msg=f'type={kind}'):
+                unpack.unpack(io.BytesIO(stream.getvalue()), None, 'sha1')
+
+    def test_setuid_entries_pass_as_regular_files(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as tar:
+            entry = tarfile.TarInfo('suid')
+            entry.mode = 0o4755
+            entry.size = 4
+            tar.addfile(entry, io.BytesIO(b'suid'))
+        unpack.unpack(io.BytesIO(stream.getvalue()), None, 'sha1')
+
+    def test_duplicate_entry_names_are_rejected(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as tar:
+            entry = tarfile.TarInfo('dup')
+            entry.size = 1
+            tar.addfile(entry, io.BytesIO(b'a'))
+            entry2 = tarfile.TarInfo('dup')
+            entry2.size = 1
+            tar.addfile(entry2, io.BytesIO(b'b'))
+        with self.assertRaises(ValueError):
+            unpack.unpack(io.BytesIO(stream.getvalue()), None, 'sha1')
+
+
 if __name__ == '__main__':
     if shutil.which('git') is None:
         sys.exit('git is required')

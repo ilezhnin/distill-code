@@ -106,5 +106,95 @@ class MetadataCacheTests(unittest.TestCase):
         self.assertEqual(Path(artifacts['ripgrep']['path']), root / 'zai' / 'bin' / 'rg')
 
 
+class ReceiptPathTests(unittest.TestCase):
+    def test_receipt_ownership_mode_and_size_are_enforced(self):
+        good = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0, st_nlink=1, st_size=512)
+        # No raise for a well-formed receipt.
+        policy.protected_info(good)
+        for info in [
+            SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=1000, st_nlink=1, st_size=512),
+            SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_uid=0, st_nlink=1, st_size=512),
+            SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0, st_nlink=1, st_size=512),
+        ]:
+            with self.assertRaises(ValueError, msg=repr(info)):
+                policy.protected_info(info)
+
+    def test_receipt_change_while_verifying_is_detected(self):
+        root = Path(tempfile.mkdtemp(prefix='distill-attest-verify-'))
+        executable = root / 'toy-binary'
+        executable.write_bytes(b'stable binary\n')
+        call_count = [0]
+        original_identity = policy.identity
+
+        def shifting_identity(path, info):
+            result = original_identity(path, info)
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                result = list(result)
+                result[3] += 1  # Alter st_size field.
+            return result
+
+        with patch.object(policy, 'ROOT', root), \
+                patch.object(policy, 'protected', side_effect=lambda value, directory=False: Path(value)), \
+                patch.object(policy, 'protected_info'), \
+                patch.object(policy.os, 'O_NOFOLLOW', getattr(os, 'O_NOFOLLOW', 0), create=True), \
+                patch.object(policy.os, 'O_NONBLOCK', getattr(os, 'O_NONBLOCK', 0), create=True), \
+                patch.object(policy.os, 'fstat', side_effect=lambda fd: executable.stat()), \
+                patch.object(policy, 'identity', side_effect=shifting_identity):
+            with self.assertRaises(ValueError):
+                policy.artifact(executable)
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+    def test_launcher_target_requires_path_under_root(self):
+        root = Path(tempfile.mkdtemp(prefix='distill-attest-launcher-'))
+        launcher = root / 'bin' / 'test-launcher'
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text('exec /etc/evil/binary\n')
+        with patch.object(policy, 'ROOT', root), \
+                patch.object(policy, 'protected', side_effect=lambda value, directory=False: Path(value)):
+            with self.assertRaises(ValueError):
+                policy.launcher_target('test-launcher')
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+    def test_artifact_refuses_paths_outside_the_tool_root(self):
+        outside = Path(tempfile.mkdtemp(prefix='distill-attest-outside-')) / 'binary'
+        outside.write_bytes(b'outside\n')
+        with patch.object(policy, 'protected', side_effect=lambda value, directory=False: Path(value)), \
+                patch.object(policy, 'protected_info'):
+            with self.assertRaises(ValueError):
+                policy.artifact(outside)
+        import shutil
+        shutil.rmtree(outside.parent, ignore_errors=True)
+
+    def test_codex_requires_exactly_one_elf_native(self):
+        root = Path(tempfile.mkdtemp(prefix='distill-attest-codex-'))
+        codex_vendor = root / 'codex-acp' / 'node_modules' / '@openai' / 'codex-linux-x64' / 'vendor' / 'bin'
+        codex_vendor.mkdir(parents=True, exist_ok=True)
+        # No ELF binary at all.
+        (codex_vendor / 'codex').write_bytes(b'#!/bin/sh\n')
+        hashed = lambda path, cache=None: {'path': str(path), 'sha256': 'f' * 64}
+        launchers = {'codex-acp': str(root / 'codex-acp' / 'entry'),
+                     'codex': str(root / 'codex-acp' / 'launch')}
+        with patch.object(policy, 'ROOT', root), \
+                patch.object(policy, 'launcher_target', side_effect=launchers.__getitem__), \
+                patch.object(policy, 'artifact', side_effect=hashed):
+            with self.assertRaises(ValueError):
+                policy.collect('codex')
+        # Two ELF binaries is also ambiguous.
+        (codex_vendor / 'codex').write_bytes(b'\x7fELF' + b'\x00' * 12)
+        vendor2 = root / 'codex-acp' / 'node_modules' / '@openai' / 'codex-linux-arm64' / 'vendor' / 'bin'
+        vendor2.mkdir(parents=True, exist_ok=True)
+        (vendor2 / 'codex').write_bytes(b'\x7fELF' + b'\x00' * 12)
+        with patch.object(policy, 'ROOT', root), \
+                patch.object(policy, 'launcher_target', side_effect=launchers.__getitem__), \
+                patch.object(policy, 'artifact', side_effect=hashed):
+            with self.assertRaises(ValueError):
+                policy.collect('codex')
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == '__main__':
     unittest.main()

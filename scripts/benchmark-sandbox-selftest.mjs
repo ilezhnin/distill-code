@@ -209,6 +209,136 @@ print(json.dumps({'uid':os.getuid(),'rootRO':bool(os.statvfs('/').f_flag&os.ST_R
       "bounded tmpfs and usable nested user namespace",
       inside.tmp === 268435456 && inside.userns === 0,
     );
+    // Network isolation: sessions reach the public internet but not the
+    // Windows host, the WSL DNS tunnel, the local network or VM services.
+    const network = JSON.parse(
+      work(
+        "/usr/local/sbin/bench-run",
+        [
+          "session",
+          id,
+          "DISTILL_BENCH_RESOURCE_CLASS=text",
+          "--",
+          "python3",
+          "-c",
+          `import json,os,subprocess as sp
+gateway=sp.check_output(['ip','route'],text=True).split('default via ')[1].split()[0]
+def probe(host,port,timeout=5):
+    r=sp.run(['bash','-c',f'exec 3<>/dev/tcp/{host}/{port}'],capture_output=True,timeout=timeout+2)
+    return r.returncode==0
+results={'publicInternet':sp.run(['curl','-s','-o','/dev/null','-w','%{http_code}','-m','15','https://api.anthropic.com/'],capture_output=True,text=True).stdout[:1] in '12345',
+'publicDNS':sp.run(['getent','hosts','api.openai.com'],capture_output=True).returncode==0,
+'noWindowsHost':sp.run(['curl','-s','-m','5',f'http://{gateway}:445/'],capture_output=True).returncode==7,
+'noWslDns':not probe('10.255.255.254',53),
+'noLocalNetwork':not probe('192.168.1.1',80),
+'noVmServices':not probe(gateway,22),
+'noSudo':sp.run(['sudo','-n','true'],capture_output=True).returncode!=0,
+'cleanEnv':sorted(sp.check_output(['env'],text=True).strip().split('\\n'))==sorted([l for l in sp.check_output(['env'],text=True).strip().split('\\n') if l.split('=')[0] in ('HOME','LANG','LOGNAME','PATH','USER','DISTILL_BENCH_RESOURCE_CLASS','DISTILL_BENCH_RESERVATION')])}
+print(json.dumps(results))`,
+        ],
+        "text",
+      ),
+    );
+    pass(
+      "public internet reachable from session",
+      network.publicInternet,
+    );
+    pass("public DNS reachable from session", network.publicDNS);
+    pass("no Windows host access from session", network.noWindowsHost);
+    pass("no WSL DNS tunnel from session", network.noWslDns);
+    pass("no local network from session", network.noLocalNetwork);
+    pass("no VM services from session", network.noVmServices);
+    pass("no privilege gain from session", network.noSudo);
+    pass("clean environment in session", network.cleanEnv);
+    // Cross-attempt network isolation: a server in one session is
+    // unreachable from another.
+    const serverId = `${id}-net-isolate`;
+    work(
+      "/usr/local/sbin/bench-copy",
+      [serverId],
+      "prep",
+      tar([["file.txt", "one\n"]]),
+    );
+    // Start a server in the first session (backgrounded via setsid).
+    leased(
+      "/usr/local/sbin/bench-run",
+      [
+        "session",
+        serverId,
+        "DISTILL_BENCH_RESOURCE_CLASS=text",
+        "--",
+        "python3",
+        "-c",
+        "import subprocess,time;subprocess.Popen(['python3','-m','http.server','41981','--bind','127.0.0.1'],start_new_session=True);time.sleep(1)",
+      ],
+      "text",
+      undefined,
+      serverId,
+    );
+    const selfReach = work(
+      "/usr/local/sbin/bench-run",
+      [
+        "session",
+        serverId,
+        "DISTILL_BENCH_RESOURCE_CLASS=text",
+        "--",
+        "curl",
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "-m",
+        "3",
+        "http://127.0.0.1:41981/",
+      ],
+      "text",
+      undefined,
+      serverId,
+    );
+    pass("own local server reachable", selfReach.trim() === "200");
+    const crossReach = call("/usr/local/sbin/bench-run", [
+      "session",
+      id,
+      "DISTILL_BENCH_RESOURCE_CLASS=text",
+      "--",
+      "curl",
+      "-s",
+      "-m",
+      "3",
+      "http://127.0.0.1:41981/",
+    ]);
+    pass(
+      "other attempt cannot reach local server",
+      crossReach.status !== 0 || crossReach.stdout.trim() === "",
+    );
+    successful("/usr/local/sbin/bench-kill", ["session", serverId]);
+    successful("/usr/local/sbin/bench-clean", [serverId]);
+    // Offline checker has no network access.
+    const checkNetwork = work(
+      "/usr/local/sbin/bench-judge",
+      [id, "10", "--", "python3", "-c",
+       "import subprocess;r=subprocess.run(['curl','-s','-m','5','https://api.anthropic.com/'],capture_output=True);exit(0 if r.returncode==6 else 1)"],
+      "check",
+    );
+    pass("offline checker has no network", checkNetwork !== undefined);
+    // Paired selftest: verdict/process separation checks.
+    const pairedTests = fs
+      .readFileSync(path.join(resources, "paired-selftest.py"), "utf8")
+      .replace(/\r\n/g, "\n");
+    successful(
+      "/usr/local/sbin/bench-budget",
+      [
+        "control",
+        "--",
+        "/usr/bin/env",
+        `TMPDIR=/srv/bench/staging/${id}`,
+        "python3",
+        "-",
+      ],
+      pairedTests,
+    );
+    pass("verdict/process separation regressions", true);
     pass(
       "outside root stays writable",
       root("import os;print(bool(os.statvfs('/').f_flag&os.ST_RDONLY))") ===
