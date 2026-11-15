@@ -1092,6 +1092,16 @@ async fn run_doctor_impl(
         return DoctorReport { checks: Vec::new() };
     }
 
+    #[cfg(windows)]
+    if let Some(planted) = planted_unix_tool_path() {
+        log::warn!(
+            "[doctor] not running the health check: {}",
+            planted_unix_tool_message(&planted)
+        );
+        return DoctorReport {
+            checks: vec![DoctorCheck::from(planted_unix_tool_check(&planted))],
+        };
+    }
     // Checks probe npm state (`npm prefix -g`, version lookups) with the same
     // private-prefix view the fixes install into, so a check never contradicts
     // the fix that just ran.
@@ -1153,6 +1163,82 @@ async fn run_doctor_impl(
         checks.push(check);
     }
     DoctorReport { checks }
+}
+
+/// The Unix paths the upstream doctor crate runs or reads from, and on
+/// Windows should never find.
+///
+/// The crate looks a missing binary up through `/bin/zsh -l -c` and
+/// `/bin/bash`, then in `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and
+/// linuxbrew's folder, and runs its fixes and sign-in probes through the same
+/// shells. On Windows a rooted path without a drive is that path on the
+/// current drive, and any account on the machine may create a folder in a
+/// drive's root: a `C:\bin\zsh.exe` another account left there was run as
+/// the operator, with the provider environment, on every health check.
+///
+/// The crate has no switch for this, so the app does not call it while any
+/// of those paths exists. That stops a file left in wait; it does not stop
+/// one created in the moment between this look and the crate's own, which
+/// only a change in the crate can.
+#[cfg(windows)]
+pub(crate) fn planted_unix_tool_path() -> Option<PathBuf> {
+    let current = std::env::current_dir().ok()?;
+    let root = current.ancestors().last()?;
+    planted_unix_tool_path_under(root)
+}
+
+#[cfg(windows)]
+fn planted_unix_tool_path_under(root: &Path) -> Option<PathBuf> {
+    const SHELLS: [&str; 4] = ["zsh", "zsh.exe", "bash", "bash.exe"];
+    const TOOL_FOLDERS: [&[&str]; 4] = [
+        &["opt", "homebrew", "bin"],
+        &["usr", "local", "bin"],
+        &["usr", "bin"],
+        &["home", "linuxbrew", ".linuxbrew", "bin"],
+    ];
+    SHELLS
+        .iter()
+        .map(|shell| root.join("bin").join(shell))
+        .chain(TOOL_FOLDERS.iter().map(|parts| {
+            parts
+                .iter()
+                .fold(root.to_path_buf(), |path, part| path.join(part))
+        }))
+        .find(|path| path.exists())
+}
+
+/// What the operator is told instead of a health check that would have run
+/// a program nobody chose.
+#[cfg(windows)]
+pub(crate) fn planted_unix_tool_message(planted: &Path) -> String {
+    format!(
+        "{} exists. The health check would run programs from it without asking, so it was not run. Remove or move it, then check again.",
+        planted.display()
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn planted_unix_tool_check(planted: &Path) -> doctor::DoctorCheck {
+    doctor::DoctorCheck {
+        id: "unsafe-unix-tool-path".to_string(),
+        label: "Health check".to_string(),
+        status: CheckStatus::Fail,
+        message: planted_unix_tool_message(planted),
+        fix_url: None,
+        fix_command: None,
+        fix_type: None,
+        path: Some(planted.to_string_lossy().into_owned()),
+        bridge_path: None,
+        raw_output: None,
+        auth_status: None,
+        installed_version: None,
+        latest_version: None,
+        update_available: None,
+        install_source: None,
+        self_updating: None,
+        main: None,
+        bridge: None,
+    }
 }
 
 fn doctor_config(runtime_config: &RuntimeConfig) -> Option<&RuntimeDoctorConfig> {
@@ -1347,6 +1433,10 @@ pub async fn run_doctor_fix(
             execute_local_fix(command, env_vars).await
         }
         DoctorFixDispatch::CrateCommand => {
+            #[cfg(windows)]
+            if let Some(planted) = planted_unix_tool_path() {
+                return Err(planted_unix_tool_message(&planted));
+            }
             // npm-backed fixes run the managed npm into the private prefix, so
             // the managed runtime must exist before the command does.
             let resolved_command = doctor::agents::lookup_fix_command(&check_id, &fix_type);
@@ -1542,6 +1632,55 @@ async fn ensure_managed_node_runtime_logged(app_handle: &AppHandle) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The upstream crate would run `\bin\zsh.exe` and read tools from the
+    /// Unix folders on the current drive; the app does not call it while one
+    /// of them is there, and an ordinary `bin` folder of the operator's own
+    /// is not one of them.
+    #[cfg(windows)]
+    #[test]
+    fn a_unix_tool_path_on_the_drive_stops_the_upstream_health_check() {
+        let drive = tempfile::tempdir().unwrap();
+        let root = drive.path();
+        assert_eq!(planted_unix_tool_path_under(root), None);
+
+        // The operator's own tools folder, with no shell in it.
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin").join("invented-tool.exe"), b"").unwrap();
+        assert_eq!(planted_unix_tool_path_under(root), None);
+
+        for shell in ["zsh.exe", "bash.exe", "zsh", "bash"] {
+            let planted = root.join("bin").join(shell);
+            fs::write(&planted, b"").unwrap();
+            assert_eq!(planted_unix_tool_path_under(root), Some(planted.clone()));
+            fs::remove_file(&planted).unwrap();
+        }
+        assert_eq!(planted_unix_tool_path_under(root), None);
+
+        for folder in [
+            root.join("opt").join("homebrew").join("bin"),
+            root.join("usr").join("local").join("bin"),
+            root.join("home")
+                .join("linuxbrew")
+                .join(".linuxbrew")
+                .join("bin"),
+        ] {
+            fs::create_dir_all(&folder).unwrap();
+            assert_eq!(planted_unix_tool_path_under(root), Some(folder.clone()));
+            fs::remove_dir(&folder).unwrap();
+        }
+        // `usr\local\bin` is gone; `usr\bin` alone is one too.
+        fs::create_dir_all(root.join("usr").join("bin")).unwrap();
+        assert_eq!(
+            planted_unix_tool_path_under(root),
+            Some(root.join("usr").join("bin"))
+        );
+
+        let check = planted_unix_tool_check(&root.join("bin").join("zsh.exe"));
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.message.contains("zsh.exe"), "{}", check.message);
+        assert!(check.fix_command.is_none() && check.fix_type.is_none());
+    }
 
     #[cfg(windows)]
     #[tokio::test]

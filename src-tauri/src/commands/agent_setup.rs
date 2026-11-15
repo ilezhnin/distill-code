@@ -437,6 +437,14 @@ async fn run_crate_check_report(
     app: &AppHandle,
     check_freshness: bool,
 ) -> Vec<doctor::DoctorCheck> {
+    #[cfg(windows)]
+    if let Some(planted) = crate::commands::doctor::planted_unix_tool_path() {
+        log::warn!(
+            "[agent-setup] not running the provider check: {}",
+            crate::commands::doctor::planted_unix_tool_message(&planted)
+        );
+        return vec![crate::commands::doctor::planted_unix_tool_check(&planted)];
+    }
     let env_vars = managed_acp_tools::provider_setup_env(app).await;
     let bundled_tools_dir = managed_acp_tools::bundled_tools_dir_for_checks(app);
     let mut report = doctor::run_checks_with_options(
