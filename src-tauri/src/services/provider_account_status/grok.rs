@@ -385,7 +385,7 @@ async fn fetch_billing_json(
     let response = apply_session_headers(client.get(url), session)
         .send()
         .await
-        .map_err(|error| BillingFailure::Failed(format!("Grok usage request failed: {error}")))?;
+        .map_err(|error| BillingFailure::Failed(unanswered(&error)))?;
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
         let body = response.text().await.unwrap_or_default();
@@ -404,6 +404,20 @@ async fn fetch_billing_json(
 }
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A request Grok never answered, by what stopped it. The client's own
+/// words for it name the address and nothing else, so a slow network read
+/// the same as a host that takes no connections.
+fn unanswered(error: &reqwest::Error) -> String {
+    let cause = if error.is_timeout() {
+        format!("no answer in {} s", FETCH_TIMEOUT.as_secs())
+    } else if error.is_connect() {
+        "no connection".into()
+    } else {
+        "the connection was cut".into()
+    };
+    format!("Could not reach Grok usage: {cause}")
+}
 
 /// The status of the Grok CLI sign-in: whether its session is one Grok still
 /// accepts, and the weekly or monthly subscription usage its billing
