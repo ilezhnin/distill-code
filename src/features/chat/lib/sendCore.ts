@@ -2,6 +2,7 @@ import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRej
 import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
 import { chatWorkClass } from "./chatExecutorSuggestion";
 import { dispatchOwnedTaskInChat } from "./ownedTaskDispatch";
+import { isWaveStepSession, queueLimitContinuation } from "./limitContinuation";
 import { queueSpareAccountContinuation } from "./spareAccountContinuation";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
@@ -604,13 +605,23 @@ export async function dispatchPrompt(
           );
         }
       }
+      // A wave step goes on after its account's limit cut it off: under
+      // the spare account now, or on its own once the limit is back,
+      // which the wave shows as a step waiting for its provider. Its
+      // continuation is queued before the chat goes idle, because the
+      // wave reads an idle step with no report as one to ask for it.
+      const waveStep =
+        Boolean(acpPromptMetadata?.executorSelection) ||
+        isWaveStepSession(sessionId);
+      if (userMessageCommitted && waveStep) {
+        queueLimitContinuation(sessionId, err);
+      }
       setError(sessionId, errorMessage);
       if (isCurrent()) {
         setChatState(sessionId, "idle");
       }
-      // A wave's own engine decides what a cut-off step does next; an
-      // ordinary chat goes on under the spare account the host found.
-      if (userMessageCommitted && !acpPromptMetadata?.executorSelection) {
+      // An ordinary chat goes on under the spare account the host found.
+      if (userMessageCommitted && !waveStep) {
         queueSpareAccountContinuation(sessionId, err);
       }
     }

@@ -635,6 +635,11 @@
         "withModel": "El paso {{step}} ({{name}}) no ha enviado nada en {{minutes}} min mientras su turno corre en {{model}}: ni texto, ni razonamiento, ni llamadas a herramientas. Un proveedor en su límite puede terminar un turno sin avisar. Redirige el paso, detenlo o reinícialo.",
         "plain": "El paso {{step}} ({{name}}) no ha enviado nada en {{minutes}} min mientras su turno corre: ni texto, ni razonamiento, ni llamadas a herramientas. Un proveedor en su límite puede terminar un turno sin avisar. Redirige el paso, detenlo o reinícialo."
       },
+      "stepAllowanceWait": {
+        "onModel": " en {{model}}",
+        "withReset": "El paso {{step}} ({{name}}) está esperando{{on}}: todas las cuentas en las que puede ejecutarse han agotado su cuota hasta {{reset}}. Entonces continúa solo. Para ejecutarlo ahora en otro modelo: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`.",
+        "noReset": "El paso {{step}} ({{name}}) está esperando{{on}}: todas las cuentas en las que puede ejecutarse han agotado su cuota y el proveedor no indica cuándo se restablece. Continúa solo cuando la cuota vuelva. Para ejecutarlo ahora en otro modelo: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`."
+      },
       "stop": "Detener la ola",
       "digest": {
         "protocolText": "Texto de protocolo entregado al conductor",

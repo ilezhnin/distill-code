@@ -34,6 +34,7 @@ import {
   waveExecutorKey,
 } from "./waveExecutor";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { useAccountQuotaWaitStore } from "@/features/chat/lib/accountQuotaWait";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import {
   noteSessionTurnEnded,
@@ -110,6 +111,7 @@ import {
   persistFailureNoticeText,
   waveRejectionNoticeText,
   waveReportDegradedNoticeText,
+  waveStepAllowanceWaitNoticeText,
   waveStepSilentNoticeText,
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
@@ -446,9 +448,45 @@ export function quietWaveSteps(
   return quiet;
 }
 
+/** The allowance waits already told to the conductor: session → wait start. */
+const allowanceWaitAnnounced = new Map<string, number>();
+
+/**
+ * The steps of `wave` whose chat waits for a spent allowance to come
+ * back, each wait returned once. A rate-limit refusal is not one: it is
+ * sent again within minutes and is shown on the step.
+ */
+export function allowanceWaitingWaveSteps(
+  wave: WaveState,
+): Array<{ stepIndex: number; sessionId: string; resetAt: number | null }> {
+  const waits = useAccountQuotaWaitStore.getState().waits;
+  const waiting: Array<{
+    stepIndex: number;
+    sessionId: string;
+    resetAt: number | null;
+  }> = [];
+  for (const step of wave.steps) {
+    if (step.phase !== "spawned" || !step.sessionId) continue;
+    const wait = waits[step.sessionId];
+    if (!wait || wait.reason !== "quota") {
+      allowanceWaitAnnounced.delete(step.sessionId);
+      continue;
+    }
+    if (allowanceWaitAnnounced.get(step.sessionId) === wait.startedAt) continue;
+    allowanceWaitAnnounced.set(step.sessionId, wait.startedAt);
+    waiting.push({
+      stepIndex: step.stepIndex,
+      sessionId: step.sessionId,
+      resetAt: wait.resetAt,
+    });
+  }
+  return waiting;
+}
+
 export function resetWaveStepSilenceForTests(): void {
   stepQuietSince.clear();
   stepSilenceAnnounced.clear();
+  allowanceWaitAnnounced.clear();
   if (silenceTimer !== null) clearTimeout(silenceTimer);
   silenceTimer = null;
 }
@@ -1691,6 +1729,30 @@ function advanceWaves(state: WaveEngineState): {
             child?.displayName ??
             (step ? roleDisplayName(step.role) : `#${quiet.stepIndex + 1}`),
           minutes: quiet.minutes,
+          ...(child?.modelId ? { model: child.modelId } : {}),
+        }),
+        false,
+        "warning",
+      );
+    }
+    // A step whose provider's allowance ran out waits for the reset,
+    // which may be hours away. The conductor is told at once, with the
+    // time: waiting is one choice, and running the step on another
+    // model now is the other.
+    for (const waiting of allowanceWaitingWaveSteps(advanced.wave)) {
+      const step = advanced.wave.steps.find(
+        (candidate) => candidate.stepIndex === waiting.stepIndex,
+      );
+      const child = waveStepNode(advanced.wave, waiting.stepIndex, nodes);
+      appendConductorNotice(
+        wave.conductorSessionId,
+        waveStepAllowanceWaitNoticeText({
+          waveId: wave.waveId,
+          stepIndex: waiting.stepIndex,
+          name:
+            child?.displayName ??
+            (step ? roleDisplayName(step.role) : `#${waiting.stepIndex + 1}`),
+          resetAt: waiting.resetAt,
           ...(child?.modelId ? { model: child.modelId } : {}),
         }),
         false,

@@ -757,6 +757,34 @@ export function waveStepSilentNoticeText(facts: {
   );
 }
 
+export function waveStepAllowanceWaitNoticeText(facts: {
+  waveId: string;
+  stepIndex: number;
+  name: string;
+  /** Epoch milliseconds, or null when the provider gives no time. */
+  resetAt: number | null;
+  model?: string;
+}): string {
+  const on = facts.model
+    ? i18n.t("chat:conductor.wave.stepAllowanceWait.onModel", {
+        model: facts.model,
+      })
+    : "";
+  return i18n.t(
+    facts.resetAt === null
+      ? "chat:conductor.wave.stepAllowanceWait.noReset"
+      : "chat:conductor.wave.stepAllowanceWait.withReset",
+    {
+      step: facts.stepIndex + 1,
+      name: facts.name,
+      on,
+      waveId: facts.waveId,
+      reset:
+        facts.resetAt === null ? "" : new Date(facts.resetAt).toISOString(),
+    },
+  );
+}
+
 export function waveReportDegradedNoticeText(
   stepIndex: number,
   name: string,

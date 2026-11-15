@@ -476,12 +476,21 @@ function runSyncPass(): void {
           sessionBackgroundWorkLive(node.sessionId, runtime?.activeRunId)));
     const turnRunning = Boolean(runtime && isSessionRunning(runtime.chatState));
     const nudgeOut = reportNudgeOut(node.sessionId, turnRunning);
+    // A chat that has run and holds a message in its queue has not
+    // ended: that message is sent next. It is how a turn its account's
+    // limit cut off goes on (`limitContinuation.ts`), and nothing is
+    // read into the cut-off turn meanwhile. A message the provider
+    // holds for a reset is the wait below, shown as waiting.
+    const queuedSend =
+      runtime?.accountQuotaWaitUntil == null &&
+      (Boolean(summary) || seenRunningBySession.has(node.sessionId)) &&
+      (chat.queuedMessageBySession[node.sessionId]?.length ?? 0) > 0;
     let nextStatus = statusFromRuntime(
       node.sessionId,
       node.status,
       runtime,
       Boolean(summary),
-      heldOpen || nudgeOut,
+      heldOpen || nudgeOut || queuedSend,
     );
     // A wave step whose turn ended without the report block is asked for
     // it once, in its own chat, before the wave reads anything into the

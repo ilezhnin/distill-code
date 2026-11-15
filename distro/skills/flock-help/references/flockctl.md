@@ -108,6 +108,14 @@ are separate choices, and each model offers its own set of them.
   `flockctl wave restart` stops a dispatched step and runs it again in a new
   session, with a correction to its brief when one is given. Each posts a
   notice in the conductor chat.
+- A wave step is not handed to a model whose accounts have all used up
+  their allowance: another model the role ranks runs it, and a step that
+  names a spent model fails saying until when, so name another. A step
+  whose allowance runs out partway through goes on in the same chat —
+  under a spare account at once, or on its own after the reset. While it
+  waits the step shows as waiting and the conductor chat gets a notice
+  with the reset time; `flockctl wave restart` runs it on another model
+  now instead.
 - `flockctl wave roadmap --conductor-session-id <id>` reads the goal a
   conductor published with a `distill-roadmap` block; the conductor changes
   it by publishing a new block.

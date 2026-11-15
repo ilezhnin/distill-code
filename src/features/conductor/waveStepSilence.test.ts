@@ -5,10 +5,13 @@ import {
   resetSessionPulsesForTests,
   sessionPulse,
 } from "@/features/chat/lib/sessionPulse";
+import { useAccountQuotaWaitStore } from "@/features/chat/lib/accountQuotaWait";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
 import { createWaveState, withWaveStepPhase } from "./waveEngine";
+import { waveStepAllowanceWaitNoticeText } from "./waveNotices";
 import {
+  allowanceWaitingWaveSteps,
   quietWaveSteps,
   resetWaveStepSilenceForTests,
   WAVE_STEP_SILENCE_MS,
@@ -63,6 +66,81 @@ describe("a session's pulse", () => {
       40,
     );
     expect(sessionPulse("s")).toEqual({ lastEventAt: 40, toolsInFlight: 0 });
+  });
+});
+
+describe("a wave step waiting for a spent allowance", () => {
+  beforeEach(() => {
+    resetWaveStepSilenceForTests();
+    useAccountQuotaWaitStore.setState({ waits: {} });
+    return () => {
+      resetWaveStepSilenceForTests();
+      useAccountQuotaWaitStore.setState({ waits: {} });
+    };
+  });
+
+  const wait = (
+    reason: "quota" | "rate_limit",
+    startedAt: number,
+    resetAt: number | null,
+  ) => ({
+    retryAt: startedAt + MINUTE,
+    startedAt,
+    message: "usage limit reached",
+    reason,
+    resetAt,
+    resetTokensAvailable: false,
+  });
+
+  it("is told once per wait, with the time the allowance comes back", () => {
+    const wave = waveWithRunningStep();
+    expect(allowanceWaitingWaveSteps(wave)).toEqual([]);
+    useAccountQuotaWaitStore.setState({
+      waits: { "child-1": wait("quota", START, START + 60 * MINUTE) },
+    });
+    expect(allowanceWaitingWaveSteps(wave)).toEqual([
+      { stepIndex: 0, sessionId: "child-1", resetAt: START + 60 * MINUTE },
+    ]);
+    // The same wait is not announced on every tick.
+    expect(allowanceWaitingWaveSteps(wave)).toEqual([]);
+    // It ends, and a later one is a new wait.
+    useAccountQuotaWaitStore.setState({ waits: {} });
+    expect(allowanceWaitingWaveSteps(wave)).toEqual([]);
+    useAccountQuotaWaitStore.setState({
+      waits: { "child-1": wait("quota", START + 90 * MINUTE, null) },
+    });
+    expect(allowanceWaitingWaveSteps(wave)).toEqual([
+      { stepIndex: 0, sessionId: "child-1", resetAt: null },
+    ]);
+  });
+
+  it("is not a rate-limit refusal, which is sent again within minutes", () => {
+    const wave = waveWithRunningStep();
+    useAccountQuotaWaitStore.setState({
+      waits: { "child-1": wait("rate_limit", START, null) },
+    });
+    expect(allowanceWaitingWaveSteps(wave)).toEqual([]);
+  });
+
+  it("names the step, the time and the command that runs it elsewhere", () => {
+    const text = waveStepAllowanceWaitNoticeText({
+      waveId: "wave-7",
+      stepIndex: 1,
+      name: "Reader",
+      resetAt: Date.UTC(2026, 10, 14, 21, 30),
+      model: "example-one",
+    });
+    expect(text).toContain("Step 2 (Reader) is waiting on example-one");
+    expect(text).toContain("2026-11-14T21:30:00.000Z");
+    expect(text).toContain("flockctl wave restart --wave-id wave-7 --step 2");
+    expect(
+      waveStepAllowanceWaitNoticeText({
+        waveId: "wave-7",
+        stepIndex: 0,
+        name: "Reader",
+        resetAt: null,
+      }),
+    ).toContain("gives no reset time");
   });
 });
 

@@ -84,12 +84,14 @@ async function loadModules() {
     { useChatStore },
     { useChatSessionStore },
     { WAVE_REPORT_NUDGE_PROMPT },
+    { queueLimitContinuation },
   ] = await Promise.all([
     import("./useConductorGraphSync"),
     import("./conductorGraphStore"),
     import("@/features/chat/stores/chatStore"),
     import("@/features/chat/stores/chatSessionStore"),
     import("./wavePrompts"),
+    import("@/features/chat/lib/limitContinuation"),
   ]);
   useChatStore.setState({ hasHydratedMessageQueues: true });
   useChatSessionStore.setState({ hasHydratedSessions: true });
@@ -98,6 +100,7 @@ async function loadModules() {
     graph: () => useConductorGraphStore.getState(),
     useChatStore,
     WAVE_REPORT_NUDGE_PROMPT,
+    queueLimitContinuation,
   };
 }
 
@@ -147,6 +150,59 @@ describe("a wave step that ends its turn without the report block", () => {
       "Read the slice and wrote the names.",
     );
     expect(mocks.deliverEnvelope).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not asked, and has not ended, while it goes on after its account's limit cut it off", async () => {
+    const { graph, useChatStore, queueLimitContinuation } = await loadModules();
+    act(() => {
+      graph().registerNode(stepNode("step-cut"));
+      useChatStore.getState().setChatState("step-cut", "streaming");
+    });
+    // The send path queues the continuation as the turn fails, before
+    // the chat goes idle.
+    act(() => {
+      useChatStore
+        .getState()
+        .addMessage("step-cut", reply("m1", "Reading the third file."));
+      queueLimitContinuation("step-cut", {
+        data: { dispatchStarted: true, cutOffByLimit: true },
+      });
+      useChatStore.getState().setChatState("step-cut", "idle");
+    });
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+    expect(graph().getNode("step-cut")?.status).toBe("running");
+    expect(graph().getReport("run-step-cut")).toBeUndefined();
+
+    // No spare account: the provider refuses the continuation and the
+    // chat waits for the reset. The step shows as waiting, not as over.
+    act(() => {
+      useChatStore
+        .getState()
+        .setAccountQuotaWaitUntil("step-cut", Date.now() + 3_600_000);
+    });
+    expect(graph().getNode("step-cut")?.status).toBe("waiting");
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+
+    // The limit is back: the message is still first in the queue, about
+    // to be sent, and the step is asked for nothing in that moment.
+    act(() => {
+      useChatStore.getState().setAccountQuotaWaitUntil("step-cut", null);
+    });
+    expect(graph().getNode("step-cut")?.status).toBe("running");
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+    // The continuation is sent, leaving the queue once its turn has
+    // begun, and the step reports.
+    act(() => {
+      useChatStore.getState().setChatState("step-cut", "streaming");
+      useChatStore.setState({ queuedMessageBySession: {} });
+    });
+    expect(graph().getNode("step-cut")?.status).toBe("running");
+    act(() => {
+      useChatStore.getState().addMessage("step-cut", reply("m2", REPORT));
+      useChatStore.getState().setChatState("step-cut", "idle");
+    });
+    expect(graph().getNode("step-cut")?.status).toBe("completed");
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
   });
 
   it("is read as it stands when the answer carries no report either", async () => {

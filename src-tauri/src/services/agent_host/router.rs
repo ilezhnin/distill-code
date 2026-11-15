@@ -7514,6 +7514,12 @@ impl Inner {
                             "[agent-host] failed to record why the turn of {session_id} failed: {persist_error}"
                         );
                     }
+                    // Why the turn ended is otherwise only in the provider's
+                    // words. A wave step goes on after a cut-off whether or
+                    // not a spare account is ready, so it is told in a field.
+                    if Self::cut_off_by_quota(error) {
+                        error["data"]["cutOffByLimit"] = json!(true);
+                    }
                     if let Some(spare) = self
                         .spare_account_after_quota(&record, error, ids.allow_credits)
                         .await
