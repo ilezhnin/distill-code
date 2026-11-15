@@ -2888,6 +2888,50 @@ mod tests {
         dir.close().await;
     }
 
+    /// The same for a log an earlier run left on disk, which is how the
+    /// 11.8 GB of 2026-11-14 reached the next build: the first write after
+    /// the open folds the log in, the one after it starts the log over.
+    #[tokio::test]
+    async fn an_oversized_write_ahead_log_left_by_an_earlier_run_is_cut_back() {
+        let dir = crate::test_support::TempRoot::new();
+        let path = dir.path().join("first.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        dir.register(&store.pool);
+        store.insert_session(&record("chat")).await.unwrap();
+        let megabyte = "x".repeat(1024 * 1024);
+        let burst: Vec<Value> = (0..WAL_SIZE_LIMIT_BYTES / (1024 * 1024) + 8)
+            .map(|_| json!({ "text": megabyte }))
+            .collect();
+        store.append_events("chat", &burst).await.unwrap();
+        // What an app that did not close its database leaves: the file and
+        // its log, as they are.
+        let left = dir.path().join("left.db");
+        let left_wal = left.with_extension("db-wal");
+        std::fs::copy(&path, &left).unwrap();
+        std::fs::copy(path.with_extension("db-wal"), &left_wal).unwrap();
+        let wal_len = || {
+            std::fs::metadata(&left_wal)
+                .map(|meta| meta.len())
+                .unwrap_or(0)
+        };
+        assert!(wal_len() > WAL_SIZE_LIMIT_BYTES, "{}", wal_len());
+
+        let reopened = SessionStore::open(&left).await.unwrap();
+        dir.register(&reopened.pool);
+        for text in ["one", "two"] {
+            reopened
+                .append_events("chat", &[json!({ "text": text })])
+                .await
+                .unwrap();
+        }
+        assert!(wal_len() <= WAL_SIZE_LIMIT_BYTES, "{}", wal_len());
+        assert_eq!(
+            reopened.list_events("chat").await.unwrap().len(),
+            burst.len() + 2
+        );
+        dir.close().await;
+    }
+
     #[tokio::test]
     async fn listed_owners_survive_restart_and_ignore_copied_snapshot_ownership() {
         let dir = crate::test_support::TempRoot::new();
