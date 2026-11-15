@@ -4084,7 +4084,6 @@ function AppShellView({ children }: { children?: React.ReactNode }) {
           width: sidebarWidth,
           isResizing: sidebarIsResizing,
           onSettingsClick: () => handleNavigate("settings"),
-          onSettingsBack: leaveSecondarySurface,
           onSettingsSectionChange: selectSettingsSection,
           onNavigate: handleNavigate,
           onBenchmarkSectionSelect: (section) =>

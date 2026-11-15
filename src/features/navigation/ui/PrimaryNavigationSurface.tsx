@@ -8,7 +8,6 @@ import {
   type Ref,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { IconArrowLeft } from "@tabler/icons-react";
 import { ArrowUpCircle, Pause } from "lucide-react";
 import type { AppView } from "@/app/AppShell";
 import { PaneSurface } from "@/app/layout/panes/paneChrome";
@@ -64,7 +63,6 @@ interface PrimaryNavigationSurfaceProps {
   onKeyDown: KeyboardEventHandler<HTMLElement>;
   onBenchmarkSectionSelect?: (section: BenchmarkSection) => void;
   onNavigate?: (view: AppView) => void;
-  onSettingsBack?: () => void;
   onSettingsClick?: () => void;
   onSettingsSectionChange?: (section: SectionId) => void;
   renderInlineSessionList?: () => ReactNode;
@@ -98,7 +96,6 @@ export const PrimaryNavigationSurface = forwardRef<
     onKeyDown,
     onBenchmarkSectionSelect,
     onNavigate,
-    onSettingsBack,
     onSettingsClick,
     onSettingsSectionChange,
     renderInlineSessionList,
@@ -296,17 +293,6 @@ export const PrimaryNavigationSurface = forwardRef<
           inert={!isSecondarySurface ? true : undefined}
           aria-hidden={!isSecondarySurface}
         >
-          <div className="mt-1 flex h-7 flex-shrink-0 items-center px-1.5">
-            <SidebarNavItem
-              icon={IconArrowLeft}
-              label={t("actions.backToMainNavigation")}
-              collapsed={navCollapsed}
-              labelTransition={labelTransition}
-              labelVisible={navLabelVisible}
-              isActive={false}
-              onClick={() => onSettingsBack?.()}
-            />
-          </div>
           <nav
             ref={secondaryNavRef}
             onKeyDown={onKeyDown}

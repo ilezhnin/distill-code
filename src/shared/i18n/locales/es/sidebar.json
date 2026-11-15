@@ -1,7 +1,6 @@
 {
   "appName": "Levocat Flock",
   "actions": {
-    "backToMainNavigation": "Atrás",
     "back": "Atrás",
     "collapse": "Contraer barra lateral",
     "copyLink": "Copiar enlace del chat",

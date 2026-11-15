@@ -39,7 +39,6 @@ export interface NavigationPanesViewProps {
   /** Drop shadow on the panel when hovering the sidebar (or actively resizing). */
   elevatedShadow?: boolean;
   onSettingsClick?: () => void;
-  onSettingsBack?: () => void;
   onSettingsSectionChange?: (section: SectionId) => void;
   onNewChatInProject?: (projectId: string) => void;
   onNewConductorInProject?: (projectId: string) => void;
@@ -217,7 +216,6 @@ export function NavigationPanesView({
   isResizing = false,
   elevatedShadow = false,
   onSettingsClick,
-  onSettingsBack,
   onSettingsSectionChange,
   onNewChatInProject,
   onNewConductorInProject,
@@ -397,7 +395,6 @@ export function NavigationPanesView({
         onKeyDown={handleSidebarNavKeyDown}
         onBenchmarkSectionSelect={onBenchmarkSectionSelect}
         onNavigate={onNavigate}
-        onSettingsBack={onSettingsBack}
         onSettingsClick={onSettingsClick}
         onSettingsSectionChange={onSettingsSectionChange}
         renderInlineSessionList={
