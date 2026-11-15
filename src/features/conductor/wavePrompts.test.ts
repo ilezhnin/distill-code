@@ -74,4 +74,23 @@ describe("buildWaveStepPrompt", () => {
     // everything.
     expect(prompt).toContain("omitted here");
   });
+
+  it("abridges a fan-out's handoff before dropping any shard's report", () => {
+    // Forty shards of one task: every report matters to the step that
+    // sums them up, and the subtask they share is most of their bulk.
+    const shards = Array.from({ length: 40 }, (_, stepIndex) =>
+      completedStep({
+        stepIndex,
+        subtask: `Name the functions of your slice. ${"y".repeat(900)}`,
+        report: report({ summary: `SLICE-${stepIndex} named` }),
+      }),
+    );
+    const prompt = buildWaveStepPrompt(allAccessStep, shards);
+
+    expect(prompt).toContain("abridged to fit");
+    expect(prompt).not.toContain("omitted here");
+    expect(prompt).toContain("SLICE-0 named");
+    expect(prompt).toContain("SLICE-39 named");
+    expect(prompt).not.toContain("yyyy");
+  });
 });

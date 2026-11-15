@@ -564,6 +564,78 @@ describe("advanceWave stub degradation (5b)", () => {
   });
 });
 
+describe("advanceWave width", () => {
+  const shards = (count: number): WaveStep[] =>
+    Array.from({ length: count }, (_, index) =>
+      step("brigade", `piece ${index}`),
+    );
+
+  it("starts no more executors at once than the wave's width", () => {
+    const wave = waveOf(shards(12));
+    const first = advanceWave(wave, { nodes: [], reportOf: () => undefined });
+    expect(first.spawn.map((request) => request.stepIndex)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7,
+    ]);
+
+    // Eight are at work: nothing more starts until one of them ends.
+    let running = wave;
+    for (const index of [0, 1, 2, 3, 4, 5, 6, 7]) {
+      running = withWaveStepPhase(running, index, {
+        phase: "spawned",
+        sessionId: `child-${index}`,
+        runId: `run-${index}`,
+      });
+    }
+    const busy = advanceWave(running, {
+      nodes: [0, 1, 2, 3, 4, 5, 6, 7].map((index) =>
+        workerNode(index, "running"),
+      ),
+      reportOf: () => undefined,
+    });
+    expect(busy.spawn).toEqual([]);
+    expect(busy.complete).toBe(false);
+
+    // Two finish, and two of the waiting shards take their places.
+    const freed = advanceWave(running, {
+      nodes: [0, 1, 2, 3, 4, 5, 6, 7].map((index) =>
+        workerNode(index, index < 2 ? "completed" : "running"),
+      ),
+      reportOf: (runId) =>
+        runId === "run-0" || runId === "run-1"
+          ? {
+              runId,
+              status: "completed",
+              summary: "Done",
+              decisions: ["Kept it small"],
+              artifacts: [],
+              risks: [],
+              needsOperator: false,
+              nextSuggestedTask: null,
+            }
+          : undefined,
+    });
+    expect(freed.spawn.map((request) => request.stepIndex)).toEqual([8, 9]);
+  });
+
+  it("runs at the width its plan asked for", () => {
+    const narrow = createWaveState({
+      waveId: "wave-1",
+      conductorSessionId: "conductor-1",
+      planMessageId: "plan-1",
+      steps: shards(6),
+      createdAt: 1,
+      maxParallel: 2,
+    });
+    const advanced = advanceWave(narrow, {
+      nodes: [],
+      reportOf: () => undefined,
+      // One spawn is already on its way.
+      inFlight: new Set([0]),
+    });
+    expect(advanced.spawn.map((request) => request.stepIndex)).toEqual([1]);
+  });
+});
+
 describe("advanceWave verification gate (P62)", () => {
   const spawnedPair = () =>
     withWaveStepPhase(

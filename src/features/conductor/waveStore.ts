@@ -469,6 +469,11 @@ function parseWave(value: unknown): WaveState | null {
     planMessageId: raw.planMessageId,
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : 0,
     steps: steps.sort((left, right) => left.stepIndex - right.stepIndex),
+    ...(typeof raw.maxParallel === "number" &&
+    Number.isInteger(raw.maxParallel) &&
+    raw.maxParallel >= 1
+      ? { maxParallel: raw.maxParallel }
+      : {}),
     // v1 → v2 migration, applied per wave rather than in a separate pass: a
     // wave persisted before 3a was by construction still running, served its
     // own plan message as the root request, and had spent no revisions.

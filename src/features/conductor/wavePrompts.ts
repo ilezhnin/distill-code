@@ -21,6 +21,9 @@ import { getWaveTelemetry } from "./waveTelemetryStore";
 
 import {
   MAX_WAVE_STEP_LABEL_LENGTH,
+  DEFAULT_WAVE_PARALLEL,
+  MAX_WAVE_EXECUTORS,
+  MAX_WAVE_PARALLEL,
   MAX_WAVE_STEPS,
   WAVE_FENCE_TAG,
   type WaveStep,
@@ -109,6 +112,8 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - "subtask" is a JSON string, and broken JSON runs nothing — so inside it never use the double-quote character. Quote with «guillemets» or 'single quotes' instead, and never paste JSON snippets, code, or fenced blocks into a subtask. Do not describe the report format either: every worker receives the report contract automatically, restating it only risks the plan.
 - The block is ONE JSON object. After the last step, close the steps array AND the object: the block always ends with \`}]}\` — a block ending in \`}]\` is missing its final brace and runs nothing.
 - "access" is either [] or "all". Nothing else — no lists of step indexes.
+- "shards" is optional: a list of two or more short strings, one per piece of a task that is the same work over many inputs — files, directories, ranges, ids. The step then runs once per shard, each with the step's subtask and its own shard, each an executor of this wave with its own report. Write the subtask for one piece and let the shards name the pieces; do not start sessions yourself for work a sharded step can carry. A wave runs at most ${MAX_WAVE_EXECUTORS} executors, steps and shards together.
+- "parallel" is optional and sits beside "steps", not inside one: how many of the wave's executors run at once, from 1 to ${MAX_WAVE_PARALLEL}. Left out, ${DEFAULT_WAVE_PARALLEL} run at once and the rest start as those finish. Lower it when the work shares one provider's limit or one machine's memory.
 - "label" is optional: a short human-readable name for the step, at most ${MAX_WAVE_STEP_LABEL_LENGTH} characters. It names the step's chip and its worker's tab, so give one when two steps share a role and their subtasks' first words would not tell them apart.
 - "model" is optional. Omit it and the step runs on whatever its role's model ranking picks, or inherits the conductor's model. Name one — a model id or enough of its name to be unambiguous, like "opus" or "grok" — and the step runs on exactly that model. A plan naming a model this installation cannot run right now is refused whole and shown to the operator; nothing is ever silently substituted. Name a model only when the operator asked for one or the step demonstrably needs it.
 - "class" is optional: one of ${modelPreferenceClassIds().join(", ")}. It says how hard THIS step's work is, not what the worker is good at — the same role can be a one-line rename and a week of refactoring — and the operator's own map decides which models each class prefers. Name it when the step is clearly heavier or lighter than its role's usual work; omit it and the role decides as before. It is not a way to ask for a specific model: that is "model".
@@ -288,6 +293,9 @@ Fix exactly that, and change nothing else about the plan. If the block did not p
  */
 export const MAX_PREVIOUS_REPORTS_CHARS = 24_000;
 
+/** How much of a summary an abridged handoff keeps (see below). */
+const ABRIDGED_SUMMARY_CHARS = 240;
+
 /**
  * Drops the oldest report payloads until the block fits, and says how many.
  *
@@ -297,7 +305,34 @@ export const MAX_PREVIOUS_REPORTS_CHARS = 24_000;
 function boundedReportPayloads(
   ordered: readonly CompletedWaveStepReport[],
 ): Record<string, unknown>[] {
-  const payloads = ordered.map(reportPayload);
+  let payloads = ordered.map(reportPayload);
+  // A fan-out hands on more reports than a plan has steps, each small and
+  // all of them the point: a step that sums up sixty shards given the
+  // last ten has nothing to sum up. Such a handoff is abridged before
+  // any of it is dropped: the subtasks, which the shards share, are left
+  // out and a long summary is cut.
+  let abridged = false;
+  if (
+    payloads.length > MAX_WAVE_STEPS &&
+    JSON.stringify(payloads).length > MAX_PREVIOUS_REPORTS_CHARS
+  ) {
+    abridged = true;
+    payloads = payloads.map(({ subtask: _subtask, ...rest }) => ({
+      ...rest,
+      summary:
+        typeof rest.summary === "string" &&
+        rest.summary.length > ABRIDGED_SUMMARY_CHARS
+          ? `${rest.summary.slice(0, ABRIDGED_SUMMARY_CHARS - 1)}…`
+          : rest.summary,
+    }));
+  }
+  const note = abridged
+    ? [
+        {
+          note: "These reports are abridged to fit: their subtasks are left out and long summaries are cut. Each names its step; ask the operator for one in full if you need it.",
+        },
+      ]
+    : [];
   let dropped = 0;
   while (
     payloads.length > 1 &&
@@ -308,12 +343,13 @@ function boundedReportPayloads(
   }
   return dropped > 0
     ? [
+        ...note,
         {
           note: `${dropped} earlier report${dropped === 1 ? "" : "s"} omitted here: the handoff was too large to pass on in full. Ask the operator if you need them.`,
         },
         ...payloads,
       ]
-    : payloads;
+    : [...note, ...payloads];
 }
 
 function reportPayload(

@@ -15,6 +15,10 @@ expectations all have to agree on the same words.
 - A `distill-wave` block that is present but cannot be parsed MUST be refused
   as a whole, and the refusal MUST say what was wrong with it.
 - A plan MUST carry between one and five steps.
+- A step MAY carry `shards`, a list of the pieces of one task; each shard
+  MUST run as an executor of the wave with its own report.
+- A wave MUST NOT run more than sixty-four executors, and the app MUST bound
+  how many of them run at once.
 - Each step MUST carry a `role` from the worker-layer role catalog and a
   non-empty `subtask`.
 - Each step's `access` MUST be either `[]` — the step sees nothing from its

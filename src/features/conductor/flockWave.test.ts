@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_WAVE_EXECUTORS,
+  MAX_WAVE_PARALLEL,
   MAX_WAVE_STEPS,
   WAVE_FENCE_TAG,
   type WaveInvalidReason,
@@ -57,6 +59,89 @@ describe("parseFlockWave — plan", () => {
       model: "gpt-5.6-sol[xhigh]",
     });
     expect(legacy.kind === "plan" && legacy.steps[0].effort).toBeUndefined();
+  });
+});
+
+describe("parseFlockWave — shards", () => {
+  it("deals a sharded step out as one executor per shard", () => {
+    const parsed = parseFlockWave(
+      fence(
+        JSON.stringify({
+          parallel: 3,
+          steps: [
+            {
+              role: "brigade",
+              subtask: "Name the functions of your slice",
+              access: [],
+              label: "names",
+              model: "grok",
+              shards: ["g01 lines 1-5000", " g01 lines 5001-10000 ", "g02"],
+            },
+            { role: "qa", subtask: "Check the names", access: "all" },
+          ],
+        }),
+      ),
+    );
+    expect(parsed.kind).toBe("plan");
+    if (parsed.kind !== "plan") return;
+    expect(parsed.parallel).toBe(3);
+    expect(parsed.steps).toHaveLength(4);
+    expect(parsed.steps.map((step) => step.label)).toEqual([
+      "names 1/3",
+      "names 2/3",
+      "names 3/3",
+      undefined,
+    ]);
+    const second = parsed.steps[1];
+    expect(second).toMatchObject({
+      role: "brigade",
+      access: [],
+      model: "grok",
+    });
+    expect(second.subtask).toContain("Name the functions of your slice");
+    expect(second.subtask).toContain("shard 2 of 3");
+    expect(second.subtask).toContain("Your shard: g01 lines 5001-10000");
+    // A step without a label still tells its shards apart.
+    const unnamed = parseFlockWave(
+      fence(
+        JSON.stringify({
+          steps: [
+            {
+              role: "brigade",
+              subtask: "Read your file",
+              access: [],
+              shards: ["a.ts", "b.ts"],
+            },
+          ],
+        }),
+      ),
+    );
+    expect(unnamed.kind === "plan" && unnamed.steps[0].label).toBe("shard 1/2");
+    expect(unnamed.kind === "plan" && unnamed.parallel).toBeUndefined();
+  });
+
+  it("refuses shards that are no list of pieces, too many executors, and a width it cannot run", () => {
+    const plan = (step: Record<string, unknown>, top: object = {}) =>
+      fence(
+        JSON.stringify({
+          ...top,
+          steps: [
+            { role: "brigade", subtask: "Do your piece", access: [], ...step },
+          ],
+        }),
+      );
+    for (const shards of ["a", ["only one"], ["a", ""], ["a", 7], []]) {
+      expectInvalid(plan({ shards }), "shards-invalid");
+    }
+    const many = Array.from(
+      { length: MAX_WAVE_EXECUTORS + 1 },
+      (_, index) => `piece ${index}`,
+    );
+    const refused = expectInvalid(plan({ shards: many }), "too-many-executors");
+    expect(refused?.detail).toContain(String(MAX_WAVE_EXECUTORS));
+    for (const parallel of [0, MAX_WAVE_PARALLEL + 1, 2.5, "8"]) {
+      expectInvalid(plan({}, { parallel }), "parallel-invalid");
+    }
   });
 });
 

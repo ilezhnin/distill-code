@@ -773,6 +773,7 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       conductorSessionId: candidate.conductorSessionId,
       planMessageId: candidate.planMessageId,
       steps: admission.steps,
+      ...(admission.parallel ? { maxParallel: admission.parallel } : {}),
       createdAt: Date.now(),
     });
     // Tombstone and watermark first, whatever happens to the wave next: an

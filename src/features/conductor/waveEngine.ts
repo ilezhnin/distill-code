@@ -12,6 +12,7 @@
 
 import type { ModelPreferenceClassId } from "@/features/agents/lib/modelRanking";
 
+import { DEFAULT_WAVE_PARALLEL } from "./flockWave";
 import type {
   FlockWaveParse,
   WaveInvalid,
@@ -212,6 +213,13 @@ export interface WaveState {
   planMessageId: string;
   createdAt: number;
   steps: WaveStepState[];
+  /**
+   * How many of the wave's executors run at once; the default when absent.
+   * A wave of sixty shards started all at once is sixty turns on one
+   * provider in the same minute (11-14: a third of a weekly limit in an
+   * hour), so the rest wait their turn.
+   */
+  maxParallel?: number;
   /** Position in the closed loop. Waves persisted before 3a resume `running`. */
   phase: WavePhase;
   /**
@@ -373,7 +381,12 @@ export type WaveRejectionReason =
   | "verification-step-blind";
 
 export type WaveAdmission =
-  | { kind: "accepted"; steps: readonly WaveStep[] }
+  | {
+      kind: "accepted";
+      steps: readonly WaveStep[];
+      /** How many executors run at once, when the plan says. */
+      parallel?: number;
+    }
   | {
       kind: "rejected";
       reason: WaveRejectionReason;
@@ -773,7 +786,13 @@ export function admitWavePlan(
     return rejected(defect.reason, defect.detail, defect.stepIndex);
   }
 
-  return { kind: "accepted", steps: parse.steps };
+  return {
+    kind: "accepted",
+    steps: parse.steps,
+    ...("parallel" in parse && parse.parallel
+      ? { parallel: parse.parallel }
+      : {}),
+  };
 }
 
 /**
@@ -793,9 +812,11 @@ export function createWaveState(args: {
   revisionCount?: number;
   carriedReports?: readonly CompletedWaveStepReport[];
   carriedBindingIds?: readonly string[];
+  maxParallel?: number;
 }): WaveState {
   return {
     waveId: args.waveId,
+    ...(args.maxParallel ? { maxParallel: args.maxParallel } : {}),
     conductorSessionId: args.conductorSessionId,
     planMessageId: args.planMessageId,
     createdAt: args.createdAt,
@@ -1562,11 +1583,21 @@ export function advanceWave(
     };
   };
 
+  // The executors at work now: started and not over, or being started.
+  // No more than the wave's width run at once; the rest wait their turn.
+  const width = wave.maxParallel ?? DEFAULT_WAVE_PARALLEL;
+  let atWork = steps.filter(
+    (step) =>
+      step.phase === "spawning" ||
+      (step.phase === "spawned" && !isStepTerminal(step)) ||
+      (step.phase === "pending" && inFlight.has(step.stepIndex)),
+  ).length;
   const spawn: WaveSpawnRequest[] = [];
   for (const step of steps) {
     // No step starts under a blocked report: whatever comes after it would
     // build on the gap, and the conductor is about to replan anyway.
     if (anyBlocked) break;
+    if (atWork >= width) break;
     if (step.phase !== "pending") continue;
     if (inFlight.has(step.stepIndex)) continue;
 
@@ -1604,6 +1635,7 @@ export function advanceWave(
       totalSteps: steps.length,
       ...(resume ? { resume } : {}),
     });
+    atWork += 1;
   }
 
   // A blocked wave completes once the steps already running are done: a step

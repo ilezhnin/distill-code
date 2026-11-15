@@ -665,6 +665,7 @@ function applyVerdictDecision(
       conductorSessionId: wave.conductorSessionId,
       planMessageId: verdictMessageId,
       steps: admission.steps,
+      ...(admission.parallel ? { maxParallel: admission.parallel } : {}),
       createdAt: Date.now(),
       rootRequestId: wave.rootRequestId,
       revisionCount: decision.revision.revisionIndex,

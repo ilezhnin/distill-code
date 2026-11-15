@@ -32,6 +32,27 @@ export const WAVE_FENCE_TAG = "distill-wave";
 export const MAX_WAVE_STEPS = 5;
 
 /**
+ * Hard cap on the executors one wave runs: its steps, each shard of a
+ * sharded step counted as one.
+ *
+ * Five steps was the limit on a plan, and it became the limit on width:
+ * a job of sixty equal pieces was run as sixty sessions started by hand
+ * beside the wave, which the wave neither waited for nor reported (11-14).
+ * A step may now name its pieces as `shards`; each is an executor of the
+ * wave like any other, with its own report.
+ */
+export const MAX_WAVE_EXECUTORS = 64;
+
+/** How many of a wave's executors run at once when the plan does not say. */
+export const DEFAULT_WAVE_PARALLEL = 8;
+
+/** The most a plan may ask to run at once. */
+export const MAX_WAVE_PARALLEL = 16;
+
+/** The longest one shard's text may be. */
+export const MAX_WAVE_SHARD_LENGTH = 2_000;
+
+/**
  * Hard cap on a step's `label`.
  *
  * The label is rendered verbatim into worker display names ("Scout · <label>"),
@@ -146,7 +167,13 @@ export type WaveInvalidReason =
   /** A step carries `effort`, but not as a non-empty string. */
   | "effort-not-a-string"
   /** A step carries `fast`, but not as `true` or `false`. */
-  | "fast-not-a-boolean";
+  | "fast-not-a-boolean"
+  /** A step's `shards` is not a list of two or more non-empty strings. */
+  | "shards-invalid"
+  /** The plan's steps and shards come to more executors than a wave runs. */
+  | "too-many-executors"
+  /** The plan's `parallel` is not a whole number a wave can honour. */
+  | "parallel-invalid";
 
 export interface WaveInvalid {
   kind: "invalid";
@@ -159,7 +186,10 @@ export interface WaveInvalid {
 
 export interface WavePlan {
   kind: "plan";
+  /** The plan's executors in order: a sharded step is one entry per shard. */
   steps: WaveStep[];
+  /** How many executors run at once, when the plan says. */
+  parallel?: number;
   /** Raw JSON source from inside the fence, trimmed. */
   planText: string;
   /** The message with the wave fence removed, trimmed. May be empty. */
@@ -422,9 +452,58 @@ function isInvalid(value: WaveStep | WaveInvalid): value is WaveInvalid {
  * Exported for the few-shot example validator, which stores plan bodies rather
  * than whole messages.
  */
+/**
+ * The executors a sharded step stands for: the step once per shard, each
+ * with the shard's text under the shared subtask and a name that tells it
+ * from its siblings. Nothing else of the step differs between them.
+ */
+function expandShards(step: WaveStep, shards: readonly string[]): WaveStep[] {
+  const total = shards.length;
+  return shards.map((shard, index) => {
+    const suffix = ` ${index + 1}/${total}`;
+    const base = (step.label ?? "shard").slice(
+      0,
+      MAX_WAVE_STEP_LABEL_LENGTH - suffix.length,
+    );
+    return {
+      ...step,
+      label: `${base}${suffix}`,
+      subtask: `${step.subtask}\n\nThis step is shard ${index + 1} of ${total} of one task. The other shards run beside you on their own parts; do only yours.\n\nYour shard: ${shard}`,
+    };
+  });
+}
+
+/** A step's `shards`, when it carries them and they are well formed. */
+function parseShards(
+  raw: unknown,
+  stepIndex: number,
+): readonly string[] | undefined | WaveInvalid {
+  if (!isJsonObject(raw) || !("shards" in raw) || raw.shards === undefined) {
+    return undefined;
+  }
+  const shards = raw.shards;
+  if (
+    !Array.isArray(shards) ||
+    shards.length < 2 ||
+    !shards.every(
+      (shard): shard is string =>
+        typeof shard === "string" &&
+        shard.trim().length > 0 &&
+        shard.length <= MAX_WAVE_SHARD_LENGTH,
+    )
+  ) {
+    return invalid(
+      "shards-invalid",
+      `Step ${stepIndex + 1}: "shards" must be a list of two or more non-empty strings of at most ${MAX_WAVE_SHARD_LENGTH} characters, one per piece of the step's task.`,
+      stepIndex,
+    );
+  }
+  return shards.map((shard) => shard.trim());
+}
+
 export function parseWavePlanBody(
   body: string,
-): { kind: "plan"; steps: WaveStep[] } | WaveInvalid {
+): { kind: "plan"; steps: WaveStep[]; parallel?: number } | WaveInvalid {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -478,14 +557,39 @@ export function parseWavePlanBody(
     );
   }
 
+  let parallel: number | undefined;
+  if ("parallel" in parsed && parsed.parallel !== undefined) {
+    if (
+      typeof parsed.parallel !== "number" ||
+      !Number.isInteger(parsed.parallel) ||
+      parsed.parallel < 1 ||
+      parsed.parallel > MAX_WAVE_PARALLEL
+    ) {
+      return invalid(
+        "parallel-invalid",
+        `"parallel" must be a whole number from 1 to ${MAX_WAVE_PARALLEL}: how many of the wave's executors run at once.`,
+      );
+    }
+    parallel = parsed.parallel;
+  }
+
   const steps: WaveStep[] = [];
   for (const [index, rawStep] of parsed.steps.entries()) {
     const step = parseWaveStep(rawStep, index);
     if (isInvalid(step)) return step;
-    steps.push(step);
+    const shards = parseShards(rawStep, index);
+    if (shards === undefined) steps.push(step);
+    else if (Array.isArray(shards)) steps.push(...expandShards(step, shards));
+    else return shards as WaveInvalid;
+  }
+  if (steps.length > MAX_WAVE_EXECUTORS) {
+    return invalid(
+      "too-many-executors",
+      `A wave runs at most ${MAX_WAVE_EXECUTORS} executors, steps and shards together; this plan asks for ${steps.length}. Deal the work in fewer, larger shards, or over more than one wave.`,
+    );
   }
 
-  return { kind: "plan", steps };
+  return { kind: "plan", steps, ...(parallel ? { parallel } : {}) };
 }
 
 /**
@@ -515,6 +619,7 @@ export function parseFlockWave(messageText: string): FlockWaveParse {
   return {
     kind: "plan",
     steps: body.steps,
+    ...(body.parallel ? { parallel: body.parallel } : {}),
     planText: scan.body,
     prose: scan.prose,
   };
