@@ -2822,6 +2822,46 @@ where
     }
 }
 
+/// `call` again, after each of `pauses`, while its helper answers with a
+/// failure: a status that failed once is a busy moment of WSL or the helper
+/// far more often than what the sandbox holds, and a run stops on it. Every
+/// failed answer is logged with its exit code and what was printed, since
+/// the refusal a caller makes of it names neither. For a read-only control
+/// call only: nothing that started work is asked twice. An answer that never
+/// came (a timeout, no room) stays the caller's to judge.
+pub(crate) async fn again_while_failed<F, Fut>(
+    what: &str,
+    pauses: &[Duration],
+    mut call: F,
+) -> io::Result<Output>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = io::Result<Output>>,
+{
+    let mut pauses = pauses.iter();
+    loop {
+        let output = call().await?;
+        if output.success() && !output.truncated {
+            return Ok(output);
+        }
+        let pause = pauses.next();
+        log::warn!(
+            "[benchmarks] {what} failed (exit {:?}{}): {}; {}",
+            output.code,
+            if output.truncated { ", truncated" } else { "" },
+            output.reason(),
+            match pause {
+                Some(pause) => format!("asking again in {} s", pause.as_secs()),
+                None => "not asked again".into(),
+            }
+        );
+        match pause {
+            Some(pause) => tokio::time::sleep(*pause).await,
+            None => return Ok(output),
+        }
+    }
+}
+
 pub(crate) async fn kill(mode: &str, id: &str) -> io::Result<()> {
     valid_id(id)?;
     if !["session", "check", "probe", "login", "browser", "prep"].contains(&mode) {
@@ -3295,6 +3335,53 @@ mod tests {
             io::ErrorKind::Other
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_status_is_asked_again_before_it_is_the_answer() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        // Exit codes of the calls in order; past the list the call cannot
+        // be read at all.
+        let answer = |codes: &'static [i32]| {
+            calls.store(0, std::sync::atomic::Ordering::SeqCst);
+            let calls = &calls;
+            again_while_failed(
+                "status",
+                &[Duration::ZERO, Duration::ZERO],
+                move || async move {
+                    let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    match codes.get(call) {
+                        Some(code) => Ok(Output {
+                            code: Some(*code),
+                            stdout: Vec::new(),
+                            stderr: Vec::new(),
+                            truncated: false,
+                            infrastructure: None,
+                            candidate_limit: None,
+                        }),
+                        None => Err(io::Error::new(io::ErrorKind::TimedOut, "slow")),
+                    }
+                },
+            )
+        };
+        let asked = || calls.load(std::sync::atomic::Ordering::SeqCst);
+        // A working helper is asked once.
+        assert!(answer(&[0]).await.unwrap().success());
+        assert_eq!(asked(), 1);
+        // One failure, or two, is a busy moment.
+        assert!(answer(&[1, 0]).await.unwrap().success());
+        assert_eq!(asked(), 2);
+        assert!(answer(&[1, 137, 0]).await.unwrap().success());
+        assert_eq!(asked(), 3);
+        // A helper that fails every time is the answer, after the pauses.
+        assert_eq!(answer(&[1, 1, 1, 0]).await.unwrap().code, Some(1));
+        assert_eq!(asked(), 3);
+        // A call that cannot be read is not asked again.
+        assert_eq!(
+            answer(&[1]).await.unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(asked(), 2);
     }
 
     #[test]

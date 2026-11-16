@@ -120,18 +120,28 @@ fn screenshot(envelope: &Value) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// The waits before the renderer's status is asked again after it failed.
+/// 11-15: one failed status stopped a run of 24 tests for the operator with
+/// three left; asked 40 times two hours later, with runs in flight, the
+/// helper answered every time, in a tenth of a second.
+const STATUS_PAUSES: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+
 /// Verify the deployed renderer before submitting any paid candidate work.
+/// A status that fails is asked again (see [`STATUS_PAUSES`]) before the
+/// renderer counts as unavailable.
 pub async fn ready() -> Result<String> {
     sandbox::ready()
         .await
         .map_err(|error| sandbox_error(error, "capability_missing"))?;
-    let output = sandbox::invoke_bounded(
-        "/usr/local/sbin/bench-browser",
-        &["status"],
-        None,
-        16 * 1024,
-        Duration::from_secs(120),
-    )
+    let output = sandbox::again_while_failed("renderer status", &STATUS_PAUSES, || {
+        sandbox::invoke_bounded(
+            "/usr/local/sbin/bench-browser",
+            &["status"],
+            None,
+            16 * 1024,
+            Duration::from_secs(120),
+        )
+    })
     .await
     .map_err(|error| sandbox_error(error, "capability_missing"))?;
     if !output.success() || output.truncated {

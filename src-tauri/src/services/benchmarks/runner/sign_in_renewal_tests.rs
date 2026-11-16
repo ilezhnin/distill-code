@@ -312,7 +312,7 @@ async fn a_cell_moved_to_another_account_starts_again_within_the_tick() {
     dir.close().await;
 }
 
-/// A test refused because interactive work held its account asks again
+/// A test refused because its account's seats were taken asks again
 /// shortly, within the tick, while other turns fly.
 #[tokio::test]
 async fn a_cell_refused_for_a_busy_account_is_retried_within_the_tick() {

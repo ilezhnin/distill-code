@@ -2626,8 +2626,8 @@ fn within_pre_answer_tries(attempt: &Attempt, error: &BenchmarkError) -> bool {
 /// Whether a failed try ended before the provider answered anything, so
 /// discarding it decides nothing about the attempt's outcome: the provider
 /// acknowledged another model at session open, a runtime it would not start,
-/// the host refused the prompt (or never dispatched it), or the account was
-/// busy with interactive work. Nothing was answered, paid for as output or
+/// the host refused the prompt (or never dispatched it), or the account had
+/// no free seat. Nothing was answered, paid for as output or
 /// evaluated. A turn that started answering is outside this class.
 pub(super) fn refused_before_answer(attempt: &Attempt, error: &BenchmarkError) -> bool {
     let host = serde_json::from_str::<Value>(&error.message).ok();
@@ -2864,7 +2864,7 @@ const SIGN_IN_WAIT_REASON: &str = "The Grok sign-in expires too soon for this te
 /// How soon a Grok turn that waits for another to leave the sign-in asks
 /// again.
 const SIGN_IN_RETRY_MS: i64 = 15 * 1000;
-/// How soon a test refused because interactive work holds its account asks
+/// How soon a test refused because its account's seats are taken asks
 /// again.
 const ACCOUNT_BUSY_RETRY_MS: i64 = 15 * 1000;
 
@@ -6024,24 +6024,11 @@ impl ExecutionBackend for NativeBackend {
                         "This provider has no verified native no-tool execution profile",
                     )
                 })?;
-            // Interactive work has priority, before anything touches the
-            // bridge that serves it, and again once the runtime is checked.
-            let provider_id = attempt.configuration.provider_id.clone();
-            let busy = || async {
-                let activity = host
-                    .account_activity(&provider_id, &account)
-                    .await
-                    .map_err(host_error)?;
-                if activity.active_sessions.is_empty() {
-                    Ok(())
-                } else {
-                    Err(BenchmarkError::new(
-                        "account_busy",
-                        "Interactive work has priority; account is active",
-                    ))
-                }
-            };
-            busy().await?;
+            // A test starts whatever else its account is doing, as a judge
+            // does: its turn is a session of its own in the sandbox, and the
+            // chats beside it change neither its answer nor its seat. What
+            // the provider lets the account fly at once is the pace's to find.
+            //
             // A turn whose plan usage is spent waits here, before any setup,
             // unless it may run on credits.
             self.credit_turn(&store.root, &attempt.configuration, false)
@@ -6110,7 +6097,6 @@ impl ExecutionBackend for NativeBackend {
             {
                 return Err(BenchmarkError::new("selection_changed","Installed runtime or model capabilities changed since configuration selection; refresh inventory"));
             }
-            busy().await?;
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
             // Until sign-in, runtime and account readiness succeed, nothing
             // of this try exists in Linux. Arming cleanup earlier starts an
@@ -9952,8 +9938,8 @@ impl BenchmarkService {
                     && refused_before_answer(&failed, &error)
                     && within_pre_answer_tries(&failed, &error)
                 {
-                    // Interactive work on the account is waited out like under
-                    // automatic retries and never counts toward the bound.
+                    // A busy account is waited out like under automatic
+                    // retries and never counts toward the bound.
                     let busy = error.code == "account_busy";
                     let tries = failed.pre_answer_refusals + u32::from(!busy);
                     requeue(
@@ -9985,8 +9971,8 @@ impl BenchmarkService {
                     } else {
                         self.idle_root(&failed).await?;
                     }
-                    // Asked again shortly, within this tick: interactive work
-                    // ends long before every other run's turns land.
+                    // Asked again shortly, within this tick: a seat frees
+                    // long before every other run's turns land.
                     failed.wait_until = Some(now() + ACCOUNT_BUSY_RETRY_MS);
                     self.store.save_attempt(&failed).await?;
                     return Ok(());
@@ -10696,7 +10682,7 @@ pub struct FakeBackend {
     pub sign_in_waits: std::sync::atomic::AtomicU64,
     /// Turns held back while another still runs on the due sign-in.
     pub busy_sign_ins: std::sync::atomic::AtomicU64,
-    /// Turns refused because interactive work holds the account.
+    /// Turns refused because the account's seats are taken.
     pub busy_accounts: std::sync::atomic::AtomicU64,
     /// The effort levels every fake model lists: none, so no effort control,
     /// unless a test gives them some.
@@ -11006,7 +10992,7 @@ impl ExecutionBackend for FakeBackend {
             if take(&self.busy_accounts) {
                 return Err(BenchmarkError::new(
                     ACCOUNT_BUSY,
-                    "Interactive work has priority; account is active",
+                    "Workflow worker slots are occupied",
                 ));
             }
             if take(&self.refused_selections) {
@@ -15121,7 +15107,7 @@ mod tests {
         ));
         assert!(refused_before_answer(
             &attempt,
-            &error("account_busy", "interactive work")
+            &error("account_busy", "Workflow worker slots are occupied")
         ));
         assert!(refused_before_answer(
             &attempt,

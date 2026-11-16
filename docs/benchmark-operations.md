@@ -477,7 +477,11 @@ renderer file. Both read a file again only when its identity changed: its
 resolved path, device, inode, size, modify and change times, owner, mode or
 link count. The recorded digests live in a root-only directory under `/run`,
 which empties at every WSL start; a damaged or unprotected record is read as
-absent. One sandbox observation answers the readiness checks that follow it
+absent. A renderer status that fails is asked again after one second and after
+three more before the renderer counts as unavailable, and the app log names
+each failed answer's exit code ("renderer status failed"): one failed status
+stops a run for its operator, and a busy moment of WSL is not a missing
+renderer. One sandbox observation answers the readiness checks that follow it
 within ten seconds, and checks that arrive while it runs share it. The receipt
 sealed after each turn always observes the sandbox again; receipts that ask
 while one such observation runs share the next one. The supervisors' own CPU (status,
@@ -849,7 +853,12 @@ No fixed number bounds how many attempts fly. A new ordinary run records
 `parallelism: 0`: as many attempts of a configuration at once as its account's
 pace and the sandbox admit. An operator may set a number instead, of any size,
 which then bounds the configuration; a saved run without one flies one at a
-time. An account with no history starts at four turns at once, in slow start:
+time. A test starts whatever else its account is doing, as a judge does: a
+chat, a wave's workers or another run on the same account hold no test back,
+since each turn is a session of its own and only the provider's limits, which
+the pace follows, bound them together.
+
+An account with no history starts at four turns at once, in slow start:
 the level doubles after each clean round, as many clean turns as the level that
 were admitted with every slot taken, so an account its demand keeps below its
 level never grows. The first sign the provider limits the account ends slow
