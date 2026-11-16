@@ -1122,10 +1122,25 @@ export const MessageBubble = memo(function MessageBubble({
               rather than as a toast; MarkdownLink routes them here. */}
           <LocalMarkdownLinkProvider value={openLocalLink}>
             <div
+              data-slot={
+                isUser && !digestEnvelope ? "user-message-bubble" : undefined
+              }
               className={cn(
                 "min-w-0 text-sm leading-relaxed",
                 isUser && !digestEnvelope
-                  ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
+                  ? cn(
+                      "rounded-sm bg-message-user-bg px-4 py-2 font-normal leading-normal text-foreground",
+                      // What the operator wrote is the one filled bubble in
+                      // the transcript, ink on a light page as on the site.
+                      // `dark` scopes the dark theme's tokens to the bubble,
+                      // so everything inside it is drawn for an ink surface.
+                      // A message another agent sent (a brief, a monitor
+                      // line) stays a quiet tint: it can run long, and it is
+                      // not the operator speaking.
+                      isFlockctlCrossSessionMessage || workerBrief
+                        ? "[--message-user-bg:var(--muted)]"
+                        : "dark",
+                    )
                   : "w-full",
               )}
             >

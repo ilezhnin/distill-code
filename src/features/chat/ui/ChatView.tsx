@@ -167,7 +167,7 @@ function sameWavePlanSteps(
 }
 
 const CHAT_RESPONDING_PILL_CLASS =
-  "rounded-full bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)] [--shimmer-ink:var(--color-surface-chat-responding-pill-fg)]";
+  "rounded-full bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)] [--flock-lead:var(--color-lead-400)] [--shimmer-ink:var(--color-surface-chat-responding-pill-fg)]";
 const CLOSED_RIGHT_RAIL_DOCK_TARGET_WIDTH_PX = 48;
 function shouldStageInitialTranscript(
   messages: readonly unknown[],

@@ -61,8 +61,8 @@ export function AgentShareCardPreview({
     return deriveAgentShareCardTextLayout(
       displayName,
       description,
-      (value) => measure(value, "600 64px Inter, sans-serif"),
-      (value) => measure(value, "600 42px Inter, sans-serif"),
+      (value) => measure(value, "600 64px Geologica, sans-serif"),
+      (value) => measure(value, "600 42px Geologica, sans-serif"),
       locale,
     );
   }, [description, displayName, fontGeneration, locale]);
@@ -185,7 +185,7 @@ export function AgentShareCardPreview({
           x="1110"
           y="153"
           fill="black"
-          fontFamily="Inter, sans-serif"
+          fontFamily="Geologica, sans-serif"
           fontSize="36"
           fontWeight="600"
           textAnchor="end"
@@ -217,7 +217,7 @@ export function AgentShareCardPreview({
           x={geometry.description.x}
           y={geometry.description.y - contentShift}
           fill="black"
-          fontFamily="Inter, sans-serif"
+          fontFamily="Geologica, sans-serif"
           fontSize="42"
           fontWeight="600"
         >

@@ -272,7 +272,7 @@ export async function renderAgentShareCard(
   await loadAgentCardFonts();
   context.fillStyle = "black";
   context.textBaseline = "alphabetic";
-  context.font = "600 36px Inter, sans-serif";
+  context.font = "600 36px Geologica, sans-serif";
   context.textAlign = "right";
   context.fillText("FLOCK AGENT", brand.x, brand.y);
 
@@ -290,11 +290,11 @@ export async function renderAgentShareCard(
   context.fillStyle = "black";
   context.textAlign = "left";
   const measureTitle = (value: string) => {
-    context.font = "600 64px Inter, sans-serif";
+    context.font = "600 64px Geologica, sans-serif";
     return context.measureText(value).width;
   };
   const measureDescription = (value: string) => {
-    context.font = "600 42px Inter, sans-serif";
+    context.font = "600 42px Geologica, sans-serif";
     return context.measureText(value).width;
   };
   const { title, descriptionLines, contentShift } =
@@ -306,10 +306,10 @@ export async function renderAgentShareCard(
       locale,
     );
 
-  context.font = "600 64px Inter, sans-serif";
+  context.font = "600 64px Geologica, sans-serif";
   context.fillText(title, titleGeometry.x, titleGeometry.y - contentShift);
 
-  context.font = "600 42px Inter, sans-serif";
+  context.font = "600 42px Geologica, sans-serif";
   descriptionLines.forEach((line, index) => {
     context.fillText(
       line,

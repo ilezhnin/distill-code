@@ -187,6 +187,8 @@ The authoritative list of raw-CSS color tokens (kept in sync with the script):
 --project-tint
 # Dot-grid canvas color (raw-CSS gradient)
 --dot-color-base
+# The lead bird's red (flock mark, running dot, working line)
+--flock-lead
 ```
 <!-- raw-css-color-tokens:end -->
 
@@ -201,6 +203,7 @@ exact machine-checked contract.
 | `scrollbar-thumb`, `scrollbar-thumb-hover` | `::-webkit-scrollbar-thumb` | Scrollbar pseudo-element. |
 | `app-top-bar-control-hover-opacity` | `opacity` via `hover:opacity-[var(...)]` | Opacity value, consumed through an arbitrary-value utility. |
 | `project-panel-tint`, `project-panel-alpha` | Create/edit project panel glass surface via an inline `color-mix(...)` | Percentage mix shares, not colors: the tint is the share of the runtime-selected project color mixed over `background` to form the panel hue, and the alpha is that hue's opacity over the backdrop blur. Dark mode raises both because pastel hues get lost over a near-black backdrop. |
+| `flock-lead` | `.flock-mark-lead`, `.flock-running-dot`, `.flock-dart`, `.flock-readout-accent` | The one red bird of the levocat.com flock, and the color of work in flight. It is a brand mark drawn by a few shared components, not a utility color for feature code, so it has no `bg-*`/`text-*` class to reach for. An ink surface in the light theme (the responding pill) sets it to the dark theme's value locally. |
 | `overlay-search-scrim` | Global search dialog overlay | Search intentionally uses a lighter, blur-free scrim than standard dialogs while retaining a theme-governed semantic color. |
 | `overlay-global-composer-shim`, `overlay-global-composer-shim-peak`, `overlay-global-composer-shim-clear` | `.global-composer-shim` and `@keyframes global-composer-shim-*` | Main-canvas glass shim and white midpoint cross-fade are authored in raw CSS during the global composer handoff, not through per-element color utilities. |
 

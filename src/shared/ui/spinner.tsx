@@ -8,6 +8,8 @@ interface SpinnerProps extends React.ComponentProps<"svg"> {
   decorative?: boolean;
 }
 
+const BIRD_PATH = "M8 0L-5 4.6L-2 0L-5-4.6Z";
+
 function Spinner({
   className,
   style,
@@ -23,11 +25,7 @@ function Spinner({
       aria-label={ariaLabel}
       aria-hidden={ariaHidden}
       viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      fill="currentColor"
       className={cn("size-4", className)}
       style={{
         backfaceVisibility: "hidden",
@@ -36,14 +34,25 @@ function Spinner({
       }}
       {...rest}
     >
+      {/* One bird of the flock circling a faint ring: the ring keeps the
+          shape readable at 12px, the bird gives it a direction. */}
+      <circle
+        cx="12"
+        cy="12"
+        r="8.5"
+        fill="none"
+        opacity="0.22"
+        stroke="currentColor"
+        strokeWidth="1.75"
+      />
       <g>
-        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        <path d={BIRD_PATH} transform="translate(12 3.5) scale(0.8)" />
         <animateTransform
           attributeName="transform"
           type="rotate"
           from="0 12 12"
           to="360 12 12"
-          dur="1s"
+          dur="1.1s"
           repeatCount="indefinite"
         />
       </g>

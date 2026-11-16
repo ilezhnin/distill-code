@@ -1358,11 +1358,12 @@ export function ChatInput({
                   ? cn(
                       "px-4 pb-2.5 pt-3",
                       innerBareSurface &&
-                        "bg-surface-chat-composer [backdrop-filter:var(--backdrop-composer-glass)] [-webkit-backdrop-filter:var(--backdrop-composer-glass)]",
+                        "bg-surface-chat-composer ring-1 ring-input focus-within:ring-ring [backdrop-filter:var(--backdrop-composer-glass)] [-webkit-backdrop-filter:var(--backdrop-composer-glass)]",
                     )
                   : "px-5 pb-3 pt-4",
                 composerRadius,
-                surface === "pill" && "bg-surface-composer backdrop-blur-md",
+                surface === "pill" &&
+                  "bg-surface-composer ring-1 ring-input backdrop-blur-md focus-within:ring-ring",
                 isAttachmentDragOver &&
                   !usesExternalAttachmentDropTarget &&
                   "bg-surface-composer/60",

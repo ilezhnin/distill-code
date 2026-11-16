@@ -2,7 +2,6 @@ import { useReducedMotion } from "motion/react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/shared/lib/cn";
-import { RESPONDING_SHIMMER_PROPS } from "@/shared/ui/ai-elements/shimmer";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
 import { FlockLoaderInline } from "@/shared/ui/flock-loader-inline";
 
@@ -54,19 +53,9 @@ export function ActiveChatPulseDot({ className }: { className?: string }) {
   return (
     <span
       aria-hidden="true"
+      data-animated={motionEnabled ? "true" : "false"}
       data-slot="active-chat-pulse-dot"
-      className={cn(
-        "size-[7px] rounded-full bg-info",
-        motionEnabled && "animate-[active-chat-dot-pulse_ease-in-out_infinite]",
-        className,
-      )}
-      style={
-        motionEnabled
-          ? {
-              animationDuration: `${RESPONDING_SHIMMER_PROPS.duration}s`,
-            }
-          : undefined
-      }
+      className={cn("flock-running-dot size-[7px] rounded-full", className)}
     />
   );
 }

@@ -24,8 +24,8 @@ const THEME_MODE_STORAGE_KEY = "goose-theme-mode";
 const PRIMARY_COLOR_STORAGE_KEY = "goose-primary-color";
 const DEPRECATED_DENSITY_STORAGE_KEY = "goose-density";
 const LEGACY_THEME_CACHE_STORAGE_KEY = "goose-theme-cache-v3";
-const LIGHT_THEME_PRIMARY = "#1a1a1a";
-const DARK_THEME_PRIMARY = "#ffffff";
+const LIGHT_THEME_PRIMARY = "#0f2230";
+const DARK_THEME_PRIMARY = "#eaf4fa";
 
 const THEME_MODES = ["system", "light", "dark"] as const;
 

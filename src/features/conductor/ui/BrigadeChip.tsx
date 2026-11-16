@@ -187,7 +187,7 @@ export function BrigadeChip({
       data-status={pending ? "pending" : status}
       data-step={step}
       data-pending={pending ? "true" : undefined}
-      className={cn("inline-flex items-center gap-1", className)}
+      className={cn("inline-flex max-w-full items-center gap-1", className)}
     >
       <button
         type="button"
@@ -195,16 +195,20 @@ export function BrigadeChip({
         aria-label={label}
         title={tooltip}
         onClick={onOpen && !pending ? () => onOpen(id) : undefined}
+        // The site's agent chip: a pill with a hairline, the status dot, the
+        // name, and what kind of work it is in mono. Hover takes the ink.
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-full text-xs text-muted-foreground",
-          pending ? "cursor-default" : "hover:text-foreground",
+          "inline-flex max-w-full items-center gap-1.5 rounded-full border border-input bg-card px-2 py-0.5 text-xs text-muted-foreground transition-colors",
+          pending
+            ? "cursor-default border-dashed"
+            : "hover:border-foreground hover:text-foreground",
         )}
       >
         {step === undefined ? null : (
           <span
             aria-hidden="true"
             data-testid="brigade-chip-step"
-            className="tabular-nums text-muted-foreground"
+            className="shrink-0 tabular-nums text-muted-foreground"
           >
             {step}
           </span>
@@ -220,7 +224,7 @@ export function BrigadeChip({
         )}
         <span
           className={cn(
-            "font-medium",
+            "shrink-0 whitespace-nowrap font-medium",
             pending ? "text-muted-foreground" : "text-foreground",
           )}
         >
@@ -229,7 +233,7 @@ export function BrigadeChip({
         {kindLabel ? (
           <span
             data-testid="brigade-chip-kind"
-            className="rounded-sm bg-muted px-1 text-[11px] text-muted-foreground"
+            className="shrink-0 whitespace-nowrap rounded-full bg-muted px-1.5 font-mono text-[11px] text-muted-foreground"
           >
             {kindLabel}
           </span>
@@ -238,7 +242,7 @@ export function BrigadeChip({
           <span
             aria-hidden="true"
             data-testid="brigade-chip-access"
-            className="text-[11px] text-muted-foreground"
+            className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground"
           >
             {accessLabel}
           </span>
@@ -247,7 +251,7 @@ export function BrigadeChip({
           <span
             aria-hidden="true"
             data-testid="brigade-chip-model"
-            className="text-[11px] italic text-muted-foreground"
+            className="shrink-0 whitespace-nowrap font-mono text-[11px] italic text-muted-foreground"
           >
             {modelLabel}
           </span>
@@ -256,7 +260,7 @@ export function BrigadeChip({
           <span
             aria-hidden="true"
             data-testid="brigade-chip-summary"
-            className="max-w-[40ch] truncate text-[11px] tabular-nums text-muted-foreground"
+            className="max-w-[40ch] truncate font-mono text-[11px] tabular-nums text-muted-foreground"
           >
             · {summaryLabel}
           </span>

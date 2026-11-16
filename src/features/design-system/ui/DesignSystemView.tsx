@@ -529,7 +529,7 @@ const appChromeColorTokens: RuntimeToken[] = [
   {
     name: "--app-top-bar-control-fg",
     description:
-      "Deep charcoal (#242424) for controls beside the breadcrumb trail in light theme; follows foreground in dark theme.",
+      "Ink for controls beside the breadcrumb trail in light theme; follows foreground in dark theme.",
   },
   {
     name: "--app-top-bar-control-fg-disabled",
@@ -3478,17 +3478,17 @@ function FlockLoaderPage() {
   const tokenDetails = {
     colorRows: [
       {
-        anatomy: "Pixel frames",
-        state: playgroundAnimated ? "Animated" : "Static",
-        background: "sprite strip",
-        textIcon: "authored frame colors",
+        anatomy: "Flock",
+        state: playgroundAnimated ? "In flight" : "Standing still",
+        background: "none",
+        textIcon: "currentColor",
         border: "none",
       },
       {
-        anatomy: "Loop",
-        state: playgroundAnimated ? "Looping" : "Settled first frame",
+        anatomy: "Lead bird",
+        state: playgroundAnimated ? "In flight" : "Standing still",
         background: "none",
-        textIcon: "five flock frames",
+        textIcon: "--flock-lead",
         border: "none",
       },
       {
@@ -3512,12 +3512,12 @@ function FlockLoaderPage() {
     <>
       <PageIntro
         title="Flock Loader"
-        description="Branded Flock activity mark for startup, active sessions, and agent work states. Five-frame flock sprite, the lead bird pulsing."
+        description="Branded Flock activity mark for startup, active sessions, and agent work states. Five birds as on levocat.com, the lead one red; in flight each surges a beat after the one ahead."
       />
       <ComponentSpec name="Flock Loader" />
 
       <ComponentPlayground
-        description="Inspect the Flock loader in its animated, reduced-motion, decorative, and labeled states. The mark is a pixel sprite, not a currentColor SVG."
+        description="Inspect the Flock loader in its animated, reduced-motion, decorative, and labeled states. The birds behind the lead take the text color of their surface."
         preview={
           <div
             className={cn(
@@ -3596,17 +3596,17 @@ function FlockLoaderInlinePage() {
   const tokenDetails = {
     colorRows: [
       {
-        anatomy: "Pixel frames",
-        state: playgroundAnimated ? "Animated" : "Static",
-        background: "sprite strip",
-        textIcon: "authored frame colors",
+        anatomy: "Flock",
+        state: playgroundAnimated ? "In flight" : "Standing still",
+        background: "none",
+        textIcon: "currentColor",
         border: "none",
       },
       {
-        anatomy: "Loop",
-        state: playgroundAnimated ? "Looping" : "Settled first frame",
+        anatomy: "Lead bird",
+        state: playgroundAnimated ? "In flight" : "Standing still",
         background: "none",
-        textIcon: "five flock frames",
+        textIcon: "--flock-lead",
         border: "none",
       },
       {
@@ -3630,12 +3630,12 @@ function FlockLoaderInlinePage() {
     <>
       <PageIntro
         title="Flock Loader Inline"
-        description="In-app activity mark for running sessions — left nav rows, the quick switcher, and the responding pill. Same Flock bird sprite as the startup loader, with a separate loop duration for small placements."
+        description="In-app activity mark for running sessions — left nav rows, the quick switcher, and the responding pill. Same flock mark as the startup loader, without the fly-in and with a separate loop duration for small placements."
       />
       <ComponentSpec name="Flock Loader Inline" />
 
       <ComponentPlayground
-        description="Inspect the in-app inline loader at the small sizes it actually renders in product. The mark is a pixel sprite, not a currentColor SVG."
+        description="Inspect the in-app inline loader at the small sizes it actually renders in product. The birds behind the lead take the text color of their surface."
         preview={
           <div
             className={cn(

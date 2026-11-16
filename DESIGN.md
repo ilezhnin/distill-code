@@ -2,26 +2,28 @@
 name: Flock
 description: A desktop agent workspace documented from the actual Flock design-system tokens.
 colors:
-  bg-primary: "#1a1a1a"
+  bg-primary: "#0f2230"
   text-primary-foreground: "#ffffff"
   bg-background: "#ffffff"
-  text-foreground: "#242424"
+  text-foreground: "#0f2230"
+  bg-canvas-base: "#eef7fd"
   bg-card: "#ffffff"
-  bg-sidebar-accent: "#f5f5f5"
-  bg-muted: "#f0f0f0"
-  bg-surface-chat-composer: "color-mix(in srgb, #f0f0f0 72%, transparent)"
-  text-muted-foreground: "#7f7f7f"
-  text-placeholder: "#cccccc"
-  border-border: "#e8e8e8"
-  border-input: "#e5e5e5"
-  border-foreground: "#242424"
+  bg-sidebar-accent: "#e5f1f9"
+  bg-muted: "#e5f1f9"
+  bg-surface-chat-composer: "color-mix(in srgb, #ffffff 90%, transparent)"
+  text-muted-foreground: "#5f7482"
+  text-placeholder: "#8097a5"
+  border-border: "#dceaf3"
+  border-input: "#bfd6e4"
+  border-foreground: "#0f2230"
   bg-destructive: "#dc2626"
   bg-destructive-10: "color-mix(in oklab, #dc2626 10%, transparent)"
   text-destructive: "#dc2626"
   text-destructive-foreground: "#ffffff"
-  text-success: "#73b468"
-  text-info: "#5c98f9"
-  text-warning: "#fbcd44"
+  text-success: "#16a34a"
+  text-info: "#0b6fa8"
+  text-warning: "#ca8a04"
+  flock-lead: "#d63a0c"
 typography:
   display:
     fontFamily: "font-display"
@@ -53,12 +55,12 @@ typography:
     lineHeight: "leading-none"
     letterSpacing: "tracking-wide"
 rounded:
-  rounded-xs: "6px"
-  rounded-sm: "12px"
-  rounded-md: "18px"
-  rounded-lg: "24px"
+  rounded-xs: "8px"
+  rounded-sm: "10px"
+  rounded-md: "14px"
+  rounded-lg: "20px"
   rounded-full: "999px"
-  rounded-composer: "40px"
+  rounded-composer: "20px"
 spacing:
   h-7: "1.75rem"
   h-8: "2rem"
@@ -77,13 +79,13 @@ components:
   button-primary:
     backgroundColor: "{colors.bg-primary}"
     textColor: "{colors.text-primary-foreground}"
-    rounded: "{rounded.rounded-full}"
+    rounded: "{rounded.rounded-xs}"
     height: "{spacing.h-9}"
     padding: "0 1rem"
   button-ghost-icon:
     backgroundColor: "transparent"
     textColor: "{colors.text-muted-foreground}"
-    rounded: "{rounded.rounded-full}"
+    rounded: "{rounded.rounded-xs}"
     height: "{spacing.h-8}"
     width: "{spacing.h-8}"
   input-default:
@@ -110,7 +112,7 @@ components:
   badge-secondary:
     backgroundColor: "{colors.bg-muted}"
     textColor: "{colors.text-foreground}"
-    rounded: "{rounded.rounded-xs}"
+    rounded: "{rounded.rounded-full}"
     padding: "0.125rem 0.5rem"
 ---
 
@@ -124,6 +126,8 @@ This file documents the actual Flock design-system source in [globals.css](src/s
 
 The current implementation provides useful product bones: semantic color tokens, shared UI primitives, a persistent sidebar, compact top bar, and a strong chat composer pattern. This document is not a blanket endorsement of every current surface.
 
+**One product with its page.** Flock shares its visual language with [levocat.com/flock](https://www.levocat.com/flock/): the sky-and-ink palette, Geologica and JetBrains Mono, 8px controls and 14px cards drawn with hairlines instead of shadows, pills for chips and statuses, and the flock itself — five birds, the lead one red — as the sign of work in flight. When the page and the app disagree, fix the token here rather than a component. The site has no dark theme of its own design beyond a palette; the app's dark theme is that palette (ink page, deep-navy cards, the same red lead a step brighter) worked out for a product.
+
 The product should reject the PRODUCT.md anti-references directly: not a generic chatbot wrapper, not a dark terminal skin, not a dashboard stuffed with metrics, not a marketing site wearing product chrome, not novelty-first AI visuals, not oversized decorative cards, not vague "assistant magic" copy, and not a pile of disconnected settings pages.
 
 **Key Characteristics:**
@@ -135,11 +139,13 @@ The product should reject the PRODUCT.md anti-references directly: not a generic
 
 ## 2. Colors
 
-The source palette is a semantic token system backed by a gray scale and small state-color set. In React code, use the Tailwind-facing utility names. In `globals.css`, those utilities map through public aliases to lower-level semantic variables.
+The source palette is a semantic token system backed by the site's sky-and-ink neutrals and a small state-color set. The neutral primitives keep the names `gray-*`, but none is a true gray: the light half is tinted toward the site's sky band (`#eef7fd`), the dark half toward its ink (`#0f2230`). In React code, use the Tailwind-facing utility names. In `globals.css`, those utilities map through public aliases to lower-level semantic variables.
+
+The page is the sky band (`--canvas-base`); cards and panels are white paper on it, separated by a hairline (`--border`, the site's `line`) rather than a shadow. Controls that can be pressed or typed into take the stronger hairline (`--input`, the site's `line-strong`).
 
 ### Primary
 
-- **`--primary`**: Primary action, selected context, and accent source. In light mode it resolves to `--color-gray-900`; in dark mode it resolves to `--color-white`.
+- **`--primary`**: Primary action, selected context, and accent source. In light mode it resolves to `--color-gray-900` (ink); in dark mode it resolves to `--color-gray-25` (the site's dark-theme ink, a sky-tinted white).
 - **`--primary-foreground`**: Foreground color on `--primary`.
 - **`--foreground`**: Public foreground alias used by Tailwind class `text-foreground`; it resolves to `--foreground`.
 - **`--accent`, `--accent-foreground`**: Hover and low-emphasis interactive fill tokens.
@@ -156,7 +162,8 @@ The source palette is a semantic token system backed by a gray scale and small s
 
 - **`--destructive`, `--destructive-foreground`**: Danger, failure boundaries, and filled destructive action states.
 - **`--success / 10%`, `--success`, `--success`**: Success and ready states.
-- **`--info / 10%`, `--info`, `--info`**: Informational state and system feedback.
+- **`--info / 10%`, `--info`, `--info`**: Informational state and system feedback. The site's link blue.
+- **`--flock-lead`**: The lead bird's red. It marks the head of the flock and work in flight: the lead bird of the loader, the breathing dot of a running agent, the elapsed time of a working turn, the bird beside a thought in progress. Raw CSS only (see the Raw-CSS Token Rule): it is drawn by a few shared components and is not a utility color for feature code.
 - **`--warning / 10%`, `--warning`, `--warning`**: Warning state.
 
 ### Neutral
@@ -178,7 +185,9 @@ The source palette is a semantic token system backed by a gray scale and small s
 
 **The State Color Rule.** Red, green, blue, and yellow are for state, not decoration. If a color does not communicate status or selected context, remove it.
 
-**The Neutral Migration Rule.** Current tokens include pure `#ffffff` and `#000000`. Future token work may tint those neutrals, but new surfaces should not introduce raw white or black outside the token layer.
+**The Lead Bird Rule.** The site keeps its red for the leading bird only. In the app that red means one thing: this is in flight right now. Do not use it for emphasis, links, selection, or failure — failure is `destructive`.
+
+**The Neutral Rule.** The neutrals are tinted, and a true gray reads as a foreign object beside them. New surfaces should not introduce raw gray, white, or black outside the token layer; shadows are cast in ink (`rgba(15, 34, 48, …)`), never in gray or black.
 
 ## 3. Typography
 
@@ -186,7 +195,9 @@ The source palette is a semantic token system backed by a gray scale and small s
 **Body Font:** `font-sans`.
 **Label/Mono Font:** `font-sans` for labels, `font-mono` for code, paths, terminal output, and identifiers.
 
-The app font is **Inter**, self-hosted as variable fonts (optical size + weight axes, normal + italic) in `src/app/assets/fonts/` under the SIL Open Font License 1.1. `globals.css` maps `--font-sans` and `--font-display` to `"Inter"` with a system-font fallback stack. Inter's optical size axis adapts tracking automatically — body sizes render comfortably, display sizes render tighter — so do not add letter-spacing compensation in component code. The mono font is **Geist Mono**, self-hosted the same way and mapped through `--font-mono`. Cash Sans is not used or bundled anywhere — it is proprietary and must not be added to this externally distributed product.
+The app font is **Geologica**, the typeface of levocat.com, self-hosted as one variable font (weight and slant axes) in `src/app/assets/fonts/` under the SIL Open Font License 1.1. `globals.css` maps `--font-sans` and `--font-display` to `"Geologica"` with a system-font fallback stack; italic is the font's own slant axis, so there is no separate italic file. Geologica is drawn wide for reading, so the body carries one global tracking trim; do not add letter-spacing compensation in component code. The mono font is **JetBrains Mono** (upright and italic), self-hosted the same way and mapped through `--font-mono`. Cash Sans is not used or bundled anywhere — it is proprietary and must not be added to this externally distributed product.
+
+Light text on a dark ground looks heavier than the same weight in ink on paper. The dark theme therefore draws `font-normal` and `font-medium` a little lighter (`--font-weight-normal`, `--font-weight-medium`); component code keeps using the weight utilities and gets the correction for free.
 
 ### Hierarchy
 
@@ -195,7 +206,7 @@ The app font is **Inter**, self-hosted as variable fonts (optical size + weight 
 - **Title** (`font-display text-lg font-semibold tracking-tight`): Section headers and ordinary product page titles.
 - **Body** (`font-sans text-sm font-normal leading-relaxed`): Default UI copy, descriptions, menus, and form help. Keep prose lines around 65 to 75 characters.
 - **Label** (`font-sans text-xs font-medium tracking-wide`): Compact metadata, badges, uppercase group labels, and secondary controls.
-- **Mono** (`font-mono`): Code, file paths, terminal output, stack traces, and technical identifiers only.
+- **Mono** (`font-mono`): Code, file paths, terminal output, stack traces, and technical identifiers — and, as on the site, the small technical labels around the work: badges and tags, a step's class and model, counts and timings, the line that says what a turn is doing. Never running prose.
 
 ### Named Rules
 
@@ -205,17 +216,17 @@ The app font is **Inter**, self-hosted as variable fonts (optical size + weight 
 
 ## 4. Elevation
 
-Flock uses semantic shadow tokens plus borders and tonal layering. Most surfaces are flat at rest. Shadows appear on hover, popovers, dialogs, and overlays where depth clarifies stacking.
+Flock uses semantic shadow tokens plus borders and tonal layering. The site is flat, and so is the app at rest: a hairline separates a card from the page. Shadows appear on hover, popovers, dialogs, and overlays where depth clarifies stacking; they are cast in ink and kept light.
 
 ### Shadow Vocabulary
 
-- **`--shadow-mini`** (`0 2px 8px rgba(76, 76, 76, 0.15)`): Small control affordance, badges, and lightweight raised feedback.
-- **`--shadow-mini-inset`** (`0 1px 4px rgba(76, 76, 76, 0.1) inset`): Subtle inset treatment.
-- **`--shadow-btn`** (`0 2px 8px rgba(76, 76, 76, 0.15)`): Button elevation when a variant explicitly needs it.
-- **`--shadow-card`** (`0 2px 8px rgba(76, 76, 76, 0.15)`): Hover elevation for interactive cards.
-- **`--shadow-elevated`** (`0 3px 12px rgba(76, 76, 76, 0.22)`): Raised surfaces that need more separation than a card.
-- **`--shadow-popover`** (`0 8px 30px rgba(0, 0, 0, 0.12)`): Menus, dropdowns, command-like overlays, and transient panels.
-- **`--shadow-modal`** (`0 20px 60px rgba(0, 0, 0, 0.2)`): Dialogs that block or redirect the current task.
+- **`--shadow-mini`** (`0 2px 8px rgba(15, 34, 48, 0.08)`): Small control affordance, badges, and lightweight raised feedback.
+- **`--shadow-mini-inset`** (`0 1px 4px rgba(15, 34, 48, 0.08) inset`): Subtle inset treatment.
+- **`--shadow-btn`** (`0 2px 8px rgba(15, 34, 48, 0.08)`): Button elevation when a variant explicitly needs it.
+- **`--shadow-card`** (`0 2px 8px rgba(15, 34, 48, 0.08)`): Hover elevation for interactive cards.
+- **`--shadow-elevated`** (`0 3px 12px rgba(15, 34, 48, 0.12)`): Raised surfaces that need more separation than a card.
+- **`--shadow-popover`** (a 1px ink hairline plus `0 6px 18px rgba(15, 34, 48, 0.08)`): Menus, dropdowns, command-like overlays, and transient panels.
+- **`--shadow-modal`** (`0 20px 60px rgba(15, 34, 48, 0.2)`): Dialogs that block or redirect the current task.
 - **`--shadow-kbd`** and **`--shadow-date-field-focus`**: Specialized component shadows.
 
 ### Named Rules
@@ -226,27 +237,27 @@ Flock uses semantic shadow tokens plus borders and tonal layering. Most surfaces
 
 ## 5. Shape
 
-Corner radii use a 5-step scale built on Tailwind's standard utility names: `rounded-xs`, `rounded-sm`, `rounded-md`, `rounded-lg`, and `rounded-full`. Each step differs by 6px so adjacent tokens nest concentrically.
+Corner radii use a 5-step scale built on Tailwind's standard utility names: `rounded-xs`, `rounded-sm`, `rounded-md`, `rounded-lg`, and `rounded-full`. The values are the site's shapes: 8px controls, 14px cards, and pills for chips.
 
 | Token | Value | Tailwind class |
 | --- | --- | --- |
-| `--radius-xs` | 6px | `rounded-xs` |
-| `--radius-sm` | 12px | `rounded-sm` |
-| `--radius-md` | 18px | `rounded-md` |
-| `--radius-lg` | 24px | `rounded-lg` |
+| `--radius-xs` | 8px | `rounded-xs` |
+| `--radius-sm` | 10px | `rounded-sm` |
+| `--radius-md` | 14px | `rounded-md` |
+| `--radius-lg` | 20px | `rounded-lg` |
 | (built-in) | 999px | `rounded-full` |
 
-**The Nesting Rule.** When one rounded surface sits inside another, drop one step on the scale and use 6px (`p-1.5`) of padding between them. The inner corner will be concentric with the outer corner. Cards inside modals nest as `md → sm`; sub-cards inside cards nest as `sm → xs`.
+**The Nesting Rule.** When one rounded surface sits inside another, drop one step on the scale and use about 4px (`p-1`) of padding between them, so the inner corner stays close to concentric with the outer one. Cards inside modals nest as `md → sm`; sub-cards inside cards nest as `sm → xs`.
 
-**Composer Exception.** `rounded-composer` (40px) is a deliberate one-off for the chat composer surface. Do not reuse it elsewhere; the composer is the app's signature component and earns its own token.
+**Composer Exception.** `rounded-composer` (20px) is a deliberate one-off for the chat composer surface. Do not reuse it elsewhere; the composer is the app's signature component and earns its own token.
 
 **Picking a Token.**
 
-- `rounded-full` — buttons, chips, pills, inputs, avatars, any surface that should read as fully soft.
-- `rounded-lg` (24px) — the largest scale container; outer cards or panels that dominate a region.
-- `rounded-md` (18px) — default for cards, modals, dropdowns, popovers, tiles, and most non-pill surfaces.
-- `rounded-sm` (12px) — surfaces nested inside `md` containers, small cards, sidebar nav items.
-- `rounded-xs` (6px) — surfaces nested inside `sm` containers, micro chips, dense controls.
+- `rounded-full` — chips, badges, status pills, avatars, dots, switches: things that label or mark, not things that are pressed to act.
+- `rounded-lg` (20px) — the largest scale container; outer cards or panels that dominate a region.
+- `rounded-md` (14px) — default for cards, modals, dropdowns, popovers, tiles, and most non-pill surfaces.
+- `rounded-sm` (10px) — surfaces nested inside `md` containers: fields, menu rows, small cards, sidebar nav items, message bubbles.
+- `rounded-xs` (8px) — buttons, and surfaces nested inside `sm` containers.
 
 **Authoring rule.** Always use Tailwind's standard radius utility names. Do not invent new class names like `rounded-m` or `rounded-pill`; override values in `@theme inline` instead.
 
@@ -268,8 +279,9 @@ Corner radii use a 5-step scale built on Tailwind's standard utility names: `rou
 
 Use [Button](src/shared/ui/button.tsx) and its variants before adding feature-level styling.
 
-- **Shape:** `rounded-full` for all buttons — text and icon-only alike. The base `Button` applies this automatically; feature code should not override the radius. Buttons are exempt from the geometric nesting rule — their effective radius is half their height, not a scale step.
-- **Primary:** `bg-primary text-primary-foreground`, mapping through semantic primary surface and readable-on-primary text tokens.
+- **Shape:** `rounded-xs` (8px) for all buttons — text and icon-only alike, as on the site. The base `Button` applies this automatically; feature code should not override the radius.
+- **Primary:** `bg-primary text-primary-foreground`, mapping through semantic primary surface and readable-on-primary text tokens: ink on a light page, the site's `btn-dark`.
+- **Outline:** paper with the stronger hairline (`border-input`), the site's `btn-line`.
 - **Sizing:** Use the `Button` `size` prop. Current variants map to `h-7`, `h-8`, `h-9`, and `h-10`.
 - **Ghost icon buttons:** No hover fill for `variant="ghost"` plus icon sizes; they shift from muted text to foreground text.
 - **Rule:** Add variants to `Button` when a reusable button treatment is missing.
@@ -278,15 +290,17 @@ Use [Button](src/shared/ui/button.tsx) and its variants before adding feature-le
 
 Use [Badge](src/shared/ui/badge.tsx), composer chips, or a shared variant.
 
-- **Shape:** `rounded-xs` (6px). Badges and status chips deliberately differ from buttons in shape because they differ in semantic purpose — buttons are interactive controls and use `rounded-full` to read as "press me"; badges are static labels conveying state and use `rounded-xs` so they read as "tag" rather than "control." This affordance separation reduces the chance of users attempting to click a static status indicator.
-- **Color:** `bg-muted`, `text-foreground`, `text-muted`, and state tokens when the chip communicates state.
+- **Shape:** `rounded-full`. Badges and status chips deliberately differ from buttons in shape because they differ in semantic purpose — buttons are interactive controls and use the 8px corner to read as "press me"; badges are labels conveying state and use the pill so they read as "tag" rather than "control." This affordance separation reduces the chance of users attempting to click a static status indicator.
+- **Type:** `font-mono` at 11px, as the site sets its tags and pills.
+- **Color:** `bg-muted`, `text-foreground`, `text-muted`, and state tokens when the chip communicates state. A chip that can be opened (an agent under a message) is paper with the stronger hairline, and takes the ink on hover.
+- **Status dots:** a run in flight is a dot in the lead bird's red that breathes (`ActiveChatPulseDot`); a step not started is a hollow dot; finished states keep their state color.
 - **State:** Removable context chips should stay compact and should not compete with the composer text field.
 
 ### Cards / Containers
 
 Use [Card](src/shared/ui/card.tsx) only when a meaningful object boundary exists.
 
-- **Shape:** `rounded-md` (18px) on the base `Card` primitive, matching the sidenav panel. Use `rounded-lg` (24px) for the largest framing cards and `rounded-sm` (12px) for sub-cards nested inside another card.
+- **Shape:** `rounded-md` (14px) on the base `Card` primitive, matching the sidenav panel. Use `rounded-lg` (20px) for the largest framing cards and `rounded-sm` (10px) for sub-cards nested inside another card.
 - **Color:** `bg-card text-card-foreground`, mapping through `--card` and `--card-foreground` to semantic card surface and text tokens.
 - **Border:** `border-border`, mapping to `--border`.
 - **Shadow:** `hover:shadow-card` only when the card is interactive.
@@ -314,7 +328,7 @@ Use the shared sidebar and nav item patterns as the baseline.
 
 The composer is the signature component and should receive the most craft.
 
-- **Surface:** `bg-surface-chat-composer` translucent glass with the `--backdrop-composer-glass` blur, and `rounded-composer`, in the current implementation.
+- **Surface:** `bg-surface-chat-composer` — paper, a touch translucent for the `--backdrop-composer-glass` blur — outlined with the stronger hairline (`ring-input`, darkening to `ring-ring` while focus is inside), and `rounded-composer`, in the current implementation.
 - **Layout:** Max width `max-w-3xl`, centered, with internal structure for attachments, selected persona/skills, text entry, toolbar controls, voice, send, stop, and context usage.
 - **Behavior:** File drop state uses tokenized muted surfaces and dashed border. Queued messages stay inline above the text area.
 - **Rule:** The composer should show active agent, model, project, skills, attachments, voice state, send state, and context usage without feeling like a control panel.
@@ -327,6 +341,18 @@ Use Radix-backed shared primitives for dialogs, sheets, drawers, dropdowns, popo
 - **Color:** `bg-popover text-popover-foreground`.
 - **Motion:** Use existing open/close animations and durations (`--duration-fast`, `--duration-normal`, `--duration-slow`).
 - **Modal Use:** Dialogs are for blocking decisions, destructive confirmation, or workflows that cannot remain inline.
+
+## 6a. Work In Flight
+
+Loading and thinking are shown with the flock, in the spirit of the site's hero: birds that move together, one of them leading.
+
+- **Flock mark** ([FlockLoader](src/shared/ui/flock-loader.tsx), `FlockLoaderInline`): five birds, the lead one in `--flock-lead`, the rest in the text color of their surface. In flight each bird surges along the flock's heading and falls back, starting a beat after the bird ahead, so the motion runs from the lead to the tail. On the startup screen the birds fly in one after another first. Standing still it is the logo.
+- **Working line** ([LoadingFlock](src/features/chat/ui/LoadingFlock.tsx)): what the turn is doing, in mono, with the elapsed time in the lead's red — the readout under the site's flock. The flock mark sits beside it.
+- **Thought** ([Reasoning](src/shared/ui/ai-elements/reasoning.tsx)): one bird ([FlockDart](src/shared/ui/flock-dart.tsx)) beside the label; red and nudging forward while the thought streams, quiet once it is finished. The shimmer on the label sweeps in the text color — never in the paper's color, which erases the word as it passes.
+- **Running dot** (`ActiveChatPulseDot`): the site's breathing dot, for a run that is live.
+- **Spinner** ([Spinner](src/shared/ui/spinner.tsx)): one bird circling a faint ring, for a short wait inside a control.
+
+All of it stands still under `prefers-reduced-motion`, and the sidebar's working indicators also follow the "Animate sidebar working indicators" setting.
 
 ## 7. Do's and Don'ts
 

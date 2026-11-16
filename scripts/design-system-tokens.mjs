@@ -209,6 +209,8 @@ const rawCssColorAllowlist = new Set([
   "project-tint",
   // Dot-grid canvas color, consumed in a raw-CSS gradient
   "dot-color-base",
+  // The lead bird's red: the flock mark, the running dot, the working line
+  "flock-lead",
 ]);
 
 // Color tokens that are intentionally theme-invariant: they carry a single

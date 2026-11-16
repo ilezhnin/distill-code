@@ -12,7 +12,8 @@ import {
 } from "@/features/chat/transcript/measurement";
 import { useTranscriptRowStateAdapter } from "@/features/chat/transcript/row-state";
 import { MessageResponse } from "@/shared/ui/ai-elements/message";
-import { BrainIcon, ChevronDownIcon } from "lucide-react";
+import { FlockDart } from "@/shared/ui/flock-dart";
+import { ChevronDownIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import {
   createContext,
@@ -54,6 +55,12 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
 };
 
 const AUTO_CLOSE_DELAY = 1000;
+const THINKING_SHIMMER_PROPS = {
+  continuous: true,
+  duration: 2.2,
+  spread: 2.5,
+  tone: "strong",
+} as const;
 const MS_IN_S = 1000;
 
 export const Reasoning = memo(
@@ -246,8 +253,12 @@ function useDefaultThinkingMessage() {
   return useCallback(
     (isStreaming: boolean, duration?: number): ReactNode => {
       if (isStreaming || duration === 0) {
+        // The highlight is the text color, not the paper: a sweep in the
+        // paper's color erased the word as it passed.
         return (
-          <Shimmer duration={1}>{t("components.reasoning.thinking")}</Shimmer>
+          <Shimmer {...THINKING_SHIMMER_PROPS}>
+            {t("components.reasoning.thinking")}
+          </Shimmer>
         );
       }
       if (duration === undefined) {
@@ -284,7 +295,7 @@ export const ReasoningTrigger = memo(
       >
         {children ?? (
           <>
-            <BrainIcon className="size-4" />
+            <FlockDart active={isStreaming} />
             {thinkingMessage(isStreaming, duration)}
             <ChevronDownIcon
               className={cn(

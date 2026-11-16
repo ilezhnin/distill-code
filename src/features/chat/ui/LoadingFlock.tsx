@@ -86,10 +86,12 @@ export function LoadingFlock({
   const elapsed =
     seconds !== null && seconds >= 1 ? formatWorkingTime(seconds) : null;
 
+  // Set like the readout under the site's flock: a quiet line in mono, with
+  // the one live figure, the time, in the lead bird's red.
   return (
     <motion.div
       className={cn(
-        "mb-3 flex min-h-4 min-w-0 items-center gap-1.5 px-1 text-xs font-normal text-current",
+        "mb-3 flex min-h-4 min-w-0 items-center gap-1.5 px-1 font-mono text-xs font-normal text-current",
         className,
       )}
       role="status"
@@ -113,7 +115,14 @@ export function LoadingFlock({
         </Shimmer>
       )}
       {elapsed ? (
-        <span className="shrink-0 tabular-nums opacity-70">{elapsed}</span>
+        <>
+          <span aria-hidden="true" className="shrink-0 opacity-50">
+            ·
+          </span>
+          <span className="flock-readout-accent shrink-0 tabular-nums">
+            {elapsed}
+          </span>
+        </>
       ) : null}
     </motion.div>
   );

@@ -1,10 +1,10 @@
 export const AGENT_CARD_FONT_LOAD_TIMEOUT_MS = 1_500;
 
 const CARD_FONTS = [
-  "600 64px Inter",
-  "600 42px Inter",
-  "600 40px Inter",
-  "600 36px Inter",
+  "600 64px Geologica",
+  "600 42px Geologica",
+  "600 40px Geologica",
+  "600 36px Geologica",
 ] as const;
 
 export async function loadAgentCardFonts(

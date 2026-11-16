@@ -1,7 +1,7 @@
 /**
  * In-app variant of the Flock loader used for session activity (left nav,
- * responding pill). Same five-frame flock sprite as the startup
- * loader, with a separate loop duration for small repeated placements.
+ * responding pill). Same flock mark as the startup loader, without the
+ * fly-in and with a separate loop duration for small repeated placements.
  */
 import { FLOCK_LOADER_INLINE_LOOP_MS } from "@/shared/ui/flock-loader-timing";
 import {

@@ -53,45 +53,44 @@
 @custom-variant dark (&:is([data-theme="dark"] *, .dark *));
 
 /* ═══════════════════════════════════════════════════════════
-   Inter — self-hosted variable fonts (SIL OFL 1.1, see
-   src/app/assets/fonts/INTER_OFL.txt). Bundled rather than
-   CDN-loaded so the desktop app has no runtime font dependency
-   and renders identically offline. The weight axis (100–900)
-   covers every weight the design system uses, and the optical
-   size axis (opsz) automatically renders body sizes with
-   comfortable tracking and display sizes tighter — so no
-   letter-spacing compensation is needed in component code.
+   Geologica — self-hosted variable font (SIL OFL 1.1, see
+   src/app/assets/fonts/GEOLOGICA_OFL.txt). The typeface of
+   levocat.com, so the app and its page read as one product.
+   Bundled rather than CDN-loaded so the desktop app has no
+   runtime font dependency and renders identically offline.
+   One file carries every weight (100–900) and the slant axis:
+   the oblique range below maps `font-style: italic` onto it,
+   so there is no separate italic file.
    ═══════════════════════════════════════════════════════════ */
 
 @font-face {
-  font-family: "Inter";
-  src: url("../../app/assets/fonts/Inter[opsz,wght].ttf")
+  font-family: "Geologica";
+  src: url("../../app/assets/fonts/Geologica[CRSV,SHRP,slnt,wght].ttf")
     format("truetype-variations");
   font-weight: 100 900;
+  font-style: oblique 0deg 12deg;
+  font-display: swap;
+}
+
+/* JetBrains Mono — self-hosted variable fonts (SIL OFL 1.1, see
+   src/app/assets/fonts/JETBRAINS_MONO_OFL.txt). Backs the --font-mono
+   token (code, paths, terminal output), the digital clock face, and the
+   small technical labels the site sets in mono: tags, readouts, statuses. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../../app/assets/fonts/JetBrainsMono[wght].ttf")
+    format("truetype-variations");
+  font-weight: 100 800;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Inter";
-  src: url("../../app/assets/fonts/Inter-Italic[opsz,wght].ttf")
+  font-family: "JetBrains Mono";
+  src: url("../../app/assets/fonts/JetBrainsMono-Italic[wght].ttf")
     format("truetype-variations");
-  font-weight: 100 900;
+  font-weight: 100 800;
   font-style: italic;
-  font-display: swap;
-}
-
-/* Geist Mono — self-hosted variable font (SIL OFL 1.1, see
-   src/app/assets/fonts/GEIST_MONO_OFL.txt). Backs the --font-mono
-   token (code, paths, terminal output) and the digital clock face.
-   Geist shares Inter's grotesque skeleton, so it pairs naturally
-   with Inter. Upstream ships no italic. */
-@font-face {
-  font-family: "Geist Mono";
-  src: url("../../app/assets/fonts/GeistMono[wght].ttf")
-    format("truetype-variations");
-  font-weight: 100 900;
-  font-style: normal;
   font-display: swap;
 }
 
@@ -115,18 +114,40 @@
   --color-white: #ffffff;
   --color-black: #000000;
 
-  /* monochromatic gray scale */
-  --color-gray-50: #f5f5f5;
-  --color-gray-75: #f1f1f1;
-  --color-gray-100: #f0f0f0;
-  --color-gray-200: #e8e8e8;
-  --color-gray-300: #e5e5e5;
-  --color-gray-400: #cccccc;
-  --color-gray-500: #999999;
-  --color-gray-600: #666666;
-  --color-gray-700: #333333;
-  --color-gray-800: #232323;
-  --color-gray-900: #1a1a1a;
+  /* Neutrals — the sky-and-ink scale of levocat.com. The names stay
+     `gray-*` because every semantic token already reads them, but none of
+     these is a true gray: the light half is tinted toward the site's sky
+     band, the dark half toward its ink. Site names in brackets. */
+  --color-gray-25: #eaf4fa; /* [ink, dark theme] */
+  --color-gray-50: #f5fafd;
+  --color-gray-75: #eef7fd; /* [band] */
+  --color-gray-100: #e5f1f9;
+  --color-gray-200: #dceaf3; /* [line] */
+  --color-gray-300: #cee0ec;
+  --color-gray-400: #bfd6e4; /* [line-strong] */
+  --color-gray-450: #a9becb; /* [muted, dark theme] */
+  --color-gray-500: #8097a5; /* [faint, dark theme] */
+  --color-gray-600: #5f7482; /* [faint] */
+  --color-gray-650: #3f5361; /* [muted] */
+  --color-gray-700: #2e4757; /* [line-strong, dark theme] */
+  --color-gray-750: #233a49;
+  --color-gray-775: #1f3442; /* [line, dark theme] */
+  --color-gray-800: #152b38; /* [card, dark theme] */
+  --color-gray-850: #122733; /* [band, dark theme] */
+  --color-gray-900: #0f2230; /* [ink] */
+  --color-gray-950: #0d1b26; /* [bg, dark theme] */
+
+  /* Sky — the hero strip and links of levocat.com. 300/700 are the link
+     ink on dark and on light; 400/600 the strip in light and in dark. */
+  --color-sky-300: #6cc6f2;
+  --color-sky-400: #3bb0e9;
+  --color-sky-600: #166a9a;
+  --color-sky-700: #0b6fa8;
+
+  /* Lead — the one red bird at the head of the flock. 400 on dark, 600 on
+     light. Kept for the leading bird and work in flight, never decoration. */
+  --color-lead-400: #ff7043;
+  --color-lead-600: #d63a0c;
 
   /* Utility hues — pair per hue. 100 = lighter (used on dark bg),
      200 = denser (used on light bg). Keeps contrast consistent across themes. */
@@ -215,14 +236,14 @@
      from drifting; dark mode diverging is exactly how black-blob controls
      appeared on gray-800 cards. */
   --background: var(--card);
-  --foreground: #242424;
+  --foreground: var(--color-gray-900);
   --card: var(--color-white);
   --card-foreground: var(--foreground);
   /* Surface ladder: canvas (window backdrop) → card (opaque container) →
      card-glass (translucent container floating over the canvas) → muted
      (fills inside a card). card-glass derives from card so both themes keep
      the same elevation relationships; the alpha is the only per-theme knob. */
-  --card-glass: color-mix(in srgb, var(--card) 78%, transparent);
+  --card-glass: color-mix(in srgb, var(--card) 82%, transparent);
   --backdrop-panel: blur(18px) saturate(180%) brightness(1.02);
   --popover: var(--color-white);
   --popover-foreground: var(--foreground);
@@ -232,14 +253,14 @@
   --secondary-foreground: var(--foreground);
   --muted: var(--color-gray-100);
   --muted-foreground: var(--color-gray-600);
-  --accent: var(--color-gray-50);
-  --accent-hover: var(--color-gray-100);
+  --accent: var(--color-gray-100);
+  --accent-hover: var(--color-gray-200);
   --accent-foreground: var(--foreground);
   --destructive: var(--color-red-600);
   --destructive-foreground: var(--color-white);
   --border: var(--color-gray-200);
-  --input: var(--color-gray-300);
-  --ring: var(--color-gray-400);
+  --input: var(--color-gray-400);
+  --ring: var(--color-gray-500);
   --text-selection-bg: color-mix(in oklab, var(--primary) 18%, transparent);
   --text-selection-fg: var(--foreground);
   --scrollbar-size: 12px;
@@ -278,14 +299,10 @@
   --sidebar-accent-foreground: var(--foreground);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
-  --sidebar-row-hover: color-mix(
-    in srgb,
-    var(--sidebar-foreground) 2%,
-    transparent
-  );
+  --sidebar-row-hover: color-mix(in srgb, var(--color-sky-400) 9%, transparent);
   --sidebar-row-active: color-mix(
     in srgb,
-    var(--sidebar-foreground) 3%,
+    var(--color-sky-400) 15%,
     transparent
   );
   --sidebar-section-action-bg: var(--muted);
@@ -294,11 +311,12 @@
   --sidebar-section-action-fg-hover: var(--background);
 
   /* Goose canvas + composer extensions. */
-  --canvas-base: #f5f5f5;
-  --surface-composer: rgba(255, 255, 255, 0.2);
-  --surface-composer-hover: rgba(255, 255, 255, 0.45);
-  /* Floating chat composer — muted gray tint; keep translucent for backdrop blur. */
-  --surface-chat-composer: color-mix(in srgb, var(--muted) 72%, transparent);
+  --canvas-base: var(--color-gray-75);
+  --surface-composer: color-mix(in srgb, var(--card) 88%, transparent);
+  --surface-composer-hover: var(--card);
+  /* Floating chat composer — paper, like a card on the sky canvas; kept a
+     touch translucent for the backdrop blur. Its outline is --shadow-chat. */
+  --surface-chat-composer: color-mix(in srgb, var(--card) 90%, transparent);
   --chat-search-match-bg: color-mix(
     in oklab,
     var(--color-yellow-600) 35%,
@@ -307,14 +325,10 @@
   --chat-search-match-fg: var(--foreground);
   --chat-search-match-active-bg: var(--primary);
   --chat-search-match-active-fg: var(--primary-foreground);
-  --surface-chat-composer-hover: color-mix(
-    in srgb,
-    var(--muted) 80%,
-    transparent
-  );
-  --surface-composer-action: var(--color-gray-300);
-  --surface-composer-action-hover: var(--color-gray-400);
-  --surface-composer-action-active: var(--color-gray-400);
+  --surface-chat-composer-hover: var(--card);
+  --surface-composer-action: var(--color-gray-100);
+  --surface-composer-action-hover: var(--color-gray-200);
+  --surface-composer-action-active: var(--color-gray-300);
   --surface-chat-responding-pill-bg: var(--foreground);
   --surface-chat-responding-pill-fg: var(--background);
   --surface-editor-panel-neutral: color-mix(
@@ -359,24 +373,24 @@
     #eeb4d2,
     #eeb4b4
   );
-  --surface-agent-profile-fg: #242424;
-  --surface-agent-profile-fg-80: rgba(36, 36, 36, 0.8);
-  --surface-agent-profile-fg-muted: rgba(36, 36, 36, 0.45);
-  --surface-agent-profile-fg-subtle: rgba(36, 36, 36, 0.4);
-  --surface-agent-profile-fg-faint: rgba(36, 36, 36, 0.35);
-  --surface-agent-profile-fg-placeholder: rgba(36, 36, 36, 0.3);
-  --surface-agent-profile-border: rgba(36, 36, 36, 0.1);
-  --surface-agent-profile-dot: rgba(36, 36, 36, 0.16);
+  --surface-agent-profile-fg: var(--color-gray-900);
+  --surface-agent-profile-fg-80: rgba(15, 34, 48, 0.8);
+  --surface-agent-profile-fg-muted: rgba(15, 34, 48, 0.5);
+  --surface-agent-profile-fg-subtle: rgba(15, 34, 48, 0.45);
+  --surface-agent-profile-fg-faint: rgba(15, 34, 48, 0.4);
+  --surface-agent-profile-fg-placeholder: rgba(15, 34, 48, 0.34);
+  --surface-agent-profile-border: rgba(15, 34, 48, 0.1);
+  --surface-agent-profile-dot: rgba(15, 34, 48, 0.16);
   --surface-agent-profile-control-bg: var(--card);
   --surface-agent-profile-control-bg-hover: rgba(255, 255, 255, 0.9);
-  --surface-agent-profile-action-fg: rgba(245, 245, 245, 0.96);
-  --surface-agent-profile-action-bg-hover: rgba(36, 36, 36, 0.9);
+  --surface-agent-profile-action-fg: rgba(245, 250, 253, 0.96);
+  --surface-agent-profile-action-bg-hover: rgba(15, 34, 48, 0.9);
   --agent-share-card-ink: #43005c;
   --surface-glass-subtle: rgba(255, 255, 255, 0.1);
   --backdrop-glass-subtle: blur(6px) saturate(120%) brightness(1.01);
   --surface-glass-strong: rgba(255, 255, 255, 0.72);
   --surface-glass-strong-hover: rgba(255, 255, 255, 0.88);
-  --surface-glass-strong-fg: #242424;
+  --surface-glass-strong-fg: var(--color-gray-900);
   /* Theme-adaptive glass for floating popovers/modals — mirrors the sidebar
      glass (light here, dark in the .dark block) so dialogs follow the theme
      and inherit the correct foreground, unlike the always-light tile glass. */
@@ -389,14 +403,14 @@
      content ghosts through it. Blur radii stay modest for WKWebView
      performance (see --backdrop-composer-glass). */
   --overlay-scrim: rgba(255, 255, 255, 0.12);
-  --overlay-search-scrim: rgba(0, 0, 0, 0.15);
+  --overlay-search-scrim: rgba(15, 34, 48, 0.14);
   --backdrop-overlay-glass: blur(8px) saturate(130%) brightness(1.03);
   /* Avatar collection takeover: heavier than the dialog scrim in both tint
      and blur — the avatars are the show, and app chrome ghosting through
      made the field muddy (Alex). Still deliberately semi-transparent: the
      strong blur reduces the page to soft color fields while the see-through
      tint keeps the "temporary surface over the app" modal feel (Tulsi). */
-  --overlay-avatar-field: rgba(252, 252, 251, 0.58);
+  --overlay-avatar-field: rgba(245, 250, 253, 0.58);
   --backdrop-avatar-field: blur(36px) saturate(120%) brightness(1.02);
   /* Onboarding tour scrim: heavier than the dialog scrim so the app reads
      as a distant backdrop while the tour speaks. Pinned to literals: the
@@ -411,7 +425,9 @@
   --surface-agent-tile-action-fg: var(--surface-glass-strong-fg);
   --surface-agent-tile-action-bg-hover: var(--foreground);
   --surface-agent-tile-action-fg-hover: var(--background);
-  --message-user-bg: var(--color-gray-75);
+  /* The operator's own bubble: ink, like the site's. The bubble carries the
+     `dark` class, so its contents read the dark theme's tokens. */
+  --message-user-bg: var(--color-gray-900);
 
   /* Default project cube fold lines on filled color swatches (sidebar, picker). */
   --project-glyph-fold-stroke: rgba(255, 255, 255, 0.92);
@@ -423,7 +439,7 @@
      compiling. */
   --surface-composer-glass: rgba(255, 255, 255, 0.15);
   --ring-composer-glass-inner: rgba(255, 255, 255, 0.6);
-  --outline-composer-glass-outer: rgba(0, 0, 0, 0.05);
+  --outline-composer-glass-outer: rgba(15, 34, 48, 0.07);
 
   /* Shared filter recipe for the composer glass surfaces (ChatView floating
      straddle + Global Hover Composer Pill). Consumed via inline style as
@@ -473,7 +489,7 @@
      reads too light over surface-composer). Used on the chat input. */
   --text-placeholder-composer: color-mix(
     in oklab,
-    var(--color-black) 35%,
+    var(--foreground) 46%,
     transparent
   );
 
@@ -483,16 +499,21 @@
   --success-foreground: var(--color-white);
   --warning: var(--color-yellow-600);
   --warning-foreground: var(--foreground);
-  --info: var(--color-blue-600);
+  --info: var(--color-sky-700);
   --info-foreground: var(--color-white);
 
-  /* Widget: clock face. Light mode = warm-near-black surface with white marks.
-     Dark mode inverts both via the .dark override below so the clock doesn't
-     disappear into the canvas. Second hand stays red in both modes. */
-  --clock-face: #1c1c1c;
+  /* The lead bird: the one red mark in the flock, and the color of work in
+     flight (the loader's leading bird, a thinking turn). Raw-CSS only — it is
+     a brand mark, not a utility color to reach for in feature code. */
+  --flock-lead: var(--color-lead-600);
+
+  /* Widget: clock face. Light mode = ink surface with white marks. Dark mode
+     inverts both via the .dark override below so the clock doesn't disappear
+     into the canvas. The second hand is the lead bird's red in both modes. */
+  --clock-face: var(--color-gray-900);
   --clock-mark: var(--color-white);
-  --clock-minute-hand: #b3b3b3;
-  --clock-hand: var(--color-red-500);
+  --clock-minute-hand: var(--color-gray-450);
+  --clock-hand: var(--color-lead-400);
 
   --sticky-note-warm: color-mix(
     in srgb,
@@ -529,21 +550,23 @@
   --sticky-note-shadow: none;
 
   /* Alpha utility (text-on-canvas overlays) */
-  --dark-04: rgba(26, 26, 26, 0.04);
-  --dark-10: rgba(26, 26, 26, 0.1);
-  --dark-40: rgba(26, 26, 26, 0.4);
+  --dark-04: rgba(15, 34, 48, 0.04);
+  --dark-10: rgba(15, 34, 48, 0.1);
+  --dark-40: rgba(15, 34, 48, 0.4);
 
   /* Dot-grid (canvas signature treatment) */
-  --dot-color-base: #cbcbcb;
+  --dot-color-base: var(--color-gray-300);
   --dot-size: 1px;
   --dot-spacing: 24px;
 
-  /* Shadows — 4-tier hierarchy. Dark block doubles intensity. */
-  --shadow-mini: 0 2px 8px rgba(76, 76, 76, 0.15);
-  --shadow-mini-inset: 0 1px 4px rgba(76, 76, 76, 0.1) inset;
-  --shadow-btn: 0 2px 8px rgba(76, 76, 76, 0.15);
-  --shadow-card: 0 2px 8px rgba(76, 76, 76, 0.15);
-  --shadow-elevated: 0 3px 12px rgba(76, 76, 76, 0.22);
+  /* Shadows — 4-tier hierarchy, cast in ink rather than gray and kept light:
+     the site is flat, so a hairline does the separating and a shadow only
+     says "this floats". Dark block deepens them. */
+  --shadow-mini: 0 2px 8px rgba(15, 34, 48, 0.08);
+  --shadow-mini-inset: 0 1px 4px rgba(15, 34, 48, 0.08) inset;
+  --shadow-btn: 0 2px 8px rgba(15, 34, 48, 0.08);
+  --shadow-card: 0 2px 8px rgba(15, 34, 48, 0.08);
+  --shadow-elevated: 0 3px 12px rgba(15, 34, 48, 0.12);
   /* Floating chat composer — the light-mode dual of the dark-mode specular rim.
      The card is pure white, so a bright highlight can't show (nothing beats
      #fff). Same light-from-above, opposite visible half: the shadowed underside
@@ -553,29 +576,28 @@
      the graduated drop cocktail (rising blur, falling opacity). Neutral
      gray-on-light per the project shadow convention (never raw black). */
   --shadow-chat:
-    inset 0 -1px 0 rgba(76, 76, 76, 0.05), 0 0 0 1px rgba(76, 76, 76, 0.03),
-    0 1px 2px rgba(76, 76, 76, 0.04), 0 3px 6px rgba(76, 76, 76, 0.05),
-    0 8px 16px rgba(76, 76, 76, 0.06), 0 16px 28px rgba(76, 76, 76, 0.05);
+    0 0 0 1px rgba(15, 34, 48, 0.06), 0 1px 2px rgba(15, 34, 48, 0.05),
+    0 8px 20px rgba(15, 34, 48, 0.08);
   --shadow-popover:
-    0 1px 1px rgba(0, 0, 0, 0.03), 0 6px 18px rgba(0, 0, 0, 0.06),
-    0 16px 32px rgba(0, 0, 0, 0.03);
-  --shadow-popover-inverse: 22px 25px 24px rgba(0, 0, 0, 0.09);
-  --shadow-popover-raised: 22px 25px 24px rgba(0, 0, 0, 0.09);
-  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.2);
+    0 0 0 1px rgba(15, 34, 48, 0.07), 0 6px 18px rgba(15, 34, 48, 0.08),
+    0 16px 32px rgba(15, 34, 48, 0.04);
+  --shadow-popover-inverse: 22px 25px 24px rgba(15, 34, 48, 0.1);
+  --shadow-popover-raised: 22px 25px 24px rgba(15, 34, 48, 0.1);
+  --shadow-modal: 0 20px 60px rgba(15, 34, 48, 0.2);
   /* Floating panel hover (sidebar). */
-  --shadow-sidebar-panel-elevated: 30px 42px 60px rgba(0, 0, 0, 0.05);
+  --shadow-sidebar-panel-elevated: 0 14px 36px rgba(15, 34, 48, 0.07);
   /* Composer pill hover — same soft sideways cast as the sidebar panel, lifted
      closer to the pill so it remains visible at the bottom edge. */
-  --shadow-global-composer-pill-hover: 30px 24px 52px rgba(0, 0, 0, 0.07);
-  --shadow-kbd: 0 2px 8px rgba(76, 76, 76, 0.15);
-  --shadow-date-field-focus: 0 0 0 3px rgba(26, 26, 26, 0.15);
-  --shadow-agent-profile-avatar: 0 18px 28px rgba(36, 36, 36, 0.1);
-  --shadow-agent-profile-affordance: 0 1px 2px rgba(36, 36, 36, 0.18);
-  --shadow-agent-profile-input-hover: 0 1px 1px rgba(0, 0, 0, 0.18);
-  --shadow-agent-profile-input-focus: 0 1px 1px rgba(0, 0, 0, 0.24);
-  --shadow-editor-field-hover: 0 1px 1px rgba(0, 0, 0, 0.18);
-  --shadow-editor-field-focus: 0 1px 1px rgba(0, 0, 0, 0.24);
-  --shadow-editor-footer: 0 -12px 24px rgba(36, 36, 36, 0.06);
+  --shadow-global-composer-pill-hover: 0 12px 32px rgba(15, 34, 48, 0.09);
+  --shadow-kbd: 0 2px 8px rgba(15, 34, 48, 0.08);
+  --shadow-date-field-focus: 0 0 0 3px rgba(15, 34, 48, 0.15);
+  --shadow-agent-profile-avatar: 0 18px 28px rgba(15, 34, 48, 0.1);
+  --shadow-agent-profile-affordance: 0 1px 2px rgba(15, 34, 48, 0.18);
+  --shadow-agent-profile-input-hover: 0 1px 1px rgba(15, 34, 48, 0.18);
+  --shadow-agent-profile-input-focus: 0 1px 1px rgba(15, 34, 48, 0.24);
+  --shadow-editor-field-hover: 0 1px 1px rgba(15, 34, 48, 0.18);
+  --shadow-editor-field-focus: 0 1px 1px rgba(15, 34, 48, 0.24);
+  --shadow-editor-footer: 0 -12px 24px rgba(15, 34, 48, 0.06);
   --shadow-color-picker-swatches: 0 10px 26px rgba(15, 23, 42, 0.12);
 
   /* Goose inverse popover — contrast-inverted chip (tooltips, floating
@@ -593,12 +615,12 @@
   --popover-raised-muted-foreground: rgba(255, 255, 255, 0.4);
   --popover-raised-focus: rgba(255, 255, 255, 0.1);
 
-  /* Charts */
-  --chart-1: #f6b44a;
-  --chart-2: #7585ff;
-  --chart-3: #d76a6a;
-  --chart-4: #d185e0;
-  --chart-5: #91cb80;
+  /* Charts — the site's warm beak and sky first, then quieter companions. */
+  --chart-1: #f5a524;
+  --chart-2: #3bb0e9;
+  --chart-3: #e0694a;
+  --chart-4: #9a86e8;
+  --chart-5: #6fbf8f;
 
   /* Status overlays (diff views etc.) */
   --status-added: var(--color-green-600);
@@ -617,10 +639,17 @@
   /* The composer wrapper owns the bottom inset. */
   --chat-surface-bottom-gap: 0px;
 
-  /* App top bar chrome — deep charcoal controls beside the breadcrumb trail. */
-  --app-top-bar-control-fg: #242424;
-  --app-top-bar-control-fg-disabled: rgba(36, 36, 36, 0.35);
+  /* App top bar chrome — ink controls beside the breadcrumb trail. */
+  --app-top-bar-control-fg: var(--color-gray-900);
+  --app-top-bar-control-fg-disabled: rgba(15, 34, 48, 0.35);
   --app-top-bar-control-hover-opacity: 0.7;
+
+  /* Text weight. Light text on a dark ground looks heavier than the same
+     weight in ink on paper, so the dark theme draws its regular and medium
+     text a little lighter; Geologica's weight axis is continuous. These are
+     the variables behind `font-normal` and `font-medium`. */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
 
   /* Motion */
   --ease-spring: cubic-bezier(0.33, 1, 0.68, 1);
@@ -641,32 +670,32 @@
      "black blob" controls: outline buttons, file chips, kbd, and every other
      paper-intent `bg-background` consumer now tracks the card surface. */
   --background: var(--card);
-  --foreground: var(--color-white);
+  --foreground: var(--color-gray-25);
   --card: var(--color-gray-800);
   --card-foreground: var(--foreground);
   --card-glass: color-mix(in srgb, var(--card) 82%, transparent);
   --backdrop-panel: blur(18px) saturate(160%) brightness(1.08);
   /* Overflow menus and other floating popovers sit one step darker than
      cards so they read as distinct surfaces against dark content (BOT-1600). */
-  --popover: var(--color-gray-900);
+  --popover: var(--color-gray-850);
   --popover-foreground: var(--foreground);
-  --primary: var(--color-white);
-  --primary-foreground: var(--color-black);
+  --primary: var(--color-gray-25);
+  --primary-foreground: var(--color-gray-900);
   --secondary: var(--color-gray-700);
   --secondary-foreground: var(--foreground);
   /* Keep quiet and interactive fills one step lighter than card/popover so
      selected tabs, hover rows, and active picker items do not disappear in dark
      surfaces. */
-  --muted: var(--color-gray-700);
-  --muted-foreground: var(--color-gray-500);
-  --accent: var(--color-gray-700);
-  --accent-hover: var(--color-gray-600);
+  --muted: var(--color-gray-775);
+  --muted-foreground: var(--color-gray-450);
+  --accent: var(--color-gray-775);
+  --accent-hover: var(--color-gray-700);
   --accent-foreground: var(--foreground);
   --destructive: var(--color-red-400);
-  --destructive-foreground: var(--color-black);
-  --border: var(--color-gray-700);
+  --destructive-foreground: var(--color-gray-950);
+  --border: var(--color-gray-750);
   --input: var(--color-gray-700);
-  --ring: var(--color-gray-400);
+  --ring: var(--color-gray-500);
   --text-selection-bg: color-mix(in oklab, var(--primary) 30%, transparent);
   --text-selection-fg: var(--foreground);
   --scrollbar-thumb-alpha: 16%;
@@ -690,14 +719,10 @@
   --sidebar-accent-foreground: var(--foreground);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
-  --sidebar-row-hover: color-mix(
-    in srgb,
-    var(--sidebar-foreground) 5%,
-    transparent
-  );
+  --sidebar-row-hover: color-mix(in srgb, var(--color-sky-300) 8%, transparent);
   --sidebar-row-active: color-mix(
     in srgb,
-    var(--sidebar-foreground) 7%,
+    var(--color-sky-300) 13%,
     transparent
   );
   --sidebar-section-action-bg: var(--muted);
@@ -713,10 +738,14 @@
   );
 
   /* Goose canvas + composer extensions — inverted. */
-  --canvas-base: var(--color-gray-900);
-  --surface-composer: rgba(255, 255, 255, 0.06);
-  --surface-composer-hover: rgba(255, 255, 255, 0.14);
-  --surface-chat-composer: var(--color-gray-700);
+  --canvas-base: var(--color-gray-950);
+  --surface-composer: color-mix(
+    in srgb,
+    var(--color-gray-775) 90%,
+    transparent
+  );
+  --surface-composer-hover: var(--color-gray-750);
+  --surface-chat-composer: var(--color-gray-775);
   --chat-search-match-bg: color-mix(
     in oklab,
     var(--color-yellow-500) 35%,
@@ -725,13 +754,13 @@
   --chat-search-match-fg: var(--foreground);
   --chat-search-match-active-bg: var(--primary);
   --chat-search-match-active-fg: var(--primary-foreground);
-  --surface-chat-composer-hover: var(--color-gray-600);
-  --surface-composer-action: var(--color-gray-600);
-  --surface-composer-action-hover: var(--color-gray-500);
-  --surface-composer-action-active: var(--color-gray-500);
+  --surface-chat-composer-hover: var(--color-gray-750);
+  --surface-composer-action: var(--color-gray-700);
+  --surface-composer-action-hover: var(--color-gray-650);
+  --surface-composer-action-active: var(--color-gray-650);
   /* Intentionally black chrome, not paper — pinned so it doesn't follow the
      `background` → `card` alias. */
-  --surface-chat-responding-pill-bg: var(--color-black);
+  --surface-chat-responding-pill-bg: var(--color-gray-950);
   --surface-chat-responding-pill-fg: var(--foreground);
   --surface-editor-panel-neutral: var(--color-gray-800);
   --surface-editor-panel: color-mix(
@@ -742,7 +771,7 @@
   --surface-editor-control: var(--color-gray-800);
   --surface-editor-control-hover: rgba(255, 255, 255, 0.08);
   --surface-editor-badge: rgba(0, 0, 0, 0.35);
-  --surface-color-picker-swatches: rgba(35, 35, 35, 0.95);
+  --surface-color-picker-swatches: rgba(21, 43, 56, 0.95);
   --project-panel-tint: 47%;
   --project-panel-alpha: 90%;
   --text-editor-field-placeholder: color-mix(
@@ -755,7 +784,7 @@
     var(--foreground) 12%,
     transparent
   );
-  --surface-agent-profile-fg: var(--color-gray-50);
+  --surface-agent-profile-fg: var(--color-gray-25);
   --surface-agent-profile-fg-80: color-mix(
     in srgb,
     var(--surface-agent-profile-fg) 80%,
@@ -802,11 +831,11 @@
   --surface-glass-strong: rgba(255, 255, 255, 0.72);
   --surface-glass-strong-hover: rgba(255, 255, 255, 0.88);
   --surface-glass-strong-fg: var(--color-gray-900);
-  --surface-popover-glass: rgba(20, 20, 20, 0.35);
+  --surface-popover-glass: rgba(13, 27, 38, 0.4);
   --overlay-scrim: rgba(0, 0, 0, 0.25);
   --overlay-search-scrim: rgba(0, 0, 0, 0.15);
   --backdrop-overlay-glass: blur(8px) saturate(130%);
-  --overlay-avatar-field: rgba(16, 16, 16, 0.58);
+  --overlay-avatar-field: rgba(10, 22, 31, 0.58);
   --backdrop-avatar-field: blur(36px) saturate(120%);
   --overlay-onboarding-scrim: rgba(0, 0, 0, 0.4);
   --backdrop-popover-glass: blur(24px) saturate(150%);
@@ -820,7 +849,13 @@
   --surface-agent-tile-action-fg: var(--foreground);
   --surface-agent-tile-action-bg-hover: var(--foreground);
   --surface-agent-tile-action-fg-hover: var(--color-black);
-  --message-user-bg: var(--color-gray-700);
+  /* In the dark theme ink would vanish into the page, so the bubble takes
+     the deep sky of the site's dark hero strip instead. */
+  --message-user-bg: color-mix(
+    in srgb,
+    var(--color-sky-600) 55%,
+    var(--color-gray-800)
+  );
 
   --project-glyph-fold-stroke: rgba(0, 0, 0, 0.85);
 
@@ -858,25 +893,27 @@
 
   --skill-pill-fg: var(--color-gray-900);
 
-  --text-placeholder-composer: var(--color-gray-400);
+  --text-placeholder-composer: var(--color-gray-500);
 
   --success: var(--color-green-400);
-  --success-foreground: var(--color-black);
+  --success-foreground: var(--color-gray-950);
   --warning: var(--color-yellow-500);
-  --warning-foreground: var(--color-black);
-  --info: var(--color-blue-400);
-  --info-foreground: var(--color-black);
+  --warning-foreground: var(--color-gray-950);
+  --info: var(--color-sky-300);
+  --info-foreground: var(--color-gray-950);
 
-  --dark-04: rgba(242, 242, 242, 0.04);
-  --dark-10: rgba(242, 242, 242, 0.1);
-  --dark-40: rgba(242, 242, 242, 0.4);
+  --flock-lead: var(--color-lead-400);
+
+  --dark-04: rgba(234, 244, 250, 0.04);
+  --dark-10: rgba(234, 244, 250, 0.1);
+  --dark-40: rgba(234, 244, 250, 0.4);
 
   /* Clock — invert face + marks against the dark canvas. Mirror of the light
-     token: face is slightly warmer than gray-100, marks match the light-mode
-     face value so the contrast direction flips cleanly. Second hand stays red. */
-  --clock-face: #f5f5f5;
-  --clock-mark: #1c1c1c;
-  --clock-minute-hand: #a3a3a3;
+     token: marks match the light-mode face value so the contrast direction
+     flips cleanly. The second hand keeps the lead bird's red. */
+  --clock-face: var(--color-gray-25);
+  --clock-mark: var(--color-gray-900);
+  --clock-minute-hand: var(--color-gray-500);
   --sticky-note-warm: color-mix(
     in srgb,
     var(--color-yellow-100) 24%,
@@ -911,7 +948,7 @@
   --sticky-note-muted: color-mix(in srgb, var(--foreground) 64%, transparent);
   --sticky-note-shadow: none;
 
-  --dot-color-base: rgba(255, 255, 255, 0.12);
+  --dot-color-base: rgba(191, 224, 242, 0.1);
 
   /* Shadows — doubled intensity over dark surfaces */
   --shadow-mini: 0 2px 8px rgba(0, 0, 0, 0.4);
@@ -936,8 +973,8 @@
   --shadow-popover-inverse: 22px 25px 24px rgba(0, 0, 0, 0.45);
   --shadow-popover-raised: 22px 25px 24px rgba(0, 0, 0, 0.45);
   --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.6);
-  --shadow-sidebar-panel-elevated: 30px 42px 60px rgba(0, 0, 0, 0.15);
-  --shadow-global-composer-pill-hover: 30px 24px 52px rgba(0, 0, 0, 0.2);
+  --shadow-sidebar-panel-elevated: 0 14px 36px rgba(0, 0, 0, 0.28);
+  --shadow-global-composer-pill-hover: 0 12px 32px rgba(0, 0, 0, 0.3);
   --shadow-kbd: 0 2px 8px rgba(0, 0, 0, 0.4);
   --shadow-date-field-focus: 0 0 0 3px rgba(244, 244, 245, 0.1);
   --shadow-agent-profile-avatar: 0 18px 32px rgba(0, 0, 0, 0.42);
@@ -951,22 +988,33 @@
 
   /* Inverse popover — contrast-inverted chip (tooltips, floating pills):
      light on dark theme. */
-  --popover-inverse: var(--color-gray-50);
+  --popover-inverse: var(--color-gray-25);
   --popover-inverse-foreground: var(--color-gray-900);
-  --popover-inverse-muted-foreground: rgba(26, 26, 26, 0.4);
-  --popover-inverse-focus: rgba(26, 26, 26, 0.1);
+  --popover-inverse-muted-foreground: rgba(15, 34, 48, 0.5);
+  --popover-inverse-focus: rgba(15, 34, 48, 0.1);
 
   /* Raised popover — overflow menus stay dark in dark theme (BOT-1600),
      one step lighter than the gray-900 default popover base so the two
      menu tiers still separate. */
   --popover-raised: var(--color-gray-800);
-  --popover-raised-foreground: var(--color-white);
-  --popover-raised-muted-foreground: rgba(255, 255, 255, 0.4);
-  --popover-raised-focus: rgba(255, 255, 255, 0.1);
+  --popover-raised-foreground: var(--color-gray-25);
+  --popover-raised-muted-foreground: rgba(234, 244, 250, 0.5);
+  --popover-raised-focus: rgba(234, 244, 250, 0.1);
 
   --status-added: var(--color-green-400);
   --status-deleted: var(--color-red-400);
   --status-modified: var(--color-yellow-500);
+
+  --font-weight-normal: 360;
+  --font-weight-medium: 460;
+}
+
+/* The operator's message bubble wears `dark` in both themes, so that what is
+   inside it is drawn for a filled surface (see MessageBubble). On a light
+   page that would also hand the bubble the dark theme's fill; give it back
+   the ink. */
+:root:not(.dark, [data-theme="dark"]) [data-slot="user-message-bubble"].dark {
+  --message-user-bg: var(--color-gray-900);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1146,26 +1194,28 @@
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
 
-  /* Fonts — Inter across the board */
+  /* Fonts — Geologica across the board, JetBrains Mono for technical text */
   --font-sans:
-    "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+    "Geologica", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   --font-terminal-symbols: "NerdFontsSymbols Nerd Font";
   --font-serif: serif;
-  --font-display: "Inter", system-ui, sans-serif;
+  --font-display: "Geologica", system-ui, sans-serif;
 
-  /* Radii — 5-step scale: xs/sm/md/lg + rounded-full (999px).
-     Each step differs by 6px, so adjacent tokens nest concentrically
-     with 6px (p-1.5) padding between layers. */
-  --radius-xs: 6px;
-  --radius-sm: 12px;
-  --radius-md: 18px;
-  --radius-lg: 24px;
+  /* Radii — the site's shapes: 8px controls, 14px cards, and rounded-full
+     (999px) for chips and status pills. `sm` is the step between them, for a
+     surface nested inside a card (a field, a menu row, a message bubble);
+     `lg` is the one step above a card, for the largest framing surfaces. */
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
 
-  /* Composer — deliberate one-off; the chat composer is the app's
-     signature surface and earns its own token. */
-  --radius-composer: 40px;
+  /* Composer — the app's signature surface keeps its own token. It sits one
+     step above a card so it still reads as the softest surface on the page. */
+  --radius-composer: 20px;
 
   /* Shadow utilities */
   --shadow-mini: var(--shadow-mini);
@@ -1554,21 +1604,128 @@
   --app-page-gutter: clamp(1.5rem, round(down, 9.375vw - 3rem, 1.5rem), 4.5rem);
 }
 
+/* ── Work in flight ───────────────────────────────────────────────────────
+   The site marks a running agent with a dot in the lead bird's red that
+   breathes; the app uses the same dot wherever a run is live. */
+.flock-running-dot {
+  background-color: var(--flock-lead);
+}
+
+.flock-running-dot[data-animated="true"] {
+  animation: active-chat-dot-pulse 1.3s ease-in-out infinite;
+}
+
 @keyframes active-chat-dot-pulse {
   0%,
   100% {
-    opacity: 0.55;
-    transform: scale(0.88);
+    opacity: 1;
   }
   50% {
-    opacity: 1;
-    transform: scale(1);
+    opacity: 0.3;
   }
 }
 
-@keyframes flock-loader-frames {
+/* The elapsed time at the end of a working line, set off like the accent
+   phrase in the site's readout. */
+.flock-readout-accent {
+  color: var(--flock-lead);
+}
+
+/* ── The flock mark ───────────────────────────────────────────────────────
+   Five birds, the lead one red (src/shared/ui/flock-loader.tsx). In flight
+   each bird surges along the flock's heading and falls back, starting a beat
+   after the bird ahead of it, so the motion runs from the lead to the tail
+   and the flock reads as following. Lengths are in the mark's own 44-unit
+   box, so the same motion scales with the mark. --flock-reach lengthens the
+   surge for small marks, where a true-to-scale one would not be seen. */
+.flock-mark {
+  overflow: visible;
+}
+
+.flock-mark-lead {
+  fill: var(--flock-lead);
+}
+
+.flock-mark-arrive {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.flock-mark-arrive:first-child {
+  --flock-rest: 0.82;
+}
+
+.flock-mark[data-animated="true"] .flock-mark-bird {
+  animation: flock-surge var(--flock-loop, 1.6s) cubic-bezier(0.45, 0, 0.35, 1)
+    infinite;
+  animation-delay: calc(var(--flock-loop, 1.6s) * (var(--flock-i) * 0.12 - 1));
+}
+
+.flock-mark[data-entrance="true"] .flock-mark-arrive {
+  animation: flock-arrive 0.6s cubic-bezier(0.3, 1.5, 0.5, 1) both;
+  animation-delay: calc(var(--flock-i) * 90ms);
+}
+
+@keyframes flock-surge {
+  0%,
+  100% {
+    opacity: var(--flock-rest, 0.42);
+    transform: translate(
+      calc(var(--flock-reach, 1) * -1.56px),
+      calc(var(--flock-reach, 1) * 0.9px)
+    );
+  }
+  42% {
+    opacity: 1;
+    transform: translate(
+      calc(var(--flock-reach, 1) * 1.56px),
+      calc(var(--flock-reach, 1) * -0.9px)
+    );
+  }
+}
+
+/* A bird arrives from behind, along the heading, and lands with a little
+   overshoot — the pop the site gives a card that has just been dealt. */
+@keyframes flock-arrive {
+  from {
+    opacity: 0;
+    transform: translate(-15.6px, 9px) scale(0.6);
+  }
   to {
-    background-position: calc(var(--flock-loader-size) * -5) 0;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* One bird as a marker beside a line (src/shared/ui/flock-dart.tsx). While
+   the thing it marks is in flight it wears the lead's red and keeps nudging
+   forward; at rest it takes the text color of its line. */
+.flock-dart[data-active="true"] {
+  color: var(--flock-lead);
+}
+
+.flock-dart[data-animated="true"] {
+  animation: flock-dart-nudge 1.3s ease-in-out infinite;
+}
+
+@keyframes flock-dart-nudge {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: translateX(-1.5px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(1.5px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flock-running-dot[data-animated="true"],
+  .flock-dart[data-animated="true"],
+  .flock-mark[data-animated="true"] .flock-mark-bird,
+  .flock-mark[data-entrance="true"] .flock-mark-arrive {
+    animation: none;
   }
 }
 
@@ -1865,9 +2022,11 @@
    the background color. Default transparent = no change.
    ═══════════════════════════════════════════════════════════ */
 
+/* Mixed in oklab, not oklch: the default tint is `transparent`, and a hue
+   angle interpolated toward it drags the sky canvas to pink. */
 .bg-dot-grid {
   background-color: color-mix(
-    in oklch,
+    in oklab,
     var(--project-tint, transparent) 25%,
     var(--canvas-base)
   );
@@ -1916,15 +2075,16 @@ body,
   body {
     @apply bg-canvas-base text-foreground;
     font-family: var(--font-sans);
-    /* Global tracking trim for Inter — pulls body text slightly tighter
-       than the opsz axis default. Tune here, never per-component. */
+    font-weight: var(--font-weight-normal);
+    /* Geologica is drawn wide for reading; this trim keeps dense product
+       chrome compact. Tune here, never per-component. */
     letter-spacing: -0.01em;
     font-feature-settings:
       "rlig" 1,
       "calt" 1;
   }
 
-  /* Keep technical monospace text neutral; the Inter body tracking trim should
+  /* Keep technical monospace text neutral; the body tracking trim should
      not squeeze code, paths, terminal-adjacent labels, or identifiers. */
   code,
   kbd,

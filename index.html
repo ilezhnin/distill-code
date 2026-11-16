@@ -7,7 +7,7 @@
     <script>
       (() => {
         const getDefaultAccent = (theme) =>
-          theme === "dark" ? "#ffffff" : "#1a1a1a";
+          theme === "dark" ? "#eaf4fa" : "#0f2230";
 
         const normalizeHexColor = (color) => {
           const value = color?.trim();
@@ -86,8 +86,8 @@
           const isDark = resolvedTheme === "dark";
           // Pre-stylesheet paint: keep in sync with --canvas-base and
           // --dot-color-base in src/shared/styles/globals.css.
-          const canvasBase = isDark ? "#1a1a1a" : "#f5f5f5";
-          const dotColor = isDark ? "rgba(255, 255, 255, 0.12)" : "#cbcbcb";
+          const canvasBase = isDark ? "#0d1b26" : "#eef7fd";
+          const dotColor = isDark ? "rgba(191, 224, 242, 0.1)" : "#cee0ec";
           root.style.setProperty("--startup-canvas-base", canvasBase);
           root.style.setProperty("--startup-dot-color", dotColor);
           root.style.setProperty("--startup-dot-size", "1px");
