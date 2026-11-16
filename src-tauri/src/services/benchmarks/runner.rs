@@ -7698,15 +7698,14 @@ fn exceeded_output_cap(error: &Value) -> bool {
 /// candidate's answer to the case, as a Claude refusal is: a model that
 /// will not do the work failed the test, scored 0, and the cell is measured
 /// (owner, 11-14). It was an unscored infrastructure failure, which left
-/// the cell open and scored one lab's refusals and not another's. xAI's
-/// safeguards refuse in their own words ([`grok_declined_task`]). The
-/// reason keeps the provider's words. A turn the provider never took, a
-/// usage limit and a refusal of the account or of the model are none.
+/// the cell open and scored one lab's refusals and not another's. xAI's and
+/// Z.ai's safeguards refuse in their own words ([`grok_declined_task`],
+/// [`zai_declined_task`]). The reason keeps the provider's words. A turn the
+/// provider never took, a usage limit and a refusal of the account or of
+/// the model are none. Claude's, Kimi's and a GLM answer's refusals end the
+/// turn with ACP's `refusal` stop instead, an answer graded like any other.
 fn refused_task(error: &Value) -> bool {
     let data = &error["data"];
-    if data["dispatchStarted"] != true || data["promptNotAccepted"] == true {
-        return false;
-    }
     let failure = &data["sessionFailure"];
     let said = |text: &Value| {
         text.as_str()
@@ -7715,7 +7714,27 @@ fn refused_task(error: &Value) -> bool {
     let flagged = data["errorKind"] == "provider_failure"
         && failure["severity"] == "error"
         && (said(&failure["title"]) || said(&error["message"]));
-    flagged || grok_declined_task(data)
+    let sent = data["dispatchStarted"] == true && data["promptNotAccepted"] != true;
+    (sent && (flagged || grok_declined_task(data))) || zai_declined_task(error)
+}
+
+/// Z.ai's verdict on a request its safeguards will not work on: business
+/// code 1301, HTTP 400, "System detected potentially unsafe or sensitive
+/// content in input or generation." (docs.z.ai/api-reference/api-code,
+/// 11-16; its mainland API says the same in Chinese). OpenCode forwards it
+/// as the turn's error, often before it streams anything, so the host may
+/// see no dispatch: the verdict itself is the provider's answer to the
+/// prompt it received. A refusal of the generation mid-stream ends the turn
+/// with a `sensitive` finish, which OpenCode settles as a plain turn.
+fn zai_declined_task(error: &Value) -> bool {
+    let said = |text: &Value| {
+        text.as_str().is_some_and(|text| {
+            text.to_ascii_lowercase()
+                .contains("potentially unsafe or sensitive content")
+                || text.contains("不安全或敏感内容")
+        })
+    };
+    said(&error["message"]) || said(&error["data"]["message"])
 }
 
 /// Whether xAI's safeguards refused the task: its API answers a request
@@ -15146,6 +15165,35 @@ mod tests {
             terminal_outcome(&other, "gpt-6-sol"),
             "infrastructure_failure"
         );
+    }
+
+    #[test]
+    fn a_task_zais_safeguards_refuse_is_the_candidates_failed_answer() {
+        // Z.ai's 1301 as OpenCode forwards it: its words as the error, the
+        // host's flags beside OpenCode's own, often with nothing streamed.
+        let opencode = |words: &str, started: bool| {
+            json!({"code":-32603,"message":words,"data":{"service":"session",
+                "errorName":"APIError","accountId":"invented",
+                "dispatchStarted":started,"promptNotAccepted":!started}})
+        };
+        let english = "System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.";
+        let chinese = "系统检测到输入或生成内容可能包含不安全或敏感内容，请您避免输入易产生敏感内容的提示语，感谢您的配合。";
+        for words in [english, chinese] {
+            for started in [true, false] {
+                let error = opencode(words, started);
+                assert!(refused_task(&error), "{error}");
+                assert_eq!(terminal_outcome(&error, "zai-coding-plan/glm-5.3"), "fail");
+            }
+        }
+        // Z.ai's other refusals (an exhausted balance, a rate limit, a bad
+        // parameter) are not of the task.
+        for words in [
+            "Insufficient balance or no resource package. Please recharge.",
+            "Rate limit reached for requests",
+            "Parameter `model` is invalid. Please check the documentation.",
+        ] {
+            assert!(!refused_task(&opencode(words, true)), "{words}");
+        }
     }
 
     #[test]

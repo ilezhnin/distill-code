@@ -856,7 +856,9 @@ graded like any other. A task the provider's safeguards refuse outright, with
 a failed turn in place of an answer (OpenAI: "This content was flagged for
 possible cybersecurity risk", "your prompt was flagged as potentially
 violating our usage policy"; xAI: HTTP 403 "permission-denied: I'm sorry, I
-can't help with that request."), is the candidate's answer too: the attempt fails
+can't help with that request."; Z.ai: code 1301, "System detected potentially
+unsafe or sensitive content in input or generation."), is the candidate's
+answer too: the attempt fails
 its test, scored 0, and its cell is measured, never left open as an
 infrastructure failure. No other model answers for it: every owned Claude session runs with
 `CLAUDE_CODE_NO_MODEL_FALLBACK=1`, which keeps Claude Code from retrying a

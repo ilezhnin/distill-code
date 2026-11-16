@@ -546,3 +546,48 @@ async fn owned_turn_opencode_cut_at_its_output_maximum_is_a_budget_failure() {
         assert_eq!(attempt.outcome.as_deref(), Some("completed"), "{provider}");
     }
 }
+
+#[tokio::test]
+async fn owned_turn_a_task_zai_refuses_before_streaming_is_the_candidates_failed_answer() {
+    // Z.ai's 1301 as OpenCode forwards it before anything streamed: the host
+    // saw no dispatch and withdrew the prompt, yet the verdict is the
+    // provider's answer to it, so the attempt fails instead of going again.
+    let mut terminal = dispatch("terminal", 0, None);
+    terminal.error = Some(json!({"code":-32603,
+        "message":"System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.",
+        "data":{"service":"session","errorName":"APIError","accountId":"invented-account",
+            "dispatchStarted":false,"promptNotAccepted":true}}));
+    let host = ReceiptHost::new(vec![snapshot(vec![], 0, false, terminal)]);
+    let mut attempt = attempt();
+    attempt.configuration.provider_id = "zai-acp".into();
+    attempt.configuration.model_id = "zai-coding-plan/glm-5.3".into();
+    let mut capture = TurnCapture::new(1024);
+    let (_sender, mut cancel) = watch::channel(false);
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        wait_for_owned_turn(
+            &host,
+            &mut attempt,
+            &mut capture,
+            &mut cancel,
+            OwnedTurnWait {
+                key: KEY,
+                session_id: SESSION,
+                started: Instant::now(),
+                timeout: Duration::from_secs(60),
+                budget: None,
+                repository: true,
+                cancellation_grace: Duration::from_secs(1),
+                terminal_drain_grace: Duration::from_secs(1),
+            },
+        ),
+    )
+    .await
+    .expect("the terminal receipt settles the wait")
+    .unwrap();
+    assert_eq!(attempt.outcome.as_deref(), Some("fail"));
+    assert!(attempt
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("unsafe or sensitive content")));
+}
