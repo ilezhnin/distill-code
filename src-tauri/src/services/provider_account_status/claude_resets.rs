@@ -193,39 +193,54 @@ impl Client {
         })
     }
 
+    /// The request that redeems a grant of `organization`.
+    fn claim(&self, origin: &str, organization: &str, body: &Value) -> reqwest::RequestBuilder {
+        self.http
+            .post(format!(
+                "{origin}/api/organizations/{organization}/reset_rate_limits"
+            ))
+            .json(body)
+    }
+
     async fn send(
         &self,
         purpose: Purpose,
         request: reqwest::RequestBuilder,
     ) -> Result<Value, RequestError> {
         let what = purpose.noun();
-        let mut response = request
+        let unanswered = |error: reqwest::Error| {
+            // The cause is named by its kind alone: a request error can
+            // carry the address it was sent to.
+            let cause = if error.is_timeout() {
+                "timed out"
+            } else if error.is_connect() {
+                "could not connect"
+            } else {
+                "was not answered"
+            };
+            log::warn!("[account-status] the Claude {what} request {cause}");
+            match purpose {
+                Purpose::Claim => {
+                    "Claude reset request could not be confirmed; retry the same operation"
+                        .to_string()
+                }
+                _ => format!(
+                    "The Claude {what} request {cause}. It is sent again on the next refresh."
+                ),
+            }
+        };
+        let (http, request) = request
             .bearer_auth(&self.token)
             .header("anthropic-beta", "oauth-2025-04-20")
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .map_err(|error| {
-                // The cause is named by its kind alone: a request error can
-                // carry the address it was sent to.
-                let cause = if error.is_timeout() {
-                    "timed out"
-                } else if error.is_connect() {
-                    "could not connect"
-                } else {
-                    "was not answered"
-                };
-                log::warn!("[account-status] the Claude {what} request {cause}");
-                match purpose {
-                    Purpose::Claim => {
-                        "Claude reset request could not be confirmed; retry the same operation"
-                            .to_string()
-                    }
-                    _ => format!(
-                        "The Claude {what} request {cause}. It is sent again on the next refresh."
-                    ),
-                }
-            })?;
+            .build_split();
+        let mut request = request.map_err(unanswered)?;
+        // Set, never added: a request built with json() already names its
+        // body's type, and the provider leaves a body named twice unread.
+        request.headers_mut().insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        let mut response = http.execute(request).await.map_err(unanswered)?;
         if !response.status().is_success() {
             if response.status() == reqwest::StatusCode::UNAUTHORIZED {
                 return Err(RequestError::Unauthorized);
@@ -239,25 +254,27 @@ impl Client {
                     .unwrap_or(60);
                 return Err(RequestError::RateLimited(retry_after));
             }
+            let status = response.status().as_u16();
+            // The provider's reason is a short code; only that is logged.
+            let refusal: Option<Value> = read_body(&mut response, what)
+                .await
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            let reason = refusal
+                .as_ref()
+                .and_then(|value| value.pointer("/error/type"))
+                .and_then(Value::as_str)
+                .filter(|code| valid_grant_id(code))
+                .unwrap_or("-");
+            log::warn!(
+                "[account-status] the provider refused the Claude {what} request: HTTP {status} (reason {reason})"
+            );
             // Never expose provider response bodies or credentials to the renderer.
             return Err(RequestError::Other(format!(
-                "The Claude {what} request returned HTTP {}; refresh the account and retry",
-                response.status().as_u16()
+                "The Claude {what} request returned HTTP {status}; refresh the account and retry"
             )));
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| format!("Could not read the Claude {what} response"))?
-        {
-            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(RequestError::Other(format!(
-                    "The Claude {what} response exceeded the size limit"
-                )));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = read_body(&mut response, what).await?;
         let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
             RequestError::Other(format!("Claude returned an unreadable {what} response"))
         })?;
@@ -266,6 +283,24 @@ impl Client {
         }
         Ok(value)
     }
+}
+
+/// A reply's body, read no further than the size limit.
+async fn read_body(response: &mut reqwest::Response, what: &str) -> Result<Vec<u8>, RequestError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| format!("Could not read the Claude {what} response"))?
+    {
+        if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(RequestError::Other(format!(
+                "The Claude {what} response exceeded the size limit"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 fn user_agent(version: Option<&str>) -> Result<String, String> {
@@ -388,15 +423,7 @@ pub(super) async fn consume(
     // No automatic retry or grant substitution. The dialog retains both IDs
     // after an uncertain response, matching the native CLI's idempotent claim.
     let result = client
-        .send(
-            Purpose::Claim,
-            client
-                .http
-                .post(format!(
-                    "{ORIGIN}/api/organizations/{organization}/reset_rate_limits"
-                ))
-                .json(&body),
-        )
+        .send(Purpose::Claim, client.claim(ORIGIN, organization, &body))
         .await
         .map_err(|error| error.to_string())?;
     // The provider's answer and reason are short codes; only those are logged.
@@ -1173,6 +1200,75 @@ mod tests {
         for text in [usage, claim] {
             assert!(!text.contains("private-test-token") && !text.contains("127.0.0.1"));
         }
+    }
+
+    #[tokio::test]
+    async fn a_claim_names_the_type_of_its_body_once() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (mut request, mut buffer) = (Vec::new(), [0u8; 4096]);
+            let end_of_head = |request: &[u8]| request.windows(4).position(|w| w == b"\r\n\r\n");
+            let head = loop {
+                if let Some(end) = end_of_head(&request) {
+                    break String::from_utf8_lossy(&request[..end + 2]).to_ascii_lowercase();
+                }
+                let size = socket.read(&mut buffer).await.unwrap();
+                assert!(size > 0, "the request ended inside its headers");
+                request.extend_from_slice(&buffer[..size]);
+            };
+            let length: usize = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .map(|value| value.trim().parse().unwrap())
+                .unwrap();
+            let body_start = end_of_head(&request).unwrap() + 4;
+            while request.len() < body_start + length {
+                let size = socket.read(&mut buffer).await.unwrap();
+                assert!(size > 0, "the request ended inside its body");
+                request.extend_from_slice(&buffer[..size]);
+            }
+            let reply = r#"{"result":"reset"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            (head, request[body_start..].to_vec())
+        });
+        let client = Client {
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            token: "private-test-token".into(),
+            organization: None,
+        };
+        let id = "e479d566-4be1-4f20-9ba7-56b21be9ace3";
+        let body = claim_body("launch-grant", id).unwrap();
+        let organization = "7f0c2f6e-5a52-4f0c-9b1e-0d6f7c1f2a11";
+        let reply = client
+            .send(
+                Purpose::Claim,
+                client.claim(&format!("http://{address}"), organization, &body),
+            )
+            .await
+            .unwrap();
+        assert_eq!(map_outcome(&reply).unwrap().outcome, ResetOutcome::Reset);
+        let (head, sent) = server.await.unwrap();
+        assert!(head.starts_with(&format!(
+            "post /api/organizations/{organization}/reset_rate_limits "
+        )));
+        // A second Content-Type beside the body's own made the provider leave
+        // the body unread and refuse the claim (HTTP 400).
+        let types: Vec<&str> = head
+            .lines()
+            .filter(|line| line.starts_with("content-type:"))
+            .collect();
+        assert_eq!(types, ["content-type: application/json"]);
+        assert_eq!(serde_json::from_slice::<Value>(&sent).unwrap(), body);
     }
 
     #[test]
