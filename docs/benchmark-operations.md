@@ -69,6 +69,22 @@ Run cards distinguish queued judges from accepted judge calls. Resource waits
 have their own clock; stopped queues do not animate. Accepted calls that are
 still finishing retain their execution clock when another test needs attention.
 
+A test's dialog is named after its task, with the model under it, and shows
+one attempt as a trail of the steps the runner walks it through: queue,
+sandbox, model, check (or the collected answer and the judges, for a test a
+panel scores) and result. A step behind the attempt carries a check and what
+it took; the step it is in says what it does, with its clock against the
+run's time limit while the model works and whether its chat still gets events;
+the steps ahead wait as quiet rings. A step with parts opens and closes: the
+cause a test waits or stopped on, in the runner's or the provider's own words
+without the host's payload, each check's verdict, each judge's seat with its
+score. A paused or stopped run holds the step with its state and no clock. An
+attempt that ended early marks the step it ended in and strikes the ones it
+never reached. Only the repetitions that count are tabs, each with its dot;
+the tries a run set aside and measured again are listed under the trail with
+the outcome they had come to, and open from there. Sections with nothing in
+them (no answer yet, no evaluation) are left out.
+
 All benchmark candidates, model inventory probes, judges, repository checks,
 JavaScript checks and browser rendering require the dedicated WSL distribution.
 Ordinary chats keep their existing provider runtime.

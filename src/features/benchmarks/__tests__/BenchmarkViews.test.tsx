@@ -553,9 +553,11 @@ describe("benchmark authoring and saved evidence", () => {
     await userEvent.click(
       await within(drawer).findByRole("button", { name: /^Task 1: / }),
     );
+    // The evidence is named after its task; the model stands under it.
     const evidence = await screen.findByRole("dialog", {
-      name: "claude-acp / model-1 / high",
+      name: "Integer transformation",
     });
+    expect(within(evidence).getByText("model-1")).toBeInTheDocument();
     expect(
       await within(evidence).findByText("Captured output"),
     ).toBeInTheDocument();

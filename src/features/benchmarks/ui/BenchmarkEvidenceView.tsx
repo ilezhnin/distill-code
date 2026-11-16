@@ -2,7 +2,13 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { IconChevronDown, IconClock, IconCoin } from "@tabler/icons-react";
+import {
+  IconChevronDown,
+  IconClock,
+  IconCoin,
+  IconHourglass,
+} from "@tabler/icons-react";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { acpGetSessionInfo } from "@/shared/api/acp";
 import { mergeAcpSessionInfo } from "@/features/chat/lib/acpSessionMapping";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -26,9 +32,15 @@ import {
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
+import { useBenchmarkSessionActivity } from "../hooks/useBenchmarkSessionActivity";
 import { benchmarkKeys, useBenchmarkVersion } from "../hooks/useBenchmarks";
+import {
+  attemptTrail,
+  countedRepetitions,
+  earlierTries,
+  supersededOutcome,
+} from "../lib/benchmarkAttemptTrail";
 import { configurationLabel } from "../lib/benchmarkDraft";
-import { judgePanelEvidenceLabel } from "../lib/benchmarkRunIssues";
 import {
   authoredByCandidate,
   hasEvaluatedOutcome,
@@ -45,18 +57,49 @@ import {
   formatElapsed,
   formatSpend,
   modelDisplayName,
+  providerVendor,
   shortId,
   stateLabel,
 } from "../lib/benchmarkLabels";
 import {
+  activityElapsed,
+  compactElapsed,
+  taskActivity,
+} from "../lib/benchmarkTaskTiming";
+import type { Attempt } from "../types";
+import {
   BenchmarkAlert,
   BenchmarkEmpty,
   Field,
+  Metric,
+  ModelIdentity,
   SectionHeading,
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { BenchmarkDiagnosticHistory } from "./BenchmarkDiagnosticHistory";
+import {
+  type DotState,
+  FAILING_OUTCOMES,
+  RepetitionDots,
+  useNow,
+  WORKING,
+} from "./BenchmarkTestStatus";
+import { BenchmarkTrail } from "./BenchmarkTrail";
 import { BenchmarkTranscriptDialog } from "./BenchmarkTranscriptDialog";
+
+/** Run states in which nothing of an open attempt moves. */
+const HELD_RUN = new Set(["paused", "needs_attention"]);
+
+/** One repetition as its tab's dot, by what the attempt itself records. */
+function repetitionDot(attempt: Attempt): DotState {
+  if (WORKING.has(attempt.phase) || attempt.phase === "awaiting_judges")
+    return "running";
+  if (attempt.phase !== "terminal") return "queued";
+  if (attempt.outcome === "pass") return "passed";
+  return attempt.outcome != null && FAILING_OUTCOMES.has(attempt.outcome)
+    ? "failed"
+    : "stopped";
+}
 
 export function BenchmarkEvidenceView({
   attemptId: openedId,
@@ -96,13 +139,12 @@ export function BenchmarkEvidenceView({
     enabled: attempt != null,
     staleTime: 30_000,
   });
-  const repetitions = (run.data?.attempts ?? [])
-    .filter(
-      (other) =>
-        other.versionId === attempt?.versionId &&
-        other.configuration.id === attempt?.configuration.id,
-    )
-    .sort((a, b) => a.repetition - b.repetition);
+  // Tries the run set aside and measured again count nowhere: they are no
+  // repetitions, and open from their own list below the trail.
+  const repetitions = attempt
+    ? countedRepetitions(run.data?.attempts ?? [], attempt)
+    : [];
+  const tries = attempt ? earlierTries(run.data?.attempts ?? [], attempt) : [];
   // The rubric and checks belong to the attempt's own version alone.
   const version = useBenchmarkVersion(attempt?.versionId);
   const manifest = version.data?.manifest;
@@ -133,6 +175,7 @@ export function BenchmarkEvidenceView({
     attempt?.output,
     manifest?.facets.outputFormat,
   );
+  const panelKind = manifest?.evaluator.kind === "rubric";
   const reviewed = attempt?.evaluations.some(
     (evaluation) =>
       evaluation.provenance === (visual ? "human_visual" : "human") &&
@@ -142,7 +185,6 @@ export function BenchmarkEvidenceView({
   // A panel verdict opens the identity the way a human review does; a vote of
   // a panel that never reached its size is no verdict yet.
   const judged = attempt ? hasPanelVerdict(attempt.evaluations) : false;
-  const panelKind = manifest?.evaluator.kind === "rubric";
   // A panel task stays anonymous only while its verdict is still to come;
   // an objective fail or a budget failure is already final.
   const verdictPending =
@@ -159,6 +201,57 @@ export function BenchmarkEvidenceView({
       (!panelKind || verdictPending));
   const disclosedReview = anonymousReview && revealed.has(attemptId);
   const blind = anonymousReview && !disclosedReview;
+  const { formatDate, formatNumber } = useLocaleFormatting();
+  // An open attempt's clocks tick; a settled one reads what it recorded.
+  const open =
+    attempt != null &&
+    attempt.phase !== "terminal" &&
+    attempt.phase !== "interrupted";
+  const now = useNow(open);
+  // While the model works its chat is the only sign of life: whether new
+  // events still arrive, read without opening the transcript.
+  const watching =
+    open && !blind && attempt.phase === "running" && attempt.sessionId != null;
+  const pulse = useBenchmarkSessionActivity(attempt?.sessionId ?? "", watching);
+  const steps =
+    attempt && !blind
+      ? attemptTrail(t, attempt, {
+          judged: panelKind,
+          runState: run.data?.state,
+          timeoutSeconds: run.data?.request.timeoutSeconds,
+          now,
+          formatTime: (at) => formatDate(at, { timeStyle: "short" }),
+        })
+      : [];
+  if (watching && pulse.data) {
+    const observation = pulse.data;
+    steps
+      .find((step) => step.id === "work")
+      ?.substeps.push({
+        id: "activity",
+        title: t(
+          observation.activitySeenAt == null
+            ? "activity.observing"
+            : "activity.lastSeen",
+          {
+            elapsed: compactElapsed(
+              now - (observation.activitySeenAt ?? observation.unchangedSince),
+            ),
+          },
+        ),
+        // Five quiet minutes is worth a look; it is no proof of a hang.
+        state:
+          now - observation.unchangedSince >= 300_000 ? "waiting" : "running",
+      });
+  }
+  // What the attempt spent working and what it spent in queues, as its card
+  // counts them.
+  const spent =
+    attempt && !blind ? activityElapsed(taskActivity([attempt]), now) : null;
+  const repetitionNumber = (other: Attempt) =>
+    other.outcome === "superseded"
+      ? t("trail.earlierTry")
+      : t("evidence.repeat", { number: other.repetition + 1 });
   // An override replaces a verdict; a visual note only annotates one.
   const canReview =
     !disclosedReview &&
@@ -241,6 +334,17 @@ export function BenchmarkEvidenceView({
       setBusy(false);
     }
   };
+  // What was actually said about the answer: a panel's marker, a judge
+  // still being asked and the placeholder of a review to come say nothing.
+  const verdicts = (attempt?.evaluations ?? []).filter(
+    (evaluation) =>
+      evaluation.provenance !== "render" &&
+      evaluation.details?.inFlight !== true &&
+      !(
+        evaluation.provenance === "objective" &&
+        evaluation.verdict === "pending_review"
+      ),
+  );
   const artifacts =
     attempt?.evaluations.flatMap((evaluation) =>
       evaluation.artifacts.filter(
@@ -257,25 +361,53 @@ export function BenchmarkEvidenceView({
     >
       <DialogContent size="xl">
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="leading-snug">
             {blind || !attempt
               ? t("evidence.anonymousReview", { id: shortId(attemptId) })
-              : configurationLabel(attempt.configuration)}
+              : (manifest?.name ?? configurationLabel(attempt.configuration))}
           </DialogTitle>
           <DialogDescription>
             {disclosedReview
               ? t("diagnostics.disclosedReview")
-              : blind
+              : blind || !attempt
                 ? t("evidence.blindReview")
-                : t("evidence.description")}
+                : [
+                    repetitionNumber(attempt),
+                    attempt.startedAt == null
+                      ? null
+                      : formatDate(attempt.startedAt, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        }),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-6">
+          {attempt && !blind ? (
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <ModelIdentity
+                configuration={attempt.configuration}
+                name={modelDisplayName(attempt.configuration)}
+                vendor={providerVendor(attempt.configuration.providerId)}
+              />
+              <StateBadge
+                state={
+                  !open
+                    ? (attempt.outcome ?? attempt.phase)
+                    : run.data && HELD_RUN.has(run.data.state)
+                      ? run.data.state
+                      : attempt.phase
+                }
+              />
+            </div>
+          ) : null}
           {repetitions.length > 1 && !blind ? (
             <div
               role="tablist"
               aria-label={t("evidence.repetitions")}
-              className="flex items-center gap-0.5"
+              className="flex flex-wrap items-center gap-0.5"
             >
               {repetitions.map((other) => (
                 <button
@@ -286,11 +418,15 @@ export function BenchmarkEvidenceView({
                   data-state={other.id === attemptId ? "on" : "off"}
                   className={cn(
                     toggleVariants({ size: "sm" }),
-                    "h-7 px-2.5 text-xs",
+                    "h-7 gap-1.5 px-2.5 text-xs",
                   )}
                   onClick={() => setShownId(other.id)}
                 >
-                  {t("evidence.repeat", { number: other.repetition + 1 })}
+                  <RepetitionDots
+                    states={[repetitionDot(other)]}
+                    animate={!run.data || !HELD_RUN.has(run.data.state)}
+                  />
+                  {repetitionNumber(other)}
                 </button>
               ))}
             </div>
@@ -309,84 +445,84 @@ export function BenchmarkEvidenceView({
             </p>
           ) : null}
           {attempt && !blind ? (
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
-              <div>
-                <dt className="text-xs text-muted-foreground">
-                  {t("fields.status")}
-                </dt>
-                <dd className="mt-1">
-                  <StateBadge state={attempt.outcome ?? attempt.phase} />
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">
-                  {t("fields.elapsed")}
-                </dt>
-                <dd className="mt-1 flex items-center gap-1.5 tabular-nums">
-                  <IconClock
-                    className="size-4 text-muted-foreground"
-                    aria-hidden
-                  />
-                  {formatElapsed(t, attempt.durationMs)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">
-                  {t("fields.tokens")}
-                </dt>
-                <dd className="mt-1">
-                  {attempt.usage.input == null && attempt.usage.output == null
-                    ? t("unknown")
-                    : t("fields.tokensValue", {
-                        input: attempt.usage.input ?? t("unknown"),
-                        output: attempt.usage.output ?? t("unknown"),
-                      })}
-                  {attempt.usage.cacheWrite || attempt.usage.cacheRead ? (
-                    <div className="text-xs text-muted-foreground">
-                      {t("fields.tokensCache", {
-                        write: attempt.usage.cacheWrite ?? 0,
-                        read: attempt.usage.cacheRead ?? 0,
-                      })}
-                    </div>
+            <dl className="flex flex-wrap gap-x-8 gap-y-3">
+              {open ? (
+                <>
+                  {spent?.execution != null ? (
+                    <Metric
+                      label={t("trail.active")}
+                      icon={<IconClock aria-hidden className="size-3.5" />}
+                      value={compactElapsed(spent.execution)}
+                    />
                   ) : null}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">
-                  {t("fields.cost")}
-                </dt>
-                <dd className="mt-1 flex items-center gap-1.5 tabular-nums">
-                  <IconCoin
-                    className="size-4 text-muted-foreground"
-                    aria-hidden
-                  />
-                  {formatSpend(t, attempt.usage.cost, attempt.usage.output)}
-                </dd>
-              </div>
-              {attempt.reason ? (
-                <p className="col-span-full text-xs text-muted-foreground">
-                  {attempt.outcome === "pending_review"
-                    ? judgePanelEvidenceLabel(t, attempt.reason)
-                    : attempt.reason}
-                </p>
-              ) : null}
+                  {spent?.waiting != null ? (
+                    <Metric
+                      label={t("grid.waited")}
+                      icon={<IconHourglass aria-hidden className="size-3.5" />}
+                      value={compactElapsed(spent.waiting)}
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  {attempt.durationMs != null ? (
+                    <Metric
+                      label={t("fields.elapsed")}
+                      icon={<IconClock aria-hidden className="size-3.5" />}
+                      value={formatElapsed(t, attempt.durationMs)}
+                    />
+                  ) : null}
+                  {attempt.usage.input != null ||
+                  attempt.usage.output != null ? (
+                    <Metric
+                      label={t("fields.tokens")}
+                      value={
+                        <>
+                          {t("fields.tokensValue", {
+                            input:
+                              attempt.usage.input == null
+                                ? t("unknown")
+                                : formatNumber(attempt.usage.input),
+                            output:
+                              attempt.usage.output == null
+                                ? t("unknown")
+                                : formatNumber(attempt.usage.output),
+                          })}
+                          {attempt.usage.cacheWrite ||
+                          attempt.usage.cacheRead ? (
+                            <div className="font-sans text-xs text-muted-foreground">
+                              {t("fields.tokensCache", {
+                                write: attempt.usage.cacheWrite ?? 0,
+                                read: attempt.usage.cacheRead ?? 0,
+                              })}
+                            </div>
+                          ) : null}
+                        </>
+                      }
+                    />
+                  ) : null}
+                  {attempt.usage.cost != null ||
+                  attempt.usage.output != null ? (
+                    <Metric
+                      label={t("fields.cost")}
+                      icon={<IconCoin aria-hidden className="size-3.5" />}
+                      value={formatSpend(
+                        t,
+                        attempt.usage.cost,
+                        attempt.usage.output,
+                      )}
+                    />
+                  ) : null}
+                </>
+              )}
             </dl>
           ) : null}
+          {steps.length > 0 ? <BenchmarkTrail steps={steps} now={now} /> : null}
           {attempt && rubric.trim() ? (
             <section className="space-y-2">
               <SectionHeading title={t("evidence.rubric")} />
               <p className="whitespace-pre-wrap text-sm">{rubric}</p>
             </section>
-          ) : null}
-          {attempt ? (
-            <BenchmarkDiagnosticHistory
-              key={attemptId}
-              attemptId={attemptId}
-              blind={blind}
-              onReveal={() =>
-                setRevealed((previous) => new Set([...previous, attemptId]))
-              }
-            />
           ) : null}
           {preview ? (
             <section className="space-y-2">
@@ -399,11 +535,11 @@ export function BenchmarkEvidenceView({
               />
             </section>
           ) : null}
-          {attempt ? (
+          {attempt?.output != null ? (
             <section className="space-y-2">
               <SectionHeading title={t("evidence.output")} />
               <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-4 text-xs">
-                {attempt.output ?? t("evidence.noOutput")}
+                {attempt.output}
               </pre>
             </section>
           ) : null}
@@ -459,16 +595,12 @@ export function BenchmarkEvidenceView({
               </ul>
             </section>
           ) : null}
-          {attempt && !blind ? (
+          {!blind && verdicts.length > 0 ? (
             <section className="space-y-2">
               <SectionHeading title={t("evidence.evaluations")} />
-              {attempt.evaluations.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {t("evidence.notEvaluated")}
-                </p>
-              ) : (
+              {
                 <ul className="divide-y divide-border">
-                  {attempt.evaluations.map((evaluation) => (
+                  {verdicts.map((evaluation) => (
                     <li key={evaluation.id} className="space-y-1 py-2 text-sm">
                       <div className="flex flex-wrap items-center gap-2">
                         <StateBadge state={evaluation.verdict} />
@@ -549,7 +681,7 @@ export function BenchmarkEvidenceView({
                     </li>
                   ))}
                 </ul>
-              )}
+              }
             </section>
           ) : null}
           {canReview ? (
@@ -648,37 +780,105 @@ export function BenchmarkEvidenceView({
               </Button>
             </section>
           ) : null}
-          {attempt && !blind ? (
-            <Collapsible>
-              <CollapsibleTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  flush
-                  rightIcon={<IconChevronDown />}
-                >
-                  {t("evidence.metadata")}
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-4 text-xs">
-                  {JSON.stringify(
-                    {
-                      outcome: stateLabel(t, attempt.outcome ?? attempt.phase),
-                      requested: attempt.configuration,
-                      observed: attempt.observed,
-                      usage: attempt.usage,
-                      evidenceHash: attempt.evidenceHash,
-                      eventCursor: attempt.eventCursor,
-                      sessionId: attempt.sessionId,
-                      hostRunId: attempt.hostRunId,
-                    },
-                    null,
-                    2,
-                  )}
-                </pre>
-              </CollapsibleContent>
-            </Collapsible>
+          {attempt ? (
+            <div className="space-y-2 border-t border-border pt-4">
+              {tries.length > 0 && !blind ? (
+                <Collapsible>
+                  <CollapsibleTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      flush
+                      rightIcon={<IconChevronDown />}
+                    >
+                      {t("trail.earlier", { count: tries.length })}
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <ul className="mt-2 divide-y divide-border">
+                      {tries.map((other) => (
+                        <li
+                          key={other.id}
+                          className="flex items-center justify-between gap-3 py-1.5 text-xs"
+                        >
+                          <span className="min-w-0 truncate">
+                            <span className="tabular-nums">
+                              {other.startedAt == null
+                                ? shortId(other.id)
+                                : formatDate(other.startedAt, {
+                                    dateStyle: "medium",
+                                    timeStyle: "short",
+                                  })}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {" · "}
+                              {stateLabel(t, supersededOutcome(other))}
+                              {other.startedAt != null &&
+                              other.finishedAt != null
+                                ? ` · ${compactElapsed(other.finishedAt - other.startedAt)}`
+                                : ""}
+                            </span>
+                          </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => setShownId(other.id)}
+                          >
+                            {t("actions.inspect")}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </CollapsibleContent>
+                </Collapsible>
+              ) : null}
+              {attempt ? (
+                <BenchmarkDiagnosticHistory
+                  key={attemptId}
+                  attemptId={attemptId}
+                  blind={blind}
+                  onReveal={() =>
+                    setRevealed((previous) => new Set([...previous, attemptId]))
+                  }
+                />
+              ) : null}
+              {attempt && !blind ? (
+                <Collapsible>
+                  <CollapsibleTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      flush
+                      rightIcon={<IconChevronDown />}
+                    >
+                      {t("evidence.metadata")}
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-4 text-xs">
+                      {JSON.stringify(
+                        {
+                          outcome: stateLabel(
+                            t,
+                            attempt.outcome ?? attempt.phase,
+                          ),
+                          requested: attempt.configuration,
+                          observed: attempt.observed,
+                          usage: attempt.usage,
+                          evidenceHash: attempt.evidenceHash,
+                          eventCursor: attempt.eventCursor,
+                          sessionId: attempt.sessionId,
+                          hostRunId: attempt.hostRunId,
+                        },
+                        null,
+                        2,
+                      )}
+                    </pre>
+                  </CollapsibleContent>
+                </Collapsible>
+              ) : null}
+            </div>
           ) : null}
         </DialogBody>
         <DialogFooter>

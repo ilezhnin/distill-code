@@ -30,11 +30,16 @@ export function observeActivity(
   };
 }
 
-export function useBenchmarkSessionActivity(sessionId: string) {
+/**
+ * Whether `sessionId`'s chat still gets events, observed every five seconds
+ * while `enabled`: a finished turn has no chat to watch.
+ */
+export function useBenchmarkSessionActivity(sessionId: string, enabled = true) {
   const client = useQueryClient();
   const key = ["benchmark-session-activity", sessionId];
   return useQuery({
     queryKey: key,
+    enabled,
     queryFn: async () => {
       // The page before the first event is empty but carries the native high
       // water mark. This reads metadata without replay, transcript downloads,

@@ -77,7 +77,7 @@ export function BenchmarkDiagnosticHistory({
         <Button
           type="button"
           variant="ghost"
-          size="sm"
+          flush
           rightIcon={<IconChevronDown />}
         >
           {t("diagnostics.title")}

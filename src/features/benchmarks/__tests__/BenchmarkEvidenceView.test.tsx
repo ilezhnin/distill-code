@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,12 +12,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { benchmarkApi } from "../api/benchmarks";
 import { BenchmarkEvidenceView } from "../ui/BenchmarkEvidenceView";
 import type { Attempt, BenchmarkDefinition } from "../types";
-import { attempt, configuration, definition, diagnostic } from "./fixtures";
+import {
+  attempt,
+  configuration,
+  definition,
+  diagnostic,
+  run,
+} from "./fixtures";
 
 vi.mock("../api/benchmarks", () => ({
   benchmarkErrorMessage: (error: unknown) => String(error),
   benchmarkApi: {
     getEvidence: vi.fn(),
+    // No run is on record unless a test stores one.
+    getRun: vi.fn(() => Promise.reject(new Error("Run not found"))),
     getTranscript: vi.fn(),
     getVersion: vi.fn(),
     submitReview: vi.fn(),
@@ -264,9 +273,7 @@ describe("blind benchmark review", () => {
     ]) {
       expect(screen.getByRole("dialog")).not.toHaveTextContent(hidden);
     }
-    expect(
-      screen.queryByText("Selection, usage and provenance"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Technical details")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Open transcript" }),
     ).not.toBeInTheDocument();
@@ -283,9 +290,7 @@ describe("blind benchmark review", () => {
     expect(
       screen.queryByRole("button", { name: "Record rubric review" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Selection, usage and provenance"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Technical details")).not.toBeInTheDocument();
   });
 
   it("reveals identity only after the saved visual review, while retaining failed objective checks", async () => {
@@ -329,9 +334,7 @@ describe("blind benchmark review", () => {
       ),
     );
     await screen.findByRole("button", { name: "Open transcript" });
-    expect(
-      screen.getByRole("heading", { name: /model-1/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("model-1")).toBeInTheDocument();
     expect(screen.getByText("Private model diagnostic")).toBeInTheDocument();
     expect(recorded.outcome).toBe("fail");
     expect(recorded.evaluations[0].score).toBe(0);
@@ -342,7 +345,7 @@ describe("blind benchmark review", () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
     catalog([definition]);
     showEvidence();
-    await screen.findByRole("heading", { name: /model-1/ });
+    await screen.findByText("model-1");
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Record rubric review" }),
@@ -534,7 +537,7 @@ describe("creative rubric review", () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(panel(2, [0.6, 0.8]));
     catalog([creativeDefinition]);
     showEvidence();
-    await screen.findByRole("heading", { name: /model-1/ });
+    await screen.findByText("model-1");
     expect(screen.getByText("Override the panel")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Open transcript" }),
@@ -586,7 +589,7 @@ describe("creative rubric review", () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(overridden);
     catalog([creativeDefinition]);
     showEvidence();
-    await screen.findByRole("heading", { name: /model-1/ });
+    await screen.findByText("model-1");
     expect(
       screen.queryByRole("button", { name: /Evaluate again/ }),
     ).not.toBeInTheDocument();
@@ -632,12 +635,12 @@ describe("creative rubric review", () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(prose);
     catalog([creativeDefinition]);
     showEvidence();
-    await screen.findByRole("heading", { name: /model-1/ });
+    await screen.findByText("model-1");
     expect(
       screen.queryByRole("heading", { name: /Anonymous review/ }),
     ).not.toBeInTheDocument();
     const dialog = screen.getByRole("dialog");
-    expect(dialog).toHaveTextContent("Status");
+    expect(dialog).toHaveTextContent("Result");
     expect(dialog).toHaveTextContent("1 min 5 s");
     expect(dialog).toHaveTextContent("$0.42");
     expect(
@@ -664,9 +667,9 @@ describe("creative rubric review", () => {
         evaluations: [],
       });
       showEvidence();
-      await screen.findByRole("heading", { name: /model-1/ });
+      await screen.findByText("model-1");
       const dialog = screen.getByRole("dialog");
-      expect(dialog).toHaveTextContent("Status");
+      expect(dialog).toHaveTextContent("Result");
       expect(dialog).toHaveTextContent("1 min 5 s");
       expect(dialog).toHaveTextContent("$0.42");
       expect(
@@ -746,6 +749,98 @@ describe("creative rubric review", () => {
     expect(
       await screen.findByText(
         "No judge panel: 1 eligible judge(s), at least 2 are required",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("an attempt that is still open", () => {
+  afterEach(() => {
+    cleanup();
+    vi.mocked(benchmarkApi.getRun).mockImplementation(() =>
+      Promise.reject(new Error("Run not found")),
+    );
+  });
+  beforeEach(() => vi.clearAllMocks());
+
+  it("shows where it is and what is ahead, with no empty sections and only the repetitions that count", async () => {
+    const working: Attempt = {
+      ...attempt,
+      phase: "running",
+      outcome: null,
+      startedAt: Date.now() - 60_000,
+      finishedAt: null,
+      durationMs: null,
+      output: null,
+      evaluations: [],
+      phaseTimes: { dispatched: Date.now() - 55_000 },
+    };
+    const queued: Attempt = {
+      ...working,
+      id: "attempt-2",
+      repetition: 1,
+      phase: "pending",
+      startedAt: null,
+      phaseTimes: null,
+    };
+    // A try the run measured again is no repetition.
+    const tried: Attempt = {
+      ...attempt,
+      id: "attempt-tried",
+      repetition: -7,
+      outcome: "superseded",
+      sessionId: "earlier-session",
+      reason:
+        "Measured again on resume: 0 of 2 repetitions were measured when the run stopped (this one: infrastructure_failure)",
+    };
+    vi.mocked(benchmarkApi.getEvidence).mockImplementation(async (id) => {
+      const found = [working, queued, tried].find((entry) => entry.id === id);
+      if (!found) throw new Error("Attempt not found");
+      return found;
+    });
+    vi.mocked(benchmarkApi.getRun).mockResolvedValue({
+      ...run,
+      state: "running",
+      attempts: [working, queued, tried],
+    });
+    catalog([definition]);
+    showEvidence();
+
+    // The dialog is named after its task; the model stands under it.
+    await screen.findByRole("heading", { name: "Integer transformation" });
+    expect(screen.getByText("model-1")).toBeInTheDocument();
+    const trail = screen.getByRole("region", { name: "Progress" });
+    const steps = within(trail).getAllByRole("listitem");
+    expect(steps.map((step) => step.dataset.state)).toEqual([
+      "done",
+      "done",
+      "running",
+      "pending",
+      "pending",
+    ]);
+    expect(steps[2]).toHaveAttribute("aria-current", "step");
+    expect(steps[2]).toHaveTextContent("Model");
+    // Its clock runs against the run's limit of two minutes.
+    expect(steps[2]).toHaveTextContent(/5\d s \/ 2:00/);
+    expect(within(trail).getByRole("progressbar")).toBeInTheDocument();
+
+    expect(await screen.findAllByRole("tab")).toHaveLength(2);
+    expect(screen.queryByText("Captured output")).not.toBeInTheDocument();
+    expect(screen.queryByText("Evaluation history")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not reported")).not.toBeInTheDocument();
+
+    // The earlier try opens from its own list and says what it had come to.
+    await userEvent.click(
+      screen.getByRole("button", { name: "1 earlier try" }),
+    );
+    expect(screen.getByText(/Infrastructure failure/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(
+      await screen.findByRole("tab", { name: /Earlier try/, selected: true }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Progress" })).getByText(
+        "Not counted",
       ),
     ).toBeInTheDocument();
   });

@@ -45,6 +45,40 @@ export function stateLabel(
   });
 }
 
+/** What a sign-in renewal that waits for other tests records as its reason. */
+const SIGN_IN_BUSY =
+  /still runs on the sign-in|renewed once a sandbox lane is free|sign-in.*renews once|sign-in.*renewed once|sign-in is being updated/i;
+
+/**
+ * What a returned test waits for, from the reason the runner recorded; with
+ * `timed`, the wording that names when the runner tries it again.
+ */
+export function waitingLabel(
+  reason: string,
+  stopped: boolean,
+  timed: boolean,
+): string {
+  if (reason.startsWith("Waiting for local resources"))
+    return "modelRun.waitingResources";
+  // Plan usage ran out and benchmark tests may not go on with credits.
+  if (/benchmark credits/i.test(reason)) {
+    if (stopped) return "modelRun.stoppedCredits";
+    return timed ? "modelRun.waitingCreditsUntil" : "modelRun.waitingCredits";
+  }
+  if (/usage limit|quota/i.test(reason)) {
+    if (stopped) return "modelRun.stoppedQuota";
+    return timed ? "modelRun.waitingQuotaUntil" : "modelRun.waitingQuota";
+  }
+  if (stopped) return "modelRun.stopped";
+  if (reason === "Waiting for judges") return "modelRun.waitingJudges";
+  // A renewal that waits for other tests on its sign-in names what it waits
+  // for; the time it records is only when the runner asks again.
+  if (SIGN_IN_BUSY.test(reason)) return "modelRun.waitingSignIn";
+  if (/sign-in/i.test(reason))
+    return timed ? "modelRun.waitingSignInUntil" : "modelRun.waitingSignIn";
+  return "modelRun.waiting";
+}
+
 export function shortId(id: string): string {
   return id.slice(0, 8);
 }
