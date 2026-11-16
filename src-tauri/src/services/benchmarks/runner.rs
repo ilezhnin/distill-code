@@ -7698,21 +7698,43 @@ fn exceeded_output_cap(error: &Value) -> bool {
 /// candidate's answer to the case, as a Claude refusal is: a model that
 /// will not do the work failed the test, scored 0, and the cell is measured
 /// (owner, 11-14). It was an unscored infrastructure failure, which left
-/// the cell open and scored one lab's refusals and not another's. The
+/// the cell open and scored one lab's refusals and not another's. xAI's
+/// safeguards refuse in their own words ([`grok_declined_task`]). The
 /// reason keeps the provider's words. A turn the provider never took, a
 /// usage limit and a refusal of the account or of the model are none.
 fn refused_task(error: &Value) -> bool {
     let data = &error["data"];
+    if data["dispatchStarted"] != true || data["promptNotAccepted"] == true {
+        return false;
+    }
     let failure = &data["sessionFailure"];
     let said = |text: &Value| {
         text.as_str()
             .is_some_and(|text| text.to_ascii_lowercase().contains("was flagged"))
     };
-    data["errorKind"] == "provider_failure"
-        && data["dispatchStarted"] == true
-        && data["promptNotAccepted"] != true
+    let flagged = data["errorKind"] == "provider_failure"
         && failure["severity"] == "error"
-        && (said(&failure["title"]) || said(&error["message"]))
+        && (said(&failure["title"]) || said(&error["message"]));
+    flagged || grok_declined_task(data)
+}
+
+/// Whether xAI's safeguards refused the task: its API answers a request
+/// they will not work on with HTTP 403 and the model's refusal, which Grok
+/// Build forwards as its error ("API error (status 403 Forbidden):
+/// permission-denied: I'm sorry, I can't help with that request."; 11-16,
+/// one repetition of a repository case whose other two passed). It stopped
+/// the run as an infrastructure failure. A 403 without those words (an
+/// account or a model the API does not allow) is no refusal of the task.
+fn grok_declined_task(data: &Value) -> bool {
+    let Some(message) = data["message"].as_str() else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase().replace('\u{2019}', "'");
+    data["http_status"] == 403
+        && message.contains("permission-denied")
+        && ["can't help with that", "cannot help with that"]
+            .iter()
+            .any(|words| message.contains(words))
 }
 
 /// The words with which a provider's message refuses the model it names:
@@ -15124,6 +15146,48 @@ mod tests {
             terminal_outcome(&other, "gpt-6-sol"),
             "infrastructure_failure"
         );
+    }
+
+    #[test]
+    fn a_task_xais_safeguards_refuse_is_the_candidates_failed_answer() {
+        // The live Grok Build receipt (2026-11-16), its usage left out.
+        let grok = |status: u16, words: &str| {
+            json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+                "http_status":status,
+                "message":format!("API error (status {status} Forbidden): {words}"),
+                "promptNotAccepted":false},"message":"Internal error","nativeExecutionMs":3263})
+        };
+        let declined = grok(
+            403,
+            "permission-denied: I'm sorry, I can't help with that request.",
+        );
+        let curly = grok(
+            403,
+            "permission-denied: I\u{2019}m sorry, I can\u{2019}t help with that request.",
+        );
+        for error in [&declined, &curly] {
+            assert!(refused_task(error), "{error}");
+            assert_eq!(terminal_outcome(error, "grok-4.5"), "fail");
+        }
+        // A 403 that refuses the account or the model, a refusal the API
+        // never answered as a 403, a turn never sent and one withdrawn are
+        // none: they stay out of the score.
+        let account = grok(
+            403,
+            "permission-denied: this team cannot use the model grok-4.5",
+        );
+        let other_status = grok(
+            500,
+            "permission-denied: I'm sorry, I can't help with that request.",
+        );
+        let mut unsent = declined.clone();
+        unsent["data"]["dispatchStarted"] = json!(false);
+        let mut withdrawn = declined.clone();
+        withdrawn["data"]["promptNotAccepted"] = json!(true);
+        for error in [&account, &other_status, &unsent, &withdrawn] {
+            assert!(!refused_task(error), "{error}");
+            assert_ne!(terminal_outcome(error, "grok-4.5"), "fail", "{error}");
+        }
     }
 
     #[test]
