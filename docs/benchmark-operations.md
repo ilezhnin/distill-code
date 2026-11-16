@@ -1045,6 +1045,13 @@ a running attempt opens its live chat. A judge's full reply is kept only when
 it gave no valid score sheet; a valid vote keeps its scores, reasons and
 critical checks. Application task chats are not benchmark chats and stay.
 
+A provider's runtime that loses its connection mid-answer asks for the response
+again, and the answer streams from its start as a new message. The attempt's
+answer is what streamed after the reconnect; the text of the broken streams
+stays in the turn's events only. An attempt that recorded that text in front of
+its answer is read again from its sealed turn on Evaluate again, with no model
+call, and the sealed record keeps the answer the attempt settled with.
+
 A model's leaderboard warning concerns its unmeasured cells in the current
 rating pool, including terminal answers awaiting judges. A stopped run whose
 remaining cases have since been measured or retired stays in run history,

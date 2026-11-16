@@ -30,6 +30,7 @@ mod judge_watchdog;
 pub(crate) mod native_receipt;
 mod ordinary_judging;
 mod preparation_watchdog;
+pub(super) mod reconnect;
 
 /// Fewest judges whose votes may settle a rendering.
 pub(crate) const MIN_JUDGES: usize = 2;
@@ -7172,6 +7173,9 @@ struct TurnCapture {
     /// Whether the runtime changed the selection while the turn ran: what
     /// streams after that is not the selected configuration's answer.
     swapped: bool,
+    /// What a connection the provider's runtime lost mid-answer leaves of
+    /// the answer (see [`reconnect::Restarts`]).
+    restarts: reconnect::Restarts,
     answer_capped: bool,
     evidence: super::evidence::EvidenceLog,
 }
@@ -7188,6 +7192,7 @@ impl TurnCapture {
             violation: None,
             declined: false,
             swapped: false,
+            restarts: reconnect::Restarts::default(),
             answer_capped: false,
             evidence,
         }
@@ -7198,6 +7203,8 @@ impl TurnCapture {
         consume_event(&payload, &mut self.output, &mut attempt.usage);
         if self.swapped {
             self.output.truncate(answered);
+        } else {
+            self.restarts.settle(&payload, &mut self.output, answered);
         }
         if let Some(model) = resolved_model_of(&payload) {
             attempt.resolved_model = Some(model);

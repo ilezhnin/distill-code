@@ -1575,6 +1575,23 @@ impl BenchmarkService {
             ));
         }
         let v = self.store.version(&a.version_id).await?;
+        // An answer recorded with the broken streams of a reconnect in front
+        // of it is read again from its sealed turn, and evaluated as the
+        // model gave it. Nothing is saved unless the evaluation is.
+        if let Some(answer) = runner::reconnect::rebuilt_answer(
+            &self.store.root,
+            &a,
+            v.manifest.limits.max_artifact_bytes,
+        )
+        .await
+        {
+            log::info!(
+                "[benchmarks] attempt {id}: answer read again from its sealed turn without the streams a reconnect broke ({} of {} bytes)",
+                answer.len(),
+                a.output.as_deref().map_or(0, str::len)
+            );
+            a.output = Some(answer);
+        }
         let output = a.output.as_deref().ok_or_else(|| {
             BenchmarkError::new("evidence_missing", "Attempt has no sealed output")
         })?;
