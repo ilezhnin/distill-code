@@ -38,7 +38,7 @@ describe("ordinary chat background work", () => {
       sessionStateById: {},
       loadingSessionIds: new Set(),
     });
-    useBackgroundTasksStore.setState({ bySession: {} });
+    useBackgroundTasksStore.setState({ bySession: {}, dismissedBySession: {} });
   });
 
   it("shows and completes an autonomous reply after the user prompt has already returned", async () => {
@@ -134,6 +134,28 @@ describe("ordinary chat background work", () => {
       _meta: { backgroundTasks: [] },
     });
     expect(useBackgroundTasksStore.getState().bySession[sessionId]).toEqual([]);
+  });
+
+  it("reads when the host saw a task start and end", async () => {
+    await send({
+      sessionUpdate: "session_info_update",
+      _meta: {
+        backgroundTasks: [
+          {
+            id: "pack",
+            state: "completed",
+            startedAt: "2026-11-14T18:00:00.000Z",
+            endedAt: "2026-11-14T18:00:41.000Z",
+          },
+          { id: "watch", state: "running", startedAt: "not a time" },
+        ],
+      },
+    });
+    const [pack, watch] =
+      useBackgroundTasksStore.getState().bySession[sessionId];
+    expect(pack.startedAt).toBe(Date.UTC(2026, 10, 14, 18, 0, 0));
+    expect(pack.endedAt).toBe(Date.UTC(2026, 10, 14, 18, 0, 41));
+    expect(watch.startedAt).toBeUndefined();
   });
 
   it("replays autonomous chunks without restarting live activity", async () => {

@@ -2854,7 +2854,7 @@ impl Inner {
                     let mut sessions = self.sessions.lock().await;
                     for (session_id, runtime) in sessions.runtimes.iter_mut() {
                         if runtime.served_by(&harness, generation) && runtime.background.is_busy() {
-                            let tasks = runtime.background.disconnected();
+                            let tasks = runtime.background.disconnected(&now_iso());
                             pending.push((session_id.clone(), json!({"sessionId": session_id, "update": {
                                 "sessionUpdate": "session_info_update",
                                 "_meta": {"backgroundTasks": tasks, "backgroundDisconnected": true, "activeRunId": null}
@@ -3242,7 +3242,7 @@ impl Inner {
         let ordinary_claude =
             runtime.harness == "claude-acp" && runtime.execution_profile.is_none();
         if ordinary_claude {
-            runtime.background.task_update(params);
+            runtime.background.task_update(params, &now_iso());
         }
         if !Self::is_turn_update(params) {
             return true;

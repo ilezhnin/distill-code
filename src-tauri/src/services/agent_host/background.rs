@@ -38,12 +38,13 @@ impl BackgroundActivity {
         json!(self.tasks.values().collect::<Vec<_>>())
     }
 
-    pub fn disconnected(&mut self) -> Value {
+    pub fn disconnected(&mut self, now: &str) -> Value {
         self.cancel();
         for task in self.tasks.values_mut() {
             if matches!(task["state"].as_str(), Some("running" | "paused")) {
                 task["state"] = json!("interrupted");
                 task["canStop"] = json!(false);
+                task["endedAt"] = json!(now);
             }
         }
         self.snapshot()
@@ -51,7 +52,9 @@ impl BackgroundActivity {
 
     /// Translate the negotiated extension into a standard ACP update so the
     /// renderer SDK validates it without discarding an unknown union variant.
-    pub fn task_update(&mut self, params: &mut Value) -> bool {
+    /// The bridge times nothing, so each task carries when this host first saw
+    /// it (`startedAt`) and when it saw it end (`endedAt`).
+    pub fn task_update(&mut self, params: &mut Value, now: &str) -> bool {
         let update = &params["update"];
         let kind = update["sessionUpdate"].as_str().unwrap_or("");
         if !matches!(
@@ -66,7 +69,7 @@ impl BackgroundActivity {
         let task = self
             .tasks
             .entry(id.into())
-            .or_insert_with(|| json!({"id": id, "state": "running"}));
+            .or_insert_with(|| json!({"id": id, "state": "running", "startedAt": now}));
         for key in [
             "name",
             "description",
@@ -87,6 +90,11 @@ impl BackgroundActivity {
             )
         }) {
             task["state"] = json!(state);
+        }
+        if !matches!(task["state"].as_str(), Some("running" | "paused"))
+            && task.get("endedAt").is_none()
+        {
+            task["endedAt"] = json!(now);
         }
         // Preserve every live job, but do not grow a session-wide status panel
         // without bound as a long conversation launches short-lived commands.
@@ -164,14 +172,50 @@ mod tests {
     fn background_command_remains_live_after_the_foreground_result() {
         let mut activity = BackgroundActivity::default();
         let mut spawned = json!({"update":{"sessionUpdate":"async_task_spawned","asyncTaskId":"pack","description":"Pack example","toolCallId":"shell"}});
-        assert!(activity.task_update(&mut spawned));
+        assert!(activity.task_update(&mut spawned, "t1"));
         assert_eq!(spawned["update"]["sessionUpdate"], "session_info_update");
         assert!(activity.is_busy());
         let mut ended = json!({"update":{"sessionUpdate":"async_task_state_update","asyncTaskId":"pack","state":"completed","summary":"Exit 0"}});
-        activity.task_update(&mut ended);
+        activity.task_update(&mut ended, "t2");
         assert!(!activity.is_busy());
         assert_eq!(activity.snapshot()[0]["description"], "Pack example");
         assert_eq!(activity.snapshot()[0]["state"], "completed");
+    }
+
+    #[test]
+    fn a_task_is_timed_from_its_first_report_to_the_first_report_of_its_end() {
+        let mut activity = BackgroundActivity::default();
+        let update = |kind: &str, id: &str, state: Option<&str>| {
+            let mut update = json!({"sessionUpdate": kind, "asyncTaskId": id});
+            if let Some(state) = state {
+                update["state"] = json!(state);
+            }
+            json!({ "update": update })
+        };
+        activity.task_update(&mut update("async_task_spawned", "pack", None), "t1");
+        activity.task_update(&mut update("async_task_progress", "pack", None), "t2");
+        let running = activity.snapshot();
+        assert_eq!(running[0]["startedAt"], "t1");
+        assert!(running[0].get("endedAt").is_none());
+
+        activity.task_update(
+            &mut update("async_task_state_update", "pack", Some("completed")),
+            "t3",
+        );
+        // A repeated terminal report (a late output path) does not move the end.
+        activity.task_update(
+            &mut update("async_task_state_update", "pack", Some("completed")),
+            "t4",
+        );
+        let ended = activity.snapshot();
+        assert_eq!(ended[0]["startedAt"], "t1");
+        assert_eq!(ended[0]["endedAt"], "t3");
+
+        activity.task_update(&mut update("async_task_spawned", "watch", None), "t5");
+        let lost = activity.disconnected("t6");
+        assert_eq!(lost[0]["endedAt"], "t3");
+        assert_eq!(lost[1]["state"], "interrupted");
+        assert_eq!(lost[1]["endedAt"], "t6");
     }
 
     #[test]

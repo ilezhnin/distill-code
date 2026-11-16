@@ -1,8 +1,20 @@
 {
   "backgroundTasks": {
     "interrupted": "Connection lost; completion not confirmed",
-    "active_one": "{{count}} background task running",
-    "active_other": "{{count}} background tasks running",
+    "count": {
+      "running_one": "{{count}} running",
+      "running_other": "{{count}} running",
+      "paused_one": "{{count}} paused",
+      "paused_other": "{{count}} paused",
+      "failed_one": "{{count}} failed",
+      "failed_other": "{{count}} failed",
+      "interrupted_one": "{{count}} interrupted",
+      "interrupted_other": "{{count}} interrupted",
+      "stopped_one": "{{count}} stopped",
+      "stopped_other": "{{count}} stopped",
+      "completed_one": "{{count}} done",
+      "completed_other": "{{count}} done"
+    },
     "history": "Background tasks",
     "task": "Background task",
     "running": "Running in background",
@@ -11,7 +23,10 @@
     "failed": "Failed",
     "stopped": "Stopped",
     "stop": "Stop",
-    "stopFailed": "Could not stop the task. Try again."
+    "stopFailed": "Could not stop the task. Try again.",
+    "clear": "Clear finished tasks",
+    "showOutput": "Show output file",
+    "showOutputFailed": "Could not show the output file."
   },
   "history": {
     "resultLoading": "Loading saved result...",

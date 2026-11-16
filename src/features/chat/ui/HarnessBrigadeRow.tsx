@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
+import { useRunningClock } from "@/features/chat/hooks/useRunningClock";
 import type { HarnessBrigadeEntry } from "@/features/chat/lib/harnessBrigade";
 import { revealHarnessSubagentToolCall } from "@/features/chat/lib/harnessBrigadeFocus";
 import { isWorkingStatus } from "@/features/conductor/brigadeActivity";
@@ -61,18 +62,6 @@ export function harnessChipWords(
     ...(parts.length > 0 ? { summaryLabel: parts.join(" · ") } : {}),
     ...(title ? { title } : {}),
   };
-}
-
-/** A clock that moves once a second, and only while something is counted. */
-function useRunningClock(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
 }
 
 /**

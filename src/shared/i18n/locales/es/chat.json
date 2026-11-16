@@ -1,8 +1,20 @@
 {
   "backgroundTasks": {
     "interrupted": "Conexión perdida; finalización sin confirmar",
-    "active_one": "{{count}} tarea en segundo plano",
-    "active_other": "{{count}} tareas en segundo plano",
+    "count": {
+      "running_one": "{{count}} en curso",
+      "running_other": "{{count}} en curso",
+      "paused_one": "{{count}} en pausa",
+      "paused_other": "{{count}} en pausa",
+      "failed_one": "{{count}} con error",
+      "failed_other": "{{count}} con error",
+      "interrupted_one": "{{count}} interrumpida",
+      "interrupted_other": "{{count}} interrumpidas",
+      "stopped_one": "{{count}} detenida",
+      "stopped_other": "{{count}} detenidas",
+      "completed_one": "{{count}} completada",
+      "completed_other": "{{count}} completadas"
+    },
     "history": "Tareas en segundo plano",
     "task": "Tarea en segundo plano",
     "running": "En ejecución en segundo plano",
@@ -11,7 +23,10 @@
     "failed": "Error",
     "stopped": "Detenida",
     "stop": "Detener",
-    "stopFailed": "No se pudo detener la tarea. Inténtalo de nuevo."
+    "stopFailed": "No se pudo detener la tarea. Inténtalo de nuevo.",
+    "clear": "Quitar las tareas terminadas",
+    "showOutput": "Mostrar el archivo de salida",
+    "showOutputFailed": "No se pudo mostrar el archivo de salida."
   },
   "history": {
     "resultLoading": "Cargando resultado guardado...",

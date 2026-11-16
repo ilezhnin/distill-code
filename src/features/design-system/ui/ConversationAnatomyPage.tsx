@@ -8,6 +8,8 @@ import {
   User,
 } from "lucide-react";
 
+import type { BackgroundTask } from "@/features/chat/stores/backgroundTasksStore";
+import { BackgroundTaskList } from "@/features/chat/ui/BackgroundTasksPanel";
 import { ChatInput } from "@/features/chat/ui/ChatInput";
 import { ChatInputAttachments } from "@/features/chat/ui/ChatInputAttachments";
 import { ChatInputSelectionChips } from "@/features/chat/ui/ChatInputSelectionChips";
@@ -614,6 +616,54 @@ function MentionRow({
   );
 }
 
+const backgroundTasksPreviewStart = Date.now();
+
+function backgroundTaskPreview(
+  id: string,
+  state: BackgroundTask["state"],
+  description: string,
+  startedSecondsAgo: number,
+  rest: Partial<BackgroundTask> = {},
+): BackgroundTask {
+  return {
+    id,
+    state,
+    description,
+    startedAt: backgroundTasksPreviewStart - startedSecondsAgo * 1000,
+    ...rest,
+  };
+}
+
+const backgroundTasksPreview: BackgroundTask[] = [
+  backgroundTaskPreview("suite", "running", "Run the regression suite", 134, {
+    summary: "412 of 1 870 tests done",
+    canStop: true,
+  }),
+  backgroundTaskPreview("index", "paused", "Index the documentation", 610, {
+    canStop: true,
+  }),
+  backgroundTaskPreview("build", "failed", "Build the installer", 900, {
+    summary: "Exit 1\nerror: linker not found",
+    endedAt: backgroundTasksPreviewStart - 770_000,
+  }),
+  backgroundTaskPreview("sync", "interrupted", "Sync the fixtures", 1500, {
+    endedAt: backgroundTasksPreviewStart - 1_300_000,
+  }),
+  backgroundTaskPreview("tail", "stopped", "Tail the server log", 2000, {
+    endedAt: backgroundTasksPreviewStart - 1_900_000,
+  }),
+  backgroundTaskPreview("pack", "completed", "Pack the example project", 2500, {
+    summary: "Exit 0",
+    endedAt: backgroundTasksPreviewStart - 2_488_000,
+  }),
+];
+
+const backgroundTasksEndedPreview = backgroundTasksPreview.filter(
+  (task) => task.state === "completed" || task.state === "stopped",
+);
+
+async function noopStopBackgroundTask() {}
+
 function QueuedPillPreview() {
   return (
     <div
@@ -1094,6 +1144,30 @@ export function ConversationAnatomyPage() {
         >
           <StatePreview label="Queued">
             <QueuedPillPreview />
+          </StatePreview>
+        </PreviewCard>
+
+        <PreviewCard
+          title="BackgroundTaskList"
+          when="above the composer while work a chat started keeps running behind its answers."
+        >
+          <StatePreview label="Running, paused and ended work">
+            <InlinePreview>
+              <BackgroundTaskList
+                tasks={backgroundTasksPreview}
+                onStop={noopStopBackgroundTask}
+                onClear={() => {}}
+              />
+            </InlinePreview>
+          </StatePreview>
+          <StatePreview label="Everything ended: folded to its counts">
+            <InlinePreview>
+              <BackgroundTaskList
+                tasks={backgroundTasksEndedPreview}
+                onStop={noopStopBackgroundTask}
+                onClear={() => {}}
+              />
+            </InlinePreview>
           </StatePreview>
         </PreviewCard>
 
