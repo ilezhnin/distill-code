@@ -65,3 +65,13 @@ the whole system prompt. The native text profile has no tools; the protected
 repository profile allows OpenCode's file, search, shell and to-do tools, with
 the ripgrep release OpenCode would otherwise download. It has no subagents and
 no web tools.
+
+OpenCode caps each model request at its own output maximum, 32000 tokens with
+reasoning included, as Claude Code caps Claude's; the policy leaves that cap as
+it ships. A request the cap cuts off ends the turn with a plain `end_turn` and
+no error, so Flock reads the cut from the request's usage: output and reasoning
+that reach the cap settle the attempt as `budget_reached`, scored zero, with
+the cap in its reason. OpenCode reports only the usage of a turn's last model
+request. A text turn is one request, so its counters are whole; a repository
+turn's are labelled as its last request's, and Flock gives such a turn no cost
+and leaves it out of the median output.

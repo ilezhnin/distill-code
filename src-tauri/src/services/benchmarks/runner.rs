@@ -6558,6 +6558,13 @@ impl ExecutionBackend for NativeBackend {
             {
                 attempt.outcome = Some("budget_reached".into());
                 attempt.reason = Some(RECOVERED_ANSWER_CAP_REASON.into());
+            } else if attempt.outcome.as_deref() == Some("completed") {
+                if let Some(reason) = status.result.as_ref().and_then(|result| {
+                    runtime_output_cap_stop(&attempt.configuration.provider_id, result)
+                }) {
+                    attempt.outcome = Some("budget_reached".into());
+                    attempt.reason = Some(reason);
+                }
             }
             if let Some(selection) = status
                 .result
@@ -7109,6 +7116,11 @@ async fn wait_for_owned_turn(
                     }
                     .into(),
                 );
+            } else if let Some(reason) = status.result.as_ref().and_then(|result| {
+                runtime_output_cap_stop(&attempt.configuration.provider_id, result)
+            }) {
+                attempt.outcome = Some("budget_reached".into());
+                attempt.reason = Some(reason);
             } else {
                 attempt.outcome = Some("completed".into());
             }
@@ -7608,9 +7620,40 @@ fn terminal_outcome(error: &Value, model_id: &str) -> &'static str {
     }
 }
 
-/// Providers whose CLI output-token stop [`exceeded_output_cap`] recognizes;
+/// Providers whose CLI output-token stop the runner recognizes, as an error
+/// ([`exceeded_output_cap`]) or a quiet stop ([`runtime_output_cap_stop`]);
 /// a holdout report names the others as a limitation.
-pub(crate) const OUTPUT_CAP_PROVIDERS: [&str; 2] = ["claude-acp", "grok-acp"];
+pub(crate) const OUTPUT_CAP_PROVIDERS: [&str; 3] = ["claude-acp", "grok-acp", "zai-acp"];
+
+/// Why a turn that ended without an error stopped at the output-token maximum
+/// of its provider's CLI, if it did. OpenCode, the Z.ai runtime, says so as
+/// ACP's `max_tokens` stop only when the provider flags the cut; usually a
+/// request its maximum cuts off just ends the turn with `end_turn`, and the
+/// usage OpenCode reports is that last request's. Its output and reasoning
+/// reaching the maximum is then the cut (11-16: 91 GLM turns stopped at
+/// exactly 32000, most with no answer). The cut answer is the model's own, as
+/// Claude's past Claude Code's maximum is: a budget failure scored zero.
+fn runtime_output_cap_stop(provider_id: &str, result: &Value) -> Option<String> {
+    if provider_id != "zai-acp" {
+        return None;
+    }
+    let max = crate::services::agent_host::execution::zai_output_token_max();
+    if result["stopReason"] == "max_tokens" {
+        return Some(format!(
+            "OpenCode stopped the model's last request at its {max}-token output maximum"
+        ));
+    }
+    let usage = &result["usage"];
+    let spent = usage["outputTokens"]
+        .as_u64()?
+        .saturating_add(usage["thoughtTokens"].as_u64().unwrap_or(0));
+    (result["stopReason"] == "end_turn" && spent >= max).then(|| {
+        format!(
+            "OpenCode stopped the model's last request at its {max}-token output maximum, \
+             reasoning included ({spent} tokens)"
+        )
+    })
+}
 
 /// Whether the provider's own CLI stopped a turn because the answer passed its
 /// output-token maximum (Claude Code: "Claude's response exceeded the 32000

@@ -682,6 +682,48 @@ describe("creative rubric review", () => {
     }
   });
 
+  it("names OpenCode's last request as all a GLM repository turn's counters cover, and prices none of it", async () => {
+    catalog([creativeDefinition]);
+    const reason =
+      "OpenCode stopped the model's last request at its 32000-token output maximum, reasoning included (32000 tokens)";
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...drawing,
+      configuration: {
+        ...drawing.configuration,
+        providerId: "zai-acp",
+        executionProfile: "protected_repository",
+      },
+      outcome: "budget_reached",
+      reason,
+      durationMs: 647_000,
+      usage: { ...drawing.usage, input: 273, output: 0, cost: 0.00065 },
+      evaluations: [],
+    });
+    showEvidence();
+    await screen.findByText("model-1");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("Tokens, last request");
+    expect(dialog).toHaveTextContent(
+      "OpenCode reports only the turn’s last model request",
+    );
+    expect(dialog).toHaveTextContent("273 in / 0 out");
+    expect(dialog).not.toHaveTextContent("$0.00065");
+    expect(dialog).toHaveTextContent(reason);
+    cleanup();
+    // The same runtime's text turn is one request: its counters are whole.
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...drawing,
+      configuration: { ...drawing.configuration, providerId: "zai-acp" },
+      outcome: "budget_reached",
+      usage: { ...drawing.usage, cost: 0.42 },
+      evaluations: [],
+    });
+    showEvidence();
+    await screen.findByText("model-1");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("last request");
+    expect(screen.getByRole("dialog")).toHaveTextContent("$0.42");
+  });
+
   it("evaluates a case the candidate wrote again without a hint during blind review", async () => {
     const [version] = creativeDefinition.versions;
     catalog([

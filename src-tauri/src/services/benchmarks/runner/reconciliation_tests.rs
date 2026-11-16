@@ -474,3 +474,75 @@ async fn owned_turn_reconciliation_preserves_receipt_storage_errors() {
         host.assert_single_cancellation();
     }
 }
+
+/// Settles one turn of `provider` whose terminal receipt ended with `stop`
+/// and reported `usage`, as the live wait reads it.
+async fn settle_clean_turn(provider: &str, stop: &str, usage: Value, repository: bool) -> Attempt {
+    let mut terminal = dispatch("terminal", 0, None);
+    terminal.result = Some(json!({"stopReason": stop, "usage": usage}));
+    let host = ReceiptHost::new(vec![snapshot(vec![], 0, false, terminal)]);
+    let mut attempt = attempt();
+    attempt.configuration.provider_id = provider.into();
+    let mut capture = TurnCapture::new(1024);
+    let (_sender, mut cancel) = watch::channel(false);
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        wait_for_owned_turn(
+            &host,
+            &mut attempt,
+            &mut capture,
+            &mut cancel,
+            OwnedTurnWait {
+                key: KEY,
+                session_id: SESSION,
+                started: Instant::now(),
+                timeout: Duration::from_secs(60),
+                budget: None,
+                repository,
+                cancellation_grace: Duration::from_secs(1),
+                terminal_drain_grace: Duration::from_secs(1),
+            },
+        ),
+    )
+    .await
+    .expect("the terminal receipt settles the wait")
+    .unwrap();
+    assert!(host.cancellations.lock().unwrap().is_empty());
+    attempt
+}
+
+#[tokio::test]
+async fn owned_turn_opencode_cut_at_its_output_maximum_is_a_budget_failure() {
+    // The receipts of two GLM repository turns OpenCode cut off (11-16): a
+    // plain end_turn whose last request spent its whole 32000 tokens.
+    for usage in [
+        json!({"cachedReadTokens":20288,"inputTokens":273,"outputTokens":0,
+            "thoughtTokens":32000,"totalTokens":52561}),
+        json!({"cachedReadTokens":76672,"inputTokens":3013,"outputTokens":1,
+            "thoughtTokens":31999,"totalTokens":111685}),
+    ] {
+        for repository in [true, false] {
+            let attempt = settle_clean_turn("zai-acp", "end_turn", usage.clone(), repository).await;
+            assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
+            let reason = attempt.reason.unwrap();
+            assert!(reason.contains("32000-token output maximum"), "{reason}");
+            assert_eq!(attempt.usage.reasoning, usage["thoughtTokens"].as_u64());
+        }
+    }
+    // OpenCode's own word for a cut the provider flagged.
+    let flagged = json!({"inputTokens":40,"outputTokens":900,"thoughtTokens":2000});
+    let attempt = settle_clean_turn("zai-acp", "max_tokens", flagged, true).await;
+    assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
+    // A long last request that ended on its own is an answer to grade.
+    let whole = json!({"inputTokens":40,"outputTokens":800,"thoughtTokens":31199});
+    let attempt = settle_clean_turn("zai-acp", "end_turn", whole.clone(), true).await;
+    assert_eq!(attempt.outcome.as_deref(), Some("completed"));
+    assert_eq!(attempt.reason, None);
+    // Other runtimes report a cut as an error of their own: a large clean
+    // turn of theirs is never read as one.
+    let large = json!({"inputTokens":40,"outputTokens":30000,"thoughtTokens":9000});
+    for provider in ["claude-acp", "codex-acp", "grok-acp", "kimi-acp"] {
+        let attempt = settle_clean_turn(provider, "end_turn", large.clone(), true).await;
+        assert_eq!(attempt.outcome.as_deref(), Some("completed"), "{provider}");
+    }
+}

@@ -188,6 +188,22 @@ export function formatUsd(
 }
 
 /**
+ * Whether an attempt's recorded usage covers only its turn's last model
+ * request, as the service's `usage_is_last_request_only` reads it: OpenCode
+ * (Z.ai) reports its latest request alone, and a repository turn makes many.
+ * The service leaves such an attempt's cost unknown.
+ */
+export function usageIsLastRequestOnly(configuration: {
+  providerId: string;
+  executionProfile: string;
+}): boolean {
+  return (
+    configuration.providerId === "zai-acp" &&
+    configuration.executionProfile === "protected_repository"
+  );
+}
+
+/**
  * An attempt's cost, or why it has none. The service prices every counted
  * token it has a list price for, so counted tokens without a cost mean the
  * model has no price; nothing counted means the provider reported nothing.

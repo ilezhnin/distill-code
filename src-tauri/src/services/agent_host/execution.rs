@@ -119,6 +119,24 @@ static POLICIES: LazyLock<NativePolicies> = LazyLock::new(|| {
     serde_json::from_str(POLICY_RESOURCE).expect("the checked-in benchmark policy resource parses")
 });
 
+/// OpenCode 1.18.35's own cap on each model request (`OUTPUT_TOKEN_MAX`), used
+/// where `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` is unset.
+const OPENCODE_OUTPUT_TOKEN_MAX: u64 = 32_000;
+
+/// The most output, reasoning included, that the Z.ai runtime lets one model
+/// request of a benchmark turn produce: the policy's
+/// `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX`, else OpenCode's own maximum. The
+/// policy sets none, so its turns run at OpenCode's 32000, as Claude's run at
+/// Claude Code's. A model whose own output limit is lower is capped lower.
+pub fn zai_output_token_max() -> u64 {
+    POLICIES
+        .zai
+        .env
+        .get("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
+        .and_then(|max| max.parse().ok())
+        .unwrap_or(OPENCODE_OUTPUT_TOKEN_MAX)
+}
+
 /// The resource as written, for the digest the probe also computes: the typed
 /// entries above fill in defaults the file does not spell out.
 static POLICY_DOCUMENT: LazyLock<Value> = LazyLock::new(|| {

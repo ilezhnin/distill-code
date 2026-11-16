@@ -1803,11 +1803,15 @@ fn measurement_report(
                     .filter_map(|a| a.duration_ms.map(|v| v as f64))
                     .collect(),
             );
-            // Auxiliary model calls inflate the counters; keep the figure pure.
+            // Auxiliary model calls inflate the counters and a last request's
+            // usage understates its turn; keep the figure pure.
             let median_output_tokens = median(
                 every_scored
                     .iter()
-                    .filter(|a| !has_auxiliary_usage(a))
+                    .filter(|a| {
+                        !has_auxiliary_usage(a)
+                            && !super::model_catalog::usage_is_last_request_only(&a.configuration)
+                    })
                     .filter_map(|a| a.usage.output.map(|v| v as f64))
                     .collect(),
             );

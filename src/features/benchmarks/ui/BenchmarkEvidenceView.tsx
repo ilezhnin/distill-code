@@ -61,6 +61,7 @@ import {
   providerVendor,
   shortId,
   stateLabel,
+  usageIsLastRequestOnly,
 } from "../lib/benchmarkLabels";
 import {
   activityElapsed,
@@ -258,6 +259,10 @@ export function BenchmarkEvidenceView({
   // counts them.
   const spent =
     attempt && !blind ? activityElapsed(taskActivity([attempt]), now) : null;
+  // OpenCode's counters cover the turn's last request only; never present
+  // them, or a price of them, as the turn's.
+  const lastRequestOnly =
+    attempt != null && usageIsLastRequestOnly(attempt.configuration);
   const repetitionNumber = (other: Attempt) =>
     other.outcome === "superseded"
       ? t("trail.earlierTry")
@@ -474,7 +479,11 @@ export function BenchmarkEvidenceView({
                   {attempt.usage.input != null ||
                   attempt.usage.output != null ? (
                     <Metric
-                      label={t("fields.tokens")}
+                      label={
+                        lastRequestOnly
+                          ? t("fields.tokensLastRequest")
+                          : t("fields.tokens")
+                      }
                       value={
                         <>
                           {t("fields.tokensValue", {
@@ -496,6 +505,11 @@ export function BenchmarkEvidenceView({
                               })}
                             </div>
                           ) : null}
+                          {lastRequestOnly ? (
+                            <div className="font-sans text-xs text-muted-foreground">
+                              {t("fields.tokensLastRequestHint")}
+                            </div>
+                          ) : null}
                         </>
                       }
                     />
@@ -505,11 +519,15 @@ export function BenchmarkEvidenceView({
                     <Metric
                       label={t("fields.cost")}
                       icon={<IconCoin aria-hidden className="size-3.5" />}
-                      value={formatSpend(
-                        t,
-                        attempt.usage.cost,
-                        attempt.usage.output,
-                      )}
+                      value={
+                        lastRequestOnly
+                          ? t("unknown")
+                          : formatSpend(
+                              t,
+                              attempt.usage.cost,
+                              attempt.usage.output,
+                            )
+                      }
                     />
                   ) : null}
                 </>

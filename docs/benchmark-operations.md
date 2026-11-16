@@ -839,7 +839,8 @@ after five minutes; after three such tries the run waits for the operator, and
 a runtime the host would not start waits for the operator at once. The cell is
 never settled by such a refusal. An answer the provider's CLI cut off at its own
 output-token maximum is the model's own: it settles as a budget failure scored
-zero.
+zero. OpenCode (Z.ai) gives no error for such a cut; a last request whose
+output and reasoning reach its maximum is read as one (see [Z.ai](zai.md)).
 
 A turn that breaks its test's policy settles by whose doing the breach was.
 The model's own work against the rules (a tool, a plan, background work or

@@ -185,6 +185,8 @@
     "tokens": "Tokens",
     "tokensCache": "caché: {{write}} escritos / {{read}} leídos",
     "tokensValue": "{{input}} entrada / {{output}} salida",
+    "tokensLastRequest": "Tokens, última solicitud",
+    "tokensLastRequestHint": "OpenCode solo informa de la última solicitud al modelo del turno",
     "rank": "#",
     "case": "Caso",
     "durationShort": "Duración",

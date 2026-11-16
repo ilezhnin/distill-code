@@ -93,18 +93,33 @@ pub fn list_cost(entry: &CatalogEntry, usage: &TokenUsage) -> Option<f64> {
     )
 }
 
+/// Whether the usage recorded for a turn on `configuration` covers only the
+/// turn's last model request. OpenCode, the Z.ai runtime, reports its latest
+/// request's usage as the turn's and nothing else, so a repository turn's
+/// counters miss every request before the last (11-16: 1 output token
+/// recorded for a 20-minute turn of 13 requests). A text turn is a single
+/// request and is whole.
+pub fn usage_is_last_request_only(configuration: &Configuration) -> bool {
+    configuration.provider_id == "zai-acp"
+        && configuration.execution_profile == "protected_repository"
+}
+
 /// An attempt's cost as every report reads it: its tokens at the list prices
 /// that applied when it ran (`at`), so every provider is priced the same way;
 /// what the provider reported only where no list price resolves. Providers
 /// report on different bases (Grok's figure runs near a third of its list
 /// price, Kimi reports none), so a reported figure is evidence for the
-/// attempt's details, not a board.
+/// attempt's details, not a board. Unknown where the usage covers only the
+/// turn's last request: pricing that would understate the turn.
 pub fn attempt_cost(
     entries: &[CatalogEntry],
     configuration: &Configuration,
     usage: &TokenUsage,
     at: Option<i64>,
 ) -> Option<f64> {
+    if usage_is_last_request_only(configuration) {
+        return None;
+    }
     at.and_then(|at| list_cost(resolve(entries, configuration, at)?, usage))
         .or(usage.cost)
 }
@@ -1097,6 +1112,30 @@ mod tests {
         let mut other = configuration.clone();
         other.provider_id = "grok-acp".into();
         assert_eq!(attempt_cost(&entries, &other, &spent, Some(150)), None);
+    }
+
+    /// OpenCode reports only a turn's last request: a repository turn's
+    /// counters understate it, so neither a list price of them nor a reported
+    /// figure is its cost. A text turn is one request and is priced.
+    #[test]
+    fn a_last_request_usage_prices_no_turn() {
+        let mut glm = k3();
+        glm.provider_id = "zai-acp".into();
+        glm.model_id = "zai-coding-plan/glm-5.3-flash".into();
+        let mut entry = kimi(100, 0.6);
+        entry.provider_id = Some("zai-acp".into());
+        entry.needle = "glm-5.3-flash".into();
+        let mut spent = usage(3_013, 1, 76_672, 0);
+        spent.cost = Some(0.0);
+        assert!(!usage_is_last_request_only(&glm));
+        assert!(attempt_cost(&[entry.clone()], &glm, &spent, Some(150)).is_some());
+        glm.execution_profile = "protected_repository".into();
+        assert!(usage_is_last_request_only(&glm));
+        assert_eq!(attempt_cost(&[entry], &glm, &spent, Some(150)), None);
+        // Another runtime's repository turn reports the whole turn.
+        let mut codex = glm.clone();
+        codex.provider_id = "codex-acp".into();
+        assert!(!usage_is_last_request_only(&codex));
     }
 
     /// An unpriced model resolves to its labelled estimate from the vendor
