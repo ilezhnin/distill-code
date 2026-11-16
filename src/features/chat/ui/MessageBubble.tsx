@@ -707,6 +707,7 @@ function renderContentBlock(
           <CompactionNotice
             key={`notification-${index}`}
             compaction={sn.compaction}
+            measure={sn.compactionMeasure}
           />
         );
       const notificationAction = resolveNotificationAction(sn.action, options);

@@ -28,6 +28,18 @@
     "showOutput": "Show output file",
     "showOutputFailed": "Could not show the output file."
   },
+  "compaction": {
+    "done": "Compacted",
+    "summary": "Summary",
+    "tokens": "{{tokens}} tokens in context",
+    "freed": "Context went from {{before}} to {{after}} tokens",
+    "doneSpoken": "Conversation compacted: context went from {{before}} to {{after}} tokens.",
+    "trigger": {
+      "automatic": "auto",
+      "manual": "manual",
+      "idle": "idle"
+    }
+  },
   "history": {
     "resultLoading": "Loading saved result...",
     "resultFailed": "The saved result could not be loaded.",

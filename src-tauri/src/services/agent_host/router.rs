@@ -554,6 +554,9 @@ pub struct SessionRuntime {
     loading: bool,
     run: Option<RunState>,
     background: super::background::BackgroundActivity,
+    /// The context window as the bridge last counted it, for the compaction
+    /// updates that pass (see [`super::context_meter`]).
+    context: super::context_meter::ContextMeter,
     steer_queue: VecDeque<QueuedPrompt>,
     native_steers: Vec<steering::PendingSteer>,
     /// `{ modes, models, configOptions }` as last reported by the bridge.
@@ -3110,6 +3113,7 @@ impl Inner {
                 {
                     Self::stamp_staged_update(&mut params, run, &now_iso(), evidence_only);
                 }
+                runtime.context.observe(&mut params);
                 if let Some(options) = Self::config_option_update(&params) {
                     // A bridge moves these without being asked: claude drops
                     // an effort a model does not offer, and the SDK flips fast
@@ -4522,6 +4526,7 @@ impl Inner {
                 loading: false,
                 run: None,
                 background: Default::default(),
+                context: Default::default(),
                 steer_queue: VecDeque::new(),
                 native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
@@ -4702,6 +4707,7 @@ impl Inner {
                 loading: true,
                 run: None,
                 background: Default::default(),
+                context: Default::default(),
                 steer_queue: VecDeque::new(),
                 native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
@@ -6090,6 +6096,7 @@ impl Inner {
                 loading: false,
                 run: None,
                 background: Default::default(),
+                context: Default::default(),
                 steer_queue: VecDeque::new(),
                 native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
@@ -6298,6 +6305,7 @@ impl Inner {
                 loading: false,
                 run: None,
                 background: Default::default(),
+                context: Default::default(),
                 steer_queue: VecDeque::new(),
                 native_steers: Vec::new(),
                 snapshot: snapshot.clone(),
@@ -8186,6 +8194,7 @@ impl Inner {
                 loading: false,
                 run: None,
                 background: Default::default(),
+                context: Default::default(),
                 steer_queue: VecDeque::new(),
                 native_steers: Vec::new(),
                 has_model_option: Self::has_model_option(&snapshot),
@@ -10921,6 +10930,7 @@ mod tests {
             loading,
             run: None,
             background: Default::default(),
+            context: Default::default(),
             steer_queue: VecDeque::new(),
             native_steers: Vec::new(),
             snapshot: json!({}),
@@ -12842,6 +12852,7 @@ mod tests {
             loading: false,
             run: None,
             background: Default::default(),
+            context: Default::default(),
             steer_queue: VecDeque::new(),
             native_steers: Vec::new(),
             snapshot: claude_session(),
@@ -12911,6 +12922,7 @@ mod tests {
             loading: false,
             run: None,
             background: Default::default(),
+            context: Default::default(),
             steer_queue: VecDeque::new(),
             native_steers: Vec::new(),
             snapshot: Value::Null,

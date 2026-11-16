@@ -6,6 +6,7 @@
 mod app_sign_in;
 mod background;
 pub mod bridge;
+mod context_meter;
 pub mod execution;
 #[cfg(feature = "app-test-driver")]
 pub(crate) mod execution_fixture;

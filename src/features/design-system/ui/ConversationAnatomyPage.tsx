@@ -14,6 +14,7 @@ import { ChatInput } from "@/features/chat/ui/ChatInput";
 import { ChatInputAttachments } from "@/features/chat/ui/ChatInputAttachments";
 import { ChatInputSelectionChips } from "@/features/chat/ui/ChatInputSelectionChips";
 import { ChatLoadingSkeleton } from "@/features/chat/ui/ChatLoadingSkeleton";
+import { CompactionNotice } from "@/features/chat/ui/CompactionNotice";
 import { ConversationEmptyAvatar } from "@/features/chat/ui/ConversationEmptyAvatar";
 import { MessageBubble } from "@/features/chat/ui/MessageBubble";
 import { MessageBubbleActions } from "@/features/chat/ui/MessageBubbleActions";
@@ -262,6 +263,23 @@ const systemCompactionMessage = message("system-compaction", "system", [
     text: "Conversation compacted",
   },
 ]);
+
+const compactionPreviewStart = Date.now();
+
+/** What claude-agent-acp says a compaction did. */
+const compactionPreviewFacts = {
+  jetbrains: {
+    air: {
+      contextCompaction: {
+        version: 1,
+        trigger: "automatic",
+        preTokens: 182_340,
+        postTokens: 24_100,
+        durationMs: 96_000,
+      },
+    },
+  },
+};
 
 const sampleWorker: SessionNode = {
   sessionId: "worker-scout",
@@ -1011,6 +1029,67 @@ export function ConversationAnatomyPage() {
             <MessageBubble
               message={systemCompactionMessage}
               animateEntry={false}
+            />
+          </StatePreview>
+        </PreviewCard>
+
+        <PreviewCard
+          title="CompactionNotice"
+          when="where the provider compacted the conversation: everything above the line the agent now holds as a summary."
+        >
+          <StatePreview label="Compacting, with the context window as the bridge last counted it">
+            <CompactionNotice
+              compaction={{
+                compactionId: "preview-run",
+                status: "in_progress",
+              }}
+              measure={{
+                usedBefore: 244_380,
+                size: 258_400,
+                startedAt: compactionPreviewStart - 12_000,
+              }}
+            />
+          </StatePreview>
+          <StatePreview label="Compacted: the window before and after, and how long it took">
+            <CompactionNotice
+              compaction={{ compactionId: "preview-done", status: "completed" }}
+              measure={{
+                usedBefore: 244_380,
+                usedAfter: 14_494,
+                size: 258_400,
+                startedAt: compactionPreviewStart - 60_000,
+                endedAt: compactionPreviewStart - 19_000,
+              }}
+            />
+          </StatePreview>
+          <StatePreview label="Compacted by a bridge that shares its summary and its own figures">
+            <CompactionNotice
+              compaction={{
+                compactionId: "preview-summary",
+                status: "completed",
+                summary: [
+                  {
+                    type: "text",
+                    text: "The branch renames the session store and updates its callers. Next: run the migration test.",
+                  },
+                ],
+                _meta: compactionPreviewFacts,
+              }}
+            />
+          </StatePreview>
+          <StatePreview label="Compacted by a bridge that counts nothing">
+            <CompactionNotice
+              compaction={{ compactionId: "preview-bare", status: "completed" }}
+            />
+          </StatePreview>
+          <StatePreview label="Failed">
+            <CompactionNotice
+              compaction={{
+                compactionId: "preview-failed",
+                status: "failed",
+                error: "The summary request exceeded the context window.",
+              }}
+              measure={{ usedBefore: 251_000, size: 258_400 }}
             />
           </StatePreview>
         </PreviewCard>

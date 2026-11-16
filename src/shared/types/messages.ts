@@ -239,11 +239,27 @@ export type SystemNotificationAction =
       text: string;
     };
 
+/**
+ * What the host measured around a compaction: how full the context window was
+ * when it started and when it ended, and when each happened. A bridge that
+ * does not count its context leaves the figures out.
+ */
+export interface CompactionMeasure {
+  usedBefore?: number;
+  usedAfter?: number;
+  /** The size of the context window, in tokens. */
+  size?: number;
+  /** Epoch milliseconds. */
+  startedAt?: number;
+  endedAt?: number;
+}
+
 export interface SystemNotificationContent {
   type: "systemNotification";
   notificationType: "compaction" | "info" | "warning" | "error";
   text: string;
   compaction?: CompactionUpdate;
+  compactionMeasure?: CompactionMeasure;
   action?: SystemNotificationAction;
   annotations?: Annotations;
 }

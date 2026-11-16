@@ -28,6 +28,18 @@
     "showOutput": "Mostrar el archivo de salida",
     "showOutputFailed": "No se pudo mostrar el archivo de salida."
   },
+  "compaction": {
+    "done": "Compactada",
+    "summary": "Resumen",
+    "tokens": "{{tokens}} tokens en contexto",
+    "freed": "El contexto pasó de {{before}} a {{after}} tokens",
+    "doneSpoken": "Conversación compactada: el contexto pasó de {{before}} a {{after}} tokens.",
+    "trigger": {
+      "automatic": "auto",
+      "manual": "manual",
+      "idle": "inactiva"
+    }
+  },
   "history": {
     "resultLoading": "Cargando resultado guardado...",
     "resultFailed": "No se pudo cargar el resultado guardado.",

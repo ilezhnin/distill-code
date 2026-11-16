@@ -33,6 +33,12 @@ function compaction(replay: boolean) {
   const block = messages(replay)[0]?.content[0];
   return block?.type === "systemNotification" ? block.compaction : undefined;
 }
+function measure(replay: boolean) {
+  const block = messages(replay)[0]?.content[0];
+  return block?.type === "systemNotification"
+    ? block.compactionMeasure
+    : undefined;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -111,6 +117,57 @@ describe.each([false, true])("ACP events, replay=%s", (replay) => {
     expect(useChatStore.getState().sessionStateById[sessionId]?.chatState).toBe(
       "streaming",
     );
+  });
+
+  it("measures a compaction by the context the host wrote on its updates", async () => {
+    // The host's stamp: when the update arrived, the context window as the
+    // bridge last counted it, and the bridge's own `_meta` patch.
+    const stamp = (
+      created: string,
+      used: number,
+      bridgeMeta?: Record<string, unknown>,
+    ) => ({
+      ...bridgeMeta,
+      distill: {
+        created,
+        compactionMetaPatch: bridgeMeta ? { value: bridgeMeta } : {},
+        contextUsage: { used, size: 258_400 },
+      },
+    });
+    const update = {
+      sessionUpdate: "compaction_update",
+      compactionId: "c2",
+    } as const;
+    await send({
+      ...update,
+      status: "in_progress",
+      _meta: stamp("2026-11-14T18:00:00.000Z", 244_380),
+    });
+    expect(measure(replay)).toEqual({
+      usedBefore: 244_380,
+      size: 258_400,
+      startedAt: Date.UTC(2026, 10, 14, 18, 0, 0),
+    });
+    await send({
+      ...update,
+      status: "completed",
+      _meta: stamp("2026-11-14T18:00:41.000Z", 14_494),
+    });
+    // A bridge may end a compaction twice, the second time with its facts.
+    await send({
+      ...update,
+      status: "completed",
+      _meta: stamp("2026-11-14T18:00:42.000Z", 14_494, { facts: 1 }),
+    });
+    expect(measure(replay)).toEqual({
+      usedBefore: 244_380,
+      usedAfter: 14_494,
+      size: 258_400,
+      startedAt: Date.UTC(2026, 10, 14, 18, 0, 0),
+      endedAt: Date.UTC(2026, 10, 14, 18, 0, 41),
+    });
+    // The host's stamp is not the compaction's own metadata.
+    expect(compaction(replay)?._meta).toEqual({ facts: 1 });
   });
 });
 

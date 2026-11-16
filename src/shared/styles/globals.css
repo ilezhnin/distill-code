@@ -1720,12 +1720,42 @@
   }
 }
 
+/* The light that runs along a meter while what it measures is still moving:
+   the context line of a compaction in progress. Mixed in srgb, because a mix
+   with transparent in oklch drifts toward pink. */
+.flock-meter-shine[data-animated="true"] {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--foreground) 80%, transparent) 50%,
+    transparent 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 35% 100%;
+  animation: flock-meter-shine 1.7s cubic-bezier(0.45, 0, 0.3, 1) infinite;
+}
+
+/* A background a third of its box wide leaves the box at -54% and 154%. */
+@keyframes flock-meter-shine {
+  from {
+    background-position: -54% 0;
+  }
+  to {
+    background-position: 154% 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .flock-running-dot[data-animated="true"],
   .flock-dart[data-animated="true"],
   .flock-mark[data-animated="true"] .flock-mark-bird,
   .flock-mark[data-entrance="true"] .flock-mark-arrive {
     animation: none;
+  }
+
+  .flock-meter-shine[data-animated="true"] {
+    animation: none;
+    background-image: none;
   }
 }
 
