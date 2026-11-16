@@ -547,7 +547,6 @@
     "observing": "No new events observed for {{elapsed}}",
     "lastSeen": "Activity seen {{elapsed}} ago",
     "quietHint": "The model may be thinking or waiting; this does not confirm a hang",
-    "draining": "New workflows are paused. Started workflows continue through their remaining steps.",
     "stepOf": "Step {{number}} of {{total}}",
     "stepStatus": "{{step}} · {{status}}",
     "policies": {

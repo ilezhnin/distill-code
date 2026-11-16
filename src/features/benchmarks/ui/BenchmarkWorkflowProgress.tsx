@@ -361,11 +361,6 @@ export function BenchmarkWorkflowActivity({
   if (roots.length === 0) return null;
   return (
     <span className="flex min-w-0 flex-col gap-2">
-      {run.state === "pausing" ? (
-        <span className="text-xs text-muted-foreground">
-          {t("activity.draining")}
-        </span>
-      ) : null}
       <span
         className={cn(
           "grid max-h-60 gap-3 overflow-y-auto",
@@ -426,11 +421,9 @@ export function BenchmarkWorkflowActivity({
 /** Shared by the active run strip and its drawer; all operations are read-only. */
 export function BenchmarkWorkflowProgress({
   runId,
-  showPauseReason = true,
   title,
 }: {
   runId: string;
-  showPauseReason?: boolean;
   title?: string;
 }) {
   const { t } = useTranslation("benchmarks");
@@ -463,11 +456,6 @@ export function BenchmarkWorkflowProgress({
     );
   return (
     <span className="flex flex-col gap-2">
-      {showPauseReason && run.data.state === "pausing" ? (
-        <span className="text-xs text-muted-foreground">
-          {t("activity.draining")}
-        </span>
-      ) : null}
       {run.data.attempts
         .filter((attempt) => attempt.outcome !== "superseded")
         .map((root) => (

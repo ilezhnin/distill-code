@@ -145,11 +145,6 @@ export function BenchmarkActivity({
               }),
             })}
           </p>
-          {campaign.state === "pausing" ? (
-            <p className="text-xs text-muted-foreground">
-              {t("activity.draining")}
-            </p>
-          ) : null}
           {campaign.stateReason ? (
             <p className="break-words text-xs text-muted-foreground">
               {campaign.stateReason}
@@ -170,7 +165,6 @@ export function BenchmarkActivity({
               >
                 <BenchmarkWorkflowProgress
                   runId={run.id}
-                  showPauseReason={false}
                   title={t(
                     `activity.policies.${run.request.workflowPolicy?.mode}`,
                   )}

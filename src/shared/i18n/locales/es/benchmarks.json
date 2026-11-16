@@ -547,7 +547,6 @@
     "observing": "Sin eventos nuevos observados durante {{elapsed}}",
     "lastSeen": "Actividad observada hace {{elapsed}}",
     "quietHint": "El modelo puede estar pensando o esperando; esto no confirma un bloqueo",
-    "draining": "Los flujos nuevos están en pausa. Los iniciados continúan con sus pasos restantes.",
     "stepOf": "Paso {{number}} de {{total}}",
     "stepStatus": "{{step}} · {{status}}",
     "policies": {

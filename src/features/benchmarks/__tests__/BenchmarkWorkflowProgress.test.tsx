@@ -115,7 +115,7 @@ function show() {
   );
 }
 
-it("shows internal step completion, elapsed time and the draining reason without replaying a session", async () => {
+it("shows internal step completion and elapsed time without replaying a session, and no draining note beside the state", async () => {
   const { container } = show();
   const steps = await screen.findByRole("img", {
     name: "Step 2 of 2 · Running",
@@ -127,7 +127,9 @@ it("shows internal step completion, elapsed time and the draining reason without
   expect(container.querySelector('[data-dot="running"]')).not.toBeNull();
   expect(screen.getByText("Running")).toBeInTheDocument();
   expect(screen.getByTitle(/Elapsed 1:/)).toBeInTheDocument();
-  expect(screen.getByText(/New workflows are paused/)).toBeInTheDocument();
+  expect(
+    screen.queryByText(/New workflows are paused/),
+  ).not.toBeInTheDocument();
   await waitFor(() =>
     expect(readHistoryPage).toHaveBeenCalledWith("owned-session", 1),
   );

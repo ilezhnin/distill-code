@@ -209,7 +209,9 @@ describe.each([
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel run" })).toBeEnabled();
-    expect(screen.getByText(/New workflows are paused/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/New workflows are paused/),
+    ).not.toBeInTheDocument();
     await waitFor(() =>
       expect(readHistoryPage).toHaveBeenCalledWith("session-b", 1),
     );
