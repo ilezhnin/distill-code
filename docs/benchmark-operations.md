@@ -841,6 +841,10 @@ never settled by such a refusal. An answer the provider's CLI cut off at its own
 output-token maximum is the model's own: it settles as a budget failure scored
 zero. OpenCode (Z.ai) gives no error for such a cut; a last request whose
 output and reasoning reach its maximum is read as one (see [Z.ai](zai.md)).
+Kimi Code ends a turn whose model request failed with a plain `end_turn` and
+keeps the error to itself; a Kimi turn that completed no request (no usage, no
+answer) is an infrastructure failure, not the model's answer, and earlier ones
+read as such without their records being rewritten.
 
 A turn that breaks its test's policy settles by whose doing the breach was.
 The model's own work against the rules (a tool, a plan, background work or

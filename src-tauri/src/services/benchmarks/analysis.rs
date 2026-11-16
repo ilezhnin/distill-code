@@ -193,7 +193,35 @@ pub(super) fn evaluation_outcome(evaluations: &[Evaluation]) -> Option<&str> {
 
 pub(super) fn normalize_outcome(mut attempt: Attempt) -> Attempt {
     attempt.outcome = effective_outcome(attempt.outcome.as_deref(), &attempt.evaluations);
+    // Kimi turns recorded before the runner knew them: read, never rewritten.
+    if matches!(attempt.outcome.as_deref(), Some("fail" | "no_answer"))
+        && kimi_never_answered(&attempt.configuration.provider_id, &attempt.usage)
+        && !attempt.evaluations.iter().any(|e| e.provenance == "human")
+    {
+        attempt.outcome = Some("infrastructure_failure".into());
+        attempt.reason = Some(KIMI_UNANSWERED.into());
+    }
     attempt
+}
+
+/// Why a Kimi turn with no answer is not the model's: Kimi Code ends a turn
+/// whose model request failed (a rate limit, an overload, a refused request
+/// or option) with a plain `end_turn` and keeps the error to itself, so the
+/// host sees an empty turn. 10-24: 23 kimi-for-coding-highspeed turns ended
+/// so within two seconds and were scored as the model's failures.
+pub(super) const KIMI_UNANSWERED: &str = "Kimi Code ended the turn without completing a model request and reported no error; nothing was answered";
+
+/// Whether a Kimi turn completed no model request: Flock's Kimi adapter
+/// gives every turn the engine's usage, and the engine counts every request
+/// that completed, so a turn without counters asked nothing that answered.
+/// Of every Kimi turn on record at 11-16, each one without counters had no
+/// answer and ran under five seconds, and every answer had counters.
+pub(super) fn kimi_never_answered(provider_id: &str, usage: &TokenUsage) -> bool {
+    provider_id == "kimi-acp"
+        && usage.input.is_none()
+        && usage.output.is_none()
+        && usage.cache_read.is_none()
+        && usage.cache_write.is_none()
 }
 
 /// The outcome shown for an attempt as it stood at `as_of`: none before it
@@ -4043,6 +4071,54 @@ pub(super) mod tests {
             ..attempt.evaluations[0].clone()
         });
         assert_eq!(score(attempt), Some(0.8));
+    }
+
+    /// A Kimi turn recorded as the model's failure though it completed no
+    /// request reads as the infrastructure failure it was, unscored; the
+    /// stored record keeps what it says.
+    #[test]
+    fn a_recorded_kimi_turn_that_completed_no_request_is_not_scored() {
+        let mut stored = dataset().attempts[0].clone();
+        stored.configuration.provider_id = "kimi-acp".into();
+        stored.outcome = Some("fail".into());
+        stored.reason = None;
+        stored.usage = TokenUsage::default();
+        stored.evaluations.clear();
+        stored.evaluations.push(Evaluation {
+            id: "objective".into(),
+            evaluator_revision: "invented-v1".into(),
+            verdict: "fail".into(),
+            score: Some(0.0),
+            reason: "No answer".into(),
+            created_at: 7,
+            provenance: "objective".into(),
+            artifacts: vec![],
+            details: None,
+            judge: None,
+            usage: None,
+        });
+        for outcome in ["fail", "no_answer"] {
+            let mut recorded = stored.clone();
+            recorded.outcome = Some(outcome.into());
+            recorded.evaluations[0].verdict = outcome.into();
+            let read = normalize_outcome(recorded);
+            assert_eq!(read.outcome.as_deref(), Some("infrastructure_failure"));
+            assert_eq!(read.reason.as_deref(), Some(KIMI_UNANSWERED));
+            assert_eq!(score(&read), None);
+        }
+        // Counters show a request answered; another runtime's empty usage
+        // and a human's verdict stand.
+        let mut counted = stored.clone();
+        counted.usage.input = Some(900);
+        let mut other = stored.clone();
+        other.configuration.provider_id = "codex-acp".into();
+        let mut reviewed = stored.clone();
+        reviewed.evaluations[0].provenance = "human".into();
+        for attempt in [counted, other, reviewed] {
+            let read = normalize_outcome(attempt);
+            assert_eq!(read.outcome.as_deref(), Some("fail"));
+            assert_eq!(score(&read), Some(0.0));
+        }
     }
 }
 

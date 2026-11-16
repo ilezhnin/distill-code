@@ -591,3 +591,24 @@ async fn owned_turn_a_task_zai_refuses_before_streaming_is_the_candidates_failed
         .as_deref()
         .is_some_and(|reason| reason.contains("unsafe or sensitive content")));
 }
+
+#[tokio::test]
+async fn owned_turn_a_kimi_turn_that_completed_no_request_is_no_answer_of_the_model() {
+    // The 10-24 receipts: Kimi Code ended a turn whose request failed with a
+    // plain end_turn, no usage and no answer, a second after it began.
+    let attempt = settle_clean_turn("kimi-acp", "end_turn", Value::Null, false).await;
+    assert_eq!(attempt.outcome.as_deref(), Some("infrastructure_failure"));
+    assert_eq!(
+        attempt.reason.as_deref(),
+        Some(super::super::analysis::KIMI_UNANSWERED)
+    );
+    // A Kimi turn with counters answered, however little; another runtime
+    // that reports no usage is graded as before.
+    let counted = json!({"inputTokens":900,"outputTokens":0,"totalTokens":900});
+    let attempt = settle_clean_turn("kimi-acp", "end_turn", counted, true).await;
+    assert_eq!(attempt.outcome.as_deref(), Some("completed"));
+    for provider in ["claude-acp", "codex-acp", "grok-acp", "zai-acp"] {
+        let attempt = settle_clean_turn(provider, "end_turn", Value::Null, false).await;
+        assert_eq!(attempt.outcome.as_deref(), Some("completed"), "{provider}");
+    }
+}

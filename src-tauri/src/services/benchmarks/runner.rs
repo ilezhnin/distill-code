@@ -6564,6 +6564,9 @@ impl ExecutionBackend for NativeBackend {
                 }) {
                     attempt.outcome = Some("budget_reached".into());
                     attempt.reason = Some(reason);
+                } else if unanswered_turn(&attempt, attempt.output.as_deref().unwrap_or_default()) {
+                    attempt.outcome = Some("infrastructure_failure".into());
+                    attempt.reason = Some(super::analysis::KIMI_UNANSWERED.into());
                 }
             }
             if let Some(selection) = status
@@ -7121,6 +7124,9 @@ async fn wait_for_owned_turn(
             }) {
                 attempt.outcome = Some("budget_reached".into());
                 attempt.reason = Some(reason);
+            } else if unanswered_turn(attempt, &capture.output) {
+                attempt.outcome = Some("infrastructure_failure".into());
+                attempt.reason = Some(super::analysis::KIMI_UNANSWERED.into());
             } else {
                 attempt.outcome = Some("completed".into());
             }
@@ -7624,6 +7630,16 @@ fn terminal_outcome(error: &Value, model_id: &str) -> &'static str {
 /// ([`exceeded_output_cap`]) or a quiet stop ([`runtime_output_cap_stop`]);
 /// a holdout report names the others as a limitation.
 pub(crate) const OUTPUT_CAP_PROVIDERS: [&str; 3] = ["claude-acp", "grok-acp", "zai-acp"];
+
+/// Whether a turn that ended without an error completed no model request
+/// and answered nothing: Kimi Code's way of ending a turn its request
+/// failed ([`super::analysis::KIMI_UNANSWERED`]). Not the model's answer, so
+/// not graded: the cell stays open for the operator, as for any failure of
+/// the provider's runtime.
+fn unanswered_turn(attempt: &Attempt, answer: &str) -> bool {
+    answer.trim().is_empty()
+        && super::analysis::kimi_never_answered(&attempt.configuration.provider_id, &attempt.usage)
+}
 
 /// Why a turn that ended without an error stopped at the output-token maximum
 /// of its provider's CLI, if it did. OpenCode, the Z.ai runtime, says so as
