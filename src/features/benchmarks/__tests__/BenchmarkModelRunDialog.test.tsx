@@ -928,8 +928,8 @@ it("checks every current test, tags the model's own, and runs them on today's ru
     ],
     // Every measurement is three repetitions; a case counts only when all pass.
     repetitions: 3,
-    // Four hours from Settings, not a field in the dialog.
-    timeoutSeconds: 14_400,
+    // Ninety minutes from Settings, not a field in the dialog.
+    timeoutSeconds: 5_400,
     // Five exact tests at one turn, the judged one at one plus three judges,
     // three times over.
     maxExecutions: 27,

@@ -78,8 +78,8 @@ beforeEach(async () => {
 
 describe("benchmark settings", () => {
   it("keeps credits off until a limit is stored", () => {
-    expect(parseBenchmarkSettings({ timeLimitMinutes: 90 })).toEqual({
-      timeLimitMinutes: 90,
+    expect(parseBenchmarkSettings({ timeLimitMinutes: 45 })).toEqual({
+      timeLimitMinutes: 45,
       creditLimit: null,
       judgePool: [],
       providerDataUse: {},

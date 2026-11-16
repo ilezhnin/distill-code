@@ -570,8 +570,9 @@ before the access token's own expiry.
 A Grok lease covers at most one hour of a turn, as Grok sign-ins did before
 leases: a Grok turn that runs longer than its lease ends with it, unscored,
 and is run again. That keeps a six-hour Grok grant open to new tests for most
-of its life at the 4 h default limit, where covering whole turns would admit
-new tests only in the first ~47 minutes and drain the account the rest. A run
+of its life whatever the time limit: at four hours, the default until 11-15
+(90 minutes since), covering whole turns would admit new tests only in the
+first ~47 minutes and drain the account the rest. A run
 whose time limit no fresh grant of a provider covers (Claude about 7 h 45 min
 on an 8 h grant) is refused when it is created; a forced renewal never runs
 for a test it could not admit.

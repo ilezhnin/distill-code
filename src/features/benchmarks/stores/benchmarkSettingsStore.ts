@@ -21,10 +21,12 @@ export const BENCHMARK_SETTINGS_DOCUMENT = "benchmarks/settings.json";
 
 /**
  * How long one test may run, in minutes. It only stops a test that never
- * finishes: a model on its highest effort may work an hour or two on one
- * case, and speed is measured on its own board.
+ * finishes, and speed is measured on its own board. 11-15: of 7183 passed
+ * attempts the longest took 75.6 minutes and one in a hundred more than 27;
+ * past 90 minutes nothing passed, so the four hours this was told only later
+ * that a model had failed. No case asks a run for more than an hour.
  */
-export const DEFAULT_TIME_LIMIT_MINUTES = 4 * 60;
+export const DEFAULT_TIME_LIMIT_MINUTES = 90;
 
 /** `benchmarks::MAX_TIME_LIMIT_SECONDS`, in minutes. */
 export const MAX_TIME_LIMIT_MINUTES = 24 * 60;
