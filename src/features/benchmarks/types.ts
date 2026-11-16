@@ -100,6 +100,11 @@ export interface CarryStatus {
   running: boolean;
   lastError?: string | null;
 }
+/** A test whose current version has saved answers left to evaluate. */
+export interface CarryActivity extends CarryStatus {
+  definitionId: string;
+  name: string;
+}
 export interface BenchmarkDefinition {
   id: string;
   draftRevision: number;

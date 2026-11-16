@@ -12,6 +12,7 @@ import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import {
   benchmarkKeys,
   modelNameKey,
+  useCarryActivity,
   useModelNames,
   useWorkflowCampaigns,
 } from "../hooks/useBenchmarks";
@@ -27,7 +28,7 @@ import { explicitEffort } from "../lib/benchmarkEffort";
 import { modelActivity, modelKey, workingModels } from "../lib/benchmarkModels";
 import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
-import type { LeaderboardRow, RunSummary } from "../types";
+import type { CarryActivity, LeaderboardRow, RunSummary } from "../types";
 import { StateBadge } from "./BenchmarkPrimitives";
 import {
   BenchmarkWorkflowActivity,
@@ -90,6 +91,7 @@ export function BenchmarkActivity({
   };
   const feedbackFor = (runId: string): ButtonFeedbackState =>
     steering?.runId === runId ? steering.state : "idle";
+  const carried = useCarryActivity().data ?? [];
   const campaigns = activeCampaigns(useWorkflowCampaigns().data ?? []).filter(
     (campaign) =>
       runs.some((run) => campaignIdForRun(run) === campaign.plan.id),
@@ -107,7 +109,12 @@ export function BenchmarkActivity({
         poolVersionIds,
       ).attention
     : [];
-  if (active.length === 0 && stalled.length === 0 && campaigns.length === 0)
+  if (
+    active.length === 0 &&
+    stalled.length === 0 &&
+    campaigns.length === 0 &&
+    carried.length === 0
+  )
     return null;
   return (
     <section aria-label={t("activity.title")} className="flex flex-col gap-2">
@@ -326,6 +333,7 @@ export function BenchmarkActivity({
             </div>
           );
         })}
+      {carried.length ? <CarriedAnswers tests={carried} /> : null}
       {stalled.map((run) => (
         <button
           key={run.id}
@@ -355,5 +363,90 @@ export function BenchmarkActivity({
         </button>
       ))}
     </section>
+  );
+}
+
+/**
+ * The saved answers republished checks evaluate again in the background,
+ * across every such test, and, once that stands (a restart or a failure
+ * stops it), the control that takes it up again. No model is called.
+ */
+function CarriedAnswers({ tests }: { tests: CarryActivity[] }) {
+  const { t } = useTranslation("benchmarks");
+  const client = useQueryClient();
+  const [feedback, setFeedback] = useState<ButtonFeedbackState>("idle");
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const evaluated = tests.reduce((sum, test) => sum + test.evaluated, 0);
+  const total = tests.reduce((sum, test) => sum + test.total, 0);
+  const running = tests.some((test) => test.running);
+  const idle = tests.filter((test) => !test.running);
+  const stopped = refusal ?? idle.find((test) => test.lastError)?.lastError;
+  const resume = async () => {
+    setFeedback("loading");
+    setRefusal(null);
+    try {
+      for (const test of idle) {
+        await benchmarkApi.evaluateCarried(test.versionId);
+      }
+      setFeedback("idle");
+    } catch (failure) {
+      setFeedback("error");
+      setRefusal(benchmarkErrorMessage(failure));
+    }
+    void client.invalidateQueries({
+      queryKey: [...benchmarkKeys, "carry-activity"],
+    });
+  };
+  return (
+    <div className="flex w-full items-center gap-2 rounded-lg border border-border pr-2">
+      <div
+        className="flex min-w-0 flex-1 flex-col gap-2 px-3 py-2"
+        title={tests
+          .map((test) => `${test.name}: ${test.evaluated} / ${test.total}`)
+          .join("\n")}
+      >
+        <span className="flex w-full flex-wrap items-center gap-3">
+          {running ? (
+            <Spinner decorative className="size-4 shrink-0 text-chart-1" />
+          ) : null}
+          <span className="min-w-0 truncate text-sm font-medium">
+            {t(
+              running ? "activity.carriedRunning" : "activity.carriedWaiting",
+              { count: tests.length },
+            )}
+          </span>
+          <span className="shrink-0 text-sm tabular-nums">
+            {t("activity.progress", { settled: evaluated, total })}
+          </span>
+          <Progress
+            value={total === 0 ? 0 : (evaluated / total) * 100}
+            aria-label={t("activity.carriedProgress")}
+            className="h-1.5 w-32 shrink-0"
+          />
+        </span>
+        {stopped ? (
+          <span className="flex items-start gap-2 text-xs text-destructive">
+            <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" />
+            {t("detail.carriedStopped", { reason: stopped })}
+          </span>
+        ) : null}
+      </div>
+      {idle.length ? (
+        <Button
+          type="button"
+          variant="subtle"
+          tone="success"
+          size="icon-xs"
+          aria-label={t("detail.carriedEvaluate")}
+          tooltip={t("detail.carriedEvaluate")}
+          feedbackState={feedback}
+          loadingVisual="spinner"
+          errorLabel={<AlertTriangle aria-hidden="true" />}
+          onClick={() => void resume()}
+        >
+          <Play aria-hidden="true" />
+        </Button>
+      ) : null}
+    </div>
   );
 }

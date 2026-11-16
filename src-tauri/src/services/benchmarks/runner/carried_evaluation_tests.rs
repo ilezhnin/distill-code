@@ -50,9 +50,20 @@ async fn a_carrying_republication_evaluates_saved_answers_again_without_a_model(
         (waiting.total, waiting.evaluated, waiting.running),
         (answers, 0, false)
     );
+    // The activity strip shows the answers left, so the work is never
+    // invisible, and stops showing them once all are evaluated.
+    assert_eq!(
+        s.carry_activity().await.unwrap(),
+        vec![CarryActivity {
+            definition_id: first.definition_id.clone(),
+            name: changed.name.clone(),
+            status: waiting,
+        }]
+    );
     let done = s.evaluate_carried(&second.id).await.unwrap();
     assert_eq!((done.total, done.evaluated), (answers, answers));
     assert_eq!((done.running, done.last_error), (false, None));
+    assert!(s.carry_activity().await.unwrap().is_empty());
     assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
     for attempt in &run.attempts {
         let saved = s.store.attempt(&attempt.id).await.unwrap();

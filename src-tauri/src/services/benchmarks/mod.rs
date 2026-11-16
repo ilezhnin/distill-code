@@ -72,6 +72,8 @@ pub const MAX_TIME_LIMIT_SECONDS: u32 =
 /// How long, and how often, a carried answer waits for room in the sandbox.
 const CARRY_BUSY_PAUSE: std::time::Duration = std::time::Duration::from_secs(15);
 const CARRY_BUSY_RETRIES: u32 = 40;
+/// The checks that evaluate saved answers without a model.
+const CARRIED_EVALUATORS: [&str; 4] = ["exact", "json", "javascript", "browser"];
 
 /// The carried evaluations under way, and why the last one of each version
 /// stopped, by store and version.
@@ -1818,16 +1820,42 @@ impl BenchmarkService {
         self.store
             .require_current_versions(std::slice::from_ref(&version.id))
             .await?;
-        if !matches!(
-            version.manifest.evaluator.kind.as_str(),
-            "exact" | "json" | "javascript" | "browser"
-        ) {
+        if !CARRIED_EVALUATORS.contains(&version.manifest.evaluator.kind.as_str()) {
             return Err(BenchmarkError::new(
                 "validation",
                 "Only text, JSON, JavaScript and web page checks evaluate saved answers without a model",
             ));
         }
         Ok(version)
+    }
+    /// Every test whose current version has saved answers left to evaluate,
+    /// running or stopped, oldest publication first: the activity strip
+    /// shows this work beside the runs, and a restart that stopped it.
+    pub async fn carry_activity(&self) -> Result<Vec<CarryActivity>> {
+        let current = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT v.id,v.definition_id,COALESCE(json_extract(v.manifest_json,'$.name'),''),COALESCE(json_extract(v.manifest_json,'$.evaluator.kind'),'')
+             FROM benchmark_versions v JOIN benchmark_definitions d ON d.id=v.definition_id
+             WHERE d.archived=0 AND v.carries_from IS NOT NULL
+               AND v.id=(SELECT newest.id FROM benchmark_versions newest WHERE newest.definition_id=v.definition_id ORDER BY newest.published_at DESC,newest.rowid DESC LIMIT 1)
+             ORDER BY v.published_at,v.rowid",
+        )
+        .fetch_all(&self.store.pool)
+        .await?;
+        let mut activity = Vec::new();
+        for (version_id, definition_id, name, kind) in current {
+            if !CARRIED_EVALUATORS.contains(&kind.as_str()) {
+                continue;
+            }
+            let status = self.carry_status(&version_id).await?;
+            if status.running || status.evaluated < status.total {
+                activity.push(CarryActivity {
+                    definition_id,
+                    name,
+                    status,
+                });
+            }
+        }
+        Ok(activity)
     }
     fn carry_key(&self, version_id: &str) -> String {
         format!("{}\u{1f}{version_id}", self.store.root.display())

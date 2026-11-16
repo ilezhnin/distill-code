@@ -376,6 +376,21 @@ export function useBenchmarkProgress() {
   }, [runs.data, campaigns.data]);
 }
 
+/** While saved answers are evaluated, their count is read again this often. */
+const CARRY_ACTIVITY_REFRESH_MS = 5_000;
+
+/** Tests whose saved answers are left to evaluate, running or stopped. */
+export const useCarryActivity = () =>
+  useQuery({
+    queryKey: [...benchmarkKeys, "carry-activity"],
+    queryFn: benchmarkApi.carryActivity,
+    enabled: isDesktopRuntime(),
+    refetchInterval: (query) =>
+      query.state.data?.some((test) => test.running)
+        ? CARRY_ACTIVITY_REFRESH_MS
+        : false,
+  });
+
 /** Every pool release, oldest first. */
 export function useBenchmarkReleases() {
   const releases = useQuery({

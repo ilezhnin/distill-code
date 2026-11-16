@@ -253,6 +253,16 @@ pub struct CarryStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
+/// A test whose current version has saved answers left to evaluate, as the
+/// activity strip shows it beside the runs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CarryActivity {
+    pub definition_id: String,
+    pub name: String,
+    #[serde(flatten)]
+    pub status: CarryStatus,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkDefinition {

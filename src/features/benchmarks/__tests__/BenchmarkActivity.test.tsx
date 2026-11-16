@@ -11,24 +11,27 @@ import type { ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { RunSummary } from "../types";
+import type { CarryActivity, RunSummary } from "../types";
 import { BenchmarkActivity } from "../ui/BenchmarkActivity";
 import { configuration, leaderboardRow, runSummary } from "./fixtures";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 
 const campaignState = vi.hoisted(() => ({ data: [] as WorkflowCampaign[] }));
+const carryState = vi.hoisted(() => ({ data: [] as CarryActivity[] }));
 
 vi.mock("../hooks/useBenchmarks", () => ({
   benchmarkKeys: ["benchmarks"],
   modelNameKey: (entry: { modelId: string }) => entry.modelId,
   useModelNames: () => new Map([["model-1", "Model One"]]),
   useWorkflowCampaigns: () => campaignState,
+  useCarryActivity: () => carryState,
 }));
 
 const api = vi.hoisted(() => ({
   pauseRun: vi.fn(async () => ({})),
   resumeRun: vi.fn(async () => ({})),
   cancelRun: vi.fn(async () => ({})),
+  evaluateCarried: vi.fn(async () => ({})),
 }));
 
 vi.mock("../api/benchmarks", () => ({
@@ -69,6 +72,60 @@ function show(run: Partial<RunSummary>) {
 afterEach(() => {
   cleanup();
   campaignState.data = [];
+  carryState.data = [];
+  vi.clearAllMocks();
+});
+
+const carried = (test: Partial<CarryActivity>): CarryActivity => ({
+  definitionId: "definition-1",
+  versionId: "version-1",
+  name: "Invented suite",
+  total: 40,
+  evaluated: 10,
+  running: true,
+  ...test,
+});
+
+it("shows saved answers evaluated in the background with no run going", () => {
+  carryState.data = [
+    carried({}),
+    carried({ versionId: "version-2", evaluated: 5, total: 20 }),
+  ];
+  render(<BenchmarkActivity runs={[]} onOpenRun={vi.fn()} />);
+  expect(
+    screen.getByText("Evaluating saved answers again · 2 tests"),
+  ).toBeVisible();
+  expect(screen.getByText("15 / 60")).toBeVisible();
+  expect(
+    screen.getByRole("progressbar", { name: "Saved answers evaluated" }),
+  ).toBeVisible();
+  // Nothing stands, so there is nothing to take up again.
+  expect(
+    screen.queryByRole("button", { name: "Evaluate saved answers" }),
+  ).not.toBeInTheDocument();
+});
+
+it("takes up saved answers a restart or a failure stopped", async () => {
+  carryState.data = [
+    carried({ running: false, lastError: "Invented sandbox failure" }),
+    carried({ versionId: "version-2", running: false }),
+  ];
+  render(<BenchmarkActivity runs={[]} onOpenRun={vi.fn()} />);
+  expect(
+    screen.getByText("Saved answers left to evaluate · 2 tests"),
+  ).toBeVisible();
+  expect(
+    screen.getByText("The last evaluation stopped: Invented sandbox failure"),
+  ).toBeVisible();
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Evaluate saved answers" }),
+    );
+  });
+  expect(api.evaluateCarried.mock.calls).toEqual([
+    ["version-1"],
+    ["version-2"],
+  ]);
 });
 
 it("keeps judge failures visible while the run continues other tests", () => {

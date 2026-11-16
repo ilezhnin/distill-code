@@ -30,6 +30,7 @@ import type {
   BenchmarkEvent,
   BenchmarkRun,
   BenchmarkVersion,
+  CarryActivity,
   CarryStatus,
   CandidateObservation,
   CaseStats,
@@ -198,6 +199,8 @@ export const benchmarkApi = {
     invoke<CarryStatus>("benchmark_evaluate_carried", { versionId }),
   carryStatus: (versionId: string) =>
     invoke<CarryStatus>("benchmark_carry_status", { versionId }),
+  /** Every test with saved answers left to evaluate, running or stopped. */
+  carryActivity: () => invoke<CarryActivity[]>("benchmark_carry_activity"),
   duplicateDefinition: (id: string) =>
     invoke<BenchmarkDefinition>("benchmark_duplicate_definition", { id }),
   archiveDefinition: (id: string, archived: boolean) =>

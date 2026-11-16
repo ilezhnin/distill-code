@@ -352,6 +352,11 @@ pub async fn benchmark_evaluate_carried(app: AppHandle, version_id: String) -> R
 pub async fn benchmark_carry_status(app: AppHandle, version_id: String) -> Result<CarryStatus> {
     service(&app).await?.carry_status(&version_id).await
 }
+/// Every test with saved answers left to evaluate, for the activity strip.
+#[tauri::command]
+pub async fn benchmark_carry_activity(app: AppHandle) -> Result<Vec<CarryActivity>> {
+    service(&app).await?.carry_activity().await
+}
 #[tauri::command]
 pub async fn benchmark_duplicate_definition(
     app: AppHandle,

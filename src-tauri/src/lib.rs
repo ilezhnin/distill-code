@@ -407,6 +407,7 @@ pub fn run() {
             commands::benchmarks::benchmark_republish_evaluator,
             commands::benchmarks::benchmark_evaluate_carried,
             commands::benchmarks::benchmark_carry_status,
+            commands::benchmarks::benchmark_carry_activity,
             commands::benchmarks::benchmark_duplicate_definition,
             commands::benchmarks::benchmark_archive_definition,
             commands::benchmarks::benchmark_import_definition,
