@@ -153,3 +153,50 @@ async fn a_run_resumes_on_a_version_a_republication_only_carries() {
     }
     dir.close().await;
 }
+
+/// A publication that meets another writer waits for it: it reads the test's
+/// versions before it writes the new one, and SQLite refuses at once to
+/// upgrade a read another connection's write has overtaken (11-16: one of
+/// six suite republications failed with "database is locked" while the
+/// answers of the one before it were evaluated in the background).
+#[tokio::test]
+async fn a_publication_waits_for_a_concurrent_write_instead_of_failing() {
+    let (dir, s, _backend) = setup().await;
+    let req = request(&s).await;
+    let first = s.store.version(&req.version_ids[0]).await.unwrap();
+    let mut changed = first.manifest.clone();
+    changed.evaluator.expected = json!({"invented": "another answer"}).to_string();
+    changed.evaluator.known_good = changed.evaluator.expected.clone();
+    changed.evaluator.known_bad = "null".into();
+    changed.evaluator.revision = "invented-revision-2".into();
+    let definition = s.store.definition(&first.definition_id).await.unwrap();
+    let saved = s
+        .store
+        .save_draft(
+            Some(&first.definition_id),
+            Some(definition.draft_revision),
+            changed,
+        )
+        .await
+        .unwrap();
+
+    let mut writer = s.store.pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    sqlx::query("INSERT INTO benchmark_events(entity_id,kind,created_at) VALUES(?,?,?)")
+        .bind("invented-writer")
+        .bind("concurrent_write")
+        .bind(0_i64)
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    let publishing = tokio::spawn({
+        let s = s.clone();
+        let id = first.definition_id.clone();
+        async move { s.store.publish_carrying(&id, saved.draft_revision).await }
+    });
+    // Long enough for the publication to read what it checks.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    writer.commit().await.unwrap();
+    let second = publishing.await.unwrap().unwrap();
+    assert_eq!(second.carries_from.as_deref(), Some(first.id.as_str()));
+    dir.close().await;
+}

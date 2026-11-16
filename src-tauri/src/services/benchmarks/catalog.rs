@@ -186,7 +186,9 @@ impl Store {
             }
         }
         let hash = fixtures::publish_blob(&self.root, &def.draft).await?;
-        let mut tx = self.pool.begin().await?;
+        // Immediate: it reads before it writes, and SQLite refuses at once,
+        // without waiting, to upgrade a read another writer has overtaken.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let current =
             sqlx::query_scalar::<_, i64>("SELECT revision FROM benchmark_definitions WHERE id=?")
                 .bind(id)
