@@ -14,6 +14,11 @@
 //! a broken stream may precede the failure unannounced or follow it. Hence
 //! the rule: a lost connection drops the answer streamed until it, and from
 //! then on each new message is the answer streamed again.
+//!
+//! An unannounced retry leaves no event at all, so a Codex text turn reads
+//! its answer as its last message whether or not a failure was reported
+//! (owner, 11-16): of 4351 Codex text turns on record, the 8 of several
+//! messages were all streams a reconnect broke, three with no marker.
 use super::*;
 
 /// What the lost connections of a turn leave of its answer, as its events
@@ -24,9 +29,27 @@ pub(super) struct Restarts {
     message: Option<String>,
     /// Whether a lost connection interrupted the answer.
     interrupted: bool,
+    /// Whether every new message is the answer streamed again
+    /// ([`last_message_answers`]).
+    last_message_only: bool,
 }
 
 impl Restarts {
+    /// The reading of a turn of `provider_id` in `profile`.
+    pub(super) fn for_turn(provider_id: &str, profile: &str) -> Self {
+        Self {
+            last_message_only: last_message_answers(provider_id, profile),
+            ..Self::default()
+        }
+    }
+
+    /// Reads the turn of `configuration` from now on as [`Self::for_turn`]
+    /// would, for a capture made before it knew the attempt.
+    pub(super) fn turn_of(&mut self, configuration: &Configuration) {
+        self.last_message_only =
+            last_message_answers(&configuration.provider_id, &configuration.execution_profile);
+    }
+
     /// Reads `event`, whose answer text, if it had any, is `answer` from
     /// `answered` on. A connection lost before the answer began interrupted
     /// nothing, and an answer of several messages that no lost connection
@@ -40,7 +63,7 @@ impl Restarts {
                 return;
             };
             if self.message.as_deref() != Some(message) {
-                if self.interrupted {
+                if self.interrupted || self.last_message_only {
                     answer.drain(..answered.min(answer.len()));
                 }
                 self.message = Some(message.to_owned());
@@ -50,6 +73,14 @@ impl Restarts {
             answer.clear();
         }
     }
+}
+
+/// Whether a turn's answer is its last message: a Codex text turn, which
+/// answers in one message and streams it again from its start, as a new
+/// message, after a retry it may never announce. A repository turn's report
+/// and a Claude answer of several messages stay whole.
+pub(super) fn last_message_answers(provider_id: &str, profile: &str) -> bool {
+    provider_id == "codex-acp" && profile == "native_text"
 }
 
 /// Whether `update` is the provider's runtime saying it lost its connection
@@ -280,6 +311,59 @@ mod tests {
         let mut interrupted = messages();
         interrupted.insert(1, before);
         assert_eq!(captured(interrupted).0, "Three.");
+    }
+
+    /// A Codex text turn answers in one message; a second one is the answer
+    /// streamed again after a retry its runtime never announced (attempts
+    /// 714ff31b, 65ac519d and 8b9d4382, 11-16). A Codex repository report
+    /// and a Claude answer keep every message, and a judge's reply reads as
+    /// its provider's answer does.
+    #[test]
+    fn a_codex_text_turn_answers_with_its_last_message() {
+        let events = || {
+            vec![
+                piece("msg_1", "const total = it"),
+                piece("msg_2", "const total = items.length;"),
+            ]
+        };
+        let glued = "const total = itconst total = items.length;";
+        let turn = |provider: &str, profile: &str| {
+            let mut capture = TurnCapture::new(1024);
+            let mut attempt = blank_attempt();
+            attempt.configuration.provider_id = provider.into();
+            attempt.configuration.execution_profile = profile.into();
+            for event in events() {
+                capture.read(event, &mut attempt).unwrap();
+            }
+            capture.output
+        };
+        assert_eq!(
+            turn("codex-acp", "native_text"),
+            "const total = items.length;"
+        );
+        assert_eq!(turn("codex-acp", "protected_repository"), glued);
+        assert_eq!(turn("claude-acp", "native_text"), glued);
+        let reply = |provider: &str| {
+            let mut restarts = Restarts::for_turn(provider, "native_text");
+            let mut reply = String::new();
+            let mut usage = TokenUsage::default();
+            for event in events() {
+                let answered = reply.len();
+                consume_event(&event, &mut reply, &mut usage);
+                restarts.settle(&event, &mut reply, answered);
+            }
+            reply
+        };
+        assert_eq!(reply("codex-acp"), "const total = items.length;");
+        assert_eq!(reply("claude-acp"), glued);
+        // An answer recorded the old way is read again on Evaluate again.
+        let mut codex = blank_attempt();
+        codex.configuration.provider_id = "codex-acp".into();
+        assert_eq!(
+            recaptured(glued, &events(), &codex, 1024).as_deref(),
+            Some("const total = items.length;")
+        );
+        assert_eq!(recaptured(glued, &events(), &blank_attempt(), 1024), None);
     }
 
     /// The sealed turn of a finished attempt: its events as a receipt keeps

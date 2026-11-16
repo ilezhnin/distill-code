@@ -1051,6 +1051,9 @@ answer is what streamed after the reconnect; the text of the broken streams
 stays in the turn's events only. An attempt that recorded that text in front of
 its answer is read again from its sealed turn on Evaluate again, with no model
 call, and the sealed record keeps the answer the attempt settled with.
+Codex may retry a broken stream without saying so, so a Codex text turn's
+answer is its last message; a Codex repository report and an answer of several
+messages from another provider stay whole. A judge's reply reads the same way.
 
 A model's leaderboard warning concerns its unmeasured cells in the current
 rating pool, including terminal answers awaiting judges. A stopped run whose

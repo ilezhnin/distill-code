@@ -4388,6 +4388,9 @@ impl NativeBackend {
         let mut cursor = 0i64;
         let mut reply = String::new();
         let mut usage = TokenUsage::default();
+        // A judge's reply is read as a candidate's answer is: what a lost
+        // connection broke stays out of the score sheet.
+        let mut restarts = reconnect::Restarts::for_turn(&judge.provider_id, "native_text");
         let mut failure = dispatch.err();
         let mut turn_failure = None;
         let mut provider_error = None;
@@ -4422,7 +4425,9 @@ impl NativeBackend {
                 }
             };
             for event in page.events {
+                let answered = reply.len();
                 consume_event(&event.payload, &mut reply, &mut usage);
+                restarts.settle(&event.payload, &mut reply, answered);
             }
             cursor = page.cursor;
             trace.stage = "judge_status";
@@ -7204,6 +7209,7 @@ impl TurnCapture {
         if self.swapped {
             self.output.truncate(answered);
         } else {
+            self.restarts.turn_of(&attempt.configuration);
             self.restarts.settle(&payload, &mut self.output, answered);
         }
         if let Some(model) = resolved_model_of(&payload) {
