@@ -1279,6 +1279,76 @@
      shape (pills, cards, notes). Disabled under reduced motion. */
   --animate-widget-settle: widget-settle 380ms cubic-bezier(0.34, 1.56, 0.64, 1)
     both;
+  /* Benchmark trail: a finished step's disc pops in and its check draws
+     itself, the line to the next step fills, and a short light runs down an
+     open step's branch into the part being worked on, whose dot rings as the
+     light arrives. The light's dashes read their start and end from
+     --trail-from and --trail-to. Used behind motion-safe only. */
+  --animate-trail-pop: trail-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  --animate-trail-check: trail-check 0.3s ease-out both;
+  --animate-trail-fill: trail-fill 0.28s ease-out both;
+  --animate-trail-light: trail-light 2.4s linear infinite;
+  --animate-trail-ring: trail-ring 2.4s ease-out infinite;
+
+  @keyframes trail-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.4);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @keyframes trail-check {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes trail-fill {
+    from {
+      transform: scaleY(0);
+    }
+    to {
+      transform: scaleY(1);
+    }
+  }
+  @keyframes trail-light {
+    0% {
+      stroke-dashoffset: var(--trail-from);
+      opacity: 0;
+    }
+    6% {
+      opacity: 1;
+    }
+    58% {
+      stroke-dashoffset: var(--trail-to);
+      opacity: 1;
+    }
+    72%,
+    100% {
+      stroke-dashoffset: var(--trail-to);
+      opacity: 0;
+    }
+  }
+  @keyframes trail-ring {
+    0%,
+    54% {
+      transform: scale(1);
+      opacity: 0;
+    }
+    60% {
+      opacity: 0.8;
+    }
+    92%,
+    100% {
+      transform: scale(3.6);
+      opacity: 0;
+    }
+  }
 
   @keyframes widget-settle {
     from {

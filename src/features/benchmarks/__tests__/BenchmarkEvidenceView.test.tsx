@@ -845,4 +845,33 @@ describe("an attempt that is still open", () => {
       ),
     ).toHaveLength(2);
   });
+
+  it("opens the step an attempt ended in on its cause, and folds it away", async () => {
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
+      ...attempt,
+      outcome: "infrastructure_failure",
+      sessionId: "session",
+      output: null,
+      evaluations: [],
+      phaseTimes: { dispatched: 1500 },
+      reason:
+        '{"code":-32603,"data":{"accountId":"private-account"},"message":"The bridge exited before this turn finished"}',
+    });
+    catalog([definition]);
+    showEvidence();
+    const trail = await screen.findByRole("region", { name: "Progress" });
+    // The words are the host's message alone, without its payload.
+    const cause = "The bridge exited before this turn finished";
+    expect(within(trail).getByText(cause)).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("private-account");
+    const step = within(trail).getByRole("button", { name: "Model: failed" });
+    expect(step).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(step);
+    expect(step).toHaveAttribute("aria-expanded", "false");
+    expect(within(trail).queryByText(cause)).not.toBeInTheDocument();
+    // A step with nothing in it is no button.
+    expect(
+      within(trail).queryByRole("button", { name: /^Queue/ }),
+    ).not.toBeInTheDocument();
+  });
 });
