@@ -30,6 +30,7 @@ import type {
   BenchmarkEvent,
   BenchmarkRun,
   BenchmarkVersion,
+  CarryStatus,
   CandidateObservation,
   CaseStats,
   HomeAdvantageReport,
@@ -186,6 +187,17 @@ export const benchmarkApi = {
       id,
       expectedRevision,
     }),
+  /**
+   * Publishes a definition as the next version of the test of its name,
+   * keeping that test's measured answers; only the evaluator may differ.
+   */
+  republishEvaluator: (draft: BenchmarkDraft) =>
+    invoke<BenchmarkVersion>("benchmark_republish_evaluator", { draft }),
+  /** Starts evaluating the saved answers a version carries; no model call. */
+  evaluateCarried: (versionId: string) =>
+    invoke<CarryStatus>("benchmark_evaluate_carried", { versionId }),
+  carryStatus: (versionId: string) =>
+    invoke<CarryStatus>("benchmark_carry_status", { versionId }),
   duplicateDefinition: (id: string) =>
     invoke<BenchmarkDefinition>("benchmark_duplicate_definition", { id }),
   archiveDefinition: (id: string, archived: boolean) =>

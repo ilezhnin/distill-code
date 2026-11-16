@@ -277,7 +277,11 @@
     "type": "Type",
     "files": "Files",
     "technical": "Technical details",
-    "variantGroup": "Variant group"
+    "variantGroup": "Variant group",
+    "carried": "Saved answers of the previous version evaluated by this check: {{evaluated}} of {{total}}",
+    "carriedRunning": "Evaluating in the background; no model is called.",
+    "carriedEvaluate": "Evaluate saved answers",
+    "carriedStopped": "The last evaluation stopped: {{reason}}"
   },
   "library": {
     "empty": "No tests yet.",
@@ -581,7 +585,11 @@
     "weighted": "Weighted score {{points}} of 1000",
     "judge": "Judge · {{model}}",
     "override": "Override the panel",
-    "rescoreJudges": "Evaluate again (up to 3 model calls)"
+    "rescoreJudges": "Evaluate again (up to 3 model calls)",
+    "mutationCorrect": "Correct implementations accepted",
+    "mutationDefects": "Defects caught",
+    "mutationMissed": "Not caught (bundle.implementation)",
+    "mutationRefused": "Correct ones not accepted (bundle.implementation)"
   },
   "trail": {
     "label": "Progress",
@@ -717,7 +725,8 @@
     "content": "Definition JSON",
     "selected": "{{count}} files selected",
     "publish": "Publish definitions that validate (verifies evaluators against their references; never calls a model)",
-    "tooLarge": "Choose a definition smaller than 8 MiB."
+    "tooLarge": "Choose a definition smaller than 8 MiB.",
+    "keepAnswers": "Publish each as the next version of the test with the same name and keep its measured answers (only the check may differ; saved answers are evaluated again in the background, with no model call)"
   },
   "export": {
     "title": "Export benchmark dataset",

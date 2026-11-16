@@ -11264,6 +11264,9 @@ mod judge_inventory_diagnostics_tests;
 mod manual_judge_diagnostics_tests;
 
 #[cfg(test)]
+mod carried_evaluation_tests;
+
+#[cfg(test)]
 mod judge_scheduling_tests;
 
 #[cfg(test)]

@@ -26,6 +26,24 @@ publication never transfers or rescales earlier results. An old run cannot be
 resumed or extended after its test version retires. Already admitted work keeps
 its original immutable inputs rather than switching tests mid-run.
 
+The operator can ask, test by test, to keep the measured answers when the
+evaluator alone changes: **Import definition** with "Publish each as the next
+version of the test with the same name and keep its measured answers". The
+imported definition must match the current version of the live test of its
+name in everything but its evaluator, carry an evaluator revision of its own,
+and be a text, JSON, JavaScript or web page check of the same kind, which
+evaluate a saved answer without a model; anything else is refused and changes
+nothing. The definition replaces the test's draft and becomes its next
+version, which carries the earlier version's cells. Their saved answers that
+had a verdict are then evaluated again in the background, one at a time, with
+no model call: each keeps its recorded evaluations and gets the new one
+beside them, as **Evaluate again** adds one, and the newest decides its score.
+Budget failures, cancellations and infrastructure outcomes keep theirs. The
+test's page shows how many answers are evaluated and offers **Evaluate saved
+answers** for the rest after a restart or a failure. **Evaluate again** on one
+of those answers asks the carrying version's evaluator. A qualification still
+belongs to the version it was run on.
+
 Actual evaluation prompts, fixture data, repository snapshots, expected answers,
 protected checks, rubrics, alternatives, mutants, per-task documentation and
 results must not enter project Git, public issues, commit messages or CI uploads.
@@ -259,6 +277,25 @@ forbids input changes, set `immutableArgs` to the argument indices to preserve.
 The worker checks those values independently of the returned result. Draft
 validation rejects malformed cases and indices missing from any case before
 publication starts reference execution.
+
+A JavaScript check passes when every case matches, and scores 1 or 0. A check
+whose answer is a test suite can instead declare `"scoring": "mutation-share"`.
+Each case then hands the function a bundle of implementations, and its
+`expected` value lists one verdict per implementation, `"accept"` for a correct
+one and `"reject"` for a defective one (1-16 per case, at least one of each in
+the check). A suite that does not accept every correct implementation, or that
+cannot be loaded or run, scores 0. Otherwise its score is the share of
+defective implementations it rejects, and it passes only when it rejects all
+of them. A call that throws, or that returns anything but one verdict per
+implementation, gives no verdict for its bundle: its correct implementations
+count as not accepted and its defective ones as not caught. The evaluation
+records both counts and each implementation's expected verdict and whether
+the suite gave it, and attempt evidence shows them. The pinned worker is the
+same for both scorings: the controller asks it once per implementation
+position, each time with the unchanged bundles, so a share-scored check takes
+as many browser jobs as its largest bundle has implementations, and the time
+limit applies to each job. Changing a check's scoring is an evaluator change:
+give it a new evaluator revision.
 
 Repository tasks use immutable public snapshots and an isolated workspace.
 The workspace holds exactly the files of the snapshot's tree, so the tree must

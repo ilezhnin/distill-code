@@ -317,6 +317,41 @@ pub async fn benchmark_publish_version(
         .publish_version(&id, expected_revision)
         .await
 }
+/// Publishes a definition as the next version of the test of its name,
+/// keeping that test's measured answers (the evaluator alone may differ).
+#[tauri::command]
+pub async fn benchmark_republish_evaluator(
+    app: AppHandle,
+    draft: BenchmarkDraft,
+) -> Result<BenchmarkVersion> {
+    service(&app).await?.republish_evaluator(draft).await
+}
+/// Starts evaluating the saved answers a version carries and returns at
+/// once; `benchmark_carry_status` follows it.
+#[tauri::command]
+pub async fn benchmark_evaluate_carried(app: AppHandle, version_id: String) -> Result<CarryStatus> {
+    let s = service(&app).await?;
+    s.carrying_version(&version_id).await?;
+    let mut status = s.carry_status(&version_id).await?;
+    if !status.running && status.evaluated < status.total {
+        let background = s.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = background.evaluate_carried(&version_id).await {
+                log::warn!(
+                    "[benchmarks] carried answers of {version_id} were not evaluated: {}",
+                    error.message
+                );
+            }
+        });
+        status.running = true;
+        status.last_error = None;
+    }
+    Ok(status)
+}
+#[tauri::command]
+pub async fn benchmark_carry_status(app: AppHandle, version_id: String) -> Result<CarryStatus> {
+    service(&app).await?.carry_status(&version_id).await
+}
 #[tauri::command]
 pub async fn benchmark_duplicate_definition(
     app: AppHandle,

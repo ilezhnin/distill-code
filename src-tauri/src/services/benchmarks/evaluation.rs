@@ -169,6 +169,12 @@ fn validate_javascript_spec(spec: &serde_json::Value) -> Vec<String> {
             None => issues.push("immutableArgs must be an array of argument indices".into()),
         }
     }
+    // A declared scoring must be one the controller can grade.
+    if issues.is_empty() {
+        if let Err(issue) = super::mutation::Plan::parse(spec) {
+            issues.push(issue);
+        }
+    }
     issues
 }
 #[cfg(test)]
