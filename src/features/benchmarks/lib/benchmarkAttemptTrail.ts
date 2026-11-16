@@ -449,7 +449,14 @@ export function attemptTrail(
           step.status = t("states.collecting");
           step.since = began ?? null;
         } else if (state === "done" || state === "failed")
-          step.durationMs = between(began, checks.at(-1)?.createdAt);
+          // The check the attempt settled with: its first verdict. An
+          // "Evaluate again" days later adds a verdict, not check time.
+          step.durationMs = between(
+            began,
+            checks.find(
+              (evaluation) => began == null || evaluation.createdAt >= began,
+            )?.createdAt,
+          );
         // What each check said; a panel task's placeholders say nothing.
         if (!judges)
           for (const evaluation of checks)

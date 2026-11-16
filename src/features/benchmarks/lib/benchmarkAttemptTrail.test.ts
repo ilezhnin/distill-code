@@ -313,6 +313,36 @@ describe("an attempt's trail", () => {
     );
   });
 
+  it("times the check the attempt settled with, not an Evaluate again weeks later", () => {
+    const began = NOW - 600 * 60 * MINUTE;
+    const verdict = (id: string, createdAt: number): Evaluation => ({
+      ...attempt.evaluations[0],
+      id,
+      verdict: "fail",
+      score: 0,
+      reason: "Protected 14 checks",
+      createdAt,
+    });
+    const check = step(
+      trail({
+        ...attempt,
+        outcome: "fail",
+        phaseTimes: { checkStarted: began },
+        evaluations: [
+          verdict("first", began + 69_000),
+          verdict("again", NOW - 3 * MINUTE),
+        ],
+      }),
+      "check",
+    );
+    expect(check.durationMs).toBe(69_000);
+    // Both verdicts stay listed.
+    expect(check.substeps.map((substep) => substep.id)).toEqual([
+      "first",
+      "again",
+    ]);
+  });
+
   it("holds an open attempt of a run that stopped, with no clock", () => {
     const work = step(
       trail(
