@@ -13,6 +13,7 @@ import { acpGetSessionInfo } from "@/shared/api/acp";
 import { mergeAcpSessionInfo } from "@/features/chat/lib/acpSessionMapping";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { cn } from "@/shared/lib/cn";
+import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Button } from "@/shared/ui/button";
 import { toggleVariants } from "@/shared/ui/toggle";
 import {
@@ -386,22 +387,11 @@ export function BenchmarkEvidenceView({
         </DialogHeader>
         <DialogBody className="space-y-6">
           {attempt && !blind ? (
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <ModelIdentity
-                configuration={attempt.configuration}
-                name={modelDisplayName(attempt.configuration)}
-                vendor={providerVendor(attempt.configuration.providerId)}
-              />
-              <StateBadge
-                state={
-                  !open
-                    ? (attempt.outcome ?? attempt.phase)
-                    : run.data && HELD_RUN.has(run.data.state)
-                      ? run.data.state
-                      : attempt.phase
-                }
-              />
-            </div>
+            <ModelIdentity
+              configuration={attempt.configuration}
+              name={modelDisplayName(attempt.configuration)}
+              vendor={providerVendor(attempt.configuration.providerId)}
+            />
           ) : null}
           {repetitions.length > 1 && !blind ? (
             <div
@@ -517,7 +507,27 @@ export function BenchmarkEvidenceView({
               )}
             </dl>
           ) : null}
-          {steps.length > 0 ? <BenchmarkTrail steps={steps} now={now} /> : null}
+          {attempt && steps.length > 0 ? (
+            <BenchmarkTrail
+              steps={steps}
+              now={now}
+              modelIcon={getProviderIcon(
+                attempt.configuration.providerId,
+                "size-3.5",
+              )}
+              badge={
+                <StateBadge
+                  state={
+                    !open
+                      ? (attempt.outcome ?? attempt.phase)
+                      : run.data && HELD_RUN.has(run.data.state)
+                        ? run.data.state
+                        : attempt.phase
+                  }
+                />
+              }
+            />
+          ) : null}
           {attempt && rubric.trim() ? (
             <section className="space-y-2">
               <SectionHeading title={t("evidence.rubric")} />

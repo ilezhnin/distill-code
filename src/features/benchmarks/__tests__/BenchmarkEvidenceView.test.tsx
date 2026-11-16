@@ -838,10 +838,11 @@ describe("an attempt that is still open", () => {
     expect(
       await screen.findByRole("tab", { name: /Earlier try/, selected: true }),
     ).toBeInTheDocument();
+    // Its state stands on the trail's card and on the step it ended with.
     expect(
-      within(screen.getByRole("region", { name: "Progress" })).getByText(
+      within(screen.getByRole("region", { name: "Progress" })).getAllByText(
         "Not counted",
       ),
-    ).toBeInTheDocument();
+    ).toHaveLength(2);
   });
 });

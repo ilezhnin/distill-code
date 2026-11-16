@@ -56,6 +56,8 @@ export interface TrailStep {
   limitMs?: number | null;
   /** Parts gathered of those expected: a panel's votes. */
   count?: string;
+  /** A panel task's check step only collects the answer the panel reads. */
+  collects?: boolean;
   substeps: TrailSubstep[];
 }
 
@@ -374,6 +376,7 @@ export function attemptTrail(
       state,
       substeps: [],
     };
+    if (id === "check" && judges) step.collects = true;
     const isCurrent = state === "running";
     // A step the attempt ended in says why, in the runner's or the
     // provider's own words.
