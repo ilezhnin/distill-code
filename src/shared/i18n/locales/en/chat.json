@@ -413,7 +413,6 @@
     },
     "flockctlCrossSessionLabel": "Sent by Flock from another session",
     "flockctlCrossSessionNamedLabel": "Sent by Flock from another session · source: {{sender}}",
-    "steerLabel": "Delivered to the running agent",
     "steerPendingLabel": "Waiting for delivery confirmation",
     "viewMore": "View more",
     "viewLess": "View less",

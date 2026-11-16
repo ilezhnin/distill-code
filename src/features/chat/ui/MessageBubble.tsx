@@ -984,7 +984,6 @@ export const MessageBubble = memo(function MessageBubble({
       !showPersonaGutterAvatar &&
       (assistantDisplayName || hasPersonaAvatar || assistantProviderIcon),
   );
-  const isSteeredMessage = isUser && message.metadata?.delivery === "steer";
   const isPendingSteerMessage =
     isUser && message.metadata?.delivery === "steering";
   const isFlockctlCrossSessionMessage =
@@ -1146,7 +1145,6 @@ export const MessageBubble = memo(function MessageBubble({
             >
               {workerBrief ? <WorkerBriefHeader {...workerBrief} /> : null}
               {(isFlockctlCrossSessionMessage && !workerBrief) ||
-              isSteeredMessage ||
               isPendingSteerMessage ||
               isUnconfirmedSteerMessage ||
               isFailedSteerMessage ? (
@@ -1163,11 +1161,6 @@ export const MessageBubble = memo(function MessageBubble({
                               sender: distillSenderLabel,
                             })
                           : t("message.flockctlCrossSessionLabel")}
-                    </span>
-                  ) : null}
-                  {isSteeredMessage ? (
-                    <span data-role="steer-message-label" className="leading-4">
-                      {t("message.steerLabel")}
                     </span>
                   ) : null}
                   {isUnconfirmedSteerMessage || isFailedSteerMessage ? (

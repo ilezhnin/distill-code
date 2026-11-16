@@ -413,7 +413,6 @@
     },
     "flockctlCrossSessionLabel": "Enviado por Flock desde otra sesión",
     "flockctlCrossSessionNamedLabel": "Enviado por Flock desde otra sesión · fuente: {{sender}}",
-    "steerLabel": "Guiado",
     "steerPendingLabel": "Guiando: esperando el siguiente paso del agente",
     "viewMore": "Ver más",
     "viewLess": "Ver menos",
