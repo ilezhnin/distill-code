@@ -130,6 +130,17 @@ impl Store {
         self.definition(&key).await
     }
     pub async fn publish(&self, id: &str, revision: i64) -> Result<BenchmarkVersion> {
+        self.publish_as(id, revision, false).await
+    }
+    /// Publishes a version that changes the current one's evaluator alone and
+    /// keeps its measured answers: the new version carries the current one's
+    /// cells, and [`super::BenchmarkService::evaluate_carried`] evaluates
+    /// their saved answers again. Only the operator asks for this, test by
+    /// test; an ordinary publication never carries anything.
+    pub async fn publish_carrying(&self, id: &str, revision: i64) -> Result<BenchmarkVersion> {
+        self.publish_as(id, revision, true).await
+    }
+    async fn publish_as(&self, id: &str, revision: i64, carry: bool) -> Result<BenchmarkVersion> {
         let def = self.definition(id).await?;
         if def.draft_revision != revision {
             return Err(BenchmarkError::new(
@@ -140,6 +151,13 @@ impl Store {
         let check = validate(&def.draft);
         if !check.valid {
             return Err(BenchmarkError::new("validation", check.issues.join("; ")));
+        }
+        if carry {
+            let current = self.versions_for(id).await?.into_iter().next();
+            carried_evaluator(
+                current.as_ref().map(|version| &version.manifest),
+                &def.draft,
+            )?;
         }
         if matches!(def.draft.evaluator.kind.as_str(), "javascript" | "browser") {
             let good = super::worker::evaluate(&def.draft, &def.draft.evaluator.known_good).await?;
@@ -222,13 +240,25 @@ impl Store {
         .fetch_one(&mut *tx)
         .await?;
         let published_at = now().max(previous.unwrap_or(0).saturating_add(1));
+        // The version current inside this transaction is the one checked
+        // above, or the draft revision would have changed with it.
+        let carries_from = if carry {
+            sqlx::query_scalar::<_, String>(
+                "SELECT id FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC,rowid DESC LIMIT 1",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            None
+        };
         let v = BenchmarkVersion {
             id: uuid::Uuid::new_v4().to_string(),
             definition_id: id.into(),
             content_hash: hash,
             published_at,
             manifest: def.draft,
-            carries_from: None,
+            carries_from,
         };
         sqlx::query("INSERT INTO benchmark_versions(id,definition_id,content_hash,manifest_json,published_at,carries_from) VALUES(?,?,?,?,?,?)").bind(&v.id).bind(id).bind(&v.content_hash).bind(serde_json::to_string(&v.manifest)?).bind(v.published_at).bind(&v.carries_from).execute(&mut *tx).await?;
         event(&mut tx, id, "version_published").await?;
@@ -279,9 +309,92 @@ impl Store {
     }
 }
 
+/// Whether `next` differs from `previous` in its evaluator alone: another
+/// check, expected answer or scoring, with the same task, fixtures, limits
+/// and everything else a candidate sees or is held to.
+pub(super) fn evaluator_only(previous: &BenchmarkDraft, next: &BenchmarkDraft) -> bool {
+    let parts = |draft: &BenchmarkDraft| {
+        let mut value = serde_json::to_value(draft).unwrap_or_default();
+        let evaluator = value
+            .as_object_mut()
+            .and_then(|object| object.remove("evaluator"));
+        (value, evaluator)
+    };
+    let (before, old) = parts(previous);
+    let (after, new) = parts(next);
+    old != new && before == after
+}
+
+/// What a version must be to keep the measured answers of `current`: the
+/// same task under another evaluator, with a revision of its own, that
+/// evaluates a saved answer without calling a model.
+pub(super) fn carried_evaluator(
+    current: Option<&BenchmarkDraft>,
+    next: &BenchmarkDraft,
+) -> Result<()> {
+    let refuse = |message: &str| Err(BenchmarkError::new("validation", message));
+    let Some(current) = current else {
+        return refuse("This test has no published version whose answers could be kept");
+    };
+    if !evaluator_only(current, next) {
+        return refuse(
+            "Measured answers are kept only when the evaluator alone changes; this draft changes the task or changes nothing",
+        );
+    }
+    if current.evaluator.revision == next.evaluator.revision {
+        return refuse("Give the changed evaluator a revision of its own");
+    }
+    if !matches!(
+        next.evaluator.kind.as_str(),
+        "exact" | "json" | "javascript" | "browser"
+    ) || current.evaluator.kind != next.evaluator.kind
+    {
+        return refuse(
+            "Measured answers are kept for text, JSON, JavaScript and web page checks of the same kind",
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_another_evaluator_of_the_same_task_keeps_measured_answers() {
+        let draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|draft| draft.evaluator.kind == "exact")
+            .unwrap();
+        let mut fixed = draft.clone();
+        fixed.evaluator.expected.push_str(" corrected");
+        fixed.evaluator.revision = "corrected".into();
+        assert!(evaluator_only(&draft, &fixed));
+        assert!(carried_evaluator(Some(&draft), &fixed).is_ok());
+        // Nothing changed, nothing published before, or the same revision.
+        assert!(!evaluator_only(&draft, &draft));
+        assert!(carried_evaluator(Some(&draft), &draft).is_err());
+        assert!(carried_evaluator(None, &fixed).is_err());
+        let mut unnamed = fixed.clone();
+        unnamed
+            .evaluator
+            .revision
+            .clone_from(&draft.evaluator.revision);
+        assert!(carried_evaluator(Some(&draft), &unnamed).is_err());
+        // Another prompt or limit is another task.
+        let mut reworded = fixed.clone();
+        reworded.prompt.push_str(" Answer in one line.");
+        assert!(carried_evaluator(Some(&draft), &reworded).is_err());
+        let mut limited = fixed.clone();
+        limited.limits.timeout_seconds += 1;
+        assert!(carried_evaluator(Some(&draft), &limited).is_err());
+        // A judged check would need model calls; another kind is another check.
+        let mut judged = fixed.clone();
+        judged.evaluator.kind = "rubric".into();
+        assert!(carried_evaluator(Some(&draft), &judged).is_err());
+        let mut structured = fixed;
+        structured.evaluator.kind = "json".into();
+        assert!(carried_evaluator(Some(&draft), &structured).is_err());
+    }
     #[tokio::test]
     async fn manifests_and_drafts_are_parsed_once_and_read_again_when_they_change() {
         let directory = crate::test_support::TempRoot::new();

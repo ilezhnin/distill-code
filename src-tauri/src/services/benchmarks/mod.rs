@@ -19,6 +19,7 @@ mod judge_panel;
 pub mod judge_pool;
 pub mod learned;
 pub mod model_catalog;
+pub mod mutation;
 mod owner;
 pub mod promotion;
 pub mod qualification;
@@ -68,6 +69,37 @@ pub const MAX_TIME_LIMIT_SECONDS: u32 =
 
 /// One evaluation writer per attempt: a judge panel on one rendering never
 /// blocks a review of another.
+/// How long, and how often, a carried answer waits for room in the sandbox.
+const CARRY_BUSY_PAUSE: std::time::Duration = std::time::Duration::from_secs(15);
+const CARRY_BUSY_RETRIES: u32 = 40;
+
+/// The carried evaluations under way, and why the last one of each version
+/// stopped, by store and version.
+#[derive(Default)]
+struct Carrying {
+    running: std::collections::HashSet<String>,
+    errors: HashMap<String, String>,
+}
+
+fn carrying() -> std::sync::MutexGuard<'static, Carrying> {
+    static CARRYING: OnceLock<std::sync::Mutex<Carrying>> = OnceLock::new();
+    CARRYING
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether the evaluator of `revision` has given `evaluations` its verdict.
+fn evaluated_by(evaluations: &[Evaluation], revision: &str) -> bool {
+    evaluations.iter().any(|evaluation| {
+        evaluation.evaluator_revision == revision
+            && !matches!(
+                evaluation.provenance.as_str(),
+                "human" | "human_visual" | "judge" | "judge_failure" | "render"
+            )
+    })
+}
+
 fn evaluation_lock(attempt_id: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
     let mut locks = LOCKS
@@ -1551,8 +1583,11 @@ impl BenchmarkService {
             ));
         }
         let mut a = self.store.attempt(id).await?;
+        // An answer whose version a later one carries is that version's
+        // answer: its evaluator evaluates it, while it is the current one.
+        let v = self.store.carried_version(&a.version_id).await?;
         self.store
-            .require_current_versions(std::slice::from_ref(&a.version_id))
+            .require_current_versions(std::slice::from_ref(&v.id))
             .await?;
         if a.phase != "terminal" {
             return Err(BenchmarkError::new(
@@ -1574,7 +1609,6 @@ impl BenchmarkService {
                 "Only an evaluated result can be evaluated again",
             ));
         }
-        let v = self.store.version(&a.version_id).await?;
         // An answer recorded with the broken streams of a reconnect in front
         // of it is read again from its sealed turn, and evaluated as the
         // model gave it. Nothing is saved unless the evaluation is.
@@ -1670,6 +1704,215 @@ impl BenchmarkService {
         let version = self.store.publish(id, revision).await?;
         self.changed().await;
         Ok(version)
+    }
+    /// Publishes `draft` as the next version of the live test of the same
+    /// name, keeping its measured answers: the draft may differ from the
+    /// test's current version in its evaluator alone (see
+    /// [`catalog::carried_evaluator`]). The new version carries the current
+    /// one's cells; [`Self::evaluate_carried`] then evaluates their saved
+    /// answers with the new evaluator. The test's own draft is replaced.
+    pub async fn republish_evaluator(&self, draft: BenchmarkDraft) -> Result<BenchmarkVersion> {
+        let named = sqlx::query_scalar::<_, String>(
+            "SELECT d.id FROM benchmark_definitions d WHERE d.archived=0 AND (SELECT json_extract(v.manifest_json,'$.name') FROM benchmark_versions v WHERE v.definition_id=d.id ORDER BY v.published_at DESC,v.rowid DESC LIMIT 1)=?",
+        )
+        .bind(&draft.name)
+        .fetch_all(&self.store.pool)
+        .await?;
+        let [id] = named.as_slice() else {
+            return Err(BenchmarkError::new(
+                "validation",
+                if named.is_empty() {
+                    "No published test has this definition's name"
+                } else {
+                    "Several tests have this definition's name; archive or rename the others first"
+                },
+            ));
+        };
+        let definition = self.store.definition(id).await?;
+        // Checked on the draft as the store would save it, before it replaces
+        // the test's own draft.
+        let mut draft = draft;
+        routing::normalize_draft(&mut draft);
+        let current = self.store.versions_for(id).await?.into_iter().next();
+        catalog::carried_evaluator(current.as_ref().map(|version| &version.manifest), &draft)?;
+        let saved = self
+            .store
+            .save_draft(Some(id), Some(definition.draft_revision), draft)
+            .await?;
+        let version = self
+            .store
+            .publish_carrying(id, saved.draft_revision)
+            .await?;
+        self.changed().await;
+        Ok(version)
+    }
+    /// The saved answers of the versions `version` carries that have a
+    /// verdict to replace, oldest first, each with whether this version's
+    /// evaluator has evaluated it. Budget failures, cancellations and
+    /// infrastructure outcomes keep theirs, as in [`Self::rescore`].
+    async fn carried_answers(&self, version: &BenchmarkVersion) -> Result<Vec<(String, bool)>> {
+        use sqlx::Row;
+        let mut chain = Vec::new();
+        let mut from = version.carries_from.clone();
+        while let Some(id) = from.filter(|id| !chain.contains(id)) {
+            from = self.store.version(&id).await?.carries_from;
+            chain.push(id);
+        }
+        let mut answers = Vec::new();
+        for id in chain.iter().rev() {
+            let rows = sqlx::query(
+                "SELECT id,json_extract(data_json,'$.evaluations') FROM attempts WHERE version_id=?
+                 AND json_extract(data_json,'$.phase')='terminal'
+                 AND json_extract(data_json,'$.outcome') IN ('pass','fail','completed','evaluation_error')
+                 AND json_type(data_json,'$.output')='text'
+                 AND NOT EXISTS(SELECT 1 FROM workflow_steps w WHERE w.attempt_id=attempts.id)
+                 ORDER BY rowid",
+            )
+            .bind(id)
+            .fetch_all(&self.store.pool)
+            .await?;
+            for row in rows {
+                let evaluations: Vec<Evaluation> = row
+                    .get::<Option<String>, _>(1)
+                    .map(|recorded| serde_json::from_str(&recorded))
+                    .transpose()?
+                    .unwrap_or_default();
+                answers.push((
+                    row.get::<String, _>(0),
+                    evaluated_by(&evaluations, &version.manifest.evaluator.revision),
+                ));
+            }
+        }
+        Ok(answers)
+    }
+    /// How far the evaluation of the answers `version_id` carries has come.
+    pub async fn carry_status(&self, version_id: &str) -> Result<CarryStatus> {
+        let version = self.store.version(version_id).await?;
+        let answers = self.carried_answers(&version).await?;
+        let key = self.carry_key(version_id);
+        let (running, last_error) = {
+            let carrying = carrying();
+            (
+                carrying.running.contains(&key),
+                carrying.errors.get(&key).cloned(),
+            )
+        };
+        Ok(CarryStatus {
+            version_id: version_id.into(),
+            total: answers.len() as u32,
+            evaluated: answers.iter().filter(|(_, evaluated)| *evaluated).count() as u32,
+            running,
+            last_error,
+        })
+    }
+    /// The version whose carried answers can be evaluated now: one that
+    /// carries, is current, and evaluates without a model.
+    pub async fn carrying_version(&self, version_id: &str) -> Result<BenchmarkVersion> {
+        let version = self.store.version(version_id).await?;
+        if version.carries_from.is_none() {
+            return Err(BenchmarkError::new(
+                "validation",
+                "This version keeps no answers of an earlier one",
+            ));
+        }
+        self.store
+            .require_current_versions(std::slice::from_ref(&version.id))
+            .await?;
+        if !matches!(
+            version.manifest.evaluator.kind.as_str(),
+            "exact" | "json" | "javascript" | "browser"
+        ) {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Only text, JSON, JavaScript and web page checks evaluate saved answers without a model",
+            ));
+        }
+        Ok(version)
+    }
+    fn carry_key(&self, version_id: &str) -> String {
+        format!("{}\u{1f}{version_id}", self.store.root.display())
+    }
+    /// Evaluates every saved answer `version_id` carries that its evaluator
+    /// has not evaluated yet: locally, one at a time, with no model call. Each
+    /// answer keeps its recorded evaluations and gets the new one beside
+    /// them, as "Evaluate again" adds one. Asked again, after a restart or a
+    /// failure, it goes on with what is left.
+    pub async fn evaluate_carried(&self, version_id: &str) -> Result<CarryStatus> {
+        let version = self.carrying_version(version_id).await?;
+        let key = self.carry_key(version_id);
+        if !carrying().running.insert(key.clone()) {
+            return self.carry_status(version_id).await;
+        }
+        carrying().errors.remove(&key);
+        let passed = self.evaluate_carried_answers(&version).await;
+        carrying().running.remove(&key);
+        if let Err(error) = passed {
+            log::warn!(
+                "[benchmarks] evaluating the answers version {version_id} carries stopped: {}",
+                error.message
+            );
+            carrying().errors.insert(key, error.message);
+        }
+        self.changed().await;
+        self.carry_status(version_id).await
+    }
+    async fn evaluate_carried_answers(&self, version: &BenchmarkVersion) -> Result<()> {
+        let mut failed = None;
+        for (id, evaluated) in self.carried_answers(version).await? {
+            if evaluated {
+                continue;
+            }
+            match self.evaluate_carried_answer(version, &id).await {
+                Ok(()) => self.changed().await,
+                // Without the sandbox's renderer no answer can be evaluated.
+                Err(error) if error.code == "capability_missing" => return Err(error),
+                // One answer's failure leaves it for the next request.
+                Err(error) => {
+                    log::warn!(
+                        "[benchmarks] carried answer {id} was not evaluated: {}",
+                        error.message
+                    );
+                    failed = Some(error);
+                }
+            }
+        }
+        failed.map_or(Ok(()), Err)
+    }
+    async fn evaluate_carried_answer(&self, version: &BenchmarkVersion, id: &str) -> Result<()> {
+        let lock = evaluation_lock(id);
+        let _guard = lock.lock().await;
+        let mut a = self.store.attempt(id).await?;
+        let Some(output) = a.output.clone() else {
+            return Ok(());
+        };
+        // An "Evaluate again" may have settled it while this one waited.
+        if evaluated_by(&a.evaluations, &version.manifest.evaluator.revision) {
+            return Ok(());
+        }
+        // Carried answers of every version share one lane, so several
+        // republished tests never fill the sandbox with their backlog.
+        static LANE: Mutex<()> = Mutex::const_new(());
+        let _lane = LANE.lock().await;
+        let mut busy = 0;
+        let mut e = loop {
+            match runner::evaluate(&version.manifest, &output).await {
+                // The sandbox is full: its room comes back as jobs finish.
+                Err(error) if error.code == "resource_busy" && busy < CARRY_BUSY_RETRIES => {
+                    busy += 1;
+                    tokio::time::sleep(CARRY_BUSY_PAUSE).await;
+                }
+                evaluated => break evaluated?,
+            }
+        };
+        match e.details.get_or_insert_with(|| serde_json::json!({})) {
+            serde_json::Value::Object(details) => {
+                details.insert("carriedTo".into(), serde_json::json!(version.id));
+            }
+            other => *other = serde_json::json!({"carriedTo": version.id, "details": other.take()}),
+        }
+        a.outcome = Some(e.verdict.clone());
+        a.evaluations.push(e);
+        self.store.save_attempt(&a).await
     }
     /// Freezes every live training/evaluation test's newest published version,
     /// named `name` or the next `vN`. A release that would repeat the newest

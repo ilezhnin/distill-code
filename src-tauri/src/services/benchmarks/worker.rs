@@ -344,10 +344,151 @@ fn source_limit(bytes: usize, published: u64) -> SourceLimit {
     }
 }
 
+/// One browser job in the sandbox: the worker's request and its time budget,
+/// to the helper's envelope.
+type Job = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>;
+type Run<'a> = &'a (dyn Fn(Value, Duration) -> Job + Sync);
+
+/// A browser job that ran: its envelope, or the fail the candidate earned by
+/// driving the job past a ceiling or its time budget.
+enum Settled {
+    Envelope(Value),
+    Graded(Box<Evaluation>),
+}
+
+async fn settle(draft: &BenchmarkDraft, outcome: Result<Value>) -> Result<Settled> {
+    let envelope = match outcome {
+        // The candidate's page drove the job past its ceiling: a graded fail
+        // that names the renderer and worker that ran it, so a certificate
+        // can tell which renderer this zero came from.
+        Err(error) if error.code == super::runner::CANDIDATE_LIMIT => {
+            let installed = Box::pin(ready()).await?;
+            return Ok(Settled::Graded(Box::new(failed_artifact(
+                draft,
+                &error.message,
+                &installed,
+            ))));
+        }
+        result => result?,
+    };
+    if envelope.get("error").is_some() {
+        if envelope["candidateTimedOut"] == true {
+            return Ok(Settled::Graded(Box::new(failed_artifact(
+                draft,
+                "Candidate exceeded the published evaluator time budget",
+                envelope["installedRevision"].as_str().unwrap_or_default(),
+            ))));
+        }
+        return Err(BenchmarkError::new(
+            "evaluation_error",
+            "Linux browser startup exceeded the evaluator time budget",
+        ));
+    }
+    Ok(Settled::Envelope(envelope))
+}
+
+fn stripped_note(fence_stripped: bool, export_stripped: bool) -> &'static str {
+    match (fence_stripped, export_stripped) {
+        (true, true) => "; Markdown fence and module export stripped",
+        (true, false) => "; Markdown fence stripped",
+        (false, true) => "; module export stripped",
+        (false, false) => "",
+    }
+}
+
 pub async fn evaluate_with_runtime(
     runtime: &WorkerRuntime,
     draft: &BenchmarkDraft,
     output: &str,
+) -> Result<Evaluation> {
+    evaluate_through(runtime, draft, output, &|request, timeout| {
+        Box::pin(execute(request, timeout))
+    })
+    .await
+}
+
+/// Share scoring (see [`super::mutation`]): one browser job per
+/// implementation position, each over the unchanged bundles, then the counts.
+async fn evaluate_share(
+    runtime: &WorkerRuntime,
+    draft: &BenchmarkDraft,
+    plan: &super::mutation::Plan,
+    output: &str,
+    timeout: Duration,
+    note: &str,
+    run: Run<'_>,
+) -> Result<Evaluation> {
+    if output.len() + plan.source_overhead() > MAX_SCREENSHOT {
+        return Err(BenchmarkError::new(
+            "capability_missing",
+            "Artifact is within the published size cap but exceeds this Linux renderer's 2 MiB source capacity",
+        ));
+    }
+    let source = plan.source(output);
+    let mut results = Vec::with_capacity(plan.passes());
+    let mut identity: Option<Value> = None;
+    for position in 0..plan.passes() {
+        let request = json!({"kind":"javascript","spec":plan.pass_spec(position),"output":source});
+        let envelope = match settle(draft, run(request, timeout).await).await? {
+            Settled::Envelope(envelope) => envelope,
+            // A suite that cannot be run to the end scores nothing.
+            Settled::Graded(evaluation) => return Ok(*evaluation),
+        };
+        // One evaluation is one renderer: a sandbox updated between passes
+        // would grade some implementations on another.
+        if identity.as_ref().is_some_and(|first| {
+            first["installedRevision"] != envelope["installedRevision"]
+                || first["result"]["browserVersion"] != envelope["result"]["browserVersion"]
+        }) {
+            return Err(BenchmarkError::new(
+                "capability_missing",
+                "Linux renderer identity changed during the evaluation; evaluate again",
+            ));
+        }
+        results.push(envelope["result"].clone());
+        identity.get_or_insert(envelope);
+    }
+    let identity = identity.ok_or_else(|| {
+        BenchmarkError::new("invalid_definition", "Share scoring has no implementation")
+    })?;
+    let outcome = plan.outcome(&results);
+    let id = uuid::Uuid::new_v4().to_string();
+    let directory = runtime.root.join("evaluations").join(&id);
+    tokio::fs::create_dir_all(&directory).await?;
+    tokio::fs::write(
+        directory.join("checks.json"),
+        serde_json::to_vec_pretty(&json!({"mutation":outcome.details(),"passes":results}))?,
+    )
+    .await?;
+    Ok(Evaluation {
+        id,
+        evaluator_revision: draft.evaluator.revision.clone(),
+        verdict: if outcome.passed() { "pass" } else { "fail" }.into(),
+        score: Some(outcome.score()),
+        reason: format!(
+            "Protected {} implementations: {}; Linux Chromium {}; isolated-linux-chromium-v2{note}",
+            outcome.implementations.len(),
+            outcome.summary(),
+            identity["result"]["browserVersion"]
+                .as_str()
+                .unwrap_or("unknown"),
+        ),
+        created_at: now(),
+        provenance: "protected_browser".into(),
+        artifacts: Vec::new(),
+        details: Some(
+            json!({"runtimeRevision":identity["runtimeRevision"],"installedRevision":identity["installedRevision"],"runtime":identity["runtime"],"mutation":outcome.details()}),
+        ),
+        judge: None,
+        usage: None,
+    })
+}
+
+async fn evaluate_through(
+    runtime: &WorkerRuntime,
+    draft: &BenchmarkDraft,
+    output: &str,
+    run: Run<'_>,
 ) -> Result<Evaluation> {
     let (output, fence_stripped) = super::evaluation::strip_markdown_fence(output);
     let (output, export_stripped) = if draft.evaluator.kind == "javascript" {
@@ -381,34 +522,21 @@ pub async fn evaluate_with_runtime(
     } else {
         Duration::from_secs(u64::from(draft.limits.timeout_seconds.clamp(1, 60)))
     };
-    let envelope = match execute(
-        json!({"kind":draft.evaluator.kind,"spec":spec,"output":output}),
-        timeout,
-    )
-    .await
-    {
-        // The candidate's page drove the job past its ceiling: a graded fail
-        // that names the renderer and worker that ran it, so a certificate
-        // can tell which renderer this zero came from.
-        Err(error) if error.code == super::runner::CANDIDATE_LIMIT => {
-            let installed = Box::pin(ready()).await?;
-            return Ok(failed_artifact(draft, &error.message, &installed));
+    // A specification that declares share scoring is asked position by
+    // position; every other one is sent to the worker as it is.
+    if draft.evaluator.kind == "javascript" {
+        if let Some(plan) = super::mutation::Plan::parse(&spec)
+            .map_err(|issue| BenchmarkError::new("invalid_definition", issue))?
+        {
+            let note = stripped_note(fence_stripped, export_stripped);
+            return evaluate_share(runtime, draft, &plan, output, timeout, note, run).await;
         }
-        result => result?,
-    };
-    if envelope.get("error").is_some() {
-        if envelope["candidateTimedOut"] == true {
-            return Ok(failed_artifact(
-                draft,
-                "Candidate exceeded the published evaluator time budget",
-                envelope["installedRevision"].as_str().unwrap_or_default(),
-            ));
-        }
-        return Err(BenchmarkError::new(
-            "evaluation_error",
-            "Linux browser startup exceeded the evaluator time budget",
-        ));
     }
+    let request = json!({"kind":draft.evaluator.kind,"spec":spec,"output":output});
+    let envelope = match settle(draft, run(request, timeout).await).await? {
+        Settled::Envelope(envelope) => envelope,
+        Settled::Graded(evaluation) => return Ok(*evaluation),
+    };
     let id = uuid::Uuid::new_v4().to_string();
     let directory = runtime.root.join("evaluations").join(&id);
     let image = screenshot(&envelope)?;
@@ -449,12 +577,7 @@ pub async fn evaluate_with_runtime(
             "Protected {} checks; Linux Chromium {}; isolated-linux-chromium-v2{}",
             result["checks"].as_array().map_or(0, Vec::len),
             result["browserVersion"].as_str().unwrap_or("unknown"),
-            match (fence_stripped, export_stripped) {
-                (true, true) => "; Markdown fence and module export stripped",
-                (true, false) => "; Markdown fence stripped",
-                (false, true) => "; module export stripped",
-                (false, false) => "",
-            }
+            stripped_note(fence_stripped, export_stripped)
         ),
         created_at: now(),
         provenance: "protected_browser".into(),
@@ -527,6 +650,162 @@ mod tests {
         assert!(screenshot(&json!({"screenshot":encoded}))
             .unwrap()
             .is_some());
+    }
+    /// An invented suite task: two bundles of words, one correct and three
+    /// defective implementations, declared share-scored or not.
+    fn suite_draft(share: bool) -> BenchmarkDraft {
+        let mut draft = super::super::seeds::definitions()
+            .into_iter()
+            .find(|draft| draft.evaluator.kind == "javascript")
+            .unwrap();
+        let mut spec = json!({"functionName":"gradeImplementations","argsCases":[
+            {"args":[["sound","leaky"]],"expected":["accept","reject"]},
+            {"args":[["stale","lossy"]],"expected":["reject","reject"]}]});
+        if share {
+            spec["scoring"] = json!(super::super::mutation::SCORING);
+        }
+        draft.evaluator.expected = spec.to_string();
+        draft.evaluator.revision = if share {
+            "invented-share-1"
+        } else {
+            "invented-all-1"
+        }
+        .into();
+        draft
+    }
+
+    /// Grades `answer` through a sandbox job that stands for the worker: the
+    /// suite rejects the words `answer` lists and throws on `"throw"`. Returns
+    /// the evaluation and every request the job was sent.
+    async fn graded(draft: &BenchmarkDraft, answer: &str) -> (Evaluation, Vec<Value>) {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = WorkerRuntime {
+            root: directory.path().to_path_buf(),
+        };
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let evaluation = evaluate_through(&runtime, draft, answer, &move |request, _| {
+            seen.lock().unwrap().push(request.clone());
+            Box::pin(async move {
+                let rejects = request["output"].as_str().unwrap().to_owned();
+                let suite = |args: &[Value]| {
+                    if rejects.starts_with("throw") {
+                        return None;
+                    }
+                    Some(json!(args[0]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|word| if rejects.contains(word.as_str().unwrap()) {
+                            "reject"
+                        } else {
+                            "accept"
+                        })
+                        .collect::<Vec<_>>()))
+                };
+                let result = super::super::mutation::simulated_worker(&request["spec"], &suite);
+                Ok(
+                    json!({"result":result,"screenshot":null,"runtimeRevision":runtime_revision(),
+                    "installedRevision":"a".repeat(64),"runtime":{"renderer":"invented"}}),
+                )
+            })
+        })
+        .await
+        .unwrap();
+        let checks = directory
+            .path()
+            .join("evaluations")
+            .join(&evaluation.id)
+            .join("checks.json");
+        assert!(checks.is_file());
+        let requests = requests.lock().unwrap().clone();
+        (evaluation, requests)
+    }
+
+    #[tokio::test]
+    async fn a_share_scored_suite_scores_the_defects_it_catches() {
+        let draft = suite_draft(true);
+        // Catches two of the three defective implementations.
+        let (partial, requests) = graded(&draft, "leaky stale").await;
+        assert_eq!(partial.verdict, "fail");
+        assert_eq!(partial.score, Some(2.0 / 3.0));
+        assert_eq!(partial.evaluator_revision, "invented-share-1");
+        assert_eq!(partial.provenance, "protected_browser");
+        assert_eq!(
+            partial.reason,
+            "Protected 4 implementations: accepted 1/1 correct implementations, caught 2/3 defective ones; Linux Chromium invented; isolated-linux-chromium-v2"
+        );
+        let details = partial.details.as_ref().unwrap();
+        assert_eq!(details["runtimeRevision"], runtime_revision());
+        assert_eq!(details["installedRevision"], "a".repeat(64));
+        let mutation = &details["mutation"];
+        assert_eq!(
+            (&mutation["correctAccepted"], &mutation["correctTotal"]),
+            (&json!(1), &json!(1))
+        );
+        assert_eq!(
+            (&mutation["defectsCaught"], &mutation["defectTotal"]),
+            (&json!(2), &json!(3))
+        );
+        assert_eq!(
+            mutation["implementations"][3],
+            json!({"case":1,"position":1,"expected":"reject","matched":false})
+        );
+        // One job per implementation position, each over the unchanged bundles.
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["kind"], "javascript");
+        assert_eq!(
+            requests[1]["spec"]["argsCases"][0]["args"],
+            json!([1, 2, ["sound", "leaky"]])
+        );
+        assert!(requests[0]["output"]
+            .as_str()
+            .unwrap()
+            .starts_with("leaky stale\n;async function"));
+        // Every defect caught is the only pass.
+        let (full, _) = graded(&draft, "leaky stale lossy").await;
+        assert_eq!((full.verdict.as_str(), full.score), ("pass", Some(1.0)));
+        // A rejected correct implementation is 0 whatever else was caught.
+        let (strict, _) = graded(&draft, "sound leaky stale lossy").await;
+        assert_eq!((strict.verdict.as_str(), strict.score), ("fail", Some(0.0)));
+        assert_eq!(strict.details.unwrap()["mutation"]["defectsCaught"], 3);
+        // A suite that cannot be loaded or run is 0.
+        let (broken, _) = graded(&draft, "throw").await;
+        assert_eq!((broken.verdict.as_str(), broken.score), ("fail", Some(0.0)));
+        assert_eq!(
+            broken.details.unwrap()["mutation"]["implementations"][0]["threw"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn a_specification_without_scoring_keeps_the_all_cases_verdict() {
+        let draft = suite_draft(false);
+        // The same partial suite: one bundle of two matches, so all or nothing.
+        let (partial, requests) = graded(&draft, "leaky stale").await;
+        assert_eq!(
+            (partial.verdict.as_str(), partial.score),
+            ("fail", Some(0.0))
+        );
+        assert_eq!(
+            partial.reason,
+            "Protected 2 checks; Linux Chromium invented; isolated-linux-chromium-v2"
+        );
+        assert_eq!(partial.evaluator_revision, "invented-all-1");
+        assert_eq!(
+            partial.details.unwrap(),
+            json!({"runtimeRevision":runtime_revision(),"installedRevision":"a".repeat(64),
+                "runtime":{"renderer":"invented"}})
+        );
+        // The worker gets the published specification and the answer as they are.
+        assert_eq!(
+            requests,
+            [json!({"kind":"javascript",
+                "spec":serde_json::from_str::<Value>(&draft.evaluator.expected).unwrap(),
+                "output":"leaky stale"})]
+        );
+        let (full, _) = graded(&draft, "leaky stale lossy").await;
+        assert_eq!((full.verdict.as_str(), full.score), ("pass", Some(1.0)));
     }
     #[test]
     fn renderer_revision_binds_linux_worker_and_pinned_renderer_spec() {

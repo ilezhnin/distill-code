@@ -79,6 +79,7 @@ import {
   StateBadge,
 } from "./BenchmarkPrimitives";
 import { BenchmarkDiagnosticHistory } from "./BenchmarkDiagnosticHistory";
+import { MutationShare } from "./BenchmarkMutationShare";
 import {
   type DotState,
   FAILING_OUTCOMES,
@@ -680,6 +681,7 @@ export function BenchmarkEvidenceView({
                       <p className="text-xs text-muted-foreground">
                         {evaluation.reason}
                       </p>
+                      <MutationShare details={evaluation.details} />
                       {criticalCheckEvidence(evaluation.details).length > 0 ? (
                         <div className="space-y-2 text-xs">
                           <p className="font-medium">

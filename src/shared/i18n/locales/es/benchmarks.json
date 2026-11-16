@@ -277,7 +277,11 @@
     "type": "Tipo",
     "files": "Archivos",
     "technical": "Detalles técnicos",
-    "variantGroup": "Grupo de variantes"
+    "variantGroup": "Grupo de variantes",
+    "carried": "Respuestas guardadas de la versión anterior evaluadas por esta comprobación: {{evaluated}} de {{total}}",
+    "carriedRunning": "Evaluando en segundo plano; no se llama a ningún modelo.",
+    "carriedEvaluate": "Evaluar las respuestas guardadas",
+    "carriedStopped": "La última evaluación se detuvo: {{reason}}"
   },
   "library": {
     "empty": "Todavía no hay pruebas.",
@@ -581,7 +585,11 @@
     "weighted": "Puntuación ponderada {{points}} de 1000",
     "judge": "Juez · {{model}}",
     "override": "Anular el panel",
-    "rescoreJudges": "Evaluar de nuevo (hasta 3 llamadas)"
+    "rescoreJudges": "Evaluar de nuevo (hasta 3 llamadas)",
+    "mutationCorrect": "Implementaciones correctas aceptadas",
+    "mutationDefects": "Defectos detectados",
+    "mutationMissed": "No detectados (lote.implementación)",
+    "mutationRefused": "Correctas no aceptadas (lote.implementación)"
   },
   "trail": {
     "label": "Progreso",
@@ -717,7 +725,8 @@
     "content": "JSON de definición",
     "selected": "{{count}} archivos seleccionados",
     "publish": "Publicar las definiciones que validen (verifica los evaluadores con sus referencias; nunca llama a un modelo)",
-    "tooLarge": "Elige una definición menor de 8 MiB."
+    "tooLarge": "Elige una definición menor de 8 MiB.",
+    "keepAnswers": "Publicar cada una como la siguiente versión de la prueba del mismo nombre y conservar sus respuestas medidas (solo puede cambiar la comprobación; las respuestas guardadas se evalúan de nuevo en segundo plano, sin llamar a ningún modelo)"
   },
   "export": {
     "title": "Exportar conjunto de datos de benchmark",

@@ -1169,3 +1169,19 @@ async fn an_interrupted_calibration_keeps_its_paid_panels() {
     controls_stopped().await;
     dir.close().await;
 }
+
+#[test]
+fn a_rejected_objective_control_may_fail_at_a_partial_share_score() {
+    // An all-or-nothing check: pass at 1, fail at 0.
+    assert!(objective_control_met("pass", "pass", Some(1.0)));
+    assert!(objective_control_met("fail", "fail", Some(0.0)));
+    // A share-scored suite check fails a rejected control that caught some
+    // defects, and still passes only at a full score.
+    assert!(objective_control_met("fail", "fail", Some(1.0 / 86.0)));
+    assert!(!objective_control_met("pass", "pass", Some(0.99)));
+    // The verdict must be the expected one, and a score must exist.
+    assert!(!objective_control_met("fail", "pass", Some(1.0)));
+    assert!(!objective_control_met("pass", "fail", Some(0.0)));
+    assert!(!objective_control_met("fail", "fail", Some(1.0)));
+    assert!(!objective_control_met("fail", "fail", None));
+}

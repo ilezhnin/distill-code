@@ -84,10 +84,21 @@ export interface BenchmarkVersion {
   publishedAt: number;
   manifest: BenchmarkDraft;
   /**
-   * Legacy evaluator-only carry link, retained to read historical evidence.
-   * New publications never carry or re-evaluate an earlier version's results.
+   * The version whose cells this one carries: published with only the
+   * evaluator changed, at the operator's request to keep the measured
+   * answers. An ordinary publication carries nothing.
    */
   carriesFrom?: string | null;
+}
+/** How far a version's evaluator has come through the answers it carries. */
+export interface CarryStatus {
+  versionId: string;
+  /** Saved answers with a verdict to replace. */
+  total: number;
+  /** Of them, the ones this version's evaluator has evaluated. */
+  evaluated: number;
+  running: boolean;
+  lastError?: string | null;
 }
 export interface BenchmarkDefinition {
   id: string;

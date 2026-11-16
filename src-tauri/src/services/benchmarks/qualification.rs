@@ -484,6 +484,21 @@ fn qualification_panic() -> BenchmarkError {
     )
 }
 
+/// Whether an objective check gave a control its expected verdict: an
+/// accepted control passes at a full score, and a rejected one fails below
+/// it. An all-or-nothing check fails at 0; a share-scored suite check can
+/// fail a rejected control that still caught some defects.
+pub(super) fn objective_control_met(expected: &str, verdict: &str, score: Option<f64>) -> bool {
+    verdict == expected
+        && score.is_some_and(|score| {
+            if expected == "pass" {
+                score == 1.0
+            } else {
+                (0.0..1.0).contains(&score)
+            }
+        })
+}
+
 pub(super) fn in_band(rubric: &RubricCalibration, expected: &str, score: Option<f64>) -> bool {
     score.is_some_and(|score| {
         score.is_finite()
@@ -595,8 +610,11 @@ fn control_agrees(record: &Record, version: &BenchmarkVersion, index: usize) -> 
         {
             return Ok(false);
         }
-        return Ok(evaluation.verdict == *expected
-            && evaluation.score == Some(if expected == "pass" { 1.0 } else { 0.0 }));
+        return Ok(objective_control_met(
+            expected,
+            &evaluation.verdict,
+            evaluation.score,
+        ));
     };
     if !in_band(rubric, expected, evaluation.score) {
         return Ok(false);

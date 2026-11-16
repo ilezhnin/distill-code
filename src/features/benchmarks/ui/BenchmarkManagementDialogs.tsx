@@ -68,11 +68,19 @@ export function BenchmarkImportDialog({
   const [content, setContent] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [publish, setPublish] = useState(false);
+  const [keepAnswers, setKeepAnswers] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Importing never runs anything; publishing only verifies the evaluator
   // against its own references, so a prepared set can be loaded ready to run.
   const importOne = async (draft: BenchmarkDraft) => {
+    if (keepAnswers) {
+      // The next version of the test of this name: its saved answers are
+      // evaluated again in the background, with no model call.
+      const version = await benchmarkApi.republishEvaluator(draft);
+      await benchmarkApi.evaluateCarried(version.id);
+      return { id: version.definitionId };
+    }
     const definition = await benchmarkApi.importDefinition(draft);
     if (publish) {
       await benchmarkApi.publishVersion(
@@ -150,10 +158,18 @@ export function BenchmarkImportDialog({
           />
           <Label className="flex items-start gap-2 text-sm">
             <Checkbox
-              checked={publish}
+              checked={publish || keepAnswers}
+              disabled={keepAnswers}
               onCheckedChange={(checked) => setPublish(checked === true)}
             />
             {t("import.publish")}
+          </Label>
+          <Label className="flex items-start gap-2 text-sm">
+            <Checkbox
+              checked={keepAnswers}
+              onCheckedChange={(checked) => setKeepAnswers(checked === true)}
+            />
+            {t("import.keepAnswers")}
           </Label>
           {files.length > 1 ? (
             <p className="text-sm text-muted-foreground">

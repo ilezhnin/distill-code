@@ -231,10 +231,27 @@ pub struct BenchmarkVersion {
     pub content_hash: String,
     pub published_at: i64,
     pub manifest: BenchmarkDraft,
-    /// Legacy evaluator-only carry link, retained to read historical evidence.
-    /// New publications never carry or re-evaluate earlier results.
+    /// The version whose cells this one carries: the operator published it
+    /// with only the evaluator changed and asked to keep the measured
+    /// answers, which this version's evaluator evaluates again. An ordinary
+    /// publication carries nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carries_from: Option<String>,
+}
+/// How far a version's evaluator has come through the saved answers of the
+/// versions it carries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CarryStatus {
+    pub version_id: String,
+    /// Saved answers with a verdict to replace.
+    pub total: u32,
+    /// Of them, the ones this version's evaluator has evaluated.
+    pub evaluated: u32,
+    pub running: bool,
+    /// Why the last evaluation stopped or left an answer, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

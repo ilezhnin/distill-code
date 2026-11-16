@@ -24,6 +24,7 @@ import { hasDifficulty } from "../lib/benchmarkReleases";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type { BenchmarkDefinition, BenchmarkVersion } from "../types";
 import { BenchmarkAttemptList } from "./BenchmarkAttemptList";
+import { BenchmarkCarriedAnswers } from "./BenchmarkCarriedAnswers";
 import { BenchmarkEditor } from "./BenchmarkEditor";
 import { BenchmarkQualificationPanel } from "./BenchmarkQualificationPanel";
 import { BenchmarkToolbar } from "./BenchmarkPrimitives";
@@ -221,6 +222,9 @@ function VersionHeader({
             })}
           </span>
         </div>
+        {version.carriesFrom && !archived ? (
+          <BenchmarkCarriedAnswers versionId={version.id} />
+        ) : null}
       </div>
       {picker}
     </div>
