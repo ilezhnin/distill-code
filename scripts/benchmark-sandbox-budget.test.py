@@ -1932,6 +1932,14 @@ class BudgetTests(unittest.TestCase):
         for victim in ('grok-native', 'rg', 'unshare', 'cargo', 'node'):
             self.assertEqual(killed(victim), (budget.MEMORY_CEILING, None), victim)
         self.assertEqual(killed('python3', group=memcg + '-other')[0], budget.MEMORY_CEILING)
+        # WSL 3 keeps each distro below a cgroup of its own, and the kernel
+        # names the leaf from its own root (11-15: sessions stayed
+        # infrastructure failures because the record matched no leaf).
+        nested = '/wsl-user/distro-257' + memcg
+        self.assertEqual(killed('python3', group=nested), (budget.CANDIDATE_MEMORY, 'python3'))
+        self.assertEqual(killed('grok-native', group=nested), (budget.MEMORY_CEILING, None))
+        self.assertEqual(killed('python3', group=nested + '-other')[0], budget.MEMORY_CEILING)
+        self.assertEqual(killed('python3', group=memcg + '/wsl-user')[0], budget.MEMORY_CEILING)
         # No kernel record or no snapshot: doubt never scores the candidate.
         budget.KMSG.write_text('6,1,1,-;fictional unrelated line\n')
         self.assertEqual(budget.memory_verdict('repository', 'fictional-oom', ['session-fictional-oom'], processes),

@@ -357,7 +357,9 @@ naming the line that holds it, while it does not:
   keeps the leaf's processes from its last one-second poll and reads the
   kernel's OOM record (`/dev/kmsg`) for the victim. The record's pid is the
   kernel's and every WSL distro has its own pid namespace, so the victim is
-  matched by its name: when every process of that name in the last poll ran
+  matched by its name, and the record's leaf by the tail of its path, since
+  WSL 3 names it from the kernel's own cgroup root
+  (`/wsl-user/distro-N/distill-bench/session-ID`): when every process of that name in the last poll ran
   below a shell under the agent CLI, the broker keeps a verdict by the
   session's job id (`bench-budget verdict ID`, for two days), and the attempt
   the bridge's exit ended as an infrastructure failure settles

@@ -1745,11 +1745,20 @@ def oom_victim(name):
     A record reads `oom-kill:constraint=...,oom_memcg=PATH,task_memcg=PATH,
     task=COMM,pid=PID,uid=UID`. The paths hold no comma, so the first
     `,task=` is the kernel's; the comm is the task's own choice and may hold
-    anything, so pid and uid are read from the right."""
+    anything, so pid and uid are read from the right. PATH is the leaf's from
+    the kernel's own cgroup root, which is not this distro's since WSL 3
+    gave every distro a cgroup namespace (`/wsl-user/distro-257/distill-bench/
+    session-...`, 11-15): the leaf's path here is then the record's tail,
+    and a job id names one leaf whatever stands before it. Records compared
+    for equality alone named no leaf, so sessions whose candidate commands
+    passed 6 GiB stayed infrastructure failures."""
     try:
         memcg = '/' + str((ROOT / name).relative_to(ROOT.parent))
     except ValueError:
         return None
+
+    def leaf(path):
+        return path is not None and (path == memcg or path.endswith(memcg))
     victim = None
     try:
         handle = os.open(KMSG, os.O_RDONLY | os.O_NONBLOCK)
@@ -1776,7 +1785,7 @@ def oom_victim(name):
                 rest, _, uid = tail.rpartition(',uid=')
                 comm, _, pid = rest.rpartition(',pid=')
                 fields = dict(item.split('=', 1) for item in head[len('oom-kill:'):].split(',') if '=' in item)
-                if delimited and fields.get('oom_memcg') == memcg and fields.get('task_memcg') == memcg \
+                if delimited and leaf(fields.get('oom_memcg')) and leaf(fields.get('task_memcg')) \
                         and pid.isdigit() and uid.strip().isdigit():
                     victim = comm
     finally:
