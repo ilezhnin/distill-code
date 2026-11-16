@@ -115,3 +115,41 @@ async fn a_carrying_republication_evaluates_saved_answers_again_without_a_model(
     );
     dir.close().await;
 }
+
+/// A run that holds a version an evaluator-only republication carries goes
+/// on: its remaining turns are the same task, evaluated with the carrying
+/// version's check (11-16: three paused runs held the six suite-writing
+/// tests republished for share scoring). An ordinary republication still
+/// retires the version for the run.
+#[tokio::test]
+async fn a_run_resumes_on_a_version_a_republication_only_carries() {
+    let (dir, s, _backend) = setup().await;
+    let mut req = request(&s).await;
+    req.repetitions = super::super::analysis::REQUIRED_REPETITIONS;
+    req.max_executions = super::super::analysis::REQUIRED_REPETITIONS;
+    let run = s.start_run(req).await.unwrap();
+    s.store.set_run_state(&run.id, "paused").await.unwrap();
+    let first = s.store.version(&run.request.version_ids[0]).await.unwrap();
+    let mut changed = first.manifest.clone();
+    changed.evaluator.expected = json!({"invented": "another answer"}).to_string();
+    changed.evaluator.known_good = changed.evaluator.expected.clone();
+    changed.evaluator.known_bad = "null".into();
+    changed.evaluator.revision = "invented-revision-2".into();
+    let second = s.republish_evaluator(changed).await.unwrap();
+    assert_eq!(second.carries_from.as_deref(), Some(first.id.as_str()));
+    assert!(s
+        .store
+        .require_current_versions(&run.request.version_ids)
+        .await
+        .is_err());
+    s.store
+        .require_continuable_versions(&run.request.version_ids)
+        .await
+        .unwrap();
+    let resumed = s.control(&run.id, "resume").await.unwrap();
+    assert_eq!(resumed.state, "running");
+    if let Err(error) = s.extend_run(&run.id, &[], &[]).await {
+        assert_ne!(error.code, "version_retired", "{}", error.message);
+    }
+    dir.close().await;
+}

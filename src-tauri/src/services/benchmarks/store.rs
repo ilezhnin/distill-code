@@ -394,6 +394,20 @@ impl Store {
         }
         Ok(out)
     }
+    /// [`Self::require_current_versions`] for the work an admitted run goes
+    /// on with. A version an evaluator-only republication carries is still
+    /// its case, the task unchanged but for the check, and the runner
+    /// evaluates its new turns with the carrying version's evaluator; a run
+    /// that holds it goes on (11-16: three paused runs held the six
+    /// suite-writing tests republished for share scoring). A version
+    /// replaced any other way is retired.
+    pub async fn require_continuable_versions(&self, ids: &[String]) -> Result<()> {
+        let mut carrying = Vec::with_capacity(ids.len());
+        for id in ids {
+            carrying.push(self.carried_version(id).await?.id);
+        }
+        self.require_current_versions(&carrying).await
+    }
     /// Historical manifests stay readable; only current versions accept new work.
     pub async fn require_current_versions(&self, ids: &[String]) -> Result<()> {
         let mut tx = self.pool.begin().await?;

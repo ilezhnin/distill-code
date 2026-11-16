@@ -1166,7 +1166,7 @@ impl BenchmarkService {
     ) -> Result<BenchmarkRun> {
         let run = self.store.run(id).await?;
         self.store
-            .require_current_versions(&run.request.version_ids)
+            .require_continuable_versions(&run.request.version_ids)
             .await?;
         self.store.require_current_versions(version_ids).await?;
         if !run.request.automatic_retry() {
@@ -1292,7 +1292,7 @@ impl BenchmarkService {
     /// stay queued. Returns whether anything is left to run.
     async fn restart_unfinished_cells(&self, run: &BenchmarkRun) -> Result<bool> {
         self.store
-            .require_current_versions(&run.request.version_ids)
+            .require_continuable_versions(&run.request.version_ids)
             .await?;
         run.request.require_dispatch_admission(now())?;
         if !run.request.automatic_retry() {
@@ -1882,6 +1882,17 @@ impl BenchmarkService {
         let lock = evaluation_lock(id);
         let _guard = lock.lock().await;
         let mut a = self.store.attempt(id).await?;
+        // An answer recorded with a reconnect's broken streams in front of it
+        // is evaluated as the model gave it, as "Evaluate again" does.
+        if let Some(answer) = runner::reconnect::rebuilt_answer(
+            &self.store.root,
+            &a,
+            version.manifest.limits.max_artifact_bytes,
+        )
+        .await
+        {
+            a.output = Some(answer);
+        }
         let Some(output) = a.output.clone() else {
             return Ok(());
         };
