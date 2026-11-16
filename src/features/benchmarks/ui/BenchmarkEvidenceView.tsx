@@ -214,12 +214,21 @@ export function BenchmarkEvidenceView({
   const watching =
     open && !blind && attempt.phase === "running" && attempt.sessionId != null;
   const pulse = useBenchmarkSessionActivity(attempt?.sessionId ?? "", watching);
+  // What stops the turn: the run's limit, or the budget the task itself
+  // declares when that is shorter (a repository task's hour), as the runner
+  // takes the lesser of the two.
+  const runLimit = run.data?.request.timeoutSeconds;
+  const taskBudget = manifest?.entryState?.remainingBudgetSeconds;
+  const turnLimit =
+    runLimit != null && taskBudget != null
+      ? Math.min(runLimit, taskBudget)
+      : (runLimit ?? taskBudget);
   const steps =
     attempt && !blind
       ? attemptTrail(t, attempt, {
           judged: panelKind,
           runState: run.data?.state,
-          timeoutSeconds: run.data?.request.timeoutSeconds,
+          timeoutSeconds: turnLimit,
           now,
           formatTime: (at) => formatDate(at, { timeStyle: "short" }),
         })

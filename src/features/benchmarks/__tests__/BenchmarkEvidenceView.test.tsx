@@ -846,6 +846,58 @@ describe("an attempt that is still open", () => {
     ).toHaveLength(2);
   });
 
+  it("counts a running turn against the task's own budget when that is the shorter", async () => {
+    const working: Attempt = {
+      ...attempt,
+      phase: "running",
+      outcome: null,
+      startedAt: Date.now() - 30_000,
+      finishedAt: null,
+      durationMs: null,
+      output: null,
+      evaluations: [],
+      phaseTimes: { dispatched: Date.now() - 30_000 },
+    };
+    vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(working);
+    // The run allows two minutes; the task declares one of its own.
+    vi.mocked(benchmarkApi.getRun).mockResolvedValue({
+      ...run,
+      state: "running",
+      attempts: [working],
+    });
+    const [version] = definition.versions;
+    catalog([
+      {
+        ...definition,
+        versions: [
+          {
+            ...version,
+            manifest: {
+              ...version.manifest,
+              entryState: {
+                schemaVersion: 1,
+                rootTaskId: "invented-root",
+                stepId: "implement",
+                parentStepId: null,
+                fixtureSnapshotHash: "invented",
+                conversationPrefix: "",
+                previousReports: [],
+                remainingBudgetSeconds: 60,
+                contentHash: "invented",
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    showEvidence();
+    const trail = await screen.findByRole("region", { name: "Progress" });
+    await waitFor(() =>
+      expect(within(trail).getByText(/ \/ 1:00$/)).toBeInTheDocument(),
+    );
+    expect(within(trail).queryByText(/ \/ 2:00$/)).not.toBeInTheDocument();
+  });
+
   it("opens the step an attempt ended in on its cause, and folds it away", async () => {
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue({
       ...attempt,
