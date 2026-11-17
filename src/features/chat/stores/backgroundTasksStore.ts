@@ -15,6 +15,11 @@ export interface BackgroundTask {
   description?: string;
   summary?: string;
   outputFilePath?: string;
+  /**
+   * What kind of work it is, in the bridge's word: `shell` for a command,
+   * `monitor`, `workflow`, and `turn` for a turn the agent took on its own.
+   */
+  taskType?: string;
   canStop?: boolean;
   /** When the host first saw the task, in epoch milliseconds. */
   startedAt?: number;
@@ -43,21 +48,6 @@ function timestamp(value: unknown): number | undefined {
 /** True for a task that has not ended: it runs, or waits to run on. */
 export function isBackgroundTaskLive(task: BackgroundTask): boolean {
   return task.state === "running" || task.state === "paused";
-}
-
-/**
- * The tasks in the order a person reads them: what still runs first, oldest
- * first, then what ended, the latest end first. Tasks the host did not time
- * keep the order it sent them in.
- */
-export function orderBackgroundTasks(
-  tasks: readonly BackgroundTask[],
-): BackgroundTask[] {
-  const live = tasks.filter(isBackgroundTaskLive);
-  const ended = tasks.filter((task) => !isBackgroundTaskLive(task));
-  live.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
-  ended.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
-  return [...live, ...ended];
 }
 
 /** How many live background tasks a chat has, under any of its ids. */
@@ -112,12 +102,16 @@ export const useBackgroundTasksStore = create<{
         id: item.id,
         state: item.state,
         ...Object.fromEntries(
-          ["name", "description", "summary", "outputFilePath"].flatMap(
-            (key) => {
-              const value = (item as unknown as Record<string, unknown>)[key];
-              return typeof value === "string" ? [[key, value]] : [];
-            },
-          ),
+          [
+            "name",
+            "description",
+            "summary",
+            "outputFilePath",
+            "taskType",
+          ].flatMap((key) => {
+            const value = (item as unknown as Record<string, unknown>)[key];
+            return typeof value === "string" ? [[key, value]] : [];
+          }),
         ),
         canStop: item.canStop === true,
         ...Object.fromEntries(

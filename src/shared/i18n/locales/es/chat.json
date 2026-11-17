@@ -26,7 +26,28 @@
     "stopFailed": "No se pudo detener la tarea. Inténtalo de nuevo.",
     "clear": "Quitar las tareas terminadas",
     "showOutput": "Mostrar el archivo de salida",
-    "showOutputFailed": "No se pudo mostrar el archivo de salida."
+    "showOutputFailed": "No se pudo mostrar el archivo de salida.",
+    "lanes": {
+      "wakeups": "Despertares programados",
+      "agent": "Turnos del agente"
+    },
+    "agentTurn": "Turno del agente",
+    "runs_one": "{{count}} ejecución",
+    "runs_other": "{{count}} ejecuciones",
+    "flag": {
+      "paused": "En pausa",
+      "failed": "Error",
+      "stopped": "Detenida",
+      "interrupted": "Conexión perdida"
+    },
+    "now": "ahora",
+    "since": "desde las {{time}}",
+    "nextAt": "Próximo despertar a las {{time}}",
+    "nextIn": "en {{time}}",
+    "nextWakeup": "próximo despertar en {{time}}",
+    "last": "Últimos {{span}}",
+    "spanHint": "Cambiar cuánto tiempo atrás muestra la línea de tiempo",
+    "closeDetail": "Cerrar"
   },
   "compaction": {
     "done": "Compactada",

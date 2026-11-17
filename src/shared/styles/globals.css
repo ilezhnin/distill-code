@@ -1745,7 +1745,104 @@
   }
 }
 
+/* ── The background work timeline ─────────────────────────────────────────
+   (src/features/chat/ui/BackgroundTaskTimeline.tsx) */
+
+/* What is yet to come, to the right of now: the same paper, hatched. */
+.flock-lane-future {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--muted-foreground) 10%, transparent) 0 1px,
+    transparent 1px 6px
+  );
+}
+
+/* The line that joins the runs of one lane. It moves only where it leads to
+   a run that has not started yet. */
+.flock-lane-dash {
+  background-image: repeating-linear-gradient(
+    90deg,
+    currentColor 0 3px,
+    transparent 3px 7px
+  );
+}
+
+.flock-lane-dash[data-marching="true"] {
+  animation: flock-lane-march 0.9s linear infinite;
+}
+
+@keyframes flock-lane-march {
+  to {
+    background-position: 7px 0;
+  }
+}
+
+/* The light that runs along a run that is still going. White on either
+   paper: the block under it is tinted, not ink. */
+.flock-lane-shine[data-animated="true"] {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, white 45%, transparent) 50%,
+    transparent 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 30% 100%;
+  animation: flock-meter-shine 2.4s cubic-bezier(0.45, 0, 0.3, 1) infinite;
+}
+
+/* The edge of a run that is still going: where now is. */
+.flock-lane-tip {
+  box-shadow: 0 0 6px 1px var(--info);
+}
+
+.flock-lane-tip[data-animated="true"] {
+  animation: flock-lane-tip 1.6s ease-in-out infinite;
+}
+
+@keyframes flock-lane-tip {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* A run seen ending: one flash as it takes the colour of how it went. */
+.flock-lane-block[data-settled="true"] {
+  animation: flock-lane-settle 0.7s ease-out;
+}
+
+@keyframes flock-lane-settle {
+  from {
+    filter: brightness(2.2) saturate(1.4);
+    transform: scaleY(1.6);
+  }
+  to {
+    filter: none;
+    transform: scaleY(1);
+  }
+}
+
+/* A run that began before the timeline does: its start fades out. */
+.flock-lane-clipped {
+  mask-image: linear-gradient(90deg, transparent, black 14px);
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .flock-lane-shine[data-animated="true"] {
+    animation: none;
+    background-image: none;
+  }
+
+  .flock-lane-dash[data-marching="true"],
+  .flock-lane-tip[data-animated="true"],
+  .flock-lane-block[data-settled="true"] {
+    animation: none;
+  }
+
   .flock-running-dot[data-animated="true"],
   .flock-dart[data-animated="true"],
   .flock-mark[data-animated="true"] .flock-mark-bird,

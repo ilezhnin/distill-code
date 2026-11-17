@@ -652,27 +652,62 @@ function backgroundTaskPreview(
   };
 }
 
+/** A turn the agent took after a wake-up it had scheduled. */
+function wakeupPreview(
+  id: string,
+  startedSecondsAgo: number,
+  tookSeconds: number,
+): BackgroundTask {
+  const startedAt = backgroundTasksPreviewStart - startedSecondsAgo * 1000;
+  return {
+    id,
+    taskType: "turn",
+    state: "completed",
+    name: "Claude is working",
+    description: `A scheduled wakeup fired (set for ${new Date(startedAt).toISOString()}).`,
+    startedAt,
+    endedAt: startedAt + tookSeconds * 1000,
+  };
+}
+
 const backgroundTasksPreview: BackgroundTask[] = [
-  backgroundTaskPreview("suite", "running", "Run the regression suite", 134, {
+  backgroundTaskPreview("suite", "running", "Run the regression suite", 1340, {
+    taskType: "shell",
     summary: "412 of 1 870 tests done",
     canStop: true,
   }),
   backgroundTaskPreview("index", "paused", "Index the documentation", 610, {
+    taskType: "shell",
     canStop: true,
   }),
-  backgroundTaskPreview("build", "failed", "Build the installer", 900, {
+  // The same command started twice, and the turn the agent took over the
+  // first result: one lane.
+  backgroundTaskPreview("build", "failed", "Build the installer", 1500, {
+    taskType: "shell",
     summary: "Exit 1\nerror: linker not found",
-    endedAt: backgroundTasksPreviewStart - 770_000,
+    endedAt: backgroundTasksPreviewStart - 1_370_000,
   }),
-  backgroundTaskPreview("sync", "interrupted", "Sync the fixtures", 1500, {
-    endedAt: backgroundTasksPreviewStart - 1_300_000,
-  }),
-  backgroundTaskPreview("tail", "stopped", "Tail the server log", 2000, {
-    endedAt: backgroundTasksPreviewStart - 1_900_000,
-  }),
-  backgroundTaskPreview("pack", "completed", "Pack the example project", 2500, {
+  backgroundTaskPreview(
+    "build-turn",
+    "completed",
+    'Background command "Build the installer" failed (exit code 1)',
+    1370,
+    { taskType: "turn", endedAt: backgroundTasksPreviewStart - 1_290_000 },
+  ),
+  backgroundTaskPreview("rebuild", "completed", "Build the installer", 800, {
+    taskType: "shell",
     summary: "Exit 0",
-    endedAt: backgroundTasksPreviewStart - 2_488_000,
+    endedAt: backgroundTasksPreviewStart - 470_000,
+  }),
+  wakeupPreview("wake-1", 1200, 70),
+  wakeupPreview("wake-2", 600, 55),
+  backgroundTaskPreview("sync", "interrupted", "Sync the fixtures", 1000, {
+    taskType: "shell",
+    endedAt: backgroundTasksPreviewStart - 880_000,
+  }),
+  backgroundTaskPreview("tail", "stopped", "Tail the server log", 700, {
+    taskType: "shell",
+    endedAt: backgroundTasksPreviewStart - 400_000,
   }),
 ];
 
@@ -1234,6 +1269,10 @@ export function ConversationAnatomyPage() {
             <InlinePreview>
               <BackgroundTaskList
                 tasks={backgroundTasksPreview}
+                wakeup={{
+                  at: backgroundTasksPreviewStart + 240_000,
+                  reason: "watching the regression suite",
+                }}
                 onStop={noopStopBackgroundTask}
                 onClear={() => {}}
               />

@@ -26,7 +26,28 @@
     "stopFailed": "Could not stop the task. Try again.",
     "clear": "Clear finished tasks",
     "showOutput": "Show output file",
-    "showOutputFailed": "Could not show the output file."
+    "showOutputFailed": "Could not show the output file.",
+    "lanes": {
+      "wakeups": "Scheduled wake-ups",
+      "agent": "Agent follow-ups"
+    },
+    "agentTurn": "Agent turn",
+    "runs_one": "{{count}} run",
+    "runs_other": "{{count}} runs",
+    "flag": {
+      "paused": "Paused",
+      "failed": "Failed",
+      "stopped": "Stopped",
+      "interrupted": "Connection lost"
+    },
+    "now": "now",
+    "since": "since {{time}}",
+    "nextAt": "Next wake-up at {{time}}",
+    "nextIn": "in {{time}}",
+    "nextWakeup": "next wake-up in {{time}}",
+    "last": "Last {{span}}",
+    "spanHint": "Change how far back the timeline goes",
+    "closeDetail": "Close"
   },
   "compaction": {
     "done": "Compacted",
