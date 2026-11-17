@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -180,7 +181,10 @@ it("shows and clears the same active attempt issue as the activity strip", async
       [{ ...summary, attention: null }],
     );
   });
-  expect(screen.queryByText(message)).not.toBeInTheDocument();
+  // The cache tells its readers a moment after it is written.
+  await waitFor(() =>
+    expect(screen.queryByText(message)).not.toBeInTheDocument(),
+  );
   expect(screen.getByText("Running")).toBeInTheDocument();
 });
 
@@ -217,6 +221,7 @@ it("lists one model's run by test, in its order, timing the test running now", a
   expect(block("Charlie")).toBeEnabled();
   // Every summary count refers to the same three actual attempts.
   expect(screen.getByText("In progress").nextSibling).toHaveTextContent(/^1$/);
+  expect(screen.queryByText(/ waiting$/)).not.toBeInTheDocument();
   expect(screen.getByText("Passed").nextSibling).toHaveTextContent(/^1$/);
   expect(screen.getByText("Not started").nextSibling).toHaveTextContent(/^1$/);
   expect(screen.getByText("Failed").nextSibling).toHaveTextContent(/^0$/);
@@ -475,6 +480,59 @@ it("keeps a partially scored case unsettled while another repetition awaits revi
   expect(screen.getByText("0 / 1 tests settled")).toBeInTheDocument();
   expect(screen.getByText("In progress").nextSibling?.textContent).toBe("0");
   expect(screen.getByText("Not counted").nextSibling?.textContent).toBe("1");
+});
+
+it("counts as running the tests at a model, and lists those and no other", async () => {
+  vi.mocked(benchmarkApi.listRuns).mockResolvedValue([
+    { ...runSummary, state: "running" },
+  ]);
+  const [alpha, bravo, charlie] = attempts();
+  show({
+    ...run,
+    state: "running",
+    attempts: [
+      alpha,
+      bravo,
+      // Prepared, and waiting for a seat on its account: at no model yet.
+      { ...charlie, phase: "preparing" },
+    ],
+  });
+  const heading = await screen.findByText("In progress · 1 test");
+  const list = within(heading.nextElementSibling as HTMLElement);
+  expect(list.getByText("Bravo")).toBeInTheDocument();
+  expect(list.queryByText("Charlie")).not.toBeInTheDocument();
+  // The title names the run's model once; a line of the list does not.
+  expect(list.queryByText("model-1")).not.toBeInTheDocument();
+  expect(list.queryByText("high")).not.toBeInTheDocument();
+  // The tile counts what the list shows, the waiting test noted beside it.
+  for (const [label, value] of [
+    ["Not started", "0"],
+    ["In progress", "1"],
+    ["Passed", "1"],
+  ]) {
+    expect(screen.getByText(label).nextSibling?.textContent).toBe(value);
+  }
+  expect(screen.getByText("+1 waiting")).toBeInTheDocument();
+});
+
+it("says when the run started, keeps its id for a hover and leaves closing to the cross", async () => {
+  show({ ...run, state: "running", attempts: attempts() });
+  await found("Alpha");
+  const started = screen.getByText(/^Started /);
+  expect(started).toHaveAttribute("title", `Run ${run.id}`);
+  expect(started).not.toHaveTextContent(run.id);
+  expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+});
+
+it("gives a finished run no footer, and one count of what did not finish", async () => {
+  show({ ...run, state: "completed", attempts: attempts() });
+  await found("Alpha");
+  expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(1);
+  for (const name of ["Pause", "Resume", "Cancel run"])
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+  expect(screen.queryByText(/^In progress · /)).not.toBeInTheDocument();
+  expect(screen.queryByText(/ waiting$/)).not.toBeInTheDocument();
 });
 
 it("offers to resume a paused run on the current runtime while keeping its results", async () => {

@@ -283,7 +283,18 @@ export function withOpenCells(
  * per repetition: not started, in progress, passed, failed, and, when any,
  * cases whose attempts stopped before a result.
  */
-export function TaskSummary({ cells }: { cells: TaskCell[] }) {
+export function TaskSummary({
+  cells,
+  atWork,
+}: {
+  cells: TaskCell[];
+  /**
+   * The cases with a repetition at a model now, where the caller knows:
+   * "in progress" then counts those, and notes beside them the cases that
+   * have started and wait for a seat, a sandbox or their judges.
+   */
+  atWork?: ReadonlySet<string>;
+}) {
   const { t } = useTranslation("benchmarks");
   const count = (verdict: TaskCell["verdict"]) =>
     cells.filter((cell) => cell.verdict === verdict).length;
@@ -294,31 +305,50 @@ export function TaskSummary({ cells }: { cells: TaskCell[] }) {
   ).length;
   const passed = count("solved");
   const failed = count("failed");
+  const started = count("running");
+  const running = atWork
+    ? cells.filter(
+        (cell) => cell.verdict === "running" && atWork.has(cell.versionId),
+      ).length
+    : started;
+  const waiting = started - running;
   const items: [string, number][] = [
     ["grid.queued", count("queued") - stopped],
-    ["grid.inProgress", count("running")],
+    ["grid.inProgress", running],
     ["grid.passed", passed],
     ["grid.attention", failed],
   ];
   if (stopped > 0) items.push(["grid.stopped", stopped]);
   return (
     <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {items.map(([key, value]) => (
-        <div key={key} className="rounded-md border border-border px-3 py-2">
-          <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t(key)}
-          </dt>
-          <dd
-            className={cn(
-              "font-display text-xl tabular-nums",
-              key === "grid.passed" && value > 0 && "text-success",
-              key === "grid.attention" && value > 0 && "text-destructive",
-            )}
+      {items.map(([key, value]) => {
+        const split = atWork != null && key === "grid.inProgress";
+        return (
+          <div
+            key={key}
+            title={split ? t("grid.inProgressHint") : undefined}
+            className="flex flex-wrap content-start items-baseline gap-x-2 rounded-md border border-border px-3 py-2"
           >
-            {value}
-          </dd>
-        </div>
-      ))}
+            <dt className="w-full text-[10px] uppercase tracking-widest text-muted-foreground">
+              {t(key)}
+            </dt>
+            <dd
+              className={cn(
+                "font-display text-xl tabular-nums",
+                key === "grid.passed" && value > 0 && "text-success",
+                key === "grid.attention" && value > 0 && "text-destructive",
+              )}
+            >
+              {value}
+            </dd>
+            {split && waiting > 0 ? (
+              <dd className="whitespace-nowrap text-[11px] text-muted-foreground tabular-nums">
+                {t("grid.waitingNote", { count: waiting })}
+              </dd>
+            ) : null}
+          </div>
+        );
+      })}
     </dl>
   );
 }

@@ -30,6 +30,7 @@ import {
   useBenchmarkDefinitions,
   useBenchmarkRuns,
 } from "../hooks/useBenchmarks";
+import { attemptsAtWork } from "../lib/benchmarkActivity";
 import { stalePin } from "../lib/benchmarkCatchUp";
 import { configurationLabel } from "../lib/benchmarkDraft";
 import { explicitEffort } from "../lib/benchmarkEffort";
@@ -105,6 +106,19 @@ export function BenchmarkRunDrawer({
             version.id,
             version.manifest.name,
           ]),
+        ),
+      ),
+    [definitions.data],
+  );
+  // The tests known to be a single turn: only their own attempt says what
+  // is at a model (see `attemptsAtWork`).
+  const plainTests = useMemo(
+    () =>
+      new Set(
+        (definitions.data ?? []).flatMap((definition) =>
+          definition.versions
+            .filter((version) => !version.manifest.workflow)
+            .map((version) => version.id),
         ),
       ),
     [definitions.data],
@@ -221,6 +235,22 @@ export function BenchmarkRunDrawer({
     [summaries.data],
   );
   const taskById = useMemo(() => firstById(taskOrder), [taskOrder]);
+  // The attempts at a model now, read the way the list under the progress
+  // bar reads them, so the count of running tests is the count of its lines.
+  const atWork = useMemo(
+    () =>
+      new Set(
+        attemptsAtWork(
+          {
+            state: run?.state ?? "",
+            workflowActivity: summary?.workflowActivity,
+          },
+          attempts,
+          (versionId) => plainTests.has(versionId),
+        ).map((root) => root.rootAttemptId),
+      ),
+    [attempts, plainTests, run?.state, summary?.workflowActivity],
+  );
   // A model's configurations, one per execution profile, are one model:
   // its run is titled by the model and shows one grid; a matrix of models
   // is titled by its id, one grid per model.
@@ -257,6 +287,11 @@ export function BenchmarkRunDrawer({
       return {
         key,
         label: configurationLabel(entries[0]),
+        atWork: new Set(
+          own
+            .filter((attempt) => atWork.has(attempt.id))
+            .map((attempt) => attempt.versionId),
+        ),
         cells: taskCells(
           order,
           own.map((attempt) => ({
@@ -269,7 +304,16 @@ export function BenchmarkRunDrawer({
         ),
       };
     });
-  }, [attempts, models, names, scores, run?.state, taskById, summaryById]);
+  }, [
+    attempts,
+    atWork,
+    models,
+    names,
+    scores,
+    run?.state,
+    taskById,
+    summaryById,
+  ]);
   // Keep the configuration that works now in view as a matrix run moves on.
   const rows = useRef(new Map<string, HTMLDivElement>());
   // Progress in tests: a cell, one configuration measuring one case, is
@@ -289,10 +333,13 @@ export function BenchmarkRunDrawer({
         cell.status?.kind === "running" || cell.status?.kind === "waiting",
     ),
   )?.key;
+  // One model's run has one grid, and opens at its top: its state, what it
+  // runs now and its counts stay in view.
+  const several = grids.length > 1;
   useEffect(() => {
-    if (runningKey)
+    if (runningKey && several)
       rows.current.get(runningKey)?.scrollIntoView?.({ block: "nearest" });
-  }, [runningKey]);
+  }, [runningKey, several]);
   return (
     <Dialog
       open
@@ -300,7 +347,7 @@ export function BenchmarkRunDrawer({
         if (!open) onClose();
       }}
     >
-      <DialogContent size="lg">
+      <DialogContent size="lg" closeLabel={t("actions.close")}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {single ? (
@@ -315,12 +362,20 @@ export function BenchmarkRunDrawer({
               t("runs.runTitle", { id: shortId(runId) })
             )}
           </DialogTitle>
-          <DialogDescription>
+          {/* When the run began. The title names the run by its model, so
+              its id stays one hover away rather than on show. */}
+          <DialogDescription
+            title={
+              run && single ? t("runs.runTitle", { id: runId }) : undefined
+            }
+          >
             {run
-              ? `${formatDate(run.createdAt, {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                })}${single ? ` · ${shortId(runId)}` : ""}`
+              ? t("runs.started", {
+                  date: formatDate(run.createdAt, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  }),
+                })
               : t("loading")}
           </DialogDescription>
         </DialogHeader>
@@ -417,14 +472,22 @@ export function BenchmarkRunDrawer({
               </div>
               {run.request.workflowPolicy ? (
                 <BenchmarkWorkflowProgress runId={run.id} />
-              ) : summary?.workflowActivity?.length &&
+              ) : summary &&
                 [
                   "running",
                   "pausing",
                   "cancelling",
                   "needs_attention",
                 ].includes(run.state) ? (
-                <BenchmarkWorkflowActivity run={summary} />
+                <BenchmarkWorkflowActivity
+                  run={summary}
+                  attempts={attempts}
+                  // A step's model is named only where it is not the run's.
+                  showModel={(configuration) =>
+                    !single ||
+                    modelIdentity(configuration) !== modelIdentity(single)
+                  }
+                />
               ) : null}
               <div className="max-h-[60vh] space-y-6 overflow-y-auto">
                 {grids.map((grid) => (
@@ -432,7 +495,10 @@ export function BenchmarkRunDrawer({
                     {single ? null : (
                       <h3 className="text-sm font-medium">{grid.label}</h3>
                     )}
-                    <TaskSummary cells={grid.cells} />
+                    <TaskSummary
+                      cells={grid.cells}
+                      atWork={terminal ? undefined : grid.atWork}
+                    />
                     <div
                       ref={(element) => {
                         if (element) rows.current.set(grid.key, element);
@@ -458,55 +524,46 @@ export function BenchmarkRunDrawer({
             </>
           ) : null}
         </DialogBody>
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            flush
-            className="sm:mr-auto"
-            onClick={onClose}
-          >
-            {t("actions.close")}
-          </Button>
-          {run && !terminal ? (
-            <>
-              {outdated && run.request.workflowPolicy ? null : (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={busy || run.state !== "running"}
-                    onClick={() => void control(benchmarkApi.pauseRun)}
-                  >
-                    {t("actions.pause")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={
-                      busy ||
-                      !["paused", "needs_attention", "planned"].includes(
-                        run.state,
-                      )
-                    }
-                    onClick={resume}
-                  >
-                    {t(resuming ? "actions.resuming" : "actions.resume")}
-                  </Button>
-                </>
-              )}
-              <Button
-                type="button"
-                variant="outline"
-                destructive
-                disabled={busy || run.state === "cancelling"}
-                onClick={() => void control(benchmarkApi.cancelRun)}
-              >
-                {t("actions.cancelRun")}
-              </Button>
-            </>
-          ) : null}
-        </DialogFooter>
+        {/* The dialog's own cross closes it; the footer holds only what
+            steers a run that can still be steered. */}
+        {run && !terminal ? (
+          <DialogFooter>
+            {outdated && run.request.workflowPolicy ? null : (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || run.state !== "running"}
+                  onClick={() => void control(benchmarkApi.pauseRun)}
+                >
+                  {t("actions.pause")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={
+                    busy ||
+                    !["paused", "needs_attention", "planned"].includes(
+                      run.state,
+                    )
+                  }
+                  onClick={resume}
+                >
+                  {t(resuming ? "actions.resuming" : "actions.resume")}
+                </Button>
+              </>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              destructive
+              disabled={busy || run.state === "cancelling"}
+              onClick={() => void control(benchmarkApi.cancelRun)}
+            >
+              {t("actions.cancelRun")}
+            </Button>
+          </DialogFooter>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

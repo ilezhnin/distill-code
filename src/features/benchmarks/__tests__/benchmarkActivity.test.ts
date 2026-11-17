@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activeRuns,
+  attemptsAtWork,
   benchmarkProgress,
   rowActivity,
   rowAttention,
@@ -10,8 +11,8 @@ import {
   workingConfigurations,
 } from "../lib/benchmarkActivity";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
-import type { RunSummary } from "../types";
-import { configuration, leaderboardRow, runSummary } from "./fixtures";
+import type { Attempt, RunSummary, WorkflowActivity } from "../types";
+import { attempt, configuration, leaderboardRow, runSummary } from "./fixtures";
 
 const other = { ...configuration, id: "config-2", modelId: "model-2" };
 
@@ -38,6 +39,73 @@ function summary(overrides: Partial<RunSummary>): RunSummary {
 }
 
 describe("benchmark activity", () => {
+  it("reads what is at a model: entered workflows, and single turns past their preparation", () => {
+    const turn = (overrides: Partial<Attempt>): Attempt => ({
+      ...attempt,
+      versionId: "plain",
+      phase: "running",
+      outcome: null,
+      ...overrides,
+    });
+    const entered: WorkflowActivity = {
+      rootAttemptId: "root",
+      versionId: "workflow",
+      repetition: 0,
+      phase: "running",
+      outcome: null,
+      steps: [],
+    };
+    const settled = { ...entered, rootAttemptId: "done", phase: "terminal" };
+    const attempts = [
+      // Known from the summary: listed once.
+      turn({ id: "root", versionId: "workflow" }),
+      // A step of a test not known to be a single turn is the summary's to tell.
+      turn({ id: "step", versionId: "workflow" }),
+      turn({ id: "turn", sessionId: "chat", hostRunId: "host", repetition: 2 }),
+      // Prepared and waiting for a seat, with its judges, or set aside.
+      turn({ id: "seat", phase: "preparing" }),
+      turn({ id: "judges", phase: "awaiting_judges" }),
+      turn({ id: "old", outcome: "superseded" }),
+    ];
+    const plain = (versionId: string) => versionId === "plain";
+    const read = (state: string) =>
+      attemptsAtWork(
+        { state, workflowActivity: [entered, settled] },
+        attempts,
+        plain,
+      );
+    expect(read("running").map((root) => root.rootAttemptId)).toEqual([
+      "root",
+      "turn",
+    ]);
+    // A single turn reads as a workflow of one step: its own chat and model.
+    expect(read("running")[1]).toMatchObject({
+      versionId: "plain",
+      repetition: 2,
+      steps: [
+        {
+          attemptId: "turn",
+          index: 0,
+          phase: "running",
+          sessionId: "chat",
+          hostRunId: "host",
+          configuration,
+        },
+      ],
+    });
+    // A run that stands has nothing at a model.
+    expect(read("paused")).toEqual([]);
+    expect(read("completed")).toEqual([]);
+    // Without the attempts only the summary speaks.
+    expect(
+      attemptsAtWork(
+        { state: "running", workflowActivity: [entered, settled] },
+        undefined,
+        plain,
+      ),
+    ).toEqual([entered]);
+  });
+
   it("retains settled campaign children and its frozen total without counting active children twice", () => {
     const campaign = {
       state: "pausing",

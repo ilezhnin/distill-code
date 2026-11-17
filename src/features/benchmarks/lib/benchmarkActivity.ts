@@ -1,6 +1,12 @@
 // What the runner is doing now, read from run summaries: the sidebar, the
 // Benchmarks pages and a model's rows show it while runs have work left.
-import type { Configuration, LeaderboardRow, RunSummary } from "../types";
+import type {
+  Attempt,
+  Configuration,
+  LeaderboardRow,
+  RunSummary,
+  WorkflowActivity,
+} from "../types";
 import { requests } from "./benchmarkCatchUp";
 import type { WorkflowCampaign } from "./workflowCampaign";
 
@@ -49,6 +55,71 @@ export function benchmarkProgress(
       dispatching.length === 0 &&
       active.every((campaign) => campaign.state === "paused"),
   };
+}
+
+/** The run states in which a repetition may be at a model. */
+const DISPATCHING = new Set([
+  "running",
+  "pausing",
+  "cancelling",
+  "needs_attention",
+]);
+/** The phases of an entered workflow that is still being executed. */
+const ENTERED = new Set(["preparing", "dispatching", "running", "collecting"]);
+/**
+ * The phases in which a single turn is at its model. `preparing` is not one:
+ * a turn prepared and waiting for an account's seat, a sandbox or a sign-in
+ * has started nothing yet.
+ */
+const AT_MODEL = new Set(["dispatching", "running", "collecting"]);
+
+/**
+ * The repetitions a run has at a model now, each as a workflow's activity:
+ * the workflows its summary says it entered, and, of its attempts when
+ * they are at hand, the single turns in flight. `plainTest` says whether a
+ * test is known to be a single turn: a workflow's root attempt names the
+ * session of a step it finished, never the one at work, so a test not known
+ * to be plain is left to the summary. A run that stands has none.
+ */
+export function attemptsAtWork(
+  run: Pick<RunSummary, "state" | "workflowActivity">,
+  attempts: readonly Attempt[] | undefined,
+  plainTest: (versionId: string) => boolean,
+): WorkflowActivity[] {
+  if (!DISPATCHING.has(run.state)) return [];
+  const entered = (run.workflowActivity ?? []).filter((root) =>
+    ENTERED.has(root.phase),
+  );
+  const known = new Set(entered.map((root) => root.rootAttemptId));
+  const plain = (attempts ?? [])
+    .filter(
+      (attempt) =>
+        AT_MODEL.has(attempt.phase) &&
+        attempt.outcome !== "superseded" &&
+        !known.has(attempt.id) &&
+        plainTest(attempt.versionId),
+    )
+    .map((attempt) => ({
+      rootAttemptId: attempt.id,
+      versionId: attempt.versionId,
+      repetition: attempt.repetition,
+      phase: attempt.phase,
+      outcome: attempt.outcome,
+      steps: [
+        {
+          attemptId: attempt.id,
+          index: 0,
+          phase: attempt.phase,
+          outcome: null,
+          startedAt: attempt.startedAt,
+          finishedAt: null,
+          sessionId: attempt.sessionId,
+          hostRunId: attempt.hostRunId,
+          configuration: attempt.observed ?? attempt.configuration,
+        },
+      ],
+    }));
+  return [...entered, ...plain];
 }
 
 /** Runs that dispatch now. */

@@ -380,6 +380,28 @@ it("keeps unknown authored totals unknown and bounds the compact strip to entere
   expect(benchmarkApi.listRuns).not.toHaveBeenCalled();
 });
 
+it("lists a handful of the drawer's tests under their count and offers the rest", async () => {
+  vi.mocked(benchmarkApi.listDefinitions).mockResolvedValue([]);
+  summary.workflowActivity = Array.from({ length: 7 }, (_, index) => ({
+    ...workflow(),
+    rootAttemptId: `root-${index}`,
+    versionId: `version-${index}`,
+  }));
+  render(
+    <QueryClientProvider client={client}>
+      <BenchmarkWorkflowActivity run={summary} />
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByText("In progress · 7 tests")).toBeInTheDocument();
+  expect(screen.getAllByText("Workflow test")).toHaveLength(5);
+  const all = screen.getByRole("button", { name: "Show all 7" });
+  expect(all).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(all);
+  expect(screen.getAllByText("Workflow test")).toHaveLength(7);
+  fireEvent.click(screen.getByRole("button", { name: "Show fewer" }));
+  expect(screen.getAllByText("Workflow test")).toHaveLength(5);
+});
+
 it.each([
   "paused",
   "completed",

@@ -3,14 +3,17 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { IconActivity, IconClock, IconAlertCircle } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
+import { Button } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { benchmarkApi } from "../api/benchmarks";
 import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import { useBenchmarkSessionActivity } from "../hooks/useBenchmarkSessionActivity";
+import { attemptsAtWork } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { modelDisplayName, stateLabel } from "../lib/benchmarkLabels";
 import type {
   Attempt,
+  Configuration,
   RunSummary,
   WorkflowActivity,
   WorkflowActivityStep,
@@ -410,20 +413,23 @@ function WorkflowProgress({
 function AttemptChip({
   root,
   totalSteps,
+  showModel,
 }: {
   root: WorkflowActivity;
   totalSteps?: number;
+  /** Whether the model of the step at work is worth naming. */
+  showModel?: (configuration: Configuration) => boolean;
 }) {
   const { t } = useTranslation("benchmarks");
   const now = useClock();
-  const { phase, dot, current, duration, stepCount, stepStatus } = readProgress(
-    t,
-    root,
-    root.steps,
-    totalSteps,
-    now,
-  );
+  const { phase, dot, current, shownStep, duration, stepCount, stepStatus } =
+    readProgress(t, root, root.steps, totalSteps, now);
   const session = watchedSession(current, true);
+  const model =
+    shownStep && showModel?.(shownStep.configuration)
+      ? shownStep.configuration
+      : null;
+  const effort = explicitEffort(model?.effort);
   return (
     <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
       <span
@@ -441,7 +447,16 @@ function AttemptChip({
           </span>
         )}
       </span>
-      {stepCount > 0 ? (
+      {model ? (
+        <span className="inline-flex items-center gap-1">
+          <span className="shrink-0">
+            {getProviderIcon(model.providerId, "size-3.5")}
+          </span>
+          {modelDisplayName(model)}
+          {effort ? <span>{effort}</span> : null}
+        </span>
+      ) : null}
+      {stepCount > 1 ? (
         <span
           role="img"
           aria-label={stepStatus}
@@ -489,16 +504,32 @@ function AttemptChip({
 
 /** The tests one run names on the strip before the rest are counted. */
 const STRIP_TESTS = 3;
+/** The tests the drawer lists before it offers the rest. */
+const DRAWER_TESTS = 5;
 
-/** Ordinary mixed runs use only entered workflow metadata from list-runs. */
+/**
+ * What a run has at a model now, a line per test with its running
+ * repetitions beside its name. The strip names three tests and counts the
+ * rest, from the run's summary alone. The drawer hands over the run's
+ * attempts, so it knows every repetition at a model, single turns included:
+ * it counts their tests, lists a handful and offers the rest, so a run with
+ * many at once keeps its counts and its grid in sight.
+ */
 export function BenchmarkWorkflowActivity({
   run,
   compact = false,
+  attempts,
+  showModel,
 }: {
   run: RunSummary;
   compact?: boolean;
+  /** The run's attempts, where at hand: its single turns at a model are listed too. */
+  attempts?: readonly Attempt[];
+  /** Whether a step's model is worth naming: it is not the run's own. */
+  showModel?: (configuration: Configuration) => boolean;
 }) {
   const { t } = useTranslation("benchmarks");
+  const [expanded, setExpanded] = useState(false);
   const definitions = useBenchmarkDefinitions();
   // Observe the existing coalesced list query's failure without another fetch
   // or per-workflow polling loop. Cached progress is not proof of availability.
@@ -526,93 +557,133 @@ export function BenchmarkWorkflowActivity({
         {t("activity.checkUnavailable")}
       </span>
     );
-  const roots = (run.workflowActivity ?? []).filter((root) =>
-    ["preparing", "dispatching", "running", "collecting"].includes(root.phase),
-  );
-  if (!compact) {
-    if (roots.length === 0) return null;
-    return (
-      <span className="flex min-w-0 flex-col gap-2">
-        <span className="grid max-h-60 grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3 overflow-y-auto">
-          {roots.map((root) => {
-            const manifest = versions.get(root.versionId);
-            return (
-              <WorkflowProgress
-                key={root.rootAttemptId}
-                root={root}
-                steps={root.steps}
-                totalSteps={manifest?.workflow?.steps.length}
-                title={manifest?.name}
-                summaryOnly
-              />
-            );
-          })}
-        </span>
-      </span>
-    );
-  }
-  // The strip: a line per test, its running repetitions beside its name.
-  // A test running with no workflow to report (a single turn, or one whose
-  // answer awaits its judges) is named too, so the run says all it is doing.
-  const shown = roots.slice(0, STRIP_TESTS);
-  const groups = new Map<string, WorkflowActivity[]>();
+  const roots = attemptsAtWork(run, attempts, (versionId) => {
+    const manifest = versions.get(versionId);
+    return manifest != null && !manifest.workflow;
+  });
+  const shown = compact ? roots.slice(0, STRIP_TESTS) : roots;
+  const tests = new Map<string, WorkflowActivity[]>();
   for (const root of shown) {
-    const group = groups.get(root.versionId) ?? [];
+    const group = tests.get(root.versionId) ?? [];
     group.push(root);
-    groups.set(root.versionId, group);
+    tests.set(root.versionId, group);
   }
-  const entered = new Set(roots.map((root) => root.versionId));
-  const plain = [
-    ...new Set(
-      (run.openCells ?? [])
-        .filter((cell) => cell.running && !entered.has(cell.versionId))
-        .map((cell) => cell.versionId),
-    ),
-  ];
-  const shownPlain = plain.slice(0, Math.max(0, STRIP_TESTS - groups.size));
+  // Without the attempts a test running with no workflow to report (a single
+  // turn, or one whose answer awaits its judges) is at least named, so the
+  // run says all it is doing.
+  const listed = new Set(roots.map((root) => root.versionId));
+  const plain = attempts
+    ? []
+    : [
+        ...new Set(
+          (run.openCells ?? [])
+            .filter((cell) => cell.running && !listed.has(cell.versionId))
+            .map((cell) => cell.versionId),
+        ),
+      ];
+  const shownPlain = compact
+    ? plain.slice(0, Math.max(0, STRIP_TESTS - tests.size))
+    : plain;
   const hidden = roots.length - shown.length + plain.length - shownPlain.length;
   if (roots.length === 0 && plain.length === 0) return null;
+  const foldable = !compact && tests.size > DRAWER_TESTS;
+  const groups =
+    foldable && !expanded ? [...tests].slice(0, DRAWER_TESTS) : [...tests];
   return (
-    <span className="flex min-w-0 flex-col gap-1 border-l border-border pl-3 text-xs text-muted-foreground">
-      {[...groups].map(([versionId, attempts]) => (
-        <span
-          key={versionId}
-          className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1"
+    <span className="flex min-w-0 flex-col gap-1.5">
+      {compact ? null : (
+        <span className="text-xs text-muted-foreground">
+          {t("activity.inProgress", {
+            count: tests.size + shownPlain.length,
+          })}
+        </span>
+      )}
+      <span
+        className={cn(
+          "flex min-w-0 flex-col border-l border-border pl-3 text-xs text-muted-foreground",
+          compact ? "gap-1" : "gap-2",
+        )}
+      >
+        {groups.map(([versionId, running]) => {
+          const manifest = versions.get(versionId);
+          return (
+            // The strip is wide: a test and its repetitions share a line.
+            // The drawer is narrow: the repetitions stand under the name.
+            <span
+              key={versionId}
+              className={cn(
+                "flex min-w-0",
+                compact
+                  ? "flex-wrap items-center gap-x-5 gap-y-1"
+                  : "flex-col gap-0.5",
+              )}
+            >
+              <span
+                className={cn(
+                  "min-w-0 truncate text-sm text-foreground",
+                  compact && "flex-[1_1_12rem]",
+                )}
+                title={manifest?.name}
+              >
+                {manifest?.name ?? t("activity.workflowTask")}
+              </span>
+              <span
+                className={cn(
+                  "flex flex-wrap items-center gap-x-5 gap-y-1",
+                  compact && "justify-end",
+                )}
+              >
+                {[...running]
+                  .sort((a, b) => (a.repetition ?? 0) - (b.repetition ?? 0))
+                  .map((root) => (
+                    <AttemptChip
+                      key={root.rootAttemptId}
+                      root={root}
+                      totalSteps={
+                        manifest && !manifest.workflow
+                          ? 1
+                          : manifest?.workflow?.steps.length
+                      }
+                      showModel={showModel}
+                    />
+                  ))}
+              </span>
+            </span>
+          );
+        })}
+        {shownPlain.map((versionId) => (
+          <span key={versionId} className="flex min-w-0 items-center gap-x-5">
+            <span
+              className="min-w-0 flex-1 truncate text-sm text-foreground"
+              title={versions.get(versionId)?.name}
+            >
+              {versions.get(versionId)?.name ?? t("activity.test")}
+            </span>
+            <span className="inline-flex shrink-0 items-center gap-1.5">
+              <RepetitionDots states={["running"]} />
+              {stateLabel(t, "running")}
+            </span>
+          </span>
+        ))}
+        {hidden > 0 ? (
+          <span>{t("activity.more", { count: hidden })}</span>
+        ) : null}
+      </span>
+      {foldable ? (
+        <Button
+          type="button"
+          variant="ghost"
+          flush
+          size="xs"
+          className="self-start"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((open) => !open)}
         >
-          <span
-            className="min-w-0 flex-[1_1_12rem] truncate text-sm text-foreground"
-            title={versions.get(versionId)?.name}
-          >
-            {versions.get(versionId)?.name ?? t("activity.workflowTask")}
-          </span>
-          <span className="flex flex-wrap items-center justify-end gap-x-5 gap-y-1">
-            {[...attempts]
-              .sort((a, b) => (a.repetition ?? 0) - (b.repetition ?? 0))
-              .map((root) => (
-                <AttemptChip
-                  key={root.rootAttemptId}
-                  root={root}
-                  totalSteps={versions.get(versionId)?.workflow?.steps.length}
-                />
-              ))}
-          </span>
-        </span>
-      ))}
-      {shownPlain.map((versionId) => (
-        <span key={versionId} className="flex min-w-0 items-center gap-x-5">
-          <span
-            className="min-w-0 flex-1 truncate text-sm text-foreground"
-            title={versions.get(versionId)?.name}
-          >
-            {versions.get(versionId)?.name ?? t("activity.test")}
-          </span>
-          <span className="inline-flex shrink-0 items-center gap-1.5">
-            <RepetitionDots states={["running"]} />
-            {stateLabel(t, "running")}
-          </span>
-        </span>
-      ))}
-      {hidden > 0 ? <span>{t("activity.more", { count: hidden })}</span> : null}
+          {expanded
+            ? t("activity.showFewer")
+            : t("activity.showAll", { count: tests.size })}
+        </Button>
+      ) : null}
     </span>
   );
 }
