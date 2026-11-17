@@ -545,6 +545,30 @@ pub(crate) fn selection_refusal(
     format!("{SELECTION_REFUSED}: {}", details.join("; "))
 }
 
+/// The acknowledged configuration on the profile its run planned. A provider
+/// acknowledges a model, an effort and a mode; the profile is the run's, by
+/// case. Until 11-16 a workflow root whose step made auxiliary calls was
+/// marked `native_text_auxiliary` whatever its profile, so a repository
+/// case's repetitions with such calls read as text ones, apart from the rest
+/// of their cell, and the case never completed. Read, never rewritten: an
+/// auxiliary marker of another profile keeps the planned one.
+fn on_planned_profile<'a>(
+    requested: &Configuration,
+    observed: &'a Configuration,
+) -> Cow<'a, Configuration> {
+    if !observed.execution_profile.ends_with("_auxiliary")
+        || ledger_profile(&observed.execution_profile)
+            == ledger_profile(&requested.execution_profile)
+    {
+        return Cow::Borrowed(observed);
+    }
+    let mut planned = observed.clone();
+    planned
+        .execution_profile
+        .clone_from(&requested.execution_profile);
+    Cow::Owned(planned)
+}
+
 /// What ran. A refused selection (another model, effort or fast mode) stays
 /// with the candidate that was asked for; where that request left effort or
 /// fast mode to the provider, the requested model's acknowledged value fills it.
@@ -560,7 +584,7 @@ pub(crate) fn execution_configuration(attempt: &Attempt) -> Cow<'_, Configuratio
     if attempt.outcome.as_deref() != Some("selection_changed")
         || matches_selection(requested, observed)
     {
-        return Cow::Borrowed(observed);
+        return on_planned_profile(requested, observed);
     }
     let mut asked = requested.clone();
     if asked.effort.is_none() {

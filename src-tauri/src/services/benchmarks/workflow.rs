@@ -1258,8 +1258,14 @@ fn aggregate(root: &mut Attempt, steps: &[SavedStep]) {
         if root.observed.is_none() {
             root.observed = auxiliary.attempt.observed.clone();
         }
-        if let Some(observed) = root.observed.as_mut() {
-            observed.execution_profile = "native_text_auxiliary".into();
+        // The marker is the text profile's, as for a single turn: a
+        // repository case's tool turns need several calls and keep their
+        // profile, or the board would read the repetition as a text one,
+        // apart from the rest of its case's cell.
+        if root.configuration.execution_profile == "native_text" {
+            if let Some(observed) = root.observed.as_mut() {
+                observed.execution_profile = "native_text_auxiliary".into();
+            }
         }
     }
     if root.configuration.execution_profile == "workflow_policy" {
@@ -2303,6 +2309,31 @@ mod tests {
             "native_text_auxiliary"
         );
         assert_eq!(result.usage.input, Some(20));
+        directory.close().await;
+    }
+
+    /// A repository case's tool turns need several model calls, so its root
+    /// keeps the profile its run planned: marked as a text one, the
+    /// repetition would stand apart from the rest of its case's cell.
+    #[tokio::test]
+    async fn auxiliary_calls_leave_a_repository_root_on_its_profile() {
+        let (directory, service, _, root, version) = setup().await;
+        let (_tx, cancel) = watch::channel(false);
+        let mut result = execute(&service, root, version, 30, cancel).await.unwrap();
+        let mut steps = saved_steps(&service.store, &result.id).await.unwrap();
+        result.configuration.execution_profile = "protected_repository".into();
+        for step in &mut steps {
+            step.attempt.observed.as_mut().unwrap().execution_profile =
+                "protected_repository".into();
+        }
+        steps[0].attempt.usage.schema = "provider_turn_with_auxiliary_v2".into();
+        aggregate(&mut result, &steps);
+        // The usage still says auxiliary calls were made.
+        assert_eq!(result.usage.schema, "workflow_sum_with_auxiliary_v2");
+        assert_eq!(
+            result.observed.unwrap().execution_profile,
+            "protected_repository"
+        );
         directory.close().await;
     }
 

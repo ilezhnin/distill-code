@@ -1431,6 +1431,52 @@ fn auxiliary_repetitions_stay_in_their_configurations_cell() {
     assert_eq!(row.median_output_tokens, Some(100.0));
 }
 
+/// Workflow roots of repository cases recorded until 11-16 carry the text
+/// profile's auxiliary marker on each repetition that made auxiliary calls.
+/// Read as recorded, a case with one such repetition and two without stood
+/// on two cells of its run, neither with every repetition, and its row never
+/// ranked although the run had measured the case in full.
+#[test]
+fn a_text_auxiliary_marker_never_splits_a_repository_cell() {
+    let mut data = before_only();
+    data.runs[0].request.repetitions = 3;
+    data.runs[0].request.configurations[0].execution_profile = "protected_repository".into();
+    for a in &mut data.attempts {
+        a.configuration.execution_profile = "protected_repository".into();
+        a.observed.as_mut().unwrap().execution_profile = "protected_repository".into();
+    }
+    let mut extra = Vec::new();
+    for a in &data.attempts {
+        for repetition in 1..3 {
+            let mut a = a.clone();
+            a.id = format!("{}-{repetition}", a.id);
+            a.repetition = repetition;
+            // One repetition of each case made auxiliary calls.
+            if repetition == 1 {
+                a.usage.schema = "workflow_sum_with_auxiliary_v2".into();
+                a.observed.as_mut().unwrap().execution_profile = "native_text_auxiliary".into();
+            }
+            extra.push(a);
+        }
+    }
+    data.attempts.extend(extra);
+    data.required_repetitions = 3;
+    let report = leaderboard(&data, &ResultQuery::default());
+    // One configuration on the profile the run planned, every case complete.
+    assert_eq!(report.rows.len(), 1);
+    let row = &report.rows[0];
+    assert_eq!(row.configuration.execution_profile, "protected_repository");
+    assert_eq!((row.suite_complete, row.suite_planned), (6, 6));
+    assert_eq!(row.status, "comparable");
+    // The model row, whose cells are one run's repetitions under one
+    // execution identity, holds the same six complete cases.
+    assert_eq!(report.models.len(), 1);
+    let model = &report.models[0].row;
+    assert_eq!((model.suite_complete, model.suite_planned), (6, 6));
+    assert_eq!(model.complete_version_ids.len(), 6);
+    assert_eq!(model.status, "comparable");
+}
+
 fn dated_points(data: &QueryData, configuration: &Configuration) -> Vec<(i64, Option<u32>)> {
     history(data, configuration)
         .iter()
