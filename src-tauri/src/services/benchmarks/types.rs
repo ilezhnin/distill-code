@@ -782,6 +782,11 @@ pub struct Attempt {
     /// resume never resets the bound on in-place retries.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pre_answer_refusals: u32,
+    /// Tries of this repetition an infrastructure failure ended that its run
+    /// set aside and measured again by itself. Carried by the replacement, so
+    /// the run stops trying after a few.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub infrastructure_retries: u32,
     pub session_id: Option<String>,
     pub host_run_id: Option<String>,
     pub observed: Option<Configuration>,

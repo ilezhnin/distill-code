@@ -486,7 +486,8 @@ flight starts, in a hash-bound record that never changes once closed. Time in
 flight is never credited, and campaign roots, which never continue
 mid-trajectory, get no credit. Evaluator admission waits on the
 captured answer; a runtime resource failure is inconclusive infrastructure
-evidence, not a model score. The application does not change global
+evidence, not a model score, and its check runs again on the same answer (see
+[Freeze and run](#4-freeze-and-run-the-measurement-matrix)). The application does not change global
 `.wslconfig` or the resources of other distributions.
 
 Readiness reports the digest of every sandbox helper, pinned executable and
@@ -845,6 +846,22 @@ Kimi Code ends a turn whose model request failed with a plain `end_turn` and
 keeps the error to itself; a Kimi turn that completed no request (no usage, no
 answer) is an infrastructure failure, not the model's answer, and earlier ones
 read as such without their records being rewritten.
+
+An infrastructure failure is never a score, and an ordinary run mends what it
+can by itself. A turn it ended after the prompt was sent (a lost bridge, the
+provider's rate limit cutting the answer off, a Kimi turn with no request) is
+set aside with its evidence and spend, and the run measures that repetition
+again as a fresh attempt: after one minute, five when the provider pushed back
+for its rate, at most twice per repetition. Past that, after five such
+failures in a row on one provider with no turn settling otherwise between
+them, or for a refusal no reset lifts, the cell stays an infrastructure
+failure until the operator resumes the run. A workflow root and a run that
+forbids retries are never measured again this way. A check the sandbox ended
+without a verdict (memory pressure from above the job, the broker's deadline,
+a failed cleanup) runs again on the same sealed answer, twice at most, twenty
+seconds apart, with no model call; an answer whose check still has no verdict
+settles unscored, and resuming its run checks that sealed answer again instead
+of asking the model for another.
 
 A turn that breaks its test's policy settles by whose doing the breach was.
 The model's own work against the rules (a tool, a plan, background work or

@@ -791,6 +791,7 @@ mod tests {
                     });
                     data.attempts.push(Attempt {
                         pre_answer_refusals: 0,
+                        infrastructure_retries: 0,
                         id: id.clone(),
                         run_id: id,
                         version_id: version.id.clone(),

@@ -240,6 +240,7 @@ fn pending_attempt(
 ) -> Attempt {
     Attempt {
         pre_answer_refusals: 0,
+        infrastructure_retries: 0,
         id: uuid::Uuid::new_v4().to_string(),
         run_id: run_id.to_owned(),
         version_id: version_id.to_owned(),
@@ -282,6 +283,18 @@ fn pending_attempt(
 }
 
 /// A cell the run never measured and never will: no repetition to restart or drop.
+/// Whether resuming its run checks `attempt`'s sealed answer again instead of
+/// measuring the case anew: its turn finished and was sealed, and its check
+/// ended without a verdict (the sandbox failed, the evaluator did, or the run
+/// stopped while the check waited). The answer is paid for; only the check is
+/// owed.
+fn rechecked_on_resume(attempt: &Attempt) -> bool {
+    attempt.phase == "terminal"
+        && attempt.outcome.as_deref() == Some("evaluation_error")
+        && attempt.evidence_hash.is_some()
+        && attempt.workflow_steps.is_empty()
+}
+
 fn never_measured(attempts: &[Attempt]) -> bool {
     attempts
         .iter()
@@ -1330,6 +1343,31 @@ impl BenchmarkService {
                 waiting.reason = None;
                 self.store.save_attempt(&waiting).await?;
                 unfinished = true;
+            }
+            // An answer whose check failed without a verdict keeps its sealed
+            // answer as well: it is checked again, and no model is asked. One
+            // whose sealed answer cannot be read is measured again below.
+            if rechecked_on_resume(attempt)
+                && self
+                    .store
+                    .version(&attempt.version_id)
+                    .await?
+                    .manifest
+                    .workflow
+                    .is_none()
+            {
+                let mut sealed = self.store.attempt(&attempt.id).await?;
+                if fixtures::restore_sealed_output(&self.store.root, &mut sealed)
+                    .await
+                    .is_ok()
+                {
+                    sealed.phase = "interrupted".into();
+                    sealed.outcome = Some("completed".into());
+                    sealed.reason = None;
+                    sealed.wait_until = None;
+                    self.store.save_attempt(&sealed).await?;
+                    unfinished = true;
+                }
             }
         }
         let run = &self.store.run(&run.id).await?;

@@ -61,6 +61,19 @@ pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
 /// The reason a sealed generation carries while the sandbox has not yet
 /// admitted its evaluation.
 const EVALUATION_WAIT: &str = "Waiting for local resources to evaluate";
+/// How many more times a check the sandbox's infrastructure ended (memory
+/// pressure from above the job, the broker's deadline, a failed cleanup) runs
+/// on the same sealed answer before the answer settles unscored. The check
+/// calls no model.
+const CHECK_RERUNS: u32 = 2;
+/// How long such a check waits before it runs again.
+const CHECK_RERUN_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(20)
+};
+/// The reason a sealed answer carries while its check waits to run again.
+const CHECK_AGAIN: &str = "Checking again after an infrastructure failure";
 /// How long an evaluation the sandbox refused before starting waits before it
 /// asks again. The broker's own admission already waited out its window.
 pub(super) const EVALUATION_RETRY: Duration = if cfg!(test) {
@@ -2569,6 +2582,10 @@ pub(super) fn forget_quota_waits(run_id: &str) {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(run, _), _| run != run_id);
     }
+    INFRASTRUCTURE_STREAKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(run, _), _| run != run_id);
 }
 
 /// Explicit resume probes quota/sign-in availability again. Preserve unrelated
@@ -2855,6 +2872,82 @@ fn evaluation_failure_outcome(error: &BenchmarkError) -> &'static str {
     } else {
         "evaluation_error"
     }
+}
+
+/// Whether a check that failed with `error` runs again on the same sealed
+/// answer, after `reruns` such runs: the sandbox's infrastructure ended it
+/// (see [`CHECK_RERUNS`]). The candidate's own limit, an evaluator's defect
+/// and a missing runtime decide the answer or need the operator, and settle.
+fn check_runs_again(error: &BenchmarkError, reruns: u32) -> bool {
+    error.code == "infrastructure_failure" && reruns < CHECK_RERUNS
+}
+
+/// Tries of one repetition a run measures again by itself after an
+/// infrastructure failure ended them. Past them the cell stays unmeasured
+/// until the operator resumes the run, as before.
+const INFRASTRUCTURE_RETRIES: u32 = 2;
+/// Turns of one provider in a run that an infrastructure failure ended in a
+/// row, with no turn that settled otherwise between them, after which the run
+/// stops measuring them again by itself: the provider or the sandbox is down,
+/// and each further try would only cost.
+const INFRASTRUCTURE_STREAK: u32 = 5;
+/// How long a try's replacement waits before it asks, and how long when the
+/// provider pushed back for its rate.
+const INFRASTRUCTURE_RETRY_MS: i64 = if cfg!(test) { 20 } else { 60 * 1000 };
+const THROTTLED_RETRY_MS: i64 = 5 * 60 * 1000;
+/// The reason of a try its run set aside after an infrastructure failure.
+/// The outcome in it is what the test's trail shows for the try.
+const MEASURED_AGAIN: &str =
+    "Measured again in the same run after an infrastructure failure (this one: infrastructure_failure)";
+/// The reason its replacement waits with.
+const MEASURING_AGAIN: &str =
+    "An infrastructure failure ended the last try; the test is measured again";
+
+/// How many turns of `scope` (see [`quota_scope`]) in `run_id` an
+/// infrastructure failure ended in a row, this one counted: `failed` adds to
+/// the streak, any other settled turn ends it. Kept in memory, so a restart
+/// or the operator's resume begins it again.
+static INFRASTRUCTURE_STREAKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), u32>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn infrastructure_streak(run_id: &str, scope: &str, failed: bool) -> u32 {
+    let mut streaks = INFRASTRUCTURE_STREAKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (run_id.to_owned(), scope.to_owned());
+    if failed {
+        let streak = streaks.entry(key).or_default();
+        *streak += 1;
+        *streak
+    } else {
+        streaks.remove(&key);
+        0
+    }
+}
+
+/// Whether the run measures `settled` again by itself: a standalone try of a
+/// run that allows retries, which an infrastructure failure ended before
+/// anything of it was evaluated. Not the model's answer, so nothing is lost
+/// by asking again; a workflow root's committed steps are never replayed, a
+/// refusal no reset lifts (a spent balance, an account on hold) would only
+/// be refused again, and `streak` failures in a row say the cause is not
+/// this turn's.
+fn measured_again_by_itself(
+    request: &RunRequest,
+    version: &BenchmarkVersion,
+    settled: &Attempt,
+    streak: u32,
+) -> bool {
+    request.automatic_retry()
+        && request.require_dispatch_admission(now()).is_ok()
+        && version.manifest.workflow.is_none()
+        && settled.phase == "terminal"
+        && settled.outcome.as_deref() == Some("infrastructure_failure")
+        && settled.evaluations.is_empty()
+        && settled.infrastructure_retries < INFRASTRUCTURE_RETRIES
+        && streak < INFRASTRUCTURE_STREAK
+        && !settled.reason.as_deref().is_some_and(refused_for_good)
 }
 /// A sign-in too short for the turn that the Grok CLI renews only later: the
 /// user's environment keeps its renewal window narrower than a turn needs
@@ -9979,6 +10072,16 @@ impl BenchmarkService {
                 quota_recovered(&run.id, &quota_scope(&a.configuration));
                 completed.phase = self.settled_phase(run, &completed).await?.into();
                 self.store.save_attempt(&completed).await?;
+                let streak = infrastructure_streak(
+                    &run.id,
+                    &quota_scope(&a.configuration),
+                    completed.outcome.as_deref() == Some("infrastructure_failure"),
+                );
+                if measured_again_by_itself(&run.request, &version, &completed, streak)
+                    && self.store.run_state(&run.id).await? == "running"
+                {
+                    self.measure_again(run, completed).await?;
+                }
             }
             Err(error) => {
                 let mut failed = self.store.attempt(&a.id).await?;
@@ -10280,6 +10383,51 @@ impl BenchmarkService {
             .into_iter()
             .find(|account| Some(account.as_str()) != current && !exhausted(run_id, account))
     }
+    /// Sets aside a try an infrastructure failure ended and queues a fresh
+    /// one for the same repetition, as an operator's resume does for the
+    /// whole run: the failed try keeps its evidence and spend and counts
+    /// nowhere, and its replacement waits a moment (longer when the provider
+    /// pushed back for its rate) before it asks again.
+    async fn measure_again(&self, run: &BenchmarkRun, failed: Attempt) -> Result<()> {
+        let throttled = failed
+            .reason
+            .as_deref()
+            .is_some_and(account_pace::throttle_signal);
+        let mut fresh = super::pending_attempt(
+            &run.id,
+            &failed.version_id,
+            run.request
+                .configurations
+                .iter()
+                .find(|configuration| configuration.id == failed.configuration.id)
+                .unwrap_or(&failed.configuration),
+            failed.repetition,
+        );
+        fresh.infrastructure_retries = failed.infrastructure_retries + 1;
+        fresh.reason = Some(MEASURING_AGAIN.into());
+        fresh.wait_until = Some(
+            now()
+                + if throttled {
+                    THROTTLED_RETRY_MS
+                } else {
+                    INFRASTRUCTURE_RETRY_MS
+                },
+        );
+        log::warn!(
+            "[benchmarks] attempt {}: an infrastructure failure ended its turn; the run measures the test again as attempt {} (try {} of {})",
+            failed.id,
+            fresh.id,
+            fresh.infrastructure_retries + 1,
+            INFRASTRUCTURE_RETRIES + 1
+        );
+        let mut superseded = failed;
+        superseded.reason = Some(MEASURED_AGAIN.into());
+        superseded.outcome = Some(super::analysis::SUPERSEDED.into());
+        self.store.supersede_attempt(&superseded).await?;
+        self.store.insert_attempt(&fresh).await?;
+        self.wake.notify_one();
+        Ok(())
+    }
     /// The pending attempts ready to dispatch. In a run admitted before author
     /// cells were measured, a pending cell whose candidate authored the case
     /// settles as excluded here, without any model call. A cell whose
@@ -10343,13 +10491,14 @@ impl BenchmarkService {
         }
         let output = completed.output.clone().unwrap_or_default();
         let mut waited = false;
+        let mut reruns = 0;
         let scope =
             evaluation_preparation_scope(&self.store.root.display().to_string(), &version.manifest);
         let job = format!("evaluation:{}", completed.id);
         let evaluation = loop {
             // Waiting never probes or restarts a worker. Cancellation stays
             // responsive while the shared two-minute deadline runs down.
-            if stop.cancelled() && (waited || !admission_window::has_room(&scope)) {
+            if stop.cancelled() && (waited || reruns > 0 || !admission_window::has_room(&scope)) {
                 completed.outcome = Some("evaluation_error".into());
                 completed
                     .reason
@@ -10438,6 +10587,25 @@ impl BenchmarkService {
                         json!({}),
                     )
                     .await;
+                    // The sandbox ended this check, not the answer: the same
+                    // sealed answer is checked again, and no model is asked.
+                    if check_runs_again(&error, reruns) && !stop.cancelled() {
+                        reruns += 1;
+                        log::warn!(
+                            "[benchmarks] attempt {}: its check failed in the sandbox and runs again ({reruns} of {CHECK_RERUNS}): {}",
+                            completed.id,
+                            error.message
+                        );
+                        completed.reason = Some(format!("{CHECK_AGAIN}: {}", error.message));
+                        self.store.save_attempt(&completed).await?;
+                        self.changed().await;
+                        let until = Instant::now() + CHECK_RERUN_WAIT;
+                        while Instant::now() < until && !stop.cancelled() {
+                            tokio::time::sleep(CHECK_RERUN_WAIT.min(Duration::from_millis(100)))
+                                .await;
+                        }
+                        continue;
+                    }
                     completed.outcome = Some(evaluation_failure_outcome(&error).into());
                     completed.reason = Some(error.message);
                     return Ok(completed);
@@ -10769,6 +10937,16 @@ pub struct FakeBackend {
     pub(super) evaluation_refusals: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     pub(super) evaluations: std::sync::atomic::AtomicU64,
+    /// Evaluations the sandbox's infrastructure ends after their worker
+    /// started, without a verdict.
+    #[cfg(test)]
+    pub(super) evaluation_infrastructure_failures: std::sync::atomic::AtomicU64,
+    /// Turns an infrastructure failure ends after their prompt was sent, and
+    /// the provider's words for it (a lost bridge when none are set).
+    #[cfg(test)]
+    pub(super) infrastructure_turn_failures: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pub(super) infrastructure_turn_words: std::sync::Mutex<Option<String>>,
     /// Once this many turns ran (zero: never), the next one waits, once, for
     /// a sandbox sign-in renewal that other sessions hold up.
     #[cfg(test)]
@@ -10856,6 +11034,19 @@ impl ExecutionBackend for FakeBackend {
                 ));
             }
             self.evaluations_entered.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            if self
+                .evaluation_infrastructure_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(BenchmarkError::new(
+                    "infrastructure_failure",
+                    "infrastructure_error: benchmark process tree reached its memory ceiling",
+                ));
+            }
             while self.hold_evaluations.load(Ordering::SeqCst)
                 && self
                     .evaluation_permits
@@ -11163,6 +11354,36 @@ impl ExecutionBackend for FakeBackend {
                     json!({"kind":QUOTA_WAIT,"dispatchStarted":true}).to_string(),
                 ));
             }
+            #[cfg(test)]
+            if take(&self.infrastructure_turn_failures) {
+                a.phase = "running".into();
+                a.session_id = Some(format!("failed-session-{}", a.id));
+                a.host_run_id = Some(format!("failed-turn-{}", a.id));
+                a.observed = Some(a.configuration.clone());
+                store.save_attempt(&a).await?;
+                let words = self
+                    .infrastructure_turn_words
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| {
+                        "The agent's bridge exited before this turn finished".into()
+                    });
+                a.outcome = Some("infrastructure_failure".into());
+                a.reason = Some(
+                    json!({"code":-32603,"message":words,"data":{"accountId":"invented",
+                        "dispatchStarted":true,"promptNotAccepted":false}})
+                    .to_string(),
+                );
+                a.output = Some(String::new());
+                a.usage.input = Some(7);
+                a.finished_at = Some(now());
+                a.evidence_hash = Some(
+                    fixtures::seal(&store.root, &a, &json!({"provider":"isolated_e2e_fake"}))
+                        .await?,
+                );
+                return Ok(a);
+            }
             let flying = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak_in_flight.fetch_max(flying, Ordering::SeqCst);
             a.phase = "running".into();
@@ -11286,6 +11507,9 @@ mod held_pass_tests;
 
 #[cfg(test)]
 mod evaluation_wait_tests;
+
+#[cfg(test)]
+mod infrastructure_retry_tests;
 
 #[cfg(test)]
 mod sign_in_renewal_tests;
@@ -14899,6 +15123,7 @@ mod tests {
     fn a_case_goes_out_whole_and_a_begun_case_first() {
         let attempt = |version: &str, repetition: u32, started: bool| Attempt {
             pre_answer_refusals: 0,
+            infrastructure_retries: 0,
             id: format!("{version}-{repetition}"),
             run_id: "run".into(),
             version_id: version.into(),
@@ -15730,7 +15955,7 @@ mod tests {
                 "content": {"text": text, "type": "text"}, "sessionUpdate": kind}
         })
     }
-    fn blank_attempt() -> Attempt {
+    pub(super) fn blank_attempt() -> Attempt {
         let data = super::super::analysis::tests::dataset();
         let mut attempt = data.attempts[0].clone();
         attempt.usage = TokenUsage::default();
