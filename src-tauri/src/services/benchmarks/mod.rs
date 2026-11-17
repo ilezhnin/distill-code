@@ -1436,7 +1436,10 @@ impl BenchmarkService {
     /// run that planned fewer repetitions keeps nothing. A run still open is
     /// completed as it stands.
     pub(super) async fn bake(&self, run: &BenchmarkRun, at: i64) -> Result<()> {
-        let mut tx = self.store.pool.begin().await?;
+        // Immediate: sealing reads each attempt's reason before it writes,
+        // and SQLite refuses at once, without waiting, to upgrade a read
+        // another writer has overtaken.
+        let mut tx = self.store.pool.begin_with("BEGIN IMMEDIATE").await?;
         Self::bake_in_transaction(&mut tx, run, at).await?;
         tx.commit().await?;
         self.changed().await;

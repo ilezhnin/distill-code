@@ -260,3 +260,38 @@ fn only_a_failure_worth_asking_again_is_measured_again() {
     assert_eq!(infrastructure_streak("invented-run", "invented", true), 1);
     forget_quota_waits("invented-run");
 }
+
+/// Sealing a sitting that meets another writer waits for it: it reads each
+/// attempt's reason before it writes, and SQLite refuses at once to upgrade a
+/// read another connection's write has overtaken ("database is locked").
+#[tokio::test]
+async fn sealing_a_sitting_waits_for_a_concurrent_write_instead_of_failing() {
+    let (dir, service, _backend) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let mut writer = service
+        .store
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO benchmark_events(entity_id,kind,created_at) VALUES(?,?,?)")
+        .bind("invented-writer")
+        .bind("concurrent_write")
+        .bind(0_i64)
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    let sealing = tokio::spawn({
+        let service = service.clone();
+        let run = run.clone();
+        async move { service.bake(&run, now()).await }
+    });
+    // Long enough for the sealing to read what it replaces.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    writer.commit().await.unwrap();
+    sealing.await.unwrap().unwrap();
+    let sealed = service.store.run(&run.id).await.unwrap();
+    assert_eq!(sealed.state, "completed");
+    assert_eq!(sealed.attempts[0].outcome.as_deref(), Some("superseded"));
+    dir.close().await;
+}
