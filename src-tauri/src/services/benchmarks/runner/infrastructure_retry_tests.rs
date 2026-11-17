@@ -100,6 +100,47 @@ async fn resuming_checks_a_sealed_answer_again_instead_of_asking_the_model() {
     dir.close().await;
 }
 
+/// 11-16: a paired probe past its own memory ceiling had been recorded as the
+/// sandbox's failure, so three answers stood unscored. Once the sandbox named
+/// the ceiling the candidate's, resuming still left them evaluator errors:
+/// the run stopped again and asked for another resume, which could only
+/// repeat the same check.
+#[tokio::test]
+async fn resuming_scores_an_answer_whose_check_passes_the_candidates_own_ceiling() {
+    let (dir, service, backend) = setup().await;
+    backend
+        .evaluation_infrastructure_failures
+        .store(u64::from(CHECK_RERUNS) + 1, Ordering::SeqCst);
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let stopped = settle(&service, &run.id).await;
+    let unscored = stopped.attempts[0].clone();
+    assert_eq!(unscored.outcome.as_deref(), Some("evaluation_error"));
+
+    backend
+        .evaluation_candidate_limits
+        .store(1, Ordering::SeqCst);
+    service.control(&run.id, "resume").await.unwrap();
+    let resumed = settle(&service, &run.id).await;
+    assert_eq!(resumed.state, "completed");
+    assert_eq!(resumed.attempts.len(), 1);
+    let checked = &resumed.attempts[0];
+    assert_eq!(checked.id, unscored.id);
+    // The answer past its budget: a measurement, scored 0, nothing to resume.
+    assert_eq!(checked.outcome.as_deref(), Some("budget_reached"));
+    assert_eq!(super::super::analysis::score(checked), Some(0.0));
+    assert_eq!(
+        backend.evaluation_candidate_limits.load(Ordering::SeqCst),
+        0,
+        "the check was not asked again"
+    );
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    // No run stays open on it, and no notice asks for attention.
+    let listed = service.store.runs().await.unwrap();
+    let summary = listed.iter().find(|entry| entry.id == run.id).unwrap();
+    assert!(summary.attention.is_none(), "{:?}", summary.attention);
+    dir.close().await;
+}
+
 #[tokio::test]
 async fn a_turn_an_infrastructure_failure_ended_is_measured_again_by_its_run() {
     let (dir, service, backend) = setup().await;

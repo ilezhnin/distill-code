@@ -9033,8 +9033,12 @@ impl BenchmarkService {
                             self.changed().await;
                             return Ok(());
                         }
+                        // As in `settle`: the candidate's own past its
+                        // job's ceiling is its answer, scored 0. Left as an
+                        // evaluator error it stayed unscored, and every
+                        // resume ran the same check into the same ceiling.
                         Err(e) => {
-                            restored.outcome = Some("evaluation_error".into());
+                            restored.outcome = Some(evaluation_failure_outcome(&e).into());
                             restored.reason = Some(e.message);
                         }
                     }
@@ -10941,6 +10945,9 @@ pub struct FakeBackend {
     /// started, without a verdict.
     #[cfg(test)]
     pub(super) evaluation_infrastructure_failures: std::sync::atomic::AtomicU64,
+    /// Evaluations the candidate's own code drives past the job's ceiling.
+    #[cfg(test)]
+    pub(super) evaluation_candidate_limits: std::sync::atomic::AtomicU64,
     /// Turns an infrastructure failure ends after their prompt was sent, and
     /// the provider's words for it (a lost bridge when none are set).
     #[cfg(test)]
@@ -11045,6 +11052,19 @@ impl ExecutionBackend for FakeBackend {
                 return Err(BenchmarkError::new(
                     "infrastructure_failure",
                     "infrastructure_error: benchmark process tree reached its memory ceiling",
+                ));
+            }
+            #[cfg(test)]
+            if self
+                .evaluation_candidate_limits
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(BenchmarkError::new(
+                    CANDIDATE_LIMIT,
+                    "The candidate's code drove its check past the job's memory ceiling",
                 ));
             }
             while self.hold_evaluations.load(Ordering::SeqCst)
