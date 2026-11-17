@@ -1406,6 +1406,13 @@ async function probeGrok(root, children) {
       default: value === "high",
     })),
     supports_backend_search: true,
+    // What the chat proxy's own list adds for every model it serves
+    // (2026-11-16): the agent preset and prompt label Grok Build runs the
+    // model under. The owned session must stay the benchmark's whatever the
+    // list asks for, so the stub asks for the same.
+    system_prompt_label: "Grok 4.7",
+    use_concise: false,
+    agent_type: "grok-build-plan",
   };
   const stub = await loopback((entry, response) => {
     // Grok titles a session by forcing a `session_title` call on its
@@ -1888,9 +1895,22 @@ async function probeGrok(root, children) {
       await exists(marker),
       "Positive control must run the hostile hook or MCP fixture",
     );
+    // Every fixture that can run writes the one marker, and the last to
+    // finish names it: the user home's Claude hook and MCP server run beside
+    // Grok's own, so their labels prove the control as well. Without them the
+    // control failed whenever the Claude hook wrote last (11-16: every other
+    // run in the Linux sandbox).
     const grokMarkerLabel = await readFile(marker, "utf8");
     assert(
-      ["grok-hook", "grok-mcp", "mcp-json", "SessionStart", "tool"].includes(grokMarkerLabel),
+      [
+        "grok-hook",
+        "grok-mcp",
+        "claude-hook",
+        "claude-mcp",
+        "mcp-json",
+        "SessionStart",
+        "tool",
+      ].includes(grokMarkerLabel),
       `Positive control marker must carry a known label, got ${JSON.stringify(grokMarkerLabel)}`,
     );
     assert(

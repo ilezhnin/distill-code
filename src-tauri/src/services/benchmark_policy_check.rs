@@ -368,6 +368,38 @@ mod tests {
         }
     }
 
+    /// Every fixture of the Grok control writes the one marker file, and the
+    /// one that finishes last names it. A label the control does not know
+    /// fails the whole check whenever its fixture writes last: the Claude
+    /// hook's did so every other run in the Linux sandbox (11-16), which left
+    /// Grok's sandbox check unrenewed until someone asked again.
+    #[test]
+    fn the_grok_control_knows_every_label_its_fixtures_write() {
+        let probe = INPUTS
+            .iter()
+            .find(|(path, _)| path.ends_with("benchmark-provider-policy-probe.mjs"))
+            .unwrap()
+            .1;
+        let grok = &probe[probe.find("async function probeGrok").unwrap()
+            ..probe.find("async function probeKimi").unwrap()];
+        let known = &grok[grok.find("const grokMarkerLabel").unwrap()..];
+        let known = &known[..known.find(".includes(grokMarkerLabel)").unwrap()];
+        let mut labels = Vec::new();
+        for call in ["writeMarker(\"", "sessionStartHook(\""] {
+            for (at, _) in grok.match_indices(call) {
+                let rest = &grok[at + call.len()..];
+                labels.push(&rest[..rest.find('"').unwrap()]);
+            }
+        }
+        assert!(labels.len() >= 5, "{labels:?}");
+        for label in labels {
+            assert!(
+                known.contains(&format!("\"{label}\"")),
+                "the Grok control fails when the {label} fixture writes the marker last"
+            );
+        }
+    }
+
     #[test]
     fn automatic_renewal_runs_once_and_backs_off_after_a_failure() {
         use std::time::Instant;
