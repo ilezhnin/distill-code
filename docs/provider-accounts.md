@@ -72,7 +72,14 @@ The account panel polls every minute and refreshes on window focus or request.
 It shows reported subscription, quota windows, reset times, account identity,
 reset-credit inventory, and freshness. Missing provider telemetry is displayed
 as unknown, never as an unlimited allowance. API-key accounts do not expose a
-subscription quota meter. Claude's `get_usage` reply omits reset grants, so
+subscription quota meter; their card reads "Billed per use". A Codex API key is
+checked with OpenAI's model list, which spends nothing: a key OpenAI rejects
+(401) asks to be entered again, and a failed check leaves the account usable and
+stale. Such an account can also keep an OpenAI Admin key ("Track spend"), which
+Flock uses only to read the organization's spend this calendar month (UTC) from
+the Costs API; it is DPAPI-protected beside the API key, never given to Codex,
+and cleared with the key on sign-out or removal. OpenAI offers no API for the
+remaining credit balance. An isolated (E2E) run checks no key. Claude's `get_usage` reply omits reset grants, so
 Flock reads quota and `cedar_ember` grants together through the native CLI's
 first-party usage endpoint. Missing telemetry stays unknown. Failed reads retain the last known
 values as stale. A 429 pauses usage requests for at least one minute, increasing

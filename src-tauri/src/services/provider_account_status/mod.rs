@@ -6,6 +6,7 @@ mod claude_resets;
 mod codex;
 pub(crate) mod grok;
 mod kimi;
+mod openai_key;
 mod types;
 mod windows;
 mod zai;
@@ -619,6 +620,8 @@ fn merge_read(
             status.reset_tokens = old.reset_tokens.clone();
             status.credits = old.credits.clone();
             status.on_credits = old.on_credits;
+            status.key_verified |= old.key_verified;
+            status.spend = status.spend.or_else(|| old.spend.clone());
             status.last_updated_at = old.last_updated_at;
             if old.state == AccountState::Limited {
                 status.state = AccountState::Limited;
@@ -643,16 +646,17 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
     };
     // An isolated run must never probe the user's own CLI sign-ins merely by
     // opening the window; stored accounts live in its own run root.
-    if spec.connection == ConnectionFlow::Cli
-        && app
-            .try_state::<crate::services::e2e_mode::E2eMode>()
-            .is_some()
-    {
+    let isolated = app
+        .try_state::<crate::services::e2e_mode::E2eMode>()
+        .is_some();
+    if spec.connection == ConnectionFlow::Cli && isolated {
         return empty;
     }
-    if account.auth_method == provider_accounts::AuthMethod::ApiKey
-        && spec.connection == ConnectionFlow::BrowserOrApiKey
-    {
+    let api_key = account.auth_method == provider_accounts::AuthMethod::ApiKey
+        && spec.connection == ConnectionFlow::BrowserOrApiKey;
+    // OpenAI is asked whether it accepts a Codex key; an isolated run's
+    // fixture key is never sent anywhere.
+    if api_key && (spec.telemetry != Telemetry::Codex || isolated) {
         // A metered key has no plan window; its presence is the whole status.
         empty.subscription = Some("API".into());
         empty.state = match provider_accounts::account_has_credentials(app, account) {
@@ -663,6 +667,7 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
         return empty;
     }
     let result = match spec.telemetry {
+        Telemetry::Codex if api_key => openai_key::fetch(app, account).await,
         Telemetry::Codex => codex::fetch(app, account).await,
         Telemetry::Claude => claude::fetch(app, account).await,
         Telemetry::Zai => zai::fetch(app, account).await,

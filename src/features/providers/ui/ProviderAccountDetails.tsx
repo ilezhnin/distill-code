@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { accountUsageFor } from "@/features/status/lib/accountUsage";
@@ -8,6 +9,7 @@ import { Badge } from "@/shared/ui/badge";
 import type {
   ProviderAccount,
   ProviderAccountStatus,
+  ProviderApiSpend,
 } from "../api/providerAccounts";
 import { accountStatusIsStale } from "../lib/providerAccountStatus";
 import {
@@ -37,7 +39,9 @@ export function ProviderAccountDetails({
   onUseReset?: (row: ResetTokenRow) => void;
   resetDisabled?: boolean;
 }) {
+  const { t } = useTranslation("settings");
   const usage = accountUsageFor(account, status);
+  const spend = usage.configured ? status?.spend : null;
   return (
     <ProviderUsageDetails
       usage={usage}
@@ -47,7 +51,42 @@ export function ProviderAccountDetails({
       resetTokens={resetTokenRows(status, now)}
       onUseReset={canUseAccountReset(status, now) ? onUseReset : undefined}
       resetDisabled={resetDisabled}
-    />
+      billedPerUse={
+        account.authMethod === "api_key" && usage.planType === "API"
+      }
+    >
+      {usage.configured && status?.keyVerified ? (
+        <p className="text-muted-foreground">{t("accounts.keyAccepted")}</p>
+      ) : null}
+      {spend ? <ApiSpendLine spend={spend} /> : null}
+    </ProviderUsageDetails>
+  );
+}
+
+function ApiSpendLine({ spend }: { spend: ProviderApiSpend }) {
+  const { t } = useTranslation("settings");
+  const { formatNumber } = useLocaleFormatting();
+  const currency = spend.currency?.match(/^[A-Z]{3}$/)?.[0];
+  const value =
+    spend.amount == null || !Number.isFinite(spend.amount)
+      ? t("accounts.notReported")
+      : formatNumber(
+          spend.amount,
+          currency
+            ? { style: "currency", currency }
+            : { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+        );
+  return (
+    <>
+      <p className="text-muted-foreground">
+        {t("accounts.monthSpend", { value })}
+      </p>
+      {spend.error ? (
+        <p className="break-words text-destructive" role="status">
+          {spend.error}
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -66,6 +105,8 @@ export function ProviderUsageDetails({
   resetTokens,
   onUseReset,
   resetDisabled = false,
+  billedPerUse = false,
+  children,
 }: {
   usage: ProviderRateLimits;
   now: number;
@@ -74,6 +115,10 @@ export function ProviderUsageDetails({
   resetTokens?: ResetTokenRow[];
   onUseReset?: (row: ResetTokenRow) => void;
   resetDisabled?: boolean;
+  /** A metered key: it has no plan limits to report. */
+  billedPerUse?: boolean;
+  /** Account lines shown under the usage limits. */
+  children?: ReactNode;
 }) {
   const { t } = useTranslation("settings");
   const { formatDate, formatNumber } = useLocaleFormatting();
@@ -117,8 +162,11 @@ export function ProviderUsageDetails({
       {getUsageSections(usage).length ? (
         <UsageLimits provider={usage} now={now} />
       ) : (
-        <p className="text-muted-foreground">{t("accounts.limitsUnknown")}</p>
+        <p className="text-muted-foreground">
+          {t(billedPerUse ? "accounts.apiNoLimits" : "accounts.limitsUnknown")}
+        </p>
       )}
+      {children}
       {usage.credits?.map((credit) => {
         const amount = (raw: string | null) => {
           const numeric = raw?.trim() ? Number(raw) : NaN;

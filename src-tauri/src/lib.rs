@@ -523,6 +523,7 @@ pub fn run() {
             commands::provider_accounts::list_provider_accounts,
             commands::provider_accounts::add_provider_account,
             commands::provider_accounts::update_provider_account,
+            commands::provider_accounts::set_provider_account_admin_key,
             commands::provider_accounts::remove_provider_account,
             commands::provider_accounts::set_default_provider_account,
             commands::provider_accounts::set_provider_account_routing,

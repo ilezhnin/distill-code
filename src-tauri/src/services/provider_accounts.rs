@@ -733,11 +733,24 @@ fn secret_path(root: &Path, account: &ProviderAccount) -> Result<PathBuf, String
     Ok(path)
 }
 
-fn write_api_key(root: &Path, account: &ProviderAccount, key: &str) -> Result<(), String> {
+/// The organization admin key a Codex API-key account reads its spend
+/// with. Only the status adapter reads it; no provider process gets it.
+fn admin_key_path(root: &Path, account: &ProviderAccount) -> Result<PathBuf, String> {
+    let path = account_dir(root, account)?.join("admin-key.dat");
+    flock_root::reject_document_links(root, &path)?;
+    Ok(path)
+}
+
+fn clean_secret(key: &str) -> Result<&str, String> {
     let key = key.trim();
     if key.is_empty() || key.len() > 16384 || key.contains(['\r', '\n', '\0']) {
         return Err("Enter a non-empty API key without line breaks".into());
     }
+    Ok(key)
+}
+
+fn write_api_key(root: &Path, account: &ProviderAccount, key: &str) -> Result<(), String> {
+    let key = clean_secret(key)?;
     prepare_home(root, account)?;
     let protected = protect_secret(key.as_bytes())?;
     atomic_write(&secret_path(root, account)?, &protected)
@@ -823,6 +836,59 @@ pub fn api_key(app: &AppHandle, account: &ProviderAccount) -> Result<String, Str
     read_api_key(&flock_root::app_root(app)?, account)
 }
 
+/// The admin key saved for reading `account`'s organization spend, if any.
+pub fn admin_key(app: &AppHandle, account: &ProviderAccount) -> Result<Option<String>, String> {
+    validate_identity(account)?;
+    read_admin_key(&flock_root::app_root(app)?, account)
+}
+
+fn read_admin_key(root: &Path, account: &ProviderAccount) -> Result<Option<String>, String> {
+    let bytes = match fs::read(admin_key_path(root, account)?) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("Cannot read the saved admin key".into()),
+    };
+    let clear = unprotect_secret(&bytes)?;
+    String::from_utf8(clear)
+        .map(Some)
+        .map_err(|_| "Stored admin key is invalid".into())
+}
+
+/// Saves `key` as the admin key `account_id` reads its organization spend
+/// with, or forgets the saved one. Nothing a running chat uses changes.
+pub fn set_admin_key(app: &AppHandle, account_id: &str, key: Option<&str>) -> Result<(), String> {
+    let root = flock_root::app_root(app)?;
+    let _guard = store_lock()?;
+    let snapshot = read_store(&root)?;
+    let account = snapshot
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .ok_or("Provider account does not exist")?;
+    set_admin_key_at(&root, account, key)
+}
+
+fn set_admin_key_at(
+    root: &Path,
+    account: &ProviderAccount,
+    key: Option<&str>,
+) -> Result<(), String> {
+    if account.provider_id != "codex-acp" || account.auth_method != AuthMethod::ApiKey {
+        return Err("Only Codex accounts connected with an API key read spend".into());
+    }
+    let path = admin_key_path(root, account)?;
+    let Some(key) = key else {
+        return match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("Cannot remove the saved admin key".into()),
+        };
+    };
+    let key = clean_secret(key)?;
+    prepare_home(root, account)?;
+    atomic_write(&path, &protect_secret(key.as_bytes())?)
+}
+
 /// Presence is a local diagnostic, not evidence that the provider accepted a
 /// credential. An expired OAuth access token with a refresh token remains usable.
 pub fn account_has_credentials(app: &AppHandle, account: &ProviderAccount) -> Result<bool, String> {
@@ -893,6 +959,7 @@ fn clear_api_credentials_at(root: &Path, account: &ProviderAccount) -> Result<()
     let home = account_dir(root, account)?.join("home");
     let paths = [
         secret_path(root, account)?,
+        admin_key_path(root, account)?,
         home.join("auth.json"),
         home.join(".credentials.json"),
     ];
@@ -1055,6 +1122,7 @@ fn remove_account_at(root: &Path, account_id: &str) -> Result<ProviderAccountsSn
     let home = account_dir(root, &account)?.join("home");
     let paths = [
         secret_path(root, &account)?,
+        admin_key_path(root, &account)?,
         home.join("auth.json"),
         home.join(".credentials.json"),
     ];
@@ -1654,6 +1722,52 @@ mod tests {
         let mut subscription = one.clone();
         subscription.auth_method = AuthMethod::OAuth;
         assert!(clear_api_credentials_at(root.path(), &subscription).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_codex_api_accounts_admin_key_is_protected_and_goes_with_its_key() {
+        let root = tempfile::tempdir().unwrap();
+        let add = |provider: &str, method: AuthMethod, key: Option<&str>| {
+            add_account_at(
+                root.path(),
+                provider.into(),
+                format!("{provider} {method:?}"),
+                method,
+                key.map(Into::into),
+            )
+            .unwrap()
+        };
+        let codex = add("codex-acp", AuthMethod::ApiKey, Some("fixture-project"));
+        let other = add("codex-acp", AuthMethod::ApiKey, Some("fixture-other"));
+        let admin = "sk-admin-isolation-test-secret";
+        assert_eq!(read_admin_key(root.path(), &codex).unwrap(), None);
+        set_admin_key_at(root.path(), &codex, Some(&format!(" {admin}\n"))).unwrap();
+        set_admin_key_at(root.path(), &other, Some("fixture-other-admin")).unwrap();
+        let bytes = fs::read(admin_key_path(root.path(), &codex).unwrap()).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains(admin));
+        assert_eq!(
+            read_admin_key(root.path(), &codex).unwrap().as_deref(),
+            Some(admin)
+        );
+        // Only the status read uses it: Codex never sees it.
+        let env = scoped_env_at(root.path(), &codex, vec![]).unwrap();
+        assert!(env.iter().all(|(_, value)| value != admin));
+        assert!(set_admin_key_at(root.path(), &codex, Some("line\nbreak")).is_err());
+        set_admin_key_at(root.path(), &codex, None).unwrap();
+        set_admin_key_at(root.path(), &codex, None).unwrap();
+        assert_eq!(read_admin_key(root.path(), &codex).unwrap(), None);
+        set_admin_key_at(root.path(), &codex, Some(admin)).unwrap();
+        clear_api_credentials_at(root.path(), &codex).unwrap();
+        assert_eq!(read_admin_key(root.path(), &codex).unwrap(), None);
+        remove_account_at(root.path(), &other.id).unwrap();
+        assert!(!admin_key_path(root.path(), &other).unwrap().exists());
+        for account in [
+            add("codex-acp", AuthMethod::OAuth, None),
+            add("claude-acp", AuthMethod::ApiKey, Some("fixture-claude")),
+        ] {
+            assert!(set_admin_key_at(root.path(), &account, Some(admin)).is_err());
+        }
     }
 
     #[test]

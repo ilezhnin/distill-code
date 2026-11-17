@@ -51,6 +51,10 @@ import {
   type ResetTokenRow,
 } from "../lib/resetTokens";
 import { ProviderAccountDetails } from "./ProviderAccountDetails";
+import {
+  ProviderAdminKeyDialog,
+  readsApiSpend,
+} from "./ProviderAdminKeyDialog";
 import { resetTokenText } from "./ResetTokenList";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { providerDisplayName as providerLabel } from "../providerCatalog";
@@ -347,6 +351,7 @@ function AccountRow({
       ).length,
   );
   const [connecting, setConnecting] = useState(false);
+  const [addingAdminKey, setAddingAdminKey] = useState(false);
   const [resetRequest, setResetRequest] = useState<{
     key: string;
     /** The key repeats an earlier try the provider did not confirm. */
@@ -412,6 +417,25 @@ function AccountRow({
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {readsApiSpend(account) && !needsSignIn && !authenticating ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              disabled={busy}
+              onClick={() =>
+                status?.spend
+                  ? void run(() =>
+                      useProviderAccountsStore
+                        .getState()
+                        .setAdminKey(account.id, null),
+                    )
+                  : setAddingAdminKey(true)
+              }
+            >
+              {t(status?.spend ? "accounts.stopSpend" : "accounts.trackSpend")}
+            </Button>
+          ) : null}
           {!isDefault && !needsSignIn && !authenticating ? (
             <Button
               type="button"
@@ -503,6 +527,11 @@ function AccountRow({
         <p role="alert" className="break-words text-xs text-destructive">
           {auth.message}
         </p>
+      ) : needsSignIn && !authenticating && status?.error ? (
+        // Why the provider turned the saved sign-in away, such as a revoked key.
+        <p role="alert" className="break-words text-xs text-destructive">
+          {status.error}
+        </p>
       ) : null}
       {/* An open reset confirmation shows the error itself. */}
       {error && !resetRequest ? (
@@ -514,6 +543,12 @@ function AccountRow({
         <p role="status" className="text-xs text-muted-foreground">
           {t(`accounts.resetOutcomes.${resetOutcome}`)}
         </p>
+      ) : null}
+      {addingAdminKey ? (
+        <ProviderAdminKeyDialog
+          account={account}
+          onClose={() => setAddingAdminKey(false)}
+        />
       ) : null}
       {connecting ? (
         <AccountConnectionDialog

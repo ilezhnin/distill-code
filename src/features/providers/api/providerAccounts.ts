@@ -104,6 +104,20 @@ export interface ProviderAccountResetCredit {
   description: string | null;
 }
 
+/**
+ * What the organization behind an API key spent this calendar month (UTC),
+ * read with the admin key saved for the account.
+ */
+export interface ProviderApiSpend {
+  /** In major units; null when the last read failed. */
+  amount: number | null;
+  /** Upper-case ISO 4217. */
+  currency: string | null;
+  /** Start of the month the amount covers. */
+  since: number;
+  error: string | null;
+}
+
 export type ProviderAccountState =
   | "ready"
   | "limited"
@@ -140,6 +154,10 @@ export interface ProviderAccountStatus {
    * may still show room. Cleared once a turn on the account is served.
    */
   refused?: string | null;
+  /** The provider accepted the saved API key on the last check. */
+  keyVerified?: boolean;
+  /** Present while an admin key for reading spend is saved. */
+  spend?: ProviderApiSpend | null;
 }
 
 export interface ProviderAccountStatuses {
@@ -210,6 +228,14 @@ export function updateProviderAccount(
   },
 ): Promise<ProviderAccount> {
   return invoke("update_provider_account", { accountId, ...patch });
+}
+
+/** Saves the admin key the account reads its spend with, or forgets it (null). */
+export function setProviderAccountAdminKey(
+  accountId: string,
+  adminKey: string | null,
+): Promise<void> {
+  return invoke("set_provider_account_admin_key", { accountId, adminKey });
 }
 
 export function removeProviderAccount(

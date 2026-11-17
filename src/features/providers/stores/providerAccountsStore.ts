@@ -16,6 +16,8 @@ interface ProviderAccountsState extends api.ProviderAccountsSnapshot {
     id: string,
     patch: Parameters<typeof api.updateProviderAccount>[1],
   ) => Promise<void>;
+  /** Saves the admin key `id` reads its spend with, or forgets it (null). */
+  setAdminKey: (id: string, adminKey: string | null) => Promise<void>;
   remove: (id: string) => Promise<void>;
   setDefault: (providerId: string, accountId: string) => Promise<void>;
   setRouting: (providerId: string, enabled: boolean) => Promise<void>;
@@ -211,6 +213,10 @@ export const useProviderAccountsStore = create<ProviderAccountsState>(
           .getState()
           .invalidateProvider(account.providerId, { forget: true });
       }
+      void get().refresh(true);
+    },
+    setAdminKey: async (id, adminKey) => {
+      await api.setProviderAccountAdminKey(id, adminKey);
       void get().refresh(true);
     },
     remove: async (id) => {

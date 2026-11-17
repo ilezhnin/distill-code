@@ -74,6 +74,21 @@ pub async fn update_provider_account(
     Ok(result)
 }
 
+/// Saves or forgets the admin key a Codex API-key account reads its
+/// organization's spend with. Chats on the account keep running: the key
+/// they use does not change.
+#[tauri::command]
+pub async fn set_provider_account_admin_key(
+    app: AppHandle,
+    account_id: String,
+    admin_key: Option<String>,
+) -> Result<(), String> {
+    provider_accounts::set_admin_key(&app, &account_id, admin_key.as_deref())?;
+    provider_account_status::prepare_account_change(&app, &account_id).await;
+    changed(&app);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn remove_provider_account(
     app: AppHandle,

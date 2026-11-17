@@ -13,6 +13,20 @@ pub struct CreditBalance {
     pub unlimited: bool,
 }
 
+/// What the organization behind an API key spent this calendar month (UTC),
+/// read with the admin key the owner saved for the account. Display only.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiSpend {
+    /// In major units; `None` when the last read failed.
+    pub amount: Option<f64>,
+    /// Upper-case ISO 4217.
+    pub currency: Option<String>,
+    /// Epoch milliseconds of the month's start.
+    pub since: i64,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountState {
@@ -151,6 +165,12 @@ pub struct ProviderAccountStatus {
     /// sign-in changes. Turns are never held back for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
+    /// The provider accepted the account's saved API key on the last check.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub key_verified: bool,
+    /// Present while an admin key for reading spend is saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend: Option<ApiSpend>,
 }
 
 impl ProviderAccountStatus {
@@ -171,6 +191,8 @@ impl ProviderAccountStatus {
             error: None,
             usage_retry_at: None,
             refused: None,
+            key_verified: false,
+            spend: None,
         }
     }
 }

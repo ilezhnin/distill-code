@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   signOut: vi.fn(),
   update: vi.fn(),
   add: vi.fn(),
+  setAdminKey: vi.fn(),
 }));
 vi.mock("../api/providerAccounts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/providerAccounts")>()),
@@ -266,6 +268,7 @@ beforeEach(() => {
     signOut: mocks.signOut,
     update: mocks.update,
     add: mocks.add,
+    setAdminKey: mocks.setAdminKey,
     authStates: {},
   });
   useChatSessionStore.setState({
@@ -644,6 +647,65 @@ describe("account surfaces", () => {
         apiKey: "test-key",
       }),
     );
+  });
+
+  it("shows a checked API key, reads spend with a separate admin key and says why a key was turned away", async () => {
+    setAccounts(["codex-acp"], [{ ...accounts[0], authMethod: "api_key" }]);
+    const api = {
+      ...status("personal"),
+      subscription: "API",
+      keyVerified: true,
+    };
+    useProviderAccountsStore.setState({ statuses: { personal: api } });
+    mocks.setAdminKey.mockResolvedValue(undefined);
+    render(<ProviderAccountsPanel />);
+    expect(
+      screen.getByText("Billed per use, no plan limits"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("API key accepted")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Track spend" }));
+    const dialog = screen.getByRole("dialog", { name: "Track OpenAI spend" });
+    fireEvent.change(within(dialog).getByLabelText("Admin key"), {
+      target: { value: " admin-key " },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocks.setAdminKey).toHaveBeenCalledWith("personal", "admin-key"),
+    );
+    const spend = { amount: 12.345, currency: "USD", since: now, error: null };
+    act(() =>
+      useProviderAccountsStore.setState({
+        statuses: { personal: { ...api, spend } },
+      }),
+    );
+    expect(
+      screen.getByText("Organization spend this month: $12.35"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Stop tracking spend" }),
+    );
+    await waitFor(() =>
+      expect(mocks.setAdminKey).toHaveBeenCalledWith("personal", null),
+    );
+    act(() =>
+      useProviderAccountsStore.setState({
+        statuses: {
+          personal: {
+            ...api,
+            keyVerified: false,
+            state: "needs_auth",
+            error: "OpenAI rejected the saved API key; enter a new one",
+          },
+        },
+      }),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "OpenAI rejected the saved API key",
+    );
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Track spend" }),
+    ).not.toBeInTheDocument();
   });
 
   it("names the planned account while keeping the current chat account unchanged", () => {
