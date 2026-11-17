@@ -8,6 +8,7 @@ import { Button, type ButtonFeedbackState } from "@/shared/ui/button";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { Progress } from "@/shared/ui/progress";
 import { Spinner } from "@/shared/ui/spinner";
+import { cn } from "@/shared/lib/cn";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import {
   benchmarkKeys,
@@ -25,6 +26,7 @@ import {
   runProgress,
 } from "../lib/benchmarkActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
+import { roughSpan, runPace } from "../lib/benchmarkRunPace";
 import { modelActivity, modelKey, workingModels } from "../lib/benchmarkModels";
 import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { runWindowCloses } from "../lib/benchmarkPlan";
@@ -188,148 +190,187 @@ export function BenchmarkActivity({
           const feedback = feedbackFor(run.id);
           const busy = feedback === "loading";
           const resumable = RESUMABLE.has(run.state);
+          const pace = runPace(run, Date.now());
+          const closes = pace
+            ? formatDate(pace.closesAt, {
+                dateStyle: "short",
+                timeStyle: "short",
+              })
+            : null;
           return (
             <div
               key={run.id}
-              className="flex w-full items-center gap-2 rounded-lg border border-border pr-2 transition-colors hover:bg-muted/50"
+              className="overflow-hidden rounded-lg border border-border transition-colors hover:bg-muted/50"
             >
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 flex-col gap-2 px-3 py-2 text-left"
-                onClick={() => onOpenRun(run.id)}
-              >
-                <span className="flex w-full flex-wrap items-center gap-3">
-                  {run.state === "running" ? (
-                    <Spinner
-                      decorative
-                      className="size-4 shrink-0 text-chart-1"
-                    />
-                  ) : run.state === "paused" ? null : (
-                    <StateBadge state={run.state} />
-                  )}
-                  <span className="flex min-w-0 items-center gap-3">
-                    {models.slice(0, SHOWN_MODELS).map((entry) => {
-                      const effort = explicitEffort(entry.effort);
-                      return (
-                        <span
-                          key={entry.id}
-                          className="flex min-w-0 items-center gap-1.5"
-                        >
-                          <span className="shrink-0">
-                            {getProviderIcon(entry.providerId, "size-4")}
-                          </span>
-                          <span className="truncate text-sm font-medium">
-                            {modelDisplayName(
-                              entry,
-                              names.get(modelNameKey(entry)),
-                            )}
-                          </span>
-                          {effort ? (
-                            <Badge variant="outline">{effort}</Badge>
-                          ) : null}
-                          {entry.fastMode ? (
-                            <Badge variant="outline">{t("fastMode")}</Badge>
-                          ) : null}
-                        </span>
-                      );
-                    })}
-                    {models.length > SHOWN_MODELS ? (
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {t("activity.more", {
-                          count: models.length - SHOWN_MODELS,
-                        })}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 text-sm tabular-nums">
-                    {t("activity.progress", { settled, total })}
-                  </span>
-                  <Progress
-                    value={total === 0 ? 0 : (settled / total) * 100}
-                    aria-label={t("runs.progressLabel")}
-                    className="h-1.5 w-32 shrink-0"
-                  />
-                </span>
-                {run.attention ? (
-                  <span
-                    className="flex items-start gap-2 text-xs text-destructive"
-                    title={run.attention.reason}
-                  >
-                    <AlertTriangle
-                      aria-hidden="true"
-                      className="size-3.5 shrink-0"
-                    />
-                    {attentionLabel(t, run)}
-                  </span>
-                ) : null}
-                {steering?.runId === run.id && steering.refusal ? (
-                  <span
-                    className="flex items-start gap-2 text-xs text-destructive"
-                    title={steering.refusal}
-                  >
-                    <AlertTriangle
-                      aria-hidden="true"
-                      className="size-3.5 shrink-0"
-                    />
-                    {t(
-                      steering.refusal.includes("Linux text policy proof")
-                        ? "activity.policyCheckMissing"
-                        : "activity.actionRefused",
-                    )}
-                  </span>
-                ) : null}
-                {run.workflowActivity?.length ? (
-                  <BenchmarkWorkflowActivity run={run} compact />
-                ) : null}
-              </button>
-              {/* Steering without opening the run: Pause while it runs,
-                  Resume once it stands, and Cancel always last. */}
-              <span className="flex shrink-0 items-center gap-1">
-                {resumable ? (
-                  <Button
-                    type="button"
-                    variant="subtle"
-                    tone="success"
-                    size="icon-xs"
-                    aria-label={t("actions.resume")}
-                    tooltip={t("actions.resume")}
-                    feedbackState={feedback}
-                    loadingVisual="spinner"
-                    errorLabel={<AlertTriangle aria-hidden="true" />}
-                    onClick={() => void steer(run.id, benchmarkApi.resumeRun)}
-                  >
-                    <Play aria-hidden="true" />
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="subtle"
-                    tone="warning"
-                    size="icon-xs"
-                    aria-label={t("actions.pause")}
-                    tooltip={t("actions.pause")}
-                    disabled={run.state !== "running"}
-                    feedbackState={feedback}
-                    loadingVisual="spinner"
-                    errorLabel={<AlertTriangle aria-hidden="true" />}
-                    onClick={() => void steer(run.id, benchmarkApi.pauseRun)}
-                  >
-                    <Pause aria-hidden="true" />
-                  </Button>
-                )}
-                <Button
+              <div className="flex w-full items-center gap-2 pr-2">
+                <button
                   type="button"
-                  variant="ghost"
-                  destructive
-                  size="icon-xs"
-                  aria-label={t("actions.cancelRun")}
-                  tooltip={t("actions.cancelRun")}
-                  disabled={busy || run.state === "cancelling"}
-                  onClick={() => void steer(run.id, benchmarkApi.cancelRun)}
+                  className="flex min-w-0 flex-1 flex-col gap-1.5 px-3 py-2 text-left"
+                  onClick={() => onOpenRun(run.id)}
                 >
-                  <X aria-hidden="true" />
-                </Button>
-              </span>
+                  <span className="flex w-full flex-wrap items-center gap-x-3 gap-y-1">
+                    {run.state === "running" ? (
+                      <Spinner
+                        decorative
+                        className="size-4 shrink-0 text-chart-1"
+                      />
+                    ) : run.state === "paused" ? null : (
+                      <StateBadge state={run.state} />
+                    )}
+                    <span className="flex min-w-0 items-center gap-3">
+                      {models.slice(0, SHOWN_MODELS).map((entry) => {
+                        const effort = explicitEffort(entry.effort);
+                        return (
+                          <span
+                            key={entry.id}
+                            className="flex min-w-0 items-center gap-1.5"
+                          >
+                            <span className="shrink-0">
+                              {getProviderIcon(entry.providerId, "size-4")}
+                            </span>
+                            <span className="truncate text-sm font-medium">
+                              {modelDisplayName(
+                                entry,
+                                names.get(modelNameKey(entry)),
+                              )}
+                            </span>
+                            {effort ? (
+                              <Badge variant="outline">{effort}</Badge>
+                            ) : null}
+                            {entry.fastMode ? (
+                              <Badge variant="outline">{t("fastMode")}</Badge>
+                            ) : null}
+                          </span>
+                        );
+                      })}
+                      {models.length > SHOWN_MODELS ? (
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {t("activity.more", {
+                            count: models.length - SHOWN_MODELS,
+                          })}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="ml-auto flex shrink-0 items-baseline gap-3 tabular-nums">
+                      {pace ? (
+                        <span
+                          className={cn(
+                            "text-xs",
+                            pace.pastWindow
+                              ? "text-warning"
+                              : "text-muted-foreground",
+                          )}
+                          title={t(
+                            pace.pastWindow
+                              ? "activity.etaPastWindow"
+                              : "activity.etaHint",
+                            { closes },
+                          )}
+                        >
+                          {t("activity.eta", {
+                            time: roughSpan(pace.remainingMs),
+                          })}
+                        </span>
+                      ) : run.state === "paused" ? (
+                        <span className="text-xs text-muted-foreground">
+                          {t("activity.paused")}
+                        </span>
+                      ) : null}
+                      <span className="text-sm">
+                        {t("activity.progress", { settled, total })}
+                      </span>
+                    </span>
+                  </span>
+                  {run.attention ? (
+                    <span
+                      className="flex items-start gap-2 text-xs text-destructive"
+                      title={run.attention.reason}
+                    >
+                      <AlertTriangle
+                        aria-hidden="true"
+                        className="size-3.5 shrink-0"
+                      />
+                      {attentionLabel(t, run)}
+                    </span>
+                  ) : null}
+                  {steering?.runId === run.id && steering.refusal ? (
+                    <span
+                      className="flex items-start gap-2 text-xs text-destructive"
+                      title={steering.refusal}
+                    >
+                      <AlertTriangle
+                        aria-hidden="true"
+                        className="size-3.5 shrink-0"
+                      />
+                      {t(
+                        steering.refusal.includes("Linux text policy proof")
+                          ? "activity.policyCheckMissing"
+                          : "activity.actionRefused",
+                      )}
+                    </span>
+                  ) : null}
+                  {run.workflowActivity?.length ||
+                  run.openCells?.some((cell) => cell.running) ? (
+                    <span className="ml-2 flex min-w-0 flex-col">
+                      <BenchmarkWorkflowActivity run={run} compact />
+                    </span>
+                  ) : null}
+                </button>
+                {/* Steering without opening the run: Pause while it runs,
+                    Resume once it stands, and Cancel always last. */}
+                <span className="flex shrink-0 items-center gap-1">
+                  {resumable ? (
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      tone="success"
+                      size="icon-xs"
+                      aria-label={t("actions.resume")}
+                      tooltip={t("actions.resume")}
+                      feedbackState={feedback}
+                      loadingVisual="spinner"
+                      errorLabel={<AlertTriangle aria-hidden="true" />}
+                      onClick={() => void steer(run.id, benchmarkApi.resumeRun)}
+                    >
+                      <Play aria-hidden="true" />
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      tone="warning"
+                      size="icon-xs"
+                      aria-label={t("actions.pause")}
+                      tooltip={t("actions.pause")}
+                      disabled={run.state !== "running"}
+                      feedbackState={feedback}
+                      loadingVisual="spinner"
+                      errorLabel={<AlertTriangle aria-hidden="true" />}
+                      onClick={() => void steer(run.id, benchmarkApi.pauseRun)}
+                    >
+                      <Pause aria-hidden="true" />
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    destructive
+                    size="icon-xs"
+                    aria-label={t("actions.cancelRun")}
+                    tooltip={t("actions.cancelRun")}
+                    disabled={busy || run.state === "cancelling"}
+                    onClick={() => void steer(run.id, benchmarkApi.cancelRun)}
+                  >
+                    <X aria-hidden="true" />
+                  </Button>
+                </span>
+              </div>
+              {/* How far the run is, as the card's own edge. */}
+              <Progress
+                value={total === 0 ? 0 : (settled / total) * 100}
+                aria-label={t("runs.progressLabel")}
+                className="h-0.5 rounded-none"
+              />
             </div>
           );
         })}
@@ -398,55 +439,57 @@ function CarriedAnswers({ tests }: { tests: CarryActivity[] }) {
     });
   };
   return (
-    <div className="flex w-full items-center gap-2 rounded-lg border border-border pr-2">
-      <div
-        className="flex min-w-0 flex-1 flex-col gap-2 px-3 py-2"
-        title={tests
-          .map((test) => `${test.name}: ${test.evaluated} / ${test.total}`)
-          .join("\n")}
-      >
-        <span className="flex w-full flex-wrap items-center gap-3">
-          {running ? (
-            <Spinner decorative className="size-4 shrink-0 text-chart-1" />
+    <div className="overflow-hidden rounded-lg border border-border">
+      <div className="flex w-full items-center gap-2 pr-2">
+        <div
+          className="flex min-w-0 flex-1 flex-col gap-1.5 px-3 py-2"
+          title={tests
+            .map((test) => `${test.name}: ${test.evaluated} / ${test.total}`)
+            .join("\n")}
+        >
+          <span className="flex w-full flex-wrap items-center gap-x-3 gap-y-1">
+            {running ? (
+              <Spinner decorative className="size-4 shrink-0 text-chart-1" />
+            ) : null}
+            <span className="min-w-0 truncate text-sm font-medium">
+              {t(
+                running ? "activity.carriedRunning" : "activity.carriedWaiting",
+                { count: tests.length },
+              )}
+            </span>
+            <span className="ml-auto shrink-0 text-sm tabular-nums">
+              {t("activity.progress", { settled: evaluated, total })}
+            </span>
+          </span>
+          {stopped ? (
+            <span className="flex items-start gap-2 text-xs text-destructive">
+              <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" />
+              {t("detail.carriedStopped", { reason: stopped })}
+            </span>
           ) : null}
-          <span className="min-w-0 truncate text-sm font-medium">
-            {t(
-              running ? "activity.carriedRunning" : "activity.carriedWaiting",
-              { count: tests.length },
-            )}
-          </span>
-          <span className="shrink-0 text-sm tabular-nums">
-            {t("activity.progress", { settled: evaluated, total })}
-          </span>
-          <Progress
-            value={total === 0 ? 0 : (evaluated / total) * 100}
-            aria-label={t("activity.carriedProgress")}
-            className="h-1.5 w-32 shrink-0"
-          />
-        </span>
-        {stopped ? (
-          <span className="flex items-start gap-2 text-xs text-destructive">
-            <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" />
-            {t("detail.carriedStopped", { reason: stopped })}
-          </span>
+        </div>
+        {idle.length ? (
+          <Button
+            type="button"
+            variant="subtle"
+            tone="success"
+            size="icon-xs"
+            aria-label={t("detail.carriedEvaluate")}
+            tooltip={t("detail.carriedEvaluate")}
+            feedbackState={feedback}
+            loadingVisual="spinner"
+            errorLabel={<AlertTriangle aria-hidden="true" />}
+            onClick={() => void resume()}
+          >
+            <Play aria-hidden="true" />
+          </Button>
         ) : null}
       </div>
-      {idle.length ? (
-        <Button
-          type="button"
-          variant="subtle"
-          tone="success"
-          size="icon-xs"
-          aria-label={t("detail.carriedEvaluate")}
-          tooltip={t("detail.carriedEvaluate")}
-          feedbackState={feedback}
-          loadingVisual="spinner"
-          errorLabel={<AlertTriangle aria-hidden="true" />}
-          onClick={() => void resume()}
-        >
-          <Play aria-hidden="true" />
-        </Button>
-      ) : null}
+      <Progress
+        value={total === 0 ? 0 : (evaluated / total) * 100}
+        aria-label={t("activity.carriedProgress")}
+        className="h-0.5 rounded-none"
+      />
     </div>
   );
 }

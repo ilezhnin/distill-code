@@ -9,7 +9,12 @@ import { benchmarkKeys, useBenchmarkDefinitions } from "../hooks/useBenchmarks";
 import { useBenchmarkSessionActivity } from "../hooks/useBenchmarkSessionActivity";
 import { explicitEffort } from "../lib/benchmarkEffort";
 import { modelDisplayName, stateLabel } from "../lib/benchmarkLabels";
-import type { Attempt, RunSummary, WorkflowActivityStep } from "../types";
+import type {
+  Attempt,
+  RunSummary,
+  WorkflowActivity,
+  WorkflowActivityStep,
+} from "../types";
 import { compactElapsed } from "./BenchmarkTaskGrid";
 import {
   FAILING_OUTCOMES,
@@ -26,14 +31,20 @@ function useClock() {
   return now;
 }
 
-function SessionActivity({ sessionId }: { sessionId: string }) {
+/** An event this recent means the chat is at work right now. */
+const FRESH_MS = 15_000;
+
+/** What a session's chat was last seen doing, and how to say it. */
+function useSessionObservation(sessionId: string) {
   const { t } = useTranslation("benchmarks");
   const query = useBenchmarkSessionActivity(sessionId);
   const now = useClock();
   const observation = query.data;
   const stale = observation && now - observation.checkedAt > 20_000;
-  const quiet = observation && now - observation.unchangedSince >= 300_000;
-  const unavailable = query.isError || stale;
+  const quiet = Boolean(
+    observation && now - observation.unchangedSince >= 300_000,
+  );
+  const unavailable = Boolean(query.isError || stale);
   const elapsed = observation
     ? compactElapsed(
         now - (observation.activitySeenAt ?? observation.unchangedSince),
@@ -49,24 +60,83 @@ function SessionActivity({ sessionId }: { sessionId: string }) {
             : "activity.lastSeen",
           { elapsed },
         );
+  return {
+    label,
+    hint:
+      quiet && !unavailable ? `${label}. ${t("activity.quietHint")}` : label,
+    unavailable,
+    quiet,
+    elapsed,
+    fresh:
+      !unavailable &&
+      observation?.activitySeenAt != null &&
+      now - observation.activitySeenAt < FRESH_MS,
+  };
+}
+
+function SessionActivity({ sessionId }: { sessionId: string }) {
+  const seen = useSessionObservation(sessionId);
   return (
     <span
       role="img"
-      aria-label={label}
-      title={
-        quiet && !unavailable ? `${label}. ${t("activity.quietHint")}` : label
-      }
+      aria-label={seen.label}
+      title={seen.hint}
       className={cn(
         "inline-flex items-center gap-1 tabular-nums",
-        quiet || unavailable ? "text-warning" : "text-muted-foreground",
+        seen.quiet || seen.unavailable
+          ? "text-warning"
+          : "text-muted-foreground",
       )}
     >
-      {unavailable ? (
+      {seen.unavailable ? (
         <IconAlertCircle aria-hidden className="size-3.5" />
       ) : (
         <IconActivity aria-hidden className="size-3.5" />
       )}
-      <span aria-hidden>{unavailable ? "–" : (elapsed ?? "–")}</span>
+      <span aria-hidden>{seen.unavailable ? "–" : (seen.elapsed ?? "–")}</span>
+    </span>
+  );
+}
+
+/**
+ * The same observation in a word, for the strip: at work, idle for so long,
+ * or no signal. A chat quiet for five minutes takes the warning tone; that
+ * is a reason to look, not proof of a hang.
+ */
+function SessionPulse({ sessionId }: { sessionId: string }) {
+  const { t } = useTranslation("benchmarks");
+  const seen = useSessionObservation(sessionId);
+  return (
+    <span
+      role="img"
+      aria-label={seen.label}
+      title={seen.hint}
+      className={cn(
+        "inline-flex min-w-[5.5rem] items-center gap-1 tabular-nums",
+        seen.quiet || seen.unavailable
+          ? "text-warning"
+          : seen.fresh
+            ? "text-info"
+            : "text-muted-foreground",
+      )}
+    >
+      {seen.unavailable ? (
+        <IconAlertCircle aria-hidden className="size-3.5" />
+      ) : (
+        <IconActivity
+          aria-hidden
+          className={cn("size-3.5", seen.fresh && "animate-pulse")}
+        />
+      )}
+      <span aria-hidden>
+        {seen.unavailable
+          ? t("activity.noSignal")
+          : seen.elapsed == null
+            ? "…"
+            : seen.fresh
+              ? t("activity.live")
+              : t("activity.idle", { elapsed: seen.elapsed })}
+      </span>
     </span>
   );
 }
@@ -124,28 +194,16 @@ function WorkflowAttemptProgress({
   );
 }
 
-/** Shared rendering; the caller chooses the trace or summary read model. */
-function WorkflowProgress({
-  root,
-  steps,
-  totalSteps,
-  title,
-  taskName,
-  summaryOnly = false,
-  compact = false,
-  repetition,
-}: {
-  root: Pick<Attempt, "phase" | "outcome">;
-  steps: WorkflowActivityStep[];
-  totalSteps?: number;
-  title?: string;
-  taskName?: string;
-  summaryOnly?: boolean;
-  compact?: boolean;
-  repetition?: number;
-}) {
-  const { t } = useTranslation("benchmarks");
-  const now = useClock();
+type Translate = ReturnType<typeof useTranslation>["t"];
+
+/** Where an attempt stands: its phase, its verdict so far and its step at work. */
+function readProgress(
+  t: Translate,
+  root: Pick<Attempt, "phase" | "outcome">,
+  steps: WorkflowActivityStep[],
+  totalSteps: number | undefined,
+  now: number,
+) {
   const settled = steps.filter((step) => step.phase === "terminal").length;
   const current = steps.find((step) => step.phase !== "terminal");
   const total = totalSteps ?? null;
@@ -173,13 +231,10 @@ function WorkflowProgress({
           ? "running"
           : "queued";
   const shownStep = current ?? steps.at(-1);
-  const configuration = shownStep?.configuration;
-  const effort = explicitEffort(configuration?.effort);
   const duration =
     shownStep?.startedAt == null
       ? null
       : compactElapsed((shownStep.finishedAt ?? now) - shownStep.startedAt);
-  const stepCount = total ?? steps.length;
   const stepLabel =
     total != null
       ? t("activity.stepOf", {
@@ -187,23 +242,91 @@ function WorkflowProgress({
           total,
         })
       : t("activity.step", { number: (current?.index ?? 0) + 1 });
-  const stepStatus = t("activity.stepStatus", {
-    step: stepLabel,
-    status: stateLabel(t, phase),
-  });
+  return {
+    phase,
+    dot,
+    current,
+    shownStep,
+    duration,
+    stepCount: total ?? steps.length,
+    stepStatus: t("activity.stepStatus", {
+      step: stepLabel,
+      status: stateLabel(t, phase),
+    }),
+  };
+}
+
+/** How one step of a workflow stands, for the mark that draws it. */
+function stepStanding(step: WorkflowActivityStep | undefined) {
+  const done = step?.phase === "terminal";
+  const complete = done && ["completed", "pass"].includes(step?.outcome ?? "");
+  const stopped =
+    done && (step?.outcome === "cancelled" || step?.outcome == null);
+  const failed =
+    done && !complete && !stopped && step?.outcome !== "pending_review";
+  const working =
+    (!done && step?.hostRunId != null) || step?.outcome === "pending_review";
+  return {
+    state: done ? step.outcome : (step?.phase ?? "pending"),
+    tone: complete
+      ? ("success" as const)
+      : failed
+        ? ("destructive" as const)
+        : working
+          ? ("info" as const)
+          : ("muted" as const),
+  };
+}
+
+/** The chat of the step at work, when it has one worth watching for events. */
+function watchedSession(
+  current: WorkflowActivityStep | undefined,
+  summaryOnly: boolean,
+): string | null {
+  return current?.sessionId &&
+    current.hostRunId &&
+    (!summaryOnly ||
+      ["preparing", "dispatching", "running", "collecting"].includes(
+        current.phase,
+      ))
+    ? current.sessionId
+    : null;
+}
+
+/** Shared rendering; the caller chooses the trace or summary read model. */
+function WorkflowProgress({
+  root,
+  steps,
+  totalSteps,
+  title,
+  taskName,
+  summaryOnly = false,
+}: {
+  root: Pick<Attempt, "phase" | "outcome">;
+  steps: WorkflowActivityStep[];
+  totalSteps?: number;
+  title?: string;
+  taskName?: string;
+  summaryOnly?: boolean;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const now = useClock();
+  const { phase, dot, current, shownStep, duration, stepCount, stepStatus } =
+    readProgress(t, root, steps, totalSteps, now);
+  const configuration = shownStep?.configuration;
+  const effort = explicitEffort(configuration?.effort);
+  const session = watchedSession(current, summaryOnly);
   return (
     <span className="flex min-w-0 flex-col gap-2 text-xs">
-      {!compact ? (
-        <span className="flex items-center justify-between gap-2">
-          <span className="truncate text-sm font-medium" title={taskName}>
-            {title ?? stateLabel(t, phase)}
-          </span>
-          <span title={stateLabel(t, phase)}>
-            <RepetitionDots states={[dot]} />
-          </span>
+      <span className="flex items-center justify-between gap-2">
+        <span className="truncate text-sm font-medium" title={taskName}>
+          {title ?? stateLabel(t, phase)}
         </span>
-      ) : null}
-      {!compact && configuration ? (
+        <span title={stateLabel(t, phase)}>
+          <RepetitionDots states={[dot]} />
+        </span>
+      </span>
+      {configuration ? (
         <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
           <span className="shrink-0">
             {getProviderIcon(configuration.providerId, "size-3.5")}
@@ -213,21 +336,6 @@ function WorkflowProgress({
         </span>
       ) : null}
       <span className="flex items-center justify-between gap-3 text-muted-foreground">
-        {compact ? (
-          <span
-            className="inline-flex shrink-0 items-center gap-1"
-            title={
-              repetition == null
-                ? stateLabel(t, phase)
-                : t("fields.repetitionValue", { value: repetition })
-            }
-          >
-            <RepetitionDots states={[dot]} />
-            {repetition == null ? null : (
-              <span className="tabular-nums">{repetition}</span>
-            )}
-          </span>
-        ) : null}
         <span
           className="inline-flex items-center gap-1 tabular-nums"
           title={
@@ -239,15 +347,10 @@ function WorkflowProgress({
           <IconClock aria-hidden className="size-3.5" />
           {duration ?? "–"}
         </span>
-        {current?.sessionId &&
-        current.hostRunId &&
-        (!summaryOnly ||
-          ["preparing", "dispatching", "running", "collecting"].includes(
-            current.phase,
-          )) ? (
+        {session ? (
           <SessionActivity
-            key={summaryOnly ? current.attemptId : undefined}
-            sessionId={current.sessionId}
+            key={summaryOnly ? current?.attemptId : undefined}
+            sessionId={session}
           />
         ) : null}
         {stepCount > 0 ? (
@@ -261,22 +364,9 @@ function WorkflowProgress({
           >
             <title>{stepStatus}</title>
             {Array.from({ length: stepCount }, (_, index) => {
-              const step = steps.find((entry) => entry.index === index);
-              const done = step?.phase === "terminal";
-              const state = done ? step.outcome : (step?.phase ?? "pending");
-              const complete =
-                done && ["completed", "pass"].includes(step?.outcome ?? "");
-              const stopped =
-                done &&
-                (step?.outcome === "cancelled" || step?.outcome == null);
-              const failed =
-                done &&
-                !complete &&
-                !stopped &&
-                step?.outcome !== "pending_review";
-              const working =
-                (!done && step?.hostRunId != null) ||
-                step?.outcome === "pending_review";
+              const { state, tone } = stepStanding(
+                steps.find((entry) => entry.index === index),
+              );
               return (
                 <rect
                   // biome-ignore lint/suspicious/noArrayIndexKey: the workflow step index is its position
@@ -287,11 +377,11 @@ function WorkflowProgress({
                   height="5"
                   rx="1"
                   className={cn(
-                    complete
+                    tone === "success"
                       ? "fill-success"
-                      : failed
+                      : tone === "destructive"
                         ? "fill-destructive"
-                        : working
+                        : tone === "info"
                           ? "fill-info animate-pulse"
                           : "fill-muted-foreground/40",
                   )}
@@ -311,6 +401,94 @@ function WorkflowProgress({
     </span>
   );
 }
+
+/**
+ * One running repetition of a test on the strip, in a line: which
+ * repetition, its steps as marks, how long the step at work has taken, and
+ * whether its chat still gets events.
+ */
+function AttemptChip({
+  root,
+  totalSteps,
+}: {
+  root: WorkflowActivity;
+  totalSteps?: number;
+}) {
+  const { t } = useTranslation("benchmarks");
+  const now = useClock();
+  const { phase, dot, current, duration, stepCount, stepStatus } = readProgress(
+    t,
+    root,
+    root.steps,
+    totalSteps,
+    now,
+  );
+  const session = watchedSession(current, true);
+  return (
+    <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
+      <span
+        className="inline-flex items-center gap-1.5"
+        title={
+          root.repetition == null
+            ? stateLabel(t, phase)
+            : t("fields.repetitionValue", { value: root.repetition })
+        }
+      >
+        <RepetitionDots states={[dot]} />
+        {root.repetition == null ? null : (
+          <span className="tabular-nums">
+            {t("activity.rep", { value: root.repetition })}
+          </span>
+        )}
+      </span>
+      {stepCount > 0 ? (
+        <span
+          role="img"
+          aria-label={stepStatus}
+          title={stepStatus}
+          className="inline-flex items-center gap-0.5"
+        >
+          {Array.from({ length: stepCount }, (_, index) => {
+            const { tone } = stepStanding(
+              root.steps.find((entry) => entry.index === index),
+            );
+            return (
+              <span
+                // biome-ignore lint/suspicious/noArrayIndexKey: the workflow step index is its position
+                key={index}
+                className={cn(
+                  "h-1 w-2.5 rounded-full",
+                  tone === "success"
+                    ? "bg-success"
+                    : tone === "destructive"
+                      ? "bg-destructive"
+                      : tone === "info"
+                        ? "animate-pulse bg-info"
+                        : "bg-muted-foreground/35",
+                )}
+              />
+            );
+          })}
+        </span>
+      ) : null}
+      {duration ? (
+        <span
+          className="inline-flex min-w-14 items-center gap-1 tabular-nums"
+          title={t("activity.elapsed", { elapsed: duration })}
+        >
+          <IconClock aria-hidden className="size-3.5" />
+          {duration}
+        </span>
+      ) : null}
+      {session ? (
+        <SessionPulse key={current?.attemptId} sessionId={session} />
+      ) : null}
+    </span>
+  );
+}
+
+/** The tests one run names on the strip before the rest are counted. */
+const STRIP_TESTS = 3;
 
 /** Ordinary mixed runs use only entered workflow metadata from list-runs. */
 export function BenchmarkWorkflowActivity({
@@ -351,69 +529,90 @@ export function BenchmarkWorkflowActivity({
   const roots = (run.workflowActivity ?? []).filter((root) =>
     ["preparing", "dispatching", "running", "collecting"].includes(root.phase),
   );
-  const shown = compact ? roots.slice(0, 3) : roots;
-  const groups = new Map<string, typeof shown>();
+  if (!compact) {
+    if (roots.length === 0) return null;
+    return (
+      <span className="flex min-w-0 flex-col gap-2">
+        <span className="grid max-h-60 grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3 overflow-y-auto">
+          {roots.map((root) => {
+            const manifest = versions.get(root.versionId);
+            return (
+              <WorkflowProgress
+                key={root.rootAttemptId}
+                root={root}
+                steps={root.steps}
+                totalSteps={manifest?.workflow?.steps.length}
+                title={manifest?.name}
+                summaryOnly
+              />
+            );
+          })}
+        </span>
+      </span>
+    );
+  }
+  // The strip: a line per test, its running repetitions beside its name.
+  // A test running with no workflow to report (a single turn, or one whose
+  // answer awaits its judges) is named too, so the run says all it is doing.
+  const shown = roots.slice(0, STRIP_TESTS);
+  const groups = new Map<string, WorkflowActivity[]>();
   for (const root of shown) {
     const group = groups.get(root.versionId) ?? [];
     group.push(root);
     groups.set(root.versionId, group);
   }
-  if (roots.length === 0) return null;
+  const entered = new Set(roots.map((root) => root.versionId));
+  const plain = [
+    ...new Set(
+      (run.openCells ?? [])
+        .filter((cell) => cell.running && !entered.has(cell.versionId))
+        .map((cell) => cell.versionId),
+    ),
+  ];
+  const shownPlain = plain.slice(0, Math.max(0, STRIP_TESTS - groups.size));
+  const hidden = roots.length - shown.length + plain.length - shownPlain.length;
+  if (roots.length === 0 && plain.length === 0) return null;
   return (
-    <span className="flex min-w-0 flex-col gap-2">
-      <span
-        className={cn(
-          "grid max-h-60 gap-3 overflow-y-auto",
-          !compact && "grid-cols-[repeat(auto-fit,minmax(12rem,1fr))]",
-        )}
-      >
-        {compact
-          ? [...groups].map(([versionId, attempts]) => (
-              <span key={versionId} className="flex min-w-0 flex-col gap-2">
-                <span
-                  className="truncate text-sm font-medium"
-                  title={versions.get(versionId)?.name}
-                >
-                  {versions.get(versionId)?.name ?? t("activity.workflowTask")}
-                </span>
-                <span className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3">
-                  {[...attempts]
-                    .sort((a, b) => (a.repetition ?? 0) - (b.repetition ?? 0))
-                    .map((root) => (
-                      <WorkflowProgress
-                        key={root.rootAttemptId}
-                        root={root}
-                        steps={root.steps}
-                        totalSteps={
-                          versions.get(versionId)?.workflow?.steps.length
-                        }
-                        summaryOnly
-                        compact
-                        repetition={root.repetition}
-                      />
-                    ))}
-                </span>
-              </span>
-            ))
-          : shown.map((root) => {
-              const manifest = versions.get(root.versionId);
-              return (
-                <WorkflowProgress
+    <span className="flex min-w-0 flex-col gap-1 border-l border-border pl-3 text-xs text-muted-foreground">
+      {[...groups].map(([versionId, attempts]) => (
+        <span
+          key={versionId}
+          className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1"
+        >
+          <span
+            className="min-w-0 flex-[1_1_12rem] truncate text-sm text-foreground"
+            title={versions.get(versionId)?.name}
+          >
+            {versions.get(versionId)?.name ?? t("activity.workflowTask")}
+          </span>
+          <span className="flex flex-wrap items-center justify-end gap-x-5 gap-y-1">
+            {[...attempts]
+              .sort((a, b) => (a.repetition ?? 0) - (b.repetition ?? 0))
+              .map((root) => (
+                <AttemptChip
                   key={root.rootAttemptId}
                   root={root}
-                  steps={root.steps}
-                  totalSteps={manifest?.workflow?.steps.length}
-                  title={manifest?.name}
-                  summaryOnly
+                  totalSteps={versions.get(versionId)?.workflow?.steps.length}
                 />
-              );
-            })}
-      </span>
-      {shown.length < roots.length ? (
-        <span className="text-xs text-muted-foreground">
-          {t("activity.more", { count: roots.length - shown.length })}
+              ))}
+          </span>
         </span>
-      ) : null}
+      ))}
+      {shownPlain.map((versionId) => (
+        <span key={versionId} className="flex min-w-0 items-center gap-x-5">
+          <span
+            className="min-w-0 flex-1 truncate text-sm text-foreground"
+            title={versions.get(versionId)?.name}
+          >
+            {versions.get(versionId)?.name ?? t("activity.test")}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1.5">
+            <RepetitionDots states={["running"]} />
+            {stateLabel(t, "running")}
+          </span>
+        </span>
+      ))}
+      {hidden > 0 ? <span>{t("activity.more", { count: hidden })}</span> : null}
     </span>
   );
 }

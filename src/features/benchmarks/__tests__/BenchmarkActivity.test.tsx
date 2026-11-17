@@ -11,13 +11,21 @@ import type { ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { CarryActivity, RunSummary } from "../types";
+import type { BenchmarkDefinition, CarryActivity, RunSummary } from "../types";
 import { BenchmarkActivity } from "../ui/BenchmarkActivity";
-import { configuration, leaderboardRow, runSummary } from "./fixtures";
+import {
+  configuration,
+  definition,
+  leaderboardRow,
+  runSummary,
+} from "./fixtures";
 import type { WorkflowCampaign } from "../lib/workflowCampaign";
 
 const campaignState = vi.hoisted(() => ({ data: [] as WorkflowCampaign[] }));
 const carryState = vi.hoisted(() => ({ data: [] as CarryActivity[] }));
+const definitionState = vi.hoisted(() => ({
+  data: [] as BenchmarkDefinition[],
+}));
 
 vi.mock("../hooks/useBenchmarks", () => ({
   benchmarkKeys: ["benchmarks"],
@@ -25,6 +33,7 @@ vi.mock("../hooks/useBenchmarks", () => ({
   useModelNames: () => new Map([["model-1", "Model One"]]),
   useWorkflowCampaigns: () => campaignState,
   useCarryActivity: () => carryState,
+  useBenchmarkDefinitions: () => definitionState,
 }));
 
 const api = vi.hoisted(() => ({
@@ -73,7 +82,9 @@ afterEach(() => {
   cleanup();
   campaignState.data = [];
   carryState.data = [];
+  definitionState.data = [];
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 const carried = (test: Partial<CarryActivity>): CarryActivity => ({
@@ -503,4 +514,114 @@ it("names any other refusal generically and keeps its reason in reach", async ()
       "The run refused this action. Open the run for the reason.",
     ),
   ).toHaveAttribute("title", "resource_busy: invented refusal");
+});
+
+const HOUR = 3_600_000;
+const NOW = Date.UTC(2026, 10, 14, 18, 0, 0);
+
+it("says how long a run has left at its pace, and warns once that outlasts its window", () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  // Two hours at work, a fifth of the tests settled: eight hours to go.
+  const paced = {
+    createdAt: NOW - 2 * HOUR,
+    cellCount: 100,
+    settledCellCount: 20,
+  };
+  const row = show(paced);
+  const left = row.getByText("≈ 8h left");
+  expect(left).not.toHaveClass("text-warning");
+  expect(left).toHaveAttribute(
+    "title",
+    expect.stringMatching(/^Estimated from the pace so far/),
+  );
+  cleanup();
+
+  // Twenty hours for the same fifth: the window closes long before the rest.
+  const late = show({ ...paced, createdAt: NOW - 20 * HOUR });
+  const overdue = late.getByText("≈ 3d left");
+  expect(overdue).toHaveClass("text-warning");
+  expect(overdue).toHaveAttribute(
+    "title",
+    expect.stringMatching(/will not finish before its window closes/),
+  );
+  cleanup();
+
+  // Time spent paused is not time at work.
+  const rested = show({
+    ...paced,
+    createdAt: NOW - 20 * HOUR,
+    pausedMs: 18 * HOUR,
+  });
+  expect(rested.getByText("≈ 8h left")).not.toHaveClass("text-warning");
+});
+
+it("estimates nothing from a handful of tests, for a run that stands, or with nothing left", () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  const paced = { createdAt: NOW - 2 * HOUR, cellCount: 100 };
+  for (const run of [
+    { ...paced, settledCellCount: 4 },
+    { ...paced, settledCellCount: 20, state: "pausing" },
+    { ...paced, settledCellCount: 100 },
+  ]) {
+    show(run);
+    expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
+    cleanup();
+  }
+  // A paused run says that it is paused instead.
+  const row = show({
+    ...paced,
+    settledCellCount: 20,
+    state: "paused",
+    pausedSince: NOW - HOUR,
+  });
+  expect(row.getByText("Paused")).toBeInTheDocument();
+  expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
+});
+
+it("names the tests a run is measuring now, also where there is no workflow to report", () => {
+  definitionState.data = [
+    {
+      ...definition,
+      versions: ["version-1", "version-2", "version-3", "version-4"].map(
+        (id, index) => ({
+          ...definition.versions[0],
+          id,
+          manifest: {
+            ...definition.versions[0].manifest,
+            name: `Invented test ${index + 1}`,
+          },
+        }),
+      ),
+    },
+  ];
+  const row = show({
+    openCells: [
+      {
+        configurationId: configuration.id,
+        versionId: "version-1",
+        running: true,
+      },
+      // The same test on another profile is the same test.
+      { configurationId: "other", versionId: "version-1", running: true },
+      { configurationId: configuration.id, versionId: "version-2" },
+      {
+        configurationId: configuration.id,
+        versionId: "version-3",
+        running: true,
+      },
+      {
+        configurationId: configuration.id,
+        versionId: "version-4",
+        running: true,
+      },
+    ],
+  });
+  expect(row.getAllByText("Invented test 1")).toHaveLength(1);
+  expect(row.getByText("Invented test 3")).toBeInTheDocument();
+  expect(row.getByText("Invented test 4")).toBeInTheDocument();
+  // A test that only waits its turn is not running.
+  expect(row.queryByText("Invented test 2")).not.toBeInTheDocument();
+  expect(row.getAllByText("Running")).toHaveLength(3);
 });
