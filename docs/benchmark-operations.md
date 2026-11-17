@@ -193,7 +193,11 @@ Judges need the same check, and each update of the app makes it stale for
 every provider. When a judge panel is short only because some judges' checks
 went stale, the runner renews those checks itself, one provider at a time,
 and the answers wait for their judges (as "Updating the sandbox check before
-judging") instead of stopping the run. A renewal that fails is not retried for
+judging") instead of stopping the run. A panel that has its judges goes on
+and renews the stale checks beside it, so the providers that sat out judge
+the panels that follow; a saved panel that lost a judge waits for such a
+renewal before it reports that the pool needs another judge. A renewal that
+fails is not retried for
 30 minutes: the answer then settles with the panel's issue, and **Update
 sandbox check** in that provider's run dialog shows why. Resuming the run asks
 the judges again.

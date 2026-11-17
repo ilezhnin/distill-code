@@ -177,6 +177,107 @@ fn judge_diagnostics_do_not_change_sufficient_or_frozen_panels() {
     );
 }
 
+/// 11-17: after an update Grok and Codex filled every panel, so nothing
+/// renewed the Claude check: both Claude accounts sat out 166 panels in a
+/// row, and the candidate's own model judged it.
+#[test]
+fn a_full_panel_renews_its_stale_sandbox_checks_beside_it() {
+    use crate::services::benchmark_policy_check::Automatic;
+    let seats = vec![judge("grok-acp"), judge("codex-acp")];
+    let panel = DiscoveredJudgePanel::discovered(
+        seats.clone(),
+        vec![
+            issue(
+                "claude-acp",
+                BenchmarkError::new("capability_missing", PROOF),
+            ),
+            issue(
+                "kimi-acp",
+                BenchmarkError::new("provider_failure", "invented failure"),
+            ),
+        ],
+        &[pool("claude-acp"), pool("kimi-acp")],
+    );
+    // The panel itself is what it was: its seats, no issue, nothing to wait for.
+    assert_eq!(panel.seats, seats);
+    assert!(panel.diagnostics.is_empty());
+    assert!(panel.issue(false).is_none());
+    assert!(panel
+        .renew_stale_proofs(|_| panic!("a full panel waits for nothing"))
+        .is_none());
+    // Only the stale check is renewed, and nobody waits for it.
+    let asked = std::cell::RefCell::new(Vec::new());
+    panel.renew_stale_in_background(|provider| {
+        asked.borrow_mut().push(provider);
+        Automatic::Running
+    });
+    assert_eq!(*asked.borrow(), vec![NativeProvider::Claude]);
+    let frozen = DiscoveredJudgePanel::fixed(seats);
+    frozen.renew_stale_in_background(|_| panic!("a frozen panel renews nothing"));
+}
+
+/// The same day: a saved two-seat panel lost its Grok judge, and the only
+/// other calibrated judges sat out for the stale check. The panel failed
+/// with "add one to the judge pool" on every resume instead of waiting for
+/// the twenty-second check that would have given it a judge.
+#[test]
+fn a_saved_panel_waits_for_a_stale_sandbox_check_before_it_gives_up() {
+    use crate::services::benchmark_policy_check::Automatic;
+    let unavailable = || {
+        BenchmarkError::new(
+            ordinary_judging::PANEL_UNAVAILABLE,
+            "The saved panel needs another eligible calibrated judge; add one to the judge pool",
+        )
+    };
+    let stale = || {
+        let mut panel = DiscoveredJudgePanel::discovered(
+            Vec::new(),
+            vec![issue(
+                "claude-acp",
+                BenchmarkError::new("capability_missing", PROOF),
+            )],
+            &[pool("claude-acp")],
+        );
+        panel.unavailable = Some(unavailable());
+        panel
+    };
+    assert_eq!(
+        stale()
+            .saved_panel_wait(|_| Automatic::Running)
+            .unwrap()
+            .unwrap(),
+        "Updating the sandbox check before judging: Claude"
+    );
+    // A renewal that failed recently leaves the panel's own error.
+    assert_eq!(
+        stale()
+            .saved_panel_wait(|_| Automatic::Failed)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ordinary_judging::PANEL_UNAVAILABLE
+    );
+    // So does a panel nobody's stale check explains.
+    let mut other = DiscoveredJudgePanel::discovered(
+        Vec::new(),
+        vec![issue(
+            "claude-acp",
+            BenchmarkError::new("provider_failure", "invented failure"),
+        )],
+        &[pool("claude-acp")],
+    );
+    other.unavailable = Some(unavailable());
+    assert!(other
+        .saved_panel_wait(|_| panic!("only a stale check is renewed"))
+        .unwrap()
+        .is_err());
+    // A panel that has its judges waits for nothing.
+    let mut seated = DiscoveredJudgePanel::fixed(vec![judge("grok-acp"), judge("codex-acp")]);
+    assert!(seated
+        .saved_panel_wait(|_| panic!("a seated panel renews nothing here"))
+        .is_none());
+}
+
 #[test]
 fn a_short_panel_renews_only_stale_sandbox_checks_and_waits_for_them() {
     use crate::services::benchmark_policy_check::Automatic;

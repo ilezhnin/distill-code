@@ -4,6 +4,8 @@
 use super::*;
 
 const POLICY: &str = "retained-artifact-panel-v1";
+/// The error code of a saved panel nobody can complete, now or after a reset.
+pub(super) const PANEL_UNAVAILABLE: &str = "judge_panel_unavailable";
 
 pub(super) fn recoverable(
     attempt: &Attempt,
@@ -112,7 +114,7 @@ pub(super) fn available_panel(
     // goes on with the judges it has, marked, while two remain.
     reduced_panel(open, &ready).ok_or_else(|| {
         BenchmarkError::new(
-            "judge_panel_unavailable",
+            PANEL_UNAVAILABLE,
             "The saved panel needs another eligible calibrated judge; add one to the judge pool",
         )
     })

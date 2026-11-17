@@ -284,6 +284,11 @@ fn judge_provider_label(provider: NativeProvider) -> &'static str {
 struct DiscoveredJudgePanel {
     seats: Vec<Configuration>,
     diagnostics: Vec<(NativeProvider, JudgeDiscoveryCause)>,
+    /// The pool's providers whose judges sit out only for a stale sandbox
+    /// check, whether or not the panel is short.
+    stale: Vec<NativeProvider>,
+    /// Why a saved panel cannot go on: nobody can take its missing seat now.
+    unavailable: Option<BenchmarkError>,
 }
 
 impl DiscoveredJudgePanel {
@@ -291,6 +296,8 @@ impl DiscoveredJudgePanel {
         Self {
             seats,
             diagnostics: Vec::new(),
+            stale: Vec::new(),
+            unavailable: None,
         }
     }
 
@@ -299,10 +306,7 @@ impl DiscoveredJudgePanel {
         issues: Vec<JudgeDiscoveryIssue>,
         pool: &[super::judge_pool::Entry],
     ) -> Self {
-        if seats.len() >= MIN_JUDGES {
-            return Self::fixed(seats);
-        }
-        let diagnostics = NativeProvider::ALL
+        let diagnostics: Vec<(NativeProvider, JudgeDiscoveryCause)> = NativeProvider::ALL
             .iter()
             .filter_map(|&provider| {
                 issues
@@ -325,7 +329,37 @@ impl DiscoveredJudgePanel {
                     .map(|cause| (provider, cause))
             })
             .collect();
-        Self { seats, diagnostics }
+        let stale = diagnostics
+            .iter()
+            .filter(|(_, cause)| *cause == JudgeDiscoveryCause::TextPolicyProofRequired)
+            .map(|(provider, _)| *provider)
+            .collect();
+        Self {
+            // Only a short panel's reason carries the diagnostics.
+            diagnostics: if seats.len() >= MIN_JUDGES {
+                Vec::new()
+            } else {
+                diagnostics
+            },
+            seats,
+            stale,
+            unavailable: None,
+        }
+    }
+
+    /// Starts the renewal of every stale sandbox check without waiting for
+    /// it, for a panel that has its judges. Each update of the app makes the
+    /// checks stale, and only a short panel renewed them: while two other
+    /// labs filled every panel, the third sat out until the operator opened
+    /// one of its run dialogs, and a saved panel that lost a judge had
+    /// nobody to take the seat (11-17: both Claude accounts, for hours).
+    fn renew_stale_in_background(
+        &self,
+        renew: impl Fn(NativeProvider) -> crate::services::benchmark_policy_check::Automatic,
+    ) {
+        for provider in &self.stale {
+            renew(*provider);
+        }
     }
 
     /// For a short panel, renews the sandbox check of each provider that only
@@ -349,6 +383,18 @@ impl DiscoveredJudgePanel {
             .map(|(provider, _)| judge_provider_label(*provider))
             .collect::<Vec<_>>();
         (!renewing.is_empty()).then(|| format!("{JUDGE_POLICY_RENEWAL}: {}", renewing.join(", ")))
+    }
+
+    /// What a saved panel nobody can complete does: `None` when the panel
+    /// has its judges, the wait to record while a stale sandbox check is
+    /// renewed, or the error once there is no renewal to wait for. A judge
+    /// whose check went stale can take the seat as soon as it is renewed.
+    fn saved_panel_wait(
+        &mut self,
+        renew: impl Fn(NativeProvider) -> crate::services::benchmark_policy_check::Automatic,
+    ) -> Option<Result<String>> {
+        let unavailable = self.unavailable.take()?;
+        Some(self.renew_stale_proofs(renew).ok_or(unavailable))
     }
 
     fn issue(&self, rejected: bool) -> Option<String> {
@@ -3941,7 +3987,25 @@ impl NativeBackend {
             .map(|(headroom, judge)| (headroom.map(|h| h.share), judge))
             .collect();
         let panel = if let Some(open) = open {
-            ordinary_judging::available_panel(open, &candidates, draft, offered, quota, deferred)?
+            match ordinary_judging::available_panel(
+                open,
+                &candidates,
+                draft,
+                offered,
+                quota,
+                deferred,
+            ) {
+                Ok(panel) => panel,
+                // Nobody can take the missing seat now. The caller renews a
+                // stale sandbox check and waits for it before it gives up.
+                Err(error) if error.code == ordinary_judging::PANEL_UNAVAILABLE => {
+                    let mut short =
+                        DiscoveredJudgePanel::discovered(Vec::new(), diagnostics, &pool);
+                    short.unavailable = Some(error);
+                    return Ok(short);
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             let panel = ordinary_judges(&candidates, draft, offered);
             resolve_quota_panel(panel, &candidates, draft, quota, deferred)?
@@ -4926,7 +4990,7 @@ impl NativeBackend {
         let (batch, judges, expected, votes, png) = match open {
             Some((mut open, png)) => {
                 if ordinary {
-                    let discovered = self
+                    let mut discovered = self
                         .judge_panel(
                             store,
                             &attempt,
@@ -4936,6 +5000,20 @@ impl NativeBackend {
                             Some(&open),
                         )
                         .await?;
+                    // A judge whose sandbox check went stale can take the
+                    // seat once the check is renewed: the saved panel waits
+                    // for that renewal, as a new short panel does, and gives
+                    // up only when there is none to wait for.
+                    if let Some(wait) = discovered.saved_panel_wait(
+                        crate::services::benchmark_policy_check::renew_automatically,
+                    ) {
+                        attempt.reason = Some(wait?);
+                        attempt.wait_until = Some(now() + JUDGE_POLICY_RETRY.as_millis() as i64);
+                        return Ok(attempt);
+                    }
+                    discovered.renew_stale_in_background(
+                        crate::services::benchmark_policy_check::renew_automatically,
+                    );
                     let panel = discovered.seats;
                     if ordinary_judging::needs_reseating(&attempt, &open, &panel) {
                         let contributing =
@@ -4981,6 +5059,13 @@ impl NativeBackend {
                         crate::services::benchmark_policy_check::renew_automatically,
                     )
                 });
+                // A panel with its judges goes on now; the checks it found
+                // stale are renewed beside it, for the panels that follow.
+                if issue.is_none() {
+                    discovered.renew_stale_in_background(
+                        crate::services::benchmark_policy_check::renew_automatically,
+                    );
+                }
                 let panel = discovered.seats;
                 // A panel that seats a candidate's lab or own model is marked,
                 // a frozen one's seats too, so boards can show or leave out
