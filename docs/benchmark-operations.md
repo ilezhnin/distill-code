@@ -368,7 +368,11 @@ naming the line that holds it, while it does not:
   candidate page started that its own memory ceiling stopped (the leaf's
   `memory.events.local` counts the oom; pressure from above the leaf is the
   infrastructure's) is the candidate's answer past its budget,
-  `budget_reached`, scored 0. A session's leaf holds the agent CLI and the
+  `budget_reached`, scored 0. A paired check's probe leaf, which runs the
+  candidate's code, is ended by `bench-judge` before the pair's supervisor
+  reads it, so its verdict is the one `bench-kill` takes on the way
+  (`bench-budget observe`), read as the pair's. A session's leaf holds the
+  agent CLI and the
   commands it runs, and the group kill takes the bridge with it: the broker
   keeps the leaf's processes from its last one-second poll and reads the
   kernel's OOM record (`/dev/kmsg`) for the victim. The record's pid is the

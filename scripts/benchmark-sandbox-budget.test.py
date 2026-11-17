@@ -1833,6 +1833,34 @@ class BudgetTests(unittest.TestCase):
         receipt = json.loads((outcomes / (token + '.json')).read_text())
         self.assertEqual(receipt, {'token': token, 'infrastructureError': None, 'candidateLimit': 'memory'})
 
+    def test_a_paired_probe_past_its_own_memory_ceiling_is_the_candidates(self):
+        # bench-judge ends a pair's probe through bench-kill, whose observe
+        # is the only verdict that leaf gets: the supervisor reads the pair
+        # after the leaf is gone. The probe runs the candidate's code, so its
+        # own memory.max is the candidate's (11-16: three answers of one model
+        # stopped their run as the sandbox's failure on every resume).
+        outcomes = budget.STATE / 'outcomes'
+        outcomes.mkdir(exist_ok=True)
+
+        def observed(kind, identifier, mode, own):
+            token = self.reserve(kind, identifier)
+            leaf = budget.ROOT / (mode + '-' + identifier)
+            (leaf / 'memory.events').write_text(f'oom {own}\noom_kill 1\n')
+            (leaf / 'memory.events.local').write_text(f'oom {own}\noom_kill 1\n')
+            budget.observe(mode, identifier)
+            receipt = json.loads((outcomes / (token + '.json')).read_text())
+            budget.release(token)
+            return token, receipt
+
+        token, receipt = observed('pair', 'fictional-pair-own', 'probe', 1)
+        self.assertEqual(receipt, {'token': token, 'infrastructureError': None, 'candidateLimit': 'memory'})
+        # The whole sandbox's pressure on that leaf stays the sandbox's.
+        token, receipt = observed('pair', 'fictional-pair-pressure', 'probe', 0)
+        self.assertEqual(receipt, {'token': token, 'infrastructureError': budget.MEMORY_CEILING})
+        # A probe that is no pair's runs trusted code: never the candidate's.
+        token, receipt = observed('probe', 'fictional-lone', 'probe', 1)
+        self.assertEqual(receipt, {'token': token, 'infrastructureError': budget.MEMORY_CEILING})
+
     def test_memory_verdicts_separate_the_candidate_from_the_sandbox(self):
         scratch = Path(self.temporary.name) / 'scratch'
         (scratch / 'checks' / 'fictional-page').mkdir(parents=True)

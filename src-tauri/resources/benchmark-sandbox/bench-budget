@@ -1830,13 +1830,22 @@ def observe(mode, identifier):
     if mode not in ('session', 'check', 'probe', 'login', 'browser', 'prep'):
         fail('invalid sandbox observation mode')
     name = mode + '-' + identifier
-    verdict = memory_verdict(mode, identifier, [name])
-    if verdict is None:
+    if memory_verdict(mode, identifier, [name]) is None:
         return
     with locked():
         for path in STATE.glob('lease-*.json'):
             row = readable(path, LEASE_KEYS)
             if row is not None and name in row['groups']:
+                # A paired check's leaf is judged as the pair's: its probe
+                # runs the candidate's code from its start. bench-judge ends
+                # that leaf through bench-kill before the pair's supervisor
+                # reads it, so this is the only verdict the leaf gets; read
+                # as a lone `probe`, the candidate's own ceiling was written
+                # down as the sandbox's, and the answer was never scored.
+                kind = 'pair' if row.get('kind') == 'pair' else mode
+                verdict = memory_verdict(kind, identifier, [name])
+                if verdict is None:
+                    continue
                 token = path.name[6:-5]
                 replace_private(STATE / 'outcomes' / (token + '.json'), json.dumps(memory_receipt(token, verdict)))
 
