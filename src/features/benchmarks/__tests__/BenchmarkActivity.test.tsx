@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { BenchmarkDefinition, CarryActivity, RunSummary } from "../types";
+import { observeRunPace } from "../lib/benchmarkRunPace";
 import { BenchmarkActivity } from "../ui/BenchmarkActivity";
 import {
   configuration,
@@ -83,6 +84,8 @@ afterEach(() => {
   campaignState.data = [];
   carryState.data = [];
   definitionState.data = [];
+  // A run that stands keeps no pace: the next case starts unwatched.
+  observeRunPace({ ...runSummary, state: "paused" }, 0);
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -519,63 +522,69 @@ it("names any other refusal generically and keeps its reason in reach", async ()
 const HOUR = 3_600_000;
 const NOW = Date.UTC(2026, 10, 14, 18, 0, 0);
 
-it("says how long a run has left at its pace, and warns once that outlasts its window", () => {
+/** The run of `show` as the app watched it `minutesAgo`, so many tests settled. */
+const watched = (minutesAgo: number, settled: number, rest = {}) =>
+  observeRunPace(
+    { ...runSummary, state: "running", ...rest, settledCellCount: settled },
+    NOW - minutesAgo * 60_000,
+  );
+
+it("says how long a run has left at the pace it was watched keeping, and warns once that outlasts its window", () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
-  // Two hours at work, a fifth of the tests settled: eight hours to go.
+  // Sixteen hours old with a fifth settled long ago; over the last half
+  // hour it settled fifteen more: about nine hours for the rest, and its
+  // window closes in eight.
   const paced = {
-    createdAt: NOW - 2 * HOUR,
-    cellCount: 100,
-    settledCellCount: 20,
+    createdAt: NOW - 16 * HOUR,
+    cellCount: 346,
+    settledCellCount: 75,
   };
-  const row = show(paced);
-  const left = row.getByText("≈ 8h left");
-  expect(left).not.toHaveClass("text-warning");
-  expect(left).toHaveAttribute(
-    "title",
-    expect.stringMatching(/^Estimated from the pace so far/),
-  );
-  cleanup();
-
-  // Twenty hours for the same fifth: the window closes long before the rest.
-  const late = show({ ...paced, createdAt: NOW - 20 * HOUR });
-  const overdue = late.getByText("≈ 3d left");
+  watched(30, 60, paced);
+  const overdue = show(paced).getByText("≈ 9h left");
   expect(overdue).toHaveClass("text-warning");
   expect(overdue).toHaveAttribute(
     "title",
-    expect.stringMatching(/will not finish before its window closes/),
+    expect.stringMatching(
+      /^At the pace of the last 30m the run will not finish before its window closes/,
+    ),
   );
   cleanup();
 
-  // Time spent paused is not time at work.
-  const rested = show({
-    ...paced,
-    createdAt: NOW - 20 * HOUR,
-    pausedMs: 18 * HOUR,
-  });
-  expect(rested.getByText("≈ 8h left")).not.toHaveClass("text-warning");
+  // The same pace on a run with its window ahead of it is no warning.
+  const young = { ...paced, createdAt: NOW - 2 * HOUR };
+  const left = show(young).getByText("≈ 9h left");
+  expect(left).not.toHaveClass("text-warning");
+  expect(left).toHaveAttribute(
+    "title",
+    expect.stringMatching(/^Estimated from the pace of the last 30m\./),
+  );
 });
 
-it("estimates nothing from a handful of tests, for a run that stands, or with nothing left", () => {
+it("estimates nothing before it has watched a run, for a run that stands, or with nothing left", () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
-  const paced = { createdAt: NOW - 2 * HOUR, cellCount: 100 };
+  const paced = {
+    createdAt: NOW - 16 * HOUR,
+    cellCount: 346,
+    settledCellCount: 75,
+  };
+  // Its whole life is no pace: most of it may have been spent at a crawl.
+  show(paced);
+  expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
+  cleanup();
+
+  watched(30, 60, paced);
   for (const run of [
-    { ...paced, settledCellCount: 4 },
-    { ...paced, settledCellCount: 20, state: "pausing" },
-    { ...paced, settledCellCount: 100 },
+    { ...paced, state: "pausing" },
+    { ...paced, settledCellCount: 346 },
   ]) {
     show(run);
     expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
     cleanup();
   }
   // A paused run says that it is paused instead.
-  const row = show({
-    ...paced,
-    settledCellCount: 20,
-    state: "paused",
-    pausedSince: NOW - HOUR,
-  });
+  const row = show({ ...paced, state: "paused", pausedSince: NOW - HOUR });
   expect(row.getByText("Paused")).toBeInTheDocument();
   expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
 });

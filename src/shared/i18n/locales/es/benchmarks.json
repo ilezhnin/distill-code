@@ -564,8 +564,8 @@
     "idle": "inactiva {{elapsed}}",
     "noSignal": "sin señal",
     "eta": "≈ {{time}} restantes",
-    "etaHint": "Estimado según el ritmo hasta ahora. La ventana de la ejecución se cierra el {{closes}}.",
-    "etaPastWindow": "A este ritmo la ejecución no terminará antes de que su ventana se cierre el {{closes}}. Las pruebas sin terminar se descartan entonces.",
+    "etaHint": "Estimado según el ritmo de los últimos {{span}}. La ventana de la ejecución se cierra el {{closes}}.",
+    "etaPastWindow": "Al ritmo de los últimos {{span}} la ejecución no terminará antes de que su ventana se cierre el {{closes}}. Las pruebas sin terminar se descartan entonces.",
     "policies": {
       "fixed": "Fija",
       "persona": "Persona",

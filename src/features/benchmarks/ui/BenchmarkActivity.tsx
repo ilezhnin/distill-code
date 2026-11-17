@@ -264,7 +264,7 @@ export function BenchmarkActivity({
                             pace.pastWindow
                               ? "activity.etaPastWindow"
                               : "activity.etaHint",
-                            { closes },
+                            { closes, span: roughSpan(pace.watchedMs) },
                           )}
                         >
                           {t("activity.eta", {

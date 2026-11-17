@@ -7,6 +7,7 @@ import { benchmarkProgress } from "../lib/benchmarkActivity";
 import { configurationKey } from "../lib/benchmarkBoards";
 import { attentionLabel, modelDisplayName } from "../lib/benchmarkLabels";
 import { judgingFailureLabel } from "../lib/benchmarkRunIssues";
+import { observeRunPace } from "../lib/benchmarkRunPace";
 import { projectBenchmarkUsageBatch } from "@/features/stats/lib/usageLedger";
 import { isDesktopRuntime } from "@/shared/api/flockStore";
 import type {
@@ -249,6 +250,8 @@ function useBenchmarkRunNotifications(enabled: boolean) {
   const warned = useRef(new Set<string>());
   useEffect(() => {
     if (!runs.data) return;
+    // How long a run has left is read from the pace it is watched keeping.
+    for (const run of runs.data) observeRunPace(run, Date.now());
     if (previous.current) {
       for (const run of runs.data) {
         const before = previous.current.get(run.id);

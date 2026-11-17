@@ -564,8 +564,8 @@
     "idle": "idle {{elapsed}}",
     "noSignal": "no signal",
     "eta": "≈ {{time}} left",
-    "etaHint": "Estimated from the pace so far. The run's window closes {{closes}}.",
-    "etaPastWindow": "At this pace the run will not finish before its window closes {{closes}}. Tests left unfinished then are dropped.",
+    "etaHint": "Estimated from the pace of the last {{span}}. The run's window closes {{closes}}.",
+    "etaPastWindow": "At the pace of the last {{span}} the run will not finish before its window closes {{closes}}. Tests left unfinished then are dropped.",
     "policies": {
       "fixed": "Fixed",
       "persona": "Persona",
