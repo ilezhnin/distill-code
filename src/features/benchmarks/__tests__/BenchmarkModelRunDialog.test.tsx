@@ -670,6 +670,8 @@ function show(
     runId?: string | null;
     /** Tests the model already has a score on, by version and attempt. */
     measured?: { versionIds: string[]; attemptIds: string[] };
+    /** Tests the board names complete, where it names them itself. */
+    complete?: string[];
   } = {},
 ) {
   render(
@@ -683,6 +685,7 @@ function show(
           configuration: options.configuration ?? configuration,
           scoredVersionIds: options.measured?.versionIds ?? [],
           attemptIds: options.measured?.attemptIds ?? [],
+          ...(options.complete ? { completeVersionIds: options.complete } : {}),
         })}
         definitions={options.definitions ?? definitions}
         runId={options.runId ?? null}
@@ -1432,6 +1435,75 @@ it("continues the same cancelled run after a runtime update", async () => {
   await waitFor(() => expect(benchmarkApi.extendRun).toHaveBeenCalledTimes(1));
   expect(vi.mocked(benchmarkApi.extendRun).mock.calls[0][0]).toBe("run-2");
   expect(benchmarkApi.startRun).not.toHaveBeenCalled();
+});
+
+it("asks for no continuation of a complete run after a runtime update while the board holds every other test", async () => {
+  const user = userEvent.setup();
+  // Alpha and Charlie are measured in full; the run never planned the other
+  // tests, which the board holds from an earlier run.
+  const done = stoppedRun("completed", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-3", outcome: "fail", score: 0 },
+  ]);
+  done.run.request.configurations = done.run.request.configurations.map(
+    (entry) => ({ ...entry, inventoryRevision: "older-sandbox" }),
+  );
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(done.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(done.summaries);
+  show({
+    runId: "run-2",
+    complete: [
+      "version-1",
+      "version-2",
+      "version-3",
+      "version-4",
+      "version-5",
+      "version-8",
+    ],
+  });
+  const finish = await screen.findByRole("button", { name: "Start run" });
+  expect(
+    await screen.findByText("2 of 6 tests, 0 attempts"),
+  ).toBeInTheDocument();
+  // Nothing is left to go on with, so nothing asks to continue.
+  expect(finish).toBeDisabled();
+  expect(screen.queryByText(/The execution environment changed/)).toBeNull();
+  // A test checked to join the run is checked on the installed version.
+  await user.click(
+    within(screen.getByText("Bravo").closest("label") as HTMLElement).getByRole(
+      "checkbox",
+    ),
+  );
+  await waitFor(() => expect(finish).toBeEnabled());
+  expect(
+    screen.getByText(/The execution environment changed/),
+  ).toBeInTheDocument();
+});
+
+it("asks for no new run once a closed run's other tests all stand on the board", async () => {
+  const closed = stoppedRun("completed", [
+    { versionId: "version-1", outcome: "pass", score: 1 },
+    { versionId: "version-3", outcome: "fail", score: 0 },
+  ]);
+  closed.run.createdAt = Date.now() - 25 * 3_600_000;
+  vi.mocked(benchmarkApi.getRun).mockResolvedValue(closed.run);
+  vi.mocked(benchmarkApi.listAttempts).mockResolvedValue(closed.summaries);
+  show({
+    runId: "run-2",
+    complete: [
+      "version-1",
+      "version-2",
+      "version-3",
+      "version-4",
+      "version-5",
+      "version-8",
+    ],
+  });
+  // The run reads as closed, with nothing checked for a new one.
+  expect(await screen.findByText("Archived")).toBeInTheDocument();
+  expect(screen.getByText("0 of 6 tests, 0 attempts")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+  expect(screen.queryByText(/This run is archived/)).toBeNull();
 });
 
 it("owes exactly what the board names incomplete, a carried cell included", async () => {

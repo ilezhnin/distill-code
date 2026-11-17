@@ -564,18 +564,6 @@ export function BenchmarkModelRunDialog({
     mine.length > 0 &&
     !summaries.isPending &&
     unfinishedInRun;
-  const outdatedPin = eligible.some(
-    (version) =>
-      !cells.complete.has(version.id) &&
-      staleProfiles.has(executionProfileOf(version.manifest)),
-  );
-  const outdated =
-    !expired &&
-    outdatedPin &&
-    !legacyRun &&
-    mine.length > 0 &&
-    !summaries.isPending &&
-    unfinishedInRun;
   const over = expired;
   // Saved run pins do not establish today's availability. Every dispatch
   // action waits for a successful current listing, including after an error.
@@ -621,6 +609,24 @@ export function BenchmarkModelRunDialog({
   const chosen = eligible.filter((version) => isChecked(version.id));
   // The tests a finish adds to the run.
   const added = chosen.filter((version) => !inRunIds.has(version.id));
+  // The changed runtime matters only to what the run goes on with: its own
+  // unfinished tests and the ones checked to join it. A test it never
+  // planned, left unchecked because the board already holds it, is nothing
+  // to continue, and the notice would ask for an action no button offers.
+  const outdated =
+    !expired &&
+    !legacyRun &&
+    mine.length > 0 &&
+    !summaries.isPending &&
+    [
+      ...eligible.filter(
+        (version) =>
+          inRunIds.has(version.id) && !cells.complete.has(version.id),
+      ),
+      ...added,
+    ].some((version) =>
+      staleProfiles.has(executionProfileOf(version.manifest)),
+    );
   // The attempts the main action pays for: a finish runs what the run owes
   // and three repetitions of each added test, a start three of each.
   const attempts = following
@@ -1058,7 +1064,8 @@ export function BenchmarkModelRunDialog({
               </AlertDescription>
             </Alert>
           ) : null}
-          {expired ? (
+          {/* A new run is asked for only while the board still owes a test. */}
+          {expired && owedOnBoard.length > 0 ? (
             <BenchmarkAlert tone="warning">
               {t("modelRun.archivedNotice")}
             </BenchmarkAlert>
