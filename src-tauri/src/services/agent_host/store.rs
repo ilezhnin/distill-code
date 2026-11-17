@@ -936,9 +936,11 @@ impl SessionStore {
         }
         let record = serde_json::json!({"requestKey":key,"sessionId":session,"output":output,"result":result,"error":error,"nativeExecutionMs":elapsed}).to_string();
         let hash = super::execution::digest(record.as_bytes());
+        // Immediate: it reads the dispatch and the first result before it
+        // writes (see `rewrite_message_text`).
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| db_error("begin sealed task result", e))?;
         let target =
@@ -2364,9 +2366,14 @@ impl SessionStore {
         text: &str,
         part: Option<&MessagePart>,
     ) -> Result<MessageRewrite, String> {
+        // Immediate: the rewrite reads the chat before it writes, and SQLite
+        // refuses at once, without the busy timeout, to turn a deferred read
+        // into a write when another connection wrote meanwhile ("database is
+        // locked"). With chats and benchmark sessions streaming into the same
+        // database, an edit failed that way on 2026-11-17.
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| db_error("failed to start rewrite transaction", error))?;
         let events = Self::session_events_in(&mut tx, session_id).await?;
@@ -2427,9 +2434,10 @@ impl SessionStore {
         message_id: &str,
         part: Option<&MessagePart>,
     ) -> Result<MessageRemoval, String> {
+        // Immediate for the same reason as `rewrite_message_text`.
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| db_error("failed to start removal transaction", error))?;
         let events = Self::session_events_in(&mut tx, session_id).await?;
@@ -4585,6 +4593,70 @@ mod tests {
         let events = store.list_events("c").await.expect("read");
         assert_eq!(events[1]["update"]["_meta"]["distill"]["messageId"], "m1");
         assert_eq!(events[1]["sessionId"], "c");
+        dir.close().await;
+    }
+
+    /// An edit or a removal that meets another writer waits for it: each
+    /// reads the chat before it writes, and SQLite refuses at once to turn a
+    /// deferred read into a write while another connection holds the write
+    /// lock ("database is locked"). Fails that way on a deferred transaction.
+    #[tokio::test]
+    async fn editing_and_removing_wait_for_a_concurrent_write_instead_of_failing() {
+        let prompt = json!({ "messageId": "m1", "runId": "run-1" });
+        let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let (dir, store) = store_with_conversation(&[
+            chunk("user_message_chunk", prompt, text("hello")),
+            chunk("agent_message_chunk", reply, text("hi")),
+        ])
+        .await;
+        let store = std::sync::Arc::new(store);
+
+        // Another chat streaming: it holds the write lock while the edit and
+        // then the removal read what they replace.
+        async fn hold_the_write_lock(store: &SessionStore) -> sqlx::Transaction<'_, sqlx::Sqlite> {
+            let mut writer = store
+                .pool
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .expect("writer");
+            sqlx::query("UPDATE sessions SET last_snippet = 'streaming' WHERE id = 'c'")
+                .execute(&mut *writer)
+                .await
+                .expect("concurrent write");
+            writer
+        }
+        let pause = std::time::Duration::from_millis(500);
+
+        let writer = hold_the_write_lock(&store).await;
+        let edit = tokio::spawn({
+            let store = store.clone();
+            async move {
+                store
+                    .rewrite_message_text("c", MessageSide::User, "m1", "hello there", None)
+                    .await
+            }
+        });
+        tokio::time::sleep(pause).await;
+        writer.commit().await.expect("commit the concurrent write");
+        assert_eq!(edit.await.expect("join").expect("edit").chunks, 1);
+
+        let writer = hold_the_write_lock(&store).await;
+        let removal = tokio::spawn({
+            let store = store.clone();
+            async move {
+                store
+                    .remove_message("c", MessageSide::Assistant, "r1", None)
+                    .await
+            }
+        });
+        tokio::time::sleep(pause).await;
+        writer.commit().await.expect("commit the concurrent write");
+        assert_eq!(removal.await.expect("join").expect("removal").removed, 1);
+
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![("user_message_chunk".to_string(), "hello there".to_string())]
+        );
         dir.close().await;
     }
 
