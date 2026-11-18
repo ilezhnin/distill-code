@@ -12637,7 +12637,12 @@ mod tests {
                 let answer = if *asked == 1 {
                     Err(try_again())
                 } else {
-                    Ok(claude_answer("claude-opus-4-6", Some("default"), NO_XHIGH, None))
+                    Ok(claude_answer(
+                        "claude-opus-4-6",
+                        Some("default"),
+                        NO_XHIGH,
+                        None,
+                    ))
                 };
                 async move { answer }
             })

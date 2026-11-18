@@ -6,18 +6,18 @@ use super::*;
 /// Tries of one attempt refused before any answer that go back to the queue
 /// before the run stops for the operator; one more after the operator's
 /// resume settles the cell, as `refused_again` does under automatic retries.
-pub(super) const PRE_ANSWER_TRIES: u32 = 3;
+pub(in super::super) const PRE_ANSWER_TRIES: u32 = 3;
 /// How long a try refused before any answer waits before the next one.
-pub(super) const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
+pub(in super::super) const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
 /// What the reason of a cell refused before any answer starts with while it
 /// waits for its next try; the refusal's own words follow. At the bound the
 /// cell keeps the bare refusal, so the same one after the operator's resume
 /// reads as `refused_again` and settles it.
-pub(super) const PRE_ANSWER_RETRIED: &str = "Refused before any answer; tried again.";
+pub(in super::super) const PRE_ANSWER_RETRIED: &str = "Refused before any answer; tried again.";
 
 /// Refusals before any answer a cell goes back with before the operator is
 /// asked: a runtime the host would not start needs the operator at once.
-pub(super) fn pre_answer_limit(error: &BenchmarkError) -> u32 {
+pub(in super::super) fn pre_answer_limit(error: &BenchmarkError) -> u32 {
     if error.code == "capability_missing" {
         1
     } else {
@@ -28,7 +28,7 @@ pub(super) fn pre_answer_limit(error: &BenchmarkError) -> u32 {
 /// Whether one more refusal before any answer still goes back to the queue:
 /// once the operator resumed a run stopped at the bound, the next refusal
 /// settles the cell instead of cycling forever.
-pub(super) fn within_pre_answer_tries(attempt: &Attempt, error: &BenchmarkError) -> bool {
+pub(in super::super) fn within_pre_answer_tries(attempt: &Attempt, error: &BenchmarkError) -> bool {
     error.code == "account_busy" || attempt.pre_answer_refusals < pre_answer_limit(error)
 }
 
@@ -38,7 +38,10 @@ pub(super) fn within_pre_answer_tries(attempt: &Attempt, error: &BenchmarkError)
 /// the host refused the prompt (or never dispatched it), or the account had
 /// no free seat. Nothing was answered, paid for as output or
 /// evaluated. A turn that started answering is outside this class.
-pub(in crate::services::benchmarks) fn refused_before_answer(attempt: &Attempt, error: &BenchmarkError) -> bool {
+pub(in crate::services::benchmarks) fn refused_before_answer(
+    attempt: &Attempt,
+    error: &BenchmarkError,
+) -> bool {
     let host = serde_json::from_str::<Value>(&error.message).ok();
     let data = host
         .as_ref()
@@ -62,7 +65,7 @@ pub(in crate::services::benchmarks) fn refused_before_answer(attempt: &Attempt, 
 /// its bridge ended at open. Nothing was asked, so the try goes back to the
 /// queue like a refusal before any answer, under the same bound.
 pub(in crate::services::benchmarks) const SESSION_LOST: &str = "session_lost";
-pub(super) const SESSION_LOST_BEFORE_ANSWER: &str =
+pub(in super::super) const SESSION_LOST_BEFORE_ANSWER: &str =
     "The provider's session ended before it acknowledged a model; nothing was asked of it";
 
 /// Whether a turn that failed with `code`, while its attempt was saved in
@@ -97,7 +100,10 @@ pub(in crate::services::benchmarks) fn reached_provider(attempt: &Attempt) -> bo
 /// reached a provider. An attempt leaves preparation only once its session
 /// exists, so this holds at every stage before the prompt: workflow step,
 /// bridge start, admission.
-pub(in crate::services::benchmarks) fn never_started(attempt: &Attempt, error: &BenchmarkError) -> bool {
+pub(in crate::services::benchmarks) fn never_started(
+    attempt: &Attempt,
+    error: &BenchmarkError,
+) -> bool {
     matches!(error.code.as_str(), "resource_busy" | SIGN_IN_WAIT)
         && attempt.phase == "preparing"
         && !reached_provider(attempt)
@@ -112,7 +118,8 @@ pub(in crate::services::benchmarks) fn never_started(attempt: &Attempt, error: &
 pub(in crate::services::benchmarks) const UNSTARTED_TIMEOUT: &str = "Infrastructure: the native root wall budget ran out before the session of the attempt or step that timed out started (no model time in it)";
 
 /// The host's proof that a turn's budget ran out before any provider prompt.
-pub(in crate::services::benchmarks) const NO_PROVIDER_START: &str = "native-owned-no-provider-start-v1";
+pub(in crate::services::benchmarks) const NO_PROVIDER_START: &str =
+    "native-owned-no-provider-start-v1";
 
 /// Whether a `budget_timeout` settles `unit` (an attempt, a workflow root or
 /// one of its steps) before any session of it started: no session, turn or
@@ -139,7 +146,10 @@ pub(in crate::services::benchmarks) fn unstarted_timeout(unit: &Attempt, code: &
 /// The outcome and reason `unit` settles with after `error`: its code and
 /// message, or `infrastructure_failure` for a wall budget that ran out
 /// before its session started (see [`unstarted_timeout`]).
-pub(in crate::services::benchmarks) fn settled_failure(unit: &Attempt, error: &BenchmarkError) -> (String, String) {
+pub(in crate::services::benchmarks) fn settled_failure(
+    unit: &Attempt,
+    error: &BenchmarkError,
+) -> (String, String) {
     if unstarted_timeout(unit, &error.code) {
         (
             "infrastructure_failure".into(),
@@ -152,7 +162,7 @@ pub(in crate::services::benchmarks) fn settled_failure(unit: &Attempt, error: &B
 
 /// Whether `code` holds its run until a time it already knows, rather than
 /// asking the operator.
-pub(super) fn is_wait(code: &str) -> bool {
+pub(in super::super) fn is_wait(code: &str) -> bool {
     matches!(code, QUOTA_WAIT | SIGN_IN_WAIT)
 }
 
@@ -164,7 +174,7 @@ pub(super) fn is_wait(code: &str) -> bool {
 /// refuse the same cell on every resume, so it settles with that outcome
 /// instead, and the run goes on with its other cells. A quota wait and a
 /// sign-in renewal wait always wait.
-pub(super) fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
+pub(in super::super) fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
     !is_wait(&error.code) && attempt.reason.as_deref() == Some(error.message.as_str())
 }
 
@@ -300,7 +310,7 @@ impl BenchmarkService {
     /// Settles the try of `a` that ended with `error`: back to the queue, on
     /// to another account, or settled with its outcome; and the run, where
     /// the operator has to decide.
-    pub(super) async fn try_failed(
+    pub(in super::super) async fn try_failed(
         &self,
         run: &BenchmarkRun,
         a: &Attempt,
@@ -667,7 +677,10 @@ mod tests {
             respond(&before_prompt("selection_changed")),
             Response::RetryRefusal
         );
-        assert_eq!(respond(&before_prompt(SESSION_LOST)), Response::RetryRefusal);
+        assert_eq!(
+            respond(&before_prompt(SESSION_LOST)),
+            Response::RetryRefusal
+        );
         assert_eq!(
             respond(&before_prompt(SIGN_IN_WAIT)),
             Response::WaitForSignIn
@@ -775,7 +788,12 @@ mod tests {
         // steps that waited for a local slot, settled as budget_timeout with
         // no model time: false zeros on the boards and in fit data.
         let row = judge_row("sonnet");
-        let attempt = crate::services::benchmarks::pending_attempt("invented-run", "invented-version", &row, 0);
+        let attempt = crate::services::benchmarks::pending_attempt(
+            "invented-run",
+            "invented-version",
+            &row,
+            0,
+        );
         let exhausted =
             BenchmarkError::new("budget_timeout", "Native root wall budget is exhausted");
         let (outcome, reason) = settled_failure(&attempt, &exhausted);
