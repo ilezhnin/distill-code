@@ -6,13 +6,15 @@ estimate. This helper never executes a submitted file while holding root.
 
 Admission is dynamic (policy dynamic-v2): the next job starts while what the
 sandbox measures leaves room for it, not up to a fixed number of lanes.
-- Memory: every admitted job claims the larger of what it uses now and what
-  jobs of its class needed before (the 95th percentile of their recorded
-  peaks plus a quarter; the class ceiling until eight are recorded). The
-  claims and the new job's must fit the admission line, and an attempt must
-  also leave room for one check and one preparation. While a check or a
-  preparation waits for memory, no attempt starts; while a check waits for
-  CPUs, no CPU-heavy attempt starts. Neither starves behind attempts.
+- Memory: every admitted job claims the larger of what it holds now (page
+  cache left out) and what jobs of its class usually held at most (the mean
+  of their recorded peaks plus a quarter; the class's initial claim until
+  eight are recorded). The claims, the new job's and room for one job to
+  reach its class's high mark (the 95th percentile plus a quarter) must fit
+  the admission line, and an attempt must also leave room for one check and
+  one preparation. While a check or a preparation waits for memory, no
+  attempt starts; while a check waits for CPUs, no CPU-heavy attempt starts.
+  Neither starves behind attempts.
 - CPU: a CPU-heavy job (repository session, check, paired check, browser
   check) starts while the ceilings of the running ones and its own fit the
   physical cores the host is not using itself, an attempt leaving one
@@ -98,9 +100,20 @@ PRIORITY_HOLD = 10
 # Light jobs keep a supervisor CPU free and respect measured job pressure.
 LIGHT_PRESSURE = 0.25
 # Recorded per class: peaks kept, and how many before they replace the
-# ceiling. The expectation is the 95th percentile with a quarter on top.
+# initial claim. A job claims its class's usual peak, the mean with a quarter
+# on top, and the pool keeps room once for one job to reach the high mark,
+# the 95th percentile with a quarter on top (see usual_memory, spike_room).
+# The high mark was every job's claim until 11-18: the second largest of 32
+# peaks. Two sessions that built something large (4.2 and 5.1 GiB among 29
+# near 0.4) made every repository session claim 5.3 GiB, so three sessions
+# holding 0.05 GiB each claimed 17 of 23 GiB and a run stood at four jobs.
 PEAK_RING = 32
 PEAK_SAMPLES = 8
+# The memory a class's jobs held at most (record_peak) is kept under this
+# prefix, over a longer ring: its mean decides every job's claim, and a mean
+# of few peaks would swing with each heavy job that enters or leaves it.
+HELD = 'held-'
+HELD_RING = 128
 # What a class claims before eight of its jobs are recorded, where that is
 # less than its ceiling: a repository session waits for the remote model
 # most of its time and was measured at 0.2-0.45 GiB on average, so it claims
@@ -642,36 +655,49 @@ def read_number(path, pattern=None):
     return int(found.group(1)) if found else None
 
 
-def memory_stat():
-    """The benchmark root's memory.stat as numbers, or None."""
+def memory_stat(group=None):
+    """A control group's memory.stat as numbers (the benchmark root's unless
+    `group` names another), or None."""
     try:
         return {key: int(value) for key, value in
-                (line.split()[:2] for line in (ROOT / 'memory.stat').read_text().splitlines() if line.strip())}
+                (line.split()[:2] for line in ((group or ROOT) / 'memory.stat').read_text().splitlines()
+                 if line.strip())}
     except (OSError, ValueError):
         return None
 
 
-def memory_in_use():
-    """What the jobs' memory holds that reclaim cannot simply drop: anonymous
-    and shared pages and kernel memory. Page cache is left out: it is charged
-    to the root too, includes pages reparented from finished jobs, grows for a
-    whole wave and is reclaimed under memory.high before it could push a job
-    out. memory.current where memory.stat cannot be read."""
+def memory_held(group):
+    """What a control group's memory holds that reclaim cannot simply drop:
+    anonymous and shared pages and kernel memory. Page cache is left out: it
+    grows with every file a job reads or writes, for as long as the job runs,
+    and is reclaimed under memory.high before it could push a job out.
+    memory.current where memory.stat cannot be read."""
     try:
-        stat = memory_stat()
+        stat = memory_stat(group)
         kernel = int(stat['kernel']) if 'kernel' in stat else sum(
             int(stat.get(key, 0)) for key in ('kernel_stack', 'slab', 'percpu', 'sock'))
         return int(stat['anon']) + int(stat.get('shmem', 0)) + kernel
     except (OSError, ValueError, KeyError, TypeError):
-        return read_number(ROOT / 'memory.current') or 0
+        return read_number(group / 'memory.current') or 0
+
+
+def memory_in_use():
+    """What all the jobs' memory holds (see memory_held). The root's page
+    cache also includes pages reparented from finished jobs and grows for a
+    whole wave."""
+    return memory_held(ROOT)
+
+
+def groups_held(groups):
+    """What a job's leaves hold now (see memory_held); zero before its
+    process tree started."""
+    return sum(memory_held(ROOT / name) for name in groups)
 
 
 def leaf_memory(row):
-    """What a job's leaves use now; zero before its process tree started."""
-    total = 0
-    for name in row['groups']:
-        total += read_number(ROOT / name / 'memory.current') or 0
-    return total
+    """What a job holds now, counted as the guard counts all of them
+    (memory_in_use): the files it read are not what it needs."""
+    return groups_held(row['groups'])
 
 
 class Cancelled(Exception):
@@ -744,16 +770,24 @@ def peak_samples(kind, recorded):
     its ceiling. A peak at or above the ceiling is a job its own limit
     stopped, not what one needs (record_peak keeps none since 10-18; the ones
     written before stay in the ring, ignored, until newer peaks push them
-    out)."""
+    out). They are the peaks of what its jobs held (HELD) once eight are
+    recorded; until then the memory.peak values recorded before 11-18, which
+    count page cache too and so only overstate what a job holds."""
     ceiling = CLASSES[kind][0]
-    return [value for value in recorded.get(kind, [])
-            if isinstance(value, int) and not isinstance(value, bool) and 0 < value < ceiling]
+
+    def usable(key):
+        return [value for value in recorded.get(key, [])
+                if isinstance(value, int) and not isinstance(value, bool) and 0 < value < ceiling]
+    held = usable(HELD + kind)
+    return held if len(held) >= PEAK_SAMPLES else usable(kind)
 
 
 def expected_memory(kind, recorded):
-    """What a job of `kind` is expected to need: its initial claim (the
-    ceiling for most classes) until enough of its class are recorded, then
-    their 95th percentile plus a quarter."""
+    """What one job of `kind` may need, its class's high mark: its initial
+    claim (the ceiling for most classes) until enough of its class are
+    recorded, then their 95th percentile plus a quarter. A job asking alone
+    needs this much room; jobs beside each other claim usual_memory each and
+    share one spike_room."""
     ceiling = CLASSES[kind][0]
     seen = sorted(peak_samples(kind, recorded))
     if len(seen) < PEAK_SAMPLES:
@@ -762,8 +796,31 @@ def expected_memory(kind, recorded):
     return min(ceiling, max(256 * MIB, p95 + p95 // 4))
 
 
+def usual_memory(kind, recorded):
+    """What a job of `kind` claims beside the others: the mean of its class's
+    recorded peaks plus a quarter, never above the high mark nor below
+    256 MiB; the initial claim until enough are recorded. The mean is what a
+    sum of jobs needs: the claims of N jobs together cover all of them at
+    their peaks at once, heavy ones in the share they were recorded in, where
+    the high mark for each covered N of the heaviest."""
+    high = expected_memory(kind, recorded)
+    seen = peak_samples(kind, recorded)
+    if len(seen) < PEAK_SAMPLES:
+        return high
+    mean = sum(seen) // len(seen)
+    return min(high, max(256 * MIB, mean + mean // 4))
+
+
+def spike_room(kinds, recorded):
+    """The room kept once beside the claims of jobs of `kinds`, so one of
+    them can reach its class's high mark: the largest distance from a usual
+    claim to its high mark. A job already past its usual claim claims what it
+    holds (see claim), and the room stays for the next one."""
+    return max((expected_memory(kind, recorded) - usual_memory(kind, recorded) for kind in kinds), default=0)
+
+
 def claim(row, recorded):
-    return max(leaf_memory(row), expected_memory(row['kind'], recorded)) + row.get('host_buffers', 0)
+    return max(leaf_memory(row), usual_memory(row['kind'], recorded)) + row.get('host_buffers', 0)
 
 
 def replace_private(path, text):
@@ -813,27 +870,35 @@ def own_ceiling_fired(groups):
     return any(event_counts(ROOT / name / 'memory.events.local').get('oom', 0) > 0 for name in groups)
 
 
-def record_peak(kind, groups):
-    """Keep the peak memory of a finished job for its class's expectation.
+def record_peak(kind, groups, held=0):
+    """Keep the most a finished job held for its class's claims: `held`, the
+    largest of what its leaves held (memory_held) at the one-second polls of
+    its run. A job that ended before its first poll records its leaves'
+    memory.peak instead, which counts its page cache too: all the kernel
+    kept of a job that short.
     A job its own memory.max stopped teaches nothing: its peak is the limit,
     not what it needed. Three OOM-killed repository sessions at exactly
     6 GiB (10-18) made every repository job claim its ceiling, so only three
     fit and inventory probes were refused at under a tenth of real use."""
     if own_ceiling_fired(groups):
         return
-    peak = sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)
+    peak = held or sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)
     if peak <= 0:
         return
+    key = HELD + kind
+
     def add(recorded):
-        ring = [value for value in recorded.get(kind, []) if isinstance(value, int)][-(PEAK_RING - 1):]
-        recorded[kind] = ring + [peak]
+        ring = [value for value in recorded.get(key, []) if isinstance(value, int)][-(HELD_RING - 1):]
+        recorded[key] = ring + [peak]
     update_learned(add)
 
 
-def record_usage(kind, identifier, groups, admitted_at):
+def record_usage(kind, identifier, groups, admitted_at, held=0):
     """Keep what a finished job used: CPU seconds, average cores over its
-    run, memory peak and wall time. The class's average cores teach the
-    repository sessions' burst allowance (session_burst)."""
+    run, memory peak (page cache included), the most it held at a poll
+    (`held`, see record_peak; zero when it ended before one) and wall time.
+    The class's average cores teach the repository sessions' burst allowance
+    (session_burst)."""
     wall = time.time() - admitted_at
     usage = [read_number(ROOT / name / 'cpu.stat', r'usage_usec (\d+)') for name in groups]
     if wall <= 0 or not usage or any(value is None for value in usage):
@@ -848,7 +913,8 @@ def record_usage(kind, identifier, groups, admitted_at):
     update_learned(add)
     entry = json.dumps({'at': round(time.time(), 1), 'kind': kind, 'id': identifier, 'wallSeconds': round(wall, 1),
                         'cpuSeconds': round(seconds, 2), 'cores': cores,
-                        'memoryPeak': sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups)})
+                        'memoryPeak': sum(read_number(ROOT / name / 'memory.peak') or 0 for name in groups),
+                        'memoryHeld': held})
     try:
         kept = USAGE.read_text().splitlines()[-(USAGE_LINES - 1):]
     except FileNotFoundError:
@@ -1338,8 +1404,7 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
     recorded = peaks()
     claims = sum(claim(row, recorded) for row in active)
     unused = sum(max(0, claim(row, recorded) - leaf_memory(row)) for row in active)
-    needed = expected_memory(kind, recorded) + host_buffers
-    TRACE.update(claimedMemory=claims, expectedMemory=needed)
+    needed = usual_memory(kind, recorded) + host_buffers
     if kind in ATTEMPTS and not continuing:
         kept_memory, kept_cpus, kept_repository = kept_room(kind, recorded)
     else:
@@ -1349,9 +1414,15 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
     else:
         needed_room = needed
     repository_room = 0
+    kinds = {row['kind'] for row in active} | {kind}
     if kind == 'text' and not continuing and learned('repository', recorded) and repository_active(active):
-        repository_room = expected_memory('repository', recorded)
-    own = claims + needed_room + repository_room
+        repository_room = usual_memory('repository', recorded)
+        kinds.add('repository')
+    # One job of those running, this one or the repository attempt a text
+    # attempt leaves room for may reach its class's high mark.
+    spike = spike_room(kinds, recorded)
+    TRACE.update(claimedMemory=claims, expectedMemory=needed, spikeRoom=spike)
+    own = claims + needed_room + repository_room + spike
     if own > ADMISSION_MEMORY:
         busy = refused('sandbox memory the running jobs claim leaves no room for this job', 'memory', needed_room)
         # Whether the text sessions' leaving would make the room a refused
@@ -1371,7 +1442,7 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
     # can repeatedly take Windows/guest headroom while that job waits.
     # Continuing paid workflow steps retain their existing priority (their
     # kept_memory is zero), and all jobs still cover their own actual claim.
-    observed = host_gate(gate, unused + kept_memory, needed)
+    observed = host_gate(gate, unused + kept_memory + spike, needed)
     measured = sandbox_cores()
     guest = guest_cores()
     host_cores = observed.get('hostCpuBusy')
@@ -1926,6 +1997,8 @@ def run(kind, identifier, command):
     owned = False
     child = None
     stalled_before = None
+    # The most the job's leaves held at a poll of its run (see record_peak).
+    held = 0
     def cancelled(_signal, _frame):
         raise Cancelled('benchmark resource owner cancelled')
     signal.signal(signal.SIGTERM, cancelled)
@@ -2040,6 +2113,8 @@ def run(kind, identifier, command):
                             'and hit its time limit; it runs again')
                 return code
             except subprocess.TimeoutExpired:
+                # What the job holds a second on, for its class's claims.
+                held = max(held, groups_held(groups))
                 if disconnect.poll(0):
                     raise TimeoutError('benchmark host transport disconnected')
     finally:
@@ -2063,8 +2138,8 @@ def run(kind, identifier, command):
                 # What this job needed and how long it waited for CPUs teach
                 # admission before its leaves go.
                 if groups and 'admitted_at' in locals():
-                    for record in (lambda: record_peak(kind, groups),
-                                   lambda: record_usage(kind, identifier, groups, admitted_at),
+                    for record in (lambda: record_peak(kind, groups, held),
+                                   lambda: record_usage(kind, identifier, groups, admitted_at, held),
                                    lambda: record_stall(kind, groups, admitted_at, stalled_before),
                                    lambda: record_scratch(kind, written)):
                         try:
@@ -2114,7 +2189,12 @@ def status():
         print('budget job-io', ' '.join(f'{lane} {read}/{written}' for lane, (read, written) in JOB_IO.items()))
         print('budget reserved', sum(claim(row, recorded) for row in active))
         print('budget current', (ROOT / 'memory.current').read_text().strip())
+        # What a job of each class claims beside the others, the high mark
+        # one job alone needs room for, and the room the running jobs keep
+        # for one of them to reach it.
+        print('budget usual', ' '.join(f'{kind} {usual_memory(kind, recorded)}' for kind in CLASSES))
         print('budget expected', ' '.join(f'{kind} {expected_memory(kind, recorded)}' for kind in CLASSES))
+        print('budget spike-room', spike_room({row['kind'] for row in active}, recorded))
         print('budget session-burst', session_burst(recorded))
         filesystem = os.statvfs(SCRATCH)
         print('budget scratch-size', filesystem.f_blocks * filesystem.f_frsize, filesystem.f_files)

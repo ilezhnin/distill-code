@@ -291,21 +291,34 @@ Admission is dynamic (policy measured-load-v1): no number of lanes is fixed. The
 job starts while what the sandbox measures leaves room for it, and waits,
 naming the line that holds it, while it does not:
 
-- Memory. Every admitted job claims the larger of what its process tree uses
-  now and what jobs of its kind needed before: the 95th percentile of their
-  recorded peaks plus a quarter, never above the ceiling and, until eight are
-  recorded (a job its own memory ceiling stopped records no peak, and a
-  recorded peak at or above the ceiling is ignored), the ceiling itself,
-  except a repository session, which claims 3 GiB (half its ceiling) until
-  then, so a wave starts at full parallelism,
-  and a check, which claims 1 GiB (a quarter of its ceiling): checks follow
-  repository sessions only, so they can stay unlearned for a long time.
-  The claims and the new job's must fit 23 GiB, and an attempt must also leave
-  room for one check and one preparation. No attempt starts while the jobs'
-  anonymous, shared and kernel memory exceeds 70 % of those 23 GiB or the
-  guest's memory pressure over ten seconds exceeds a tenth; page cache, which
-  grows over a wave and is reclaimed first, does not count. Learned peaks
-  persist across deploys.
+- Memory. Every admitted job claims the larger of what its process tree holds
+  now and what jobs of its kind usually held at most: the mean of their
+  recorded peaks plus a quarter, never below 256 MiB. What a job holds is its
+  anonymous, shared and kernel memory, read every second of its run; the page
+  cache of the files it read does not count, as it does not for the guard
+  below. Beside the claims the broker keeps room once for one job to reach its
+  kind's high mark, the 95th percentile of the recorded peaks plus a quarter,
+  never above the ceiling: a job asking alone needs its high mark, and each
+  further job adds its usual claim. A job past its usual claim claims what it
+  holds, and the room stays for the next one. Until 11-18 every job claimed
+  the high mark, the second largest of 32 peaks: two sessions that built
+  something large made every repository session claim 5.3 GiB, and a run stood
+  at four jobs that held 0.05 GiB each. Until eight peaks are recorded (a job
+  its own memory ceiling stopped records none, and a recorded peak at or above
+  the ceiling is ignored) a kind claims its ceiling, except a repository
+  session, which claims 3 GiB (half its ceiling) until then, so a wave starts
+  at full parallelism, and a check, which claims 1 GiB (a quarter of its
+  ceiling): checks follow repository sessions only, so they can stay unlearned
+  for a long time. The peaks recorded before 11-18 (`memory.peak`, page cache
+  included) decide until eight of a kind's jobs recorded what they held.
+  The claims, the new job's and that room must fit 23 GiB, and an attempt must
+  also leave room for one check and one preparation. No attempt starts while
+  the jobs' anonymous, shared and kernel memory exceeds 70 % of those 23 GiB or
+  the guest's memory pressure over ten seconds exceeds a tenth; page cache,
+  which grows over a wave and is reclaimed first, does not count. Learned peaks
+  persist across deploys; `bench-status` reports the claims (`budget usual`),
+  the high marks (`budget expected`) and the room kept now (`budget
+  spike-room`).
 - CPU. CPU-heavy jobs (repository sessions, checks, paired checks, browser
   runs) start by the host's measured load, not by summed reservations (owner,
   10-18: cautious past 70 %, not around 40): while the Windows host's CPU busy
@@ -341,7 +354,8 @@ naming the line that holds it, while it does not:
   running timed jobs' ceilings leaves out what those jobs use. The CPU
   pressure these lines read is the highest of the running jobs' own, never the
   supervisors' control group. Every finished job records its CPU seconds,
-  average cores, memory peak and wall time; `bench-budget usage` lists the
+  average cores, memory peak (`memoryPeak`, page cache included), the most it
+  held at a poll (`memoryHeld`) and wall time; `bench-budget usage` lists the
   latest.
 - Priority. A check or a preparation refused memory, and a timed job refused
   CPUs, keeps what it needs from new attempts for ten seconds after each
@@ -395,7 +409,8 @@ naming the line that holds it, while it does not:
 - Windows and the guest. The controller preserves at least 2 GiB of Windows
   available memory, 2 GiB of commit headroom and 30 GiB free on the registered
   sandbox volume, and 2 GiB free in the WSL guest. Each memory floor must also
-  cover the claims of earlier jobs not yet in use. Commit headroom is the commit
+  cover the claims of earlier jobs not yet in use and the room kept for one
+  job's high mark. Commit headroom is the commit
   limit (physical memory plus page file) minus committed memory; with a small
   page file it can keep a job waiting even when the sandbox has room, and the
   wait names that cause. A larger page file raises the commit limit without

@@ -1442,14 +1442,15 @@ class BudgetTests(unittest.TestCase):
 
     def test_finished_jobs_teach_their_class_peak(self):
         (budget.ROOT / 'session-fictional').mkdir()
-        for n in range(40):
-            (budget.ROOT / 'session-fictional' / 'memory.peak').write_text(str((n + 1) * 10 * MIB))
-            budget.record_peak('text', ['session-fictional'])
-        recorded = budget.peaks()['text']
-        self.assertEqual(len(recorded), budget.PEAK_RING)
-        self.assertEqual(recorded[-1], 400 * MIB)
-        # 95th percentile of 90..400 MiB is 390 MiB, plus a quarter.
-        self.assertEqual(budget.expected_memory('text', budget.peaks()), 390 * MIB + 390 * MIB // 4)
+        for n in range(budget.HELD_RING + 12):
+            budget.record_peak('text', ['session-fictional'], (n + 1) * 4 * MIB)
+        recorded = budget.peaks()[budget.HELD + 'text']
+        self.assertEqual(len(recorded), budget.HELD_RING)
+        self.assertEqual((recorded[0], recorded[-1]), (52 * MIB, 560 * MIB))
+        # The high mark: the 95th percentile of 52..560 MiB is 536 MiB, plus
+        # a quarter. The usual claim: their mean, 306 MiB, plus a quarter.
+        self.assertEqual(budget.expected_memory('text', budget.peaks()), 536 * MIB + 536 * MIB // 4)
+        self.assertEqual(budget.usual_memory('text', budget.peaks()), 306 * MIB + 306 * MIB // 4)
         # Never above the class ceiling, never below 256 MiB, and the ceiling
         # until eight are recorded.
         self.learn(text=4 * budget.GIB, prep=MIB)
@@ -1461,26 +1462,156 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(budget.expected_memory('pair', budget.peaks()), 8 * budget.GIB)
         # An unlearned check claims its initial quarter, not its ceiling.
         self.assertEqual(budget.expected_memory('check', budget.peaks()), budget.GIB)
+        # Until eight are recorded the usual claim is the initial one too, and
+        # it is never above the high mark nor below 256 MiB.
+        self.assertEqual(budget.usual_memory('check', budget.peaks()), budget.GIB)
+        self.assertEqual(budget.usual_memory('pair', budget.peaks()), 8 * budget.GIB)
+        self.learn(text=4 * budget.GIB, prep=MIB)
+        self.assertEqual(budget.usual_memory('text', budget.peaks()), 2 * budget.GIB)
+        self.assertEqual(budget.usual_memory('prep', budget.peaks()), 256 * MIB)
+
+    def test_a_finished_job_records_the_most_it_held_not_its_page_cache(self):
+        # memory.peak counts the page cache of every file a job read or
+        # wrote. What the job held at the polls of its run teaches the claim.
+        leaf = budget.ROOT / 'session-fictional'
+        leaf.mkdir()
+        (leaf / 'memory.peak').write_text(str(2 * budget.GIB))
+        (leaf / 'cpu.stat').write_text('usage_usec 1000000\n')
+        budget.record_peak('repository', [leaf.name], 300 * MIB)
+        self.assertEqual(budget.peaks(), {budget.HELD + 'repository': [300 * MIB]})
+        # A job that ended before its first poll records its memory.peak.
+        budget.record_peak('repository', [leaf.name])
+        self.assertEqual(budget.peaks()[budget.HELD + 'repository'], [300 * MIB, 2 * budget.GIB])
+        # The usage log keeps both for calibration.
+        budget.record_usage('repository', 'fictional', [leaf.name], time.time() - 100, 300 * MIB)
+        entry = json.loads(budget.USAGE.read_text().splitlines()[-1])
+        self.assertEqual((entry['memoryPeak'], entry['memoryHeld']), (2 * budget.GIB, 300 * MIB))
+        # What a leaf holds: anonymous, shared and kernel memory; memory.current
+        # where memory.stat cannot be read.
+        (leaf / 'memory.current').write_text(str(5 * budget.GIB))
+        self.assertEqual(budget.groups_held([leaf.name]), 5 * budget.GIB)
+        (leaf / 'memory.stat').write_text(f'anon {200 * MIB}\nfile {4 * budget.GIB}\nkernel {40 * MIB}\nshmem {16 * MIB}\n')
+        self.assertEqual(budget.groups_held([leaf.name]), 256 * MIB)
+        self.assertEqual(budget.groups_held([leaf.name, 'probe-fictional-gone']), 256 * MIB)
+
+    def test_peaks_recorded_with_their_page_cache_decide_until_eight_are_held(self):
+        # Learned before 11-18: memory.peak values, page cache included. They
+        # stay the class's samples until eight of its jobs recorded what they
+        # held, so an update starts from what was learned, not from the
+        # initial claims.
+        self.learn(repository=2 * budget.GIB)
+        leaf = budget.ROOT / 'session-fictional'
+        leaf.mkdir()
+        for _ in range(budget.PEAK_SAMPLES - 1):
+            budget.record_peak('repository', [leaf.name], 400 * MIB)
+        self.assertEqual(budget.usual_memory('repository', budget.peaks()), 2 * budget.GIB + budget.GIB // 2)
+        budget.record_peak('repository', [leaf.name], 400 * MIB)
+        self.assertEqual(budget.usual_memory('repository', budget.peaks()), 500 * MIB)
+        self.assertEqual(budget.peaks()['repository'], [2 * budget.GIB] * budget.PEAK_SAMPLES)
+
+    def test_a_few_heavy_jobs_raise_every_claim_by_their_share_not_to_their_peak(self):
+        # The live ring of 11-18 02:24: 29 repository sessions near 0.4 GiB
+        # and three that built something large. The 95th percentile of 32 is
+        # the second largest, so every session claimed 5.3 GiB: four filled
+        # 23 GiB while holding 0.05 GiB each, and the run stood there until
+        # morning. Now each claims the mean plus a quarter, and the distance
+        # to the high mark is kept once.
+        self.roomy()
+        self.measure(1.0)
+        ring = [400 * MIB] * 29 + [4342 * MIB, 5263 * MIB, 2417 * MIB]
+        budget.PEAKS.write_text(json.dumps({'repository': ring, 'check': [256 * MIB] * 8, 'prep': [16 * MIB] * 8}))
+        recorded = budget.peaks()
+        high = budget.expected_memory('repository', recorded)
+        usual = budget.usual_memory('repository', recorded)
+        mean = sum(ring) // len(ring)
+        self.assertEqual(high, 4342 * MIB + 4342 * MIB // 4)
+        self.assertEqual(usual, mean + mean // 4)
+        self.assertLess(usual, budget.GIB)
+        # A session asking alone needs room for the high mark, as before.
+        self.assertEqual(usual + budget.spike_room({'repository'}, recorded), high)
+        self.assertEqual(budget.spike_room(set(), recorded), 0)
+        count = 0
+        while True:
+            try:
+                self.reserve('repository', f'fictional-{count}')
+            except BlockingIOError as busy:
+                self.assertRegex(str(busy), 'memory the running jobs claim')
+                break
+            count += 1
+            self.settle()
+        # 23 GiB: twenty usual claims, one check's and one preparation's room
+        # and the spike room. The high mark for each admitted four.
+        room = budget.expected_memory('check', recorded) + budget.expected_memory('prep', recorded)
+        self.assertEqual(count, (budget.ADMISSION_MEMORY - room - (high - usual)) // usual)
+        self.assertEqual(count, 20)
+        self.assertEqual((budget.ADMISSION_MEMORY - room) // high, 4)
+        # Checks and preparations take the room the attempts leave.
+        self.reserve('check', 'fictional-check')
+        self.reserve('prep', 'fictional-prep')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            budget.status()
+        lines = output.getvalue().splitlines()
+        self.assertIn(f'budget spike-room {high - usual}', lines)
+        self.assertTrue(any(line.startswith(f'budget usual text {2 * budget.GIB} repository {usual} ') for line in lines))
+        self.assertTrue(any(line.startswith(f'budget expected text {2 * budget.GIB} repository {high} ') for line in lines))
+
+    def test_a_running_job_claims_what_it_holds_not_what_it_cached(self):
+        # 11-17: 49 jobs held 3.5 GiB between them and claimed 21.9 of 23.
+        # A session's memory.current counts every file it read.
+        self.roomy()
+        self.learn(repository=budget.GIB, check=256 * MIB, prep=256 * MIB)
+        self.reserve('repository', 'fictional-cached')
+        leaf = budget.ROOT / 'session-fictional-cached'
+        (leaf / 'memory.current').write_text(str(5 * budget.GIB))
+        (leaf / 'memory.stat').write_text(f'anon {200 * MIB}\nfile {4 * budget.GIB}\nkernel {56 * MIB}\n')
+        row = budget.receipts()[0]
+        self.assertEqual(budget.leaf_memory(row), 256 * MIB)
+        self.assertEqual(budget.claim(row, budget.peaks()), budget.GIB + budget.GIB // 4)
+        # Past its usual claim a job claims what it holds.
+        (leaf / 'memory.stat').write_text(f'anon {3 * budget.GIB}\nfile {budget.GIB}\nkernel 0\nshmem {budget.GIB}\n')
+        self.assertEqual(budget.claim(row, budget.peaks()), 4 * budget.GIB)
+
+    def test_windows_floors_cover_the_spike_room_too(self):
+        # The room one job may grow into must be there on the host as well.
+        ring = [400 * MIB] * 29 + [4000 * MIB] * 3
+        budget.PEAKS.write_text(json.dumps({'repository': ring, 'check': [256 * MIB] * 8, 'prep': [16 * MIB] * 8}))
+        recorded = budget.peaks()
+        usual = budget.usual_memory('repository', recorded)
+        spike = budget.spike_room({'repository'}, recorded)
+        self.assertEqual(usual + spike, 5000 * MIB)
+        needed = budget.HOST_MEMORY_FLOOR + usual + spike
+
+        def gate(ram):
+            return f'{int(time.time() * 1000)},{ram},{60 * budget.GIB},{57 * budget.GIB},0'
+        with self.assertRaisesRegex(BlockingIOError, 'Windows available RAM'):
+            self.reserve('repository', 'fictional-short', gate(needed - 1))
+        self.reserve('repository', 'fictional-a', gate(needed))
+        self.settle()
+        # A second session adds its usual claim, not a second spike room.
+        with self.assertRaisesRegex(BlockingIOError, 'Windows available RAM'):
+            self.reserve('repository', 'fictional-short', gate(needed + usual - 1))
+        self.reserve('repository', 'fictional-b', gate(needed + usual))
 
     def test_a_job_its_own_ceiling_stopped_teaches_no_peak(self):
         leaf = budget.ROOT / 'session-fictional-killed'
         leaf.mkdir()
         (leaf / 'memory.peak').write_text(str(6 * budget.GIB))
         (leaf / 'memory.events.local').write_text('low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n')
-        budget.record_peak('repository', [leaf.name])
-        self.assertNotIn('repository', budget.peaks())
+        budget.record_peak('repository', [leaf.name], 6 * budget.GIB)
+        self.assertEqual(budget.peaks(), {})
         # Killed by an ancestor's limit, or not at all, a job's peak counts.
         (leaf / 'memory.events.local').write_text('low 0\nhigh 0\nmax 0\noom 0\noom_kill 1\n')
         (leaf / 'memory.peak').write_text(str(2 * budget.GIB))
         budget.record_peak('repository', [leaf.name])
-        self.assertEqual(budget.peaks()['repository'], [2 * budget.GIB])
+        self.assertEqual(budget.peaks()[budget.HELD + 'repository'], [2 * budget.GIB])
         # A pair whose probe leaf hit its own limit teaches nothing either.
         probe = budget.ROOT / 'probe-fictional-killed'
         probe.mkdir()
         (probe / 'memory.peak').write_text(str(4 * budget.GIB))
         (probe / 'memory.events.local').write_text('oom 2\noom_kill 1\n')
         budget.record_peak('pair', [leaf.name, probe.name])
-        self.assertNotIn('pair', budget.peaks())
+        self.assertNotIn(budget.HELD + 'pair', budget.peaks())
 
     def test_peaks_at_the_class_ceiling_are_ignored_where_they_stand(self):
         # The live ring of 10-18: 29 sessions near 1 GiB and three OOM-killed
@@ -1509,13 +1640,14 @@ class BudgetTests(unittest.TestCase):
         (leaf / 'cpu.stat').write_text('usage_usec 1000000\n')
         budget.record_peak('repository', ['session-fictional-done'])
         self.assertEqual(budget.PEAKS_BACKUP.read_text(), before)
-        self.assertEqual(json.loads(budget.PEAKS.read_text())['repository'][-1], 2 * budget.GIB)
+        self.assertEqual(json.loads(budget.PEAKS.read_text())[budget.HELD + 'repository'], [2 * budget.GIB])
         # A torn current file: decisions and the next update use the backup.
         budget.PEAKS.write_bytes(b'\xff\xfe{"torn')
         self.assertEqual(budget.peaks(), json.loads(before))
         budget.record_peak('repository', ['session-fictional-done'])
         recovered = json.loads(budget.PEAKS.read_text())
-        self.assertEqual(recovered['repository'], [budget.GIB] * budget.PEAK_SAMPLES + [2 * budget.GIB])
+        self.assertEqual(recovered, {'repository': [budget.GIB] * budget.PEAK_SAMPLES,
+                                     budget.HELD + 'repository': [2 * budget.GIB]})
         self.assertEqual(budget.PEAKS_BACKUP.read_text(), before)
         self.assertIn('recovered it from', budget.REAPER_LOG.read_text())
         # Neither readable: both stay as they are, and the log says why.
