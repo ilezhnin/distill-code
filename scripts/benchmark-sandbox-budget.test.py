@@ -108,7 +108,11 @@ class BudgetTests(unittest.TestCase):
         ram = self.headroom[0] if ram is None else ram
         commit = self.headroom[1] if commit is None else commit
         busy = self.busy if busy is None else busy
-        return f'{int(time.time() * 1000)-age},{ram*budget.GIB},{commit*budget.GIB},{disk*budget.GIB},{busy}'
+        # Every gate carries a later time than the one before, as the host's
+        # do: the smoothing ring keeps each gate time once, and two gates
+        # made within one clock tick counted as one sample.
+        self.gated = max(getattr(self, 'gated', 0) + 1, int(time.time() * 1000))
+        return f'{self.gated-age},{ram*budget.GIB},{commit*budget.GIB},{disk*budget.GIB},{busy}'
 
     def roomy(self):
         # Capacity tests run on a host whose Windows headroom covers every
