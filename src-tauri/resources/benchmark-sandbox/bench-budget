@@ -53,6 +53,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 
 GIB = 1024 ** 3
 MIB = 1024 ** 2
@@ -1391,20 +1392,21 @@ def admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, cont
     return 'load'
 
 
-def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=False):
-    """Admission of `kind`. A `continuing` session (a later step of a
-    workflow already under way) is an attempt that goes ahead of new ones:
-    no room kept for waiting jobs, no CPU pressure or check-stall guard, no
-    room kept for another repository claim; its ceilings, the memory claims
-    and guard, the CPU lines and the Windows floors still apply."""
-    memory, cpu, pids, lane = CLASSES[kind]
-    if kind in ATTEMPTS:
-        in_use = memory_in_use()
-        stalled_memory = guest_pressure('memory')
-        if in_use > MEMORY_GUARD * ADMISSION_MEMORY or (stalled_memory is not None and stalled_memory > MEMORY_PRESSURE):
-            raise refused('sandbox memory in use or memory pressure is above its guard line')
-    sample_cpu()
-    recorded = peaks()
+def memory_guard_line():
+    """No attempt starts while what the jobs hold or the guest's memory
+    pressure is above its guard: this is what catches a simultaneous spike
+    the claims below do not cover."""
+    in_use = memory_in_use()
+    stalled = guest_pressure('memory')
+    if in_use > MEMORY_GUARD * ADMISSION_MEMORY or (stalled is not None and stalled > MEMORY_PRESSURE):
+        raise refused('sandbox memory in use or memory pressure is above its guard line')
+
+
+def memory_line(active, kind, host_buffers, continuing, recorded):
+    """The claims of the running jobs, this job's, and the rooms kept beside
+    them must fit the admission memory. Returns what the later lines and the
+    admission record read: the claims, how much of them is not in use yet,
+    this job's own need, and the rooms kept."""
     claims = sum(claim(row, recorded) for row in active)
     unused = sum(max(0, claim(row, recorded) - leaf_memory(row)) for row in active)
     needed = usual_memory(kind, recorded) + host_buffers
@@ -1438,14 +1440,20 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
         raise refused('a check or preparation waits for room first, and this attempt would take it')
     if own + kept_memory + max(0, kept_repository - repository_room) > ADMISSION_MEMORY:
         raise refused('a repository attempt waits for the memory text sessions claim')
+    return types.SimpleNamespace(claims=claims, unused=unused, needed=needed, kept_memory=kept_memory,
+                                 kept_cpus=kept_cpus, kept_repository=kept_repository, spike=spike)
+
+
+def process_line(pids):
+    """The processes running now and this job's ceiling must fit the
+    aggregate."""
     if (read_number(ROOT / 'pids.current') or 0) + pids > AGGREGATE_PIDS:
         raise refused('sandbox process budget leaves no room for this job')
-    # A refused check or preparation keeps its room at every memory floor,
-    # not only the Linux aggregate above. Otherwise smaller fresh sessions
-    # can repeatedly take Windows/guest headroom while that job waits.
-    # Continuing paid workflow steps retain their existing priority (their
-    # kept_memory is zero), and all jobs still cover their own actual claim.
-    observed = host_gate(gate, unused + kept_memory + spike, needed)
+
+
+def cpu_readings(active, observed, recorded):
+    """What the CPU lines decide on: the measured use, the load outside the
+    sandbox, the running jobs' ceilings, and how long jobs waited for CPUs."""
     measured = sandbox_cores()
     guest = guest_cores()
     host_cores = observed.get('hostCpuBusy')
@@ -1460,81 +1468,130 @@ def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=Fa
     burst = session_burst(recorded)
     pressure = job_pressure()
     stalled = recent_stall()
-    admitted_by = None
-    TRACE.update(hostCpuBusy=observed.get('hostCpuBusy'), heavyJobs=len(heavy), heavyCpus=ceilings,
-                 cpuPressure=pressure, checkStall=stalled, keptCpus=kept_cpus)
-    if kind in CPU_HEAVY:
-        cap = heavy_cap()
-        # A timed job waiting for CPUs takes the next place under the cap.
-        if cap is not None and len(heavy) + (1 if kept_cpus else 0) >= cap:
-            raise refused('the operator caps CPU-heavy benchmark jobs at ' + str(cap), 'cpu', cpu)
-        # A timing-sensitive check times what it checks (a planning lab's
-        # planner on a budget of seconds). One runs at a time: a second waits
-        # for it and keeps its CPUs from new attempts meanwhile, as a check
-        # refused CPUs does. The running one keeps its whole ceiling: another
-        # CPU-heavy job starts beside it only while the measured load, with
-        # that ceiling held back, still leaves the new job's own ceiling free.
-        # A timing check itself starts only with its whole ceiling free.
-        reserved = sum(row['cpu'] for row in active if row.get('timing'))
-        if reserved and timing:
-            raise refused('a timing-sensitive check runs, and another starts after it', 'cpu', cpu)
-        smoothed = host_busy_smoothed(observed)
-        if smoothed is not None:
-            admitted_by = admit_by_load(kind, cpu, heavy, smoothed, kept_cpus, pressure, stalled, continuing, timing,
-                                        reserved)
-        else:
-            # No gate sample in the window: the summed-ceilings rule.
-            reserve = CHECK_CPUS if kind in ATTEMPTS else 0
-            # The running timed jobs count by their ceilings (`timed`), so the
-            # measured use leaves out what they use: counted twice, two checks
-            # left no room for any new session beside the owner's desktop load.
-            if measured is not None:
-                used = max(0.0, measured - timed_use(active))
-            else:
-                used = ceilings - timed
+    return types.SimpleNamespace(measured=measured, guest=guest, outside=outside, line=line, capacity=capacity,
+                                 heavy=heavy, ceilings=ceilings, timed=timed, sessions=sessions, burst=burst,
+                                 pressure=pressure, stalled=stalled)
 
-            # Sessions admitted too recently for the samples to show their use
-            # count at their ceilings (SESSION_SETTLE). Without a sample their
-            # ceilings already stand in for their use.
-            now = time.time()
-            unsettled = 0 if measured is None else sum(
-                row['kind'] == 'repository' and now - row.get('admitted', now) < SESSION_SETTLE for row in active)
-            sessions_cpus = burst * (sessions - unsettled) + CLASSES['repository'][1] * unsettled
 
-            def admitted(kept):
-                if ceilings + cpu + reserve + kept <= line:
-                    return 'ceilings'
-                if kind == 'repository':
-                    fits = used + sessions_cpus + burst + timed + CHECK_CPUS + kept <= capacity
-                else:
-                    fits = timed + cpu + sessions_cpus <= capacity
-                return 'measured' if fits else None
-            # The samples lag: the measured use beside the running timed jobs,
-            # those jobs at their ceilings and sessions too new to show in the
-            # samples at theirs, added up. Without a sample, every ceiling.
-            occupied = used + CLASSES['repository'][1] * unsettled + timed
-            if timing and occupied + cpu > capacity:
-                raise refused('the measured CPU use leaves no timing-sensitive check its whole ceiling', 'cpu', cpu)
-            admitted_by = admitted(kept_cpus)
-            if kind == 'repository' and admitted_by != 'ceilings' and not continuing:
-                if (pressure is not None and pressure > SESSION_PRESSURE) or (stalled is not None and stalled > STALL_LINE):
-                    raise refused('CPU pressure in the sandbox holds new repository sessions')
-            if admitted_by is None and kept_cpus and admitted(0) is not None:
-                raise refused('a check waits for CPUs first, and this attempt would take them')
-            if admitted_by is None:
-                raise refused('CPU cores the host leaves free cannot cover this job beside the running checks and sessions',
-                              'cpu', cpu)
+def admit_by_ceilings(active, kind, cpu, load, kept_cpus, continuing, timing):
+    """Admission of a CPU-heavy job without a host sample in the window, by
+    summed ceilings or by measured use. Returns how it was admitted or raises
+    the refusal."""
+    reserve = CHECK_CPUS if kind in ATTEMPTS else 0
+    # The running timed jobs count by their ceilings (`timed`), so the
+    # measured use leaves out what they use: counted twice, two checks
+    # left no room for any new session beside the owner's desktop load.
+    if load.measured is not None:
+        used = max(0.0, load.measured - timed_use(active))
     else:
-        busy = (measured if measured is not None else ceilings) + outside
-        if busy + cpu + SUPERVISOR_CPUS > (os.cpu_count() or 1) or (
-                not continuing and pressure is not None and pressure > LIGHT_PRESSURE):
-            raise refused('measured CPU load is above the light-job admission line')
-    observed.update(expectedMemory=needed, claimedMemory=claims, cpuLine=line, heavyCpus=ceilings,
-                    sandboxCpu=None if measured is None else round(measured, 3),
-                    guestCpu=None if guest is None else round(guest, 3), outsideCpu=round(outside, 3),
-                    keptMemory=kept_memory + kept_repository, keptCpus=kept_cpus,
-                    cpuPressure=pressure, checkStall=stalled, cpuCapacity=capacity,
-                    sessionBurst=round(burst, 3), repositorySessions=sessions, admittedBy=admitted_by)
+        used = load.ceilings - load.timed
+
+    # Sessions admitted too recently for the samples to show their use
+    # count at their ceilings (SESSION_SETTLE). Without a sample their
+    # ceilings already stand in for their use.
+    now = time.time()
+    unsettled = 0 if load.measured is None else sum(
+        row['kind'] == 'repository' and now - row.get('admitted', now) < SESSION_SETTLE for row in active)
+    sessions_cpus = load.burst * (load.sessions - unsettled) + CLASSES['repository'][1] * unsettled
+
+    def admitted(kept):
+        if load.ceilings + cpu + reserve + kept <= load.line:
+            return 'ceilings'
+        if kind == 'repository':
+            fits = used + sessions_cpus + load.burst + load.timed + CHECK_CPUS + kept <= load.capacity
+        else:
+            fits = load.timed + cpu + sessions_cpus <= load.capacity
+        return 'measured' if fits else None
+    # The samples lag: the measured use beside the running timed jobs,
+    # those jobs at their ceilings and sessions too new to show in the
+    # samples at theirs, added up. Without a sample, every ceiling.
+    occupied = used + CLASSES['repository'][1] * unsettled + load.timed
+    if timing and occupied + cpu > load.capacity:
+        raise refused('the measured CPU use leaves no timing-sensitive check its whole ceiling', 'cpu', cpu)
+    admitted_by = admitted(kept_cpus)
+    if kind == 'repository' and admitted_by != 'ceilings' and not continuing:
+        if (load.pressure is not None and load.pressure > SESSION_PRESSURE) or (
+                load.stalled is not None and load.stalled > STALL_LINE):
+            raise refused('CPU pressure in the sandbox holds new repository sessions')
+    if admitted_by is None and kept_cpus and admitted(0) is not None:
+        raise refused('a check waits for CPUs first, and this attempt would take them')
+    if admitted_by is None:
+        raise refused('CPU cores the host leaves free cannot cover this job beside the running checks and sessions',
+                      'cpu', cpu)
+    return admitted_by
+
+
+def heavy_cpu_line(active, kind, cpu, observed, load, kept_cpus, continuing, timing):
+    """A CPU-heavy job starts under the operator's cap, never beside another
+    timing-sensitive check when it is one, and then by the host's measured
+    load (admit_by_load) or, without a sample, by ceilings and measured use
+    (admit_by_ceilings). Returns how it was admitted."""
+    cap = heavy_cap()
+    # A timed job waiting for CPUs takes the next place under the cap.
+    if cap is not None and len(load.heavy) + (1 if kept_cpus else 0) >= cap:
+        raise refused('the operator caps CPU-heavy benchmark jobs at ' + str(cap), 'cpu', cpu)
+    # A timing-sensitive check times what it checks (a planning lab's
+    # planner on a budget of seconds). One runs at a time: a second waits
+    # for it and keeps its CPUs from new attempts meanwhile, as a check
+    # refused CPUs does. The running one keeps its whole ceiling: another
+    # CPU-heavy job starts beside it only while the measured load, with
+    # that ceiling held back, still leaves the new job's own ceiling free.
+    # A timing check itself starts only with its whole ceiling free.
+    reserved = sum(row['cpu'] for row in active if row.get('timing'))
+    if reserved and timing:
+        raise refused('a timing-sensitive check runs, and another starts after it', 'cpu', cpu)
+    smoothed = host_busy_smoothed(observed)
+    if smoothed is not None:
+        return admit_by_load(kind, cpu, load.heavy, smoothed, kept_cpus, load.pressure, load.stalled, continuing,
+                             timing, reserved)
+    return admit_by_ceilings(active, kind, cpu, load, kept_cpus, continuing, timing)
+
+
+def light_cpu_line(cpu, load, continuing):
+    """A light job needs its own CPU ceiling and one supervisor CPU beside
+    the measured load, and the jobs' CPU pressure below its line."""
+    busy = (load.measured if load.measured is not None else load.ceilings) + load.outside
+    if busy + cpu + SUPERVISOR_CPUS > (os.cpu_count() or 1) or (
+            not continuing and load.pressure is not None and load.pressure > LIGHT_PRESSURE):
+        raise refused('measured CPU load is above the light-job admission line')
+
+
+def admit_measured(active, kind, gate, host_buffers, continuing=False, timing=False):
+    """Admission of `kind`: the lines below in this order, each refusing by
+    raising. A `continuing` session (a later step of a workflow already
+    under way) is an attempt that goes ahead of new ones: no room kept for
+    waiting jobs, no CPU pressure or check-stall guard, no room kept for
+    another repository claim; its ceilings, the memory claims and guard, the
+    CPU lines and the Windows floors still apply."""
+    memory, cpu, pids, lane = CLASSES[kind]
+    if kind in ATTEMPTS:
+        memory_guard_line()
+    sample_cpu()
+    recorded = peaks()
+    room = memory_line(active, kind, host_buffers, continuing, recorded)
+    process_line(pids)
+    # A refused check or preparation keeps its room at every memory floor,
+    # not only the Linux aggregate above. Otherwise smaller fresh sessions
+    # can repeatedly take Windows/guest headroom while that job waits.
+    # Continuing paid workflow steps retain their existing priority (their
+    # kept_memory is zero), and all jobs still cover their own actual claim.
+    observed = host_gate(gate, room.unused + room.kept_memory + room.spike, room.needed)
+    load = cpu_readings(active, observed, recorded)
+    TRACE.update(hostCpuBusy=observed.get('hostCpuBusy'), heavyJobs=len(load.heavy), heavyCpus=load.ceilings,
+                 cpuPressure=load.pressure, checkStall=load.stalled, keptCpus=room.kept_cpus)
+    admitted_by = None
+    if kind in CPU_HEAVY:
+        admitted_by = heavy_cpu_line(active, kind, cpu, observed, load, room.kept_cpus, continuing, timing)
+    else:
+        light_cpu_line(cpu, load, continuing)
+    observed.update(expectedMemory=room.needed, claimedMemory=room.claims, cpuLine=load.line,
+                    heavyCpus=load.ceilings,
+                    sandboxCpu=None if load.measured is None else round(load.measured, 3),
+                    guestCpu=None if load.guest is None else round(load.guest, 3),
+                    outsideCpu=round(load.outside, 3),
+                    keptMemory=room.kept_memory + room.kept_repository, keptCpus=room.kept_cpus,
+                    cpuPressure=load.pressure, checkStall=load.stalled, cpuCapacity=load.capacity,
+                    sessionBurst=round(load.burst, 3), repositorySessions=load.sessions, admittedBy=admitted_by)
     if continuing:
         observed['continuing'] = True
     if timing:
