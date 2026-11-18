@@ -875,7 +875,10 @@ def record_peak(kind, groups, held=0):
     largest of what its leaves held (memory_held) at the one-second polls of
     its run. A job that ended before its first poll records its leaves'
     memory.peak instead, which counts its page cache too: all the kernel
-    kept of a job that short.
+    kept of a job that short. The polls are also all that is left of a
+    browser run: its broker ends the group and removes the leaf (bench-kill)
+    before this supervisor reads it, so no browser run ever taught a
+    memory.peak and each claimed its 2 GiB ceiling.
     A job its own memory.max stopped teaches nothing: its peak is the limit,
     not what it needed. Three OOM-killed repository sessions at exactly
     6 GiB (10-18) made every repository job claim its ceiling, so only three

@@ -296,7 +296,10 @@ naming the line that holds it, while it does not:
   recorded peaks plus a quarter, never below 256 MiB. What a job holds is its
   anonymous, shared and kernel memory, read every second of its run; the page
   cache of the files it read does not count, as it does not for the guard
-  below. Beside the claims the broker keeps room once for one job to reach its
+  below. (A browser run's leaf is removed before its supervisor reads it, so
+  its `memory.peak` was never recorded and each claimed its 2 GiB ceiling; the
+  polls teach its kind too.) Beside the claims the broker keeps room once for
+  one job to reach its
   kind's high mark, the 95th percentile of the recorded peaks plus a quarter,
   never above the ceiling: a job asking alone needs its high mark, and each
   further job adds its usual claim. A job past its usual claim claims what it

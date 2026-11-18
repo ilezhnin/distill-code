@@ -1494,6 +1494,19 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(budget.groups_held([leaf.name]), 256 * MIB)
         self.assertEqual(budget.groups_held([leaf.name, 'probe-fictional-gone']), 256 * MIB)
 
+    def test_a_job_whose_leaf_is_gone_when_it_ends_still_teaches_what_it_held(self):
+        # A browser run's broker ends its group and removes the leaf before
+        # the run's supervisor records it. With memory.peak gone no browser
+        # run taught a peak, and each claimed its 2 GiB ceiling. What the
+        # supervisor read at its polls is its own.
+        self.assertEqual(budget.usual_memory('browser', budget.peaks()), 2 * budget.GIB)
+        for _ in range(budget.PEAK_SAMPLES):
+            budget.record_peak('browser', ['browser-fictional-gone'], 400 * MIB)
+        self.assertEqual(budget.usual_memory('browser', budget.peaks()), 500 * MIB)
+        # Nothing polled and nothing left to read teaches nothing.
+        budget.record_peak('browser', ['browser-fictional-gone'])
+        self.assertEqual(budget.peaks(), {budget.HELD + 'browser': [400 * MIB] * budget.PEAK_SAMPLES})
+
     def test_peaks_recorded_with_their_page_cache_decide_until_eight_are_held(self):
         # Learned before 11-18: memory.peak values, page cache included. They
         # stay the class's samples until eight of its jobs recorded what they
