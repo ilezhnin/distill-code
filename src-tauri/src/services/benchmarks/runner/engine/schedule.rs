@@ -358,34 +358,10 @@ impl BenchmarkService {
         tried: &mut std::collections::HashSet<String>,
         waiting_accounts: &mut std::collections::BTreeSet<String>,
     ) -> Result<bool> {
-        if !run.request.automatic_retry()
-            && (a.started_at.is_some()
-                || a.session_id.is_some()
-                || a.host_run_id.is_some()
-                || !a.workflow_steps.is_empty())
-        {
-            a.phase = "terminal".into();
-            a.outcome = Some("dispatch_uncertain".into());
-            a.reason = Some("This run forbids replay of a previously started attempt".into());
-            a.finished_at = Some(now());
-            self.store.save_attempt(&a).await?;
-            self.store.set_run_state(&run.id, "needs_attention").await?;
+        if self.refuses_replay(run, &mut a).await? {
             return Ok(false);
         }
-        // An account whose limit ran out under this run hands its tests to
-        // another account of the provider that has room.
-        if let Some(account) = a
-            .configuration
-            .account_id
-            .clone()
-            .filter(|_| run.request.automatic_retry())
-        {
-            if exhausted(&run.id, &account) {
-                if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
-                    a.configuration.account_id = Some(other);
-                }
-            }
-        }
+        self.hand_to_an_account_with_room(run, &mut a).await;
         // A configuration flies as many attempts as its run was admitted
         // with, within its account's and the app's slots.
         let concurrency = if a.configuration.execution_profile == "workflow_policy" {
@@ -436,50 +412,7 @@ impl BenchmarkService {
             && concurrency.admission
                 == crate::services::benchmarks::workflow_campaign::WorkerAdmission::ReservedPool;
         let workers = if reserve_workers {
-            let policy = run.request.workflow_policy.as_ref().ok_or_else(|| {
-                BenchmarkError::new(
-                    "invalid_workflow_policy",
-                    "Workflow worker policy is absent",
-                )
-            })?;
-            let mut worker_request = run.request.clone();
-            worker_request.parallelism = Some(concurrency.lane_parallelism());
-            let workers: Vec<_> = policy
-                .candidates
-                .iter()
-                .filter(|candidate| {
-                    policy.mode != "fixed"
-                        || policy.fixed_candidate_id.as_deref() == Some(candidate.id.as_str())
-                })
-                .map(|candidate| WorkerReservation {
-                    lane: crate::services::benchmarks::analysis::configuration_key(candidate),
-                    account: format!(
-                        "{}\u{1f}{}",
-                        candidate.provider_id,
-                        candidate.account_id.as_deref().unwrap_or_default()
-                    ),
-                    lane_slots: attempts_at_once(&worker_request, candidate) as usize,
-                    account_slots: account_slots_within(
-                        &run.id,
-                        &quota_scope(candidate),
-                        concurrency.account_slots,
-                    ),
-                })
-                .collect();
-            if workers.is_empty() {
-                return Err(BenchmarkError::new(
-                    "invalid_workflow_policy",
-                    "Workflow has no reservable worker",
-                ));
-            }
-            if workers
-                .iter()
-                .any(|worker| waiting_accounts.contains(&worker.account))
-            {
-                waiting_accounts.extend(workers.iter().map(|worker| worker.account.clone()));
-                return Ok(false);
-            }
-            workers
+            Self::policy_workers(run, &concurrency)?
         } else {
             Vec::new()
         };
@@ -487,6 +420,13 @@ impl BenchmarkService {
             .iter()
             .map(|worker| worker.account.clone())
             .collect();
+        if accounts
+            .iter()
+            .any(|account| waiting_accounts.contains(account))
+        {
+            waiting_accounts.extend(accounts);
+            return Ok(false);
+        }
         // A cell without a free seat waits without probing the host: a fill
         // passes every pending cell, and most of them wait for a seat. An
         // ordinary cell also waits while the attempts already in preparation
@@ -500,56 +440,22 @@ impl BenchmarkService {
             return Ok(false);
         }
         // Reserve before the host probe so a full queue is asked by one
-        // candidate after the shared wait, never by every pending cell.
+        // candidate after the shared wait, never by every pending cell. Its
+        // place in the window ends with the flight that owns it, however that
+        // flight ends, or here on any return before the flight starts.
         let Some(preparing) = admission_window::begin(&scope, &id) else {
             waiting_accounts.extend(accounts);
             return Ok(false);
         };
-        if let Err(error) = self.backend.resource_admission(&a.configuration).await {
-            let error = diagnostics::record(
-                &self.store, &a, "candidate_admission", error, None,
-                json!({"retryAfterMs": admission_window::RETRY.as_millis() as u64, "dispatched": false}),
-            ).await;
-            if error.code == "resource_busy" {
-                admission_window::refused(&scope, &id);
-                let reason = format!("Waiting for local resources: {}", error.message);
-                // The stored cell, without an account handoff that only its
-                // start makes. All other cells remain quietly queued.
-                let mut waiting = self.store.attempt(&a.id).await?;
-                waiting.reason = Some(reason);
-                waiting.wait_until = Some(now() + admission_window::RETRY.as_millis() as i64);
-                self.store.save_attempt(&waiting).await?;
-                self.changed().await;
-                return Ok(false);
-            }
-            return Err(error);
+        if !self.host_admits(&a, &scope).await? {
+            return Ok(false);
         }
-        // Its place in the window ends with the flight that owns it, however
-        // that flight ends, or here on any return before the flight starts.
         let Some(cancel_rx) = self.claim_workers(&run.id, seat, workers).await else {
             waiting_accounts.extend(accounts);
             return Ok(false);
         };
         if !account.is_empty() {
-            let turns = self
-                .active
-                .lock()
-                .await
-                .values()
-                .filter(|flight| flight.uses_account(&account))
-                .count();
-            a.account_load = Some(AccountLoad {
-                turns: u32::try_from(turns).unwrap_or(u32::MAX),
-                limit: u32::try_from(account_slots(
-                    &run.id,
-                    &quota_scope(&a.configuration),
-                    &pace_key(&self.store, &account),
-                ))
-                .unwrap_or(u32::MAX),
-            });
-            // The account flies a turn from now: a restart measures its
-            // pace's staleness from here even before the turn ends.
-            account_pace::record_flight(&pace_key(&self.store, &account), now());
+            self.record_account_load(run, &mut a, &account).await;
         }
         if let Err(error) =
             fixtures::verify_blob(&self.store.root, &version.content_hash, &version.manifest).await
@@ -561,41 +467,7 @@ impl BenchmarkService {
         // before the paid turn.
         let judge_budget = self.judge_budget(run, &version).await;
         tried.insert(a.id.clone());
-        a.phase = "preparing".into();
-        a.started_at = Some(now());
-        if a.reason
-            .as_deref()
-            .is_some_and(|reason| reason.starts_with("Waiting for local resources"))
-        {
-            a.reason = None;
-        }
-        // A wait ends when its cell starts; only a new one lets it start
-        // again within this tick.
-        a.wait_until = None;
-        // The claim holds a lane, account and model seat: a store failure from
-        // here on releases it, or the seat would stay taken until a restart.
-        if let Err(error) = self.store.save_attempt(&a).await {
-            self.release(&id).await;
-            return Err(error);
-        }
-        let state = match self.store.run_state(&run.id).await {
-            Ok(state) => state,
-            Err(error) => {
-                // Best effort: the cell waits again instead of reading as
-                // preparing with no flight until a restart recovers it.
-                a.phase = "pending".into();
-                a.started_at = None;
-                let _ = self.store.save_attempt(&a).await;
-                self.release(&id).await;
-                return Err(error);
-            }
-        };
-        if state != "running" {
-            a.phase = "pending".into();
-            a.started_at = None;
-            let saved = self.store.save_attempt(&a).await;
-            self.release(&id).await;
-            saved?;
+        if !self.mark_preparing(run, &mut a).await? {
             return Ok(false);
         }
         // Tell the app the attempt started, so a run's view shows which test
@@ -619,6 +491,175 @@ impl BenchmarkService {
             service.finish_flight(&id, &id, result).await;
         });
         Ok(true)
+    }
+
+    /// A run that forbids retries never replays an attempt that had started:
+    /// the attempt settles as an uncertain dispatch and the run waits for the
+    /// operator. Whether it did.
+    async fn refuses_replay(&self, run: &BenchmarkRun, a: &mut Attempt) -> Result<bool> {
+        if run.request.automatic_retry()
+            || !(a.started_at.is_some()
+                || a.session_id.is_some()
+                || a.host_run_id.is_some()
+                || !a.workflow_steps.is_empty())
+        {
+            return Ok(false);
+        }
+        a.phase = "terminal".into();
+        a.outcome = Some("dispatch_uncertain".into());
+        a.reason = Some("This run forbids replay of a previously started attempt".into());
+        a.finished_at = Some(now());
+        self.store.save_attempt(a).await?;
+        self.store.set_run_state(&run.id, "needs_attention").await?;
+        Ok(true)
+    }
+
+    /// An account whose limit ran out under this run hands its tests to
+    /// another account of the provider that has room.
+    async fn hand_to_an_account_with_room(&self, run: &BenchmarkRun, a: &mut Attempt) {
+        if !run.request.automatic_retry() {
+            return;
+        }
+        let Some(account) = a.configuration.account_id.clone() else {
+            return;
+        };
+        if exhausted(&run.id, &account) {
+            if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
+                a.configuration.account_id = Some(other);
+            }
+        }
+    }
+
+    /// The workers a workflow root reserves for its whole trajectory: every
+    /// candidate its policy may select.
+    fn policy_workers(
+        run: &BenchmarkRun,
+        concurrency: &crate::services::benchmarks::workflow_campaign::CampaignConcurrency,
+    ) -> Result<Vec<WorkerReservation>> {
+        let policy = run.request.workflow_policy.as_ref().ok_or_else(|| {
+            BenchmarkError::new(
+                "invalid_workflow_policy",
+                "Workflow worker policy is absent",
+            )
+        })?;
+        let mut worker_request = run.request.clone();
+        worker_request.parallelism = Some(concurrency.lane_parallelism());
+        let workers: Vec<_> = policy
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                policy.mode != "fixed"
+                    || policy.fixed_candidate_id.as_deref() == Some(candidate.id.as_str())
+            })
+            .map(|candidate| WorkerReservation {
+                lane: crate::services::benchmarks::analysis::configuration_key(candidate),
+                account: format!(
+                    "{}\u{1f}{}",
+                    candidate.provider_id,
+                    candidate.account_id.as_deref().unwrap_or_default()
+                ),
+                lane_slots: attempts_at_once(&worker_request, candidate) as usize,
+                account_slots: account_slots_within(
+                    &run.id,
+                    &quota_scope(candidate),
+                    concurrency.account_slots,
+                ),
+            })
+            .collect();
+        if workers.is_empty() {
+            return Err(BenchmarkError::new(
+                "invalid_workflow_policy",
+                "Workflow has no reservable worker",
+            ));
+        }
+        Ok(workers)
+    }
+
+    /// Asks the host whether `a` may start now. A refusal for room parks the
+    /// queue and leaves its reason and the next ask on the stored cell,
+    /// without an account handoff that only its start makes; every other
+    /// cell stays quietly queued.
+    async fn host_admits(&self, a: &Attempt, scope: &str) -> Result<bool> {
+        let Err(error) = self.backend.resource_admission(&a.configuration).await else {
+            return Ok(true);
+        };
+        let error = diagnostics::record(
+            &self.store,
+            a,
+            "candidate_admission",
+            error,
+            None,
+            json!({"retryAfterMs": admission_window::RETRY.as_millis() as u64, "dispatched": false}),
+        )
+        .await;
+        if error.code != "resource_busy" {
+            return Err(error);
+        }
+        admission_window::refused(scope, &a.id);
+        let mut waiting = self.store.attempt(&a.id).await?;
+        waiting.reason = Some(format!("Waiting for local resources: {}", error.message));
+        waiting.wait_until = Some(now() + admission_window::RETRY.as_millis() as i64);
+        self.store.save_attempt(&waiting).await?;
+        self.changed().await;
+        Ok(false)
+    }
+
+    /// Notes how loaded `account` is as the attempt starts on it. The account
+    /// flies a turn from now: a restart measures its pace's staleness from
+    /// here even before the turn ends.
+    async fn record_account_load(&self, run: &BenchmarkRun, a: &mut Attempt, account: &str) {
+        let turns = self
+            .active
+            .lock()
+            .await
+            .values()
+            .filter(|flight| flight.uses_account(account))
+            .count();
+        a.account_load = Some(AccountLoad {
+            turns: u32::try_from(turns).unwrap_or(u32::MAX),
+            limit: u32::try_from(account_slots(
+                &run.id,
+                &quota_scope(&a.configuration),
+                &pace_key(&self.store, account),
+            ))
+            .unwrap_or(u32::MAX),
+        });
+        account_pace::record_flight(&pace_key(&self.store, account), now());
+    }
+
+    /// Saves `a` as preparing, and whether its flight may go. The claim holds
+    /// a lane, account and model seat: a store failure from here on, or a
+    /// run that stopped meanwhile, releases it, and the cell waits again
+    /// instead of reading as preparing with no flight until a restart.
+    async fn mark_preparing(&self, run: &BenchmarkRun, a: &mut Attempt) -> Result<bool> {
+        a.phase = "preparing".into();
+        a.started_at = Some(now());
+        if a.reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("Waiting for local resources"))
+        {
+            a.reason = None;
+        }
+        // A wait ends when its cell starts; only a new one lets it start
+        // again within this tick.
+        a.wait_until = None;
+        if let Err(error) = self.store.save_attempt(a).await {
+            self.release(&a.id).await;
+            return Err(error);
+        }
+        let state = self.store.run_state(&run.id).await;
+        if state.as_deref().is_ok_and(|state| state == "running") {
+            return Ok(true);
+        }
+        a.phase = "pending".into();
+        a.started_at = None;
+        let saved = self.store.save_attempt(a).await;
+        self.release(&a.id).await;
+        // A state that could not be read is the failure to report; the save
+        // of the waiting cell was then best effort.
+        state?;
+        saved?;
+        Ok(false)
     }
 
     /// The pending attempts ready to dispatch. In a run admitted before author
