@@ -29,25 +29,19 @@ pub(in super::super) const MEASURING_AGAIN: &str =
 
 /// How many turns of `scope` (see [`quota_scope`]) in `run_id` an
 /// infrastructure failure ended in a row, this one counted: `failed` adds to
-/// the streak, any other settled turn ends it. Kept in memory, so a restart
-/// or the operator's resume begins it again.
-pub(in super::super) static INFRASTRUCTURE_STREAKS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(String, String), u32>>,
-> = std::sync::LazyLock::new(Default::default);
-
+/// the streak, any other settled turn ends it. Kept in memory (see
+/// [`learned`]), so a restart or the operator's resume begins it again.
 pub(in super::super) fn infrastructure_streak(run_id: &str, scope: &str, failed: bool) -> u32 {
-    let mut streaks = INFRASTRUCTURE_STREAKS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = (run_id.to_owned(), scope.to_owned());
-    if failed {
-        let streak = streaks.entry(key).or_default();
-        *streak += 1;
-        *streak
-    } else {
-        streaks.remove(&key);
-        0
-    }
+    learned::of(run_id, |run| {
+        if failed {
+            let streak = run.streaks.entry(scope.to_owned()).or_default();
+            *streak += 1;
+            *streak
+        } else {
+            run.streaks.remove(scope);
+            0
+        }
+    })
 }
 
 /// Whether the run measures `settled` again by itself: a standalone try of a

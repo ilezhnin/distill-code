@@ -49,10 +49,7 @@ async fn execution_limits_quota_waits_then_dispatches_once_on_the_same_account()
         service.tick().await.unwrap();
         let sent = u64::from(accepted);
         assert_eq!(backend.calls.load(Ordering::SeqCst), sent);
-        PROVIDER_HOLDS
-            .lock()
-            .unwrap()
-            .retain(|(held, _), _| held != &run.id);
+        end_holds(&run.id, None);
         let mut elapsed = waiting.clone();
         elapsed.wait_until = Some(now() - 1);
         service.store.save_attempt(&elapsed).await.unwrap();

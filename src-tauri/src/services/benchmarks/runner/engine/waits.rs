@@ -78,19 +78,7 @@ pub(in crate::services::benchmarks) fn quota_scope(configuration: &Configuration
 /// operator resumed it, so its cells ask again, and a refusal from before a
 /// long pause neither holds a healthy account nor counts toward giving up.
 pub(in crate::services::benchmarks) fn forget_quota_waits(run_id: &str) {
-    for held in [&EXHAUSTED, &QUOTA_SINCE, &PROVIDER_HOLDS] {
-        held.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(run, _), _| run != run_id);
-    }
-    INFRASTRUCTURE_STREAKS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|(run, _), _| run != run_id);
-    LEFT_FOR_OPERATOR
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|(run, _)| run != run_id);
+    learned::forget(run_id);
 }
 
 /// Explicit resume probes quota/sign-in availability again. Preserve unrelated
@@ -125,12 +113,6 @@ pub(in crate::services::benchmarks) async fn reset_account_waits(
     Ok(())
 }
 
-/// When each run's account first refused for quota (see [`quota_scope`]),
-/// while the run waits on it. Kept in memory: a restart begins the wait again.
-static QUOTA_SINCE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
-> = std::sync::LazyLock::new(Default::default);
-
 /// Why a test is left for the operator instead of waiting on its account's
 /// usage limit; the provider's own words follow it.
 pub(in super::super) const QUOTA_STOPPED: &str =
@@ -158,29 +140,34 @@ pub(in super::super) enum QuotaPlan {
 /// it that was under way and is refused in its turn never starts a wait of
 /// its own.
 pub(in super::super) fn quota_plan(run_id: &str, scope: &str, error: &str, at: i64) -> QuotaPlan {
-    if is_left(run_id, scope) {
-        return QuotaPlan::LeaveForOperator;
-    }
-    match reachable_reset(run_id, scope, error, at) {
-        Some(until) => QuotaPlan::WaitUntil(until),
-        None => {
-            leave_for_operator(run_id, scope);
-            QuotaPlan::LeaveForOperator
+    learned::of(run_id, |run| {
+        if run.left.contains(scope) {
+            return QuotaPlan::LeaveForOperator;
         }
-    }
+        match reachable_reset(&mut run.quota_since, scope, error, at) {
+            Some(until) => QuotaPlan::WaitUntil(until),
+            None => {
+                run.left.insert(scope.to_owned());
+                QuotaPlan::LeaveForOperator
+            }
+        }
+    })
 }
 
 /// The reset the run waits for: one the host names within
 /// [`QUOTA_WAIT_LIMIT_MS`], or, with no time named, a retry every
 /// [`QUOTA_RETRY_MS`] while the refusals last no longer than that. None for
 /// a weekly or longer window, a reset further off, refusals past the limit,
-/// or a limit no reset lifts ([`lasting_quota`]).
-fn reachable_reset(run_id: &str, scope: &str, error: &str, at: i64) -> Option<i64> {
+/// or a limit no reset lifts ([`lasting_quota`]). `since` is when each of
+/// the run's accounts first refused, while the run waits on it.
+fn reachable_reset(
+    since: &mut std::collections::HashMap<String, i64>,
+    scope: &str,
+    error: &str,
+    at: i64,
+) -> Option<i64> {
     if refused_for_good(error) {
-        QUOTA_SINCE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&(run_id.to_owned(), scope.to_owned()));
+        since.remove(scope);
         return None;
     }
     let parsed = serde_json::from_str::<Value>(error).ok();
@@ -203,16 +190,12 @@ fn reachable_reset(run_id: &str, scope: &str, error: &str, at: i64) -> Option<i6
     ]
     .iter()
     .any(|window| words.contains(window));
-    let key = (run_id.to_owned(), scope.to_owned());
-    let mut since = QUOTA_SINCE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let first = *since.entry(key.clone()).or_insert(at);
+    let first = *since.entry(scope.to_owned()).or_insert(at);
     if long_window
         || next_reset.is_some_and(|reset| reset - at > QUOTA_WAIT_LIMIT_MS)
         || at - first > QUOTA_WAIT_LIMIT_MS
     {
-        since.remove(&key);
+        since.remove(scope);
         return None;
     }
     Some(next_reset.unwrap_or(at + QUOTA_RETRY_MS))
@@ -221,23 +204,14 @@ fn reachable_reset(run_id: &str, scope: &str, error: &str, at: i64) -> Option<i6
 /// Whether `run_id` still waits out the usage limit of `scope` (see
 /// [`quota_scope`]): refused for quota, and no turn there finished since.
 pub(in super::super) fn quota_waiting(run_id: &str, scope: &str) -> bool {
-    QUOTA_SINCE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains_key(&(run_id.to_owned(), scope.to_owned()))
+    learned::of(run_id, |run| run.quota_since.contains_key(scope))
 }
-
-/// Accounts whose usage limit ran out under a run, until their reset.
-static EXHAUSTED: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
-> = std::sync::LazyLock::new(Default::default);
 
 /// `account` refused `run_id`'s turns for its usage limit until `until`.
 pub(in super::super) fn exhaust(run_id: &str, account: &str, until: i64) {
-    EXHAUSTED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert((run_id.to_owned(), account.to_owned()), until);
+    learned::of(run_id, |run| {
+        run.exhausted.insert(account.to_owned(), until)
+    });
 }
 
 /// Whether `account`'s limit still holds `run_id` off.
@@ -246,18 +220,9 @@ pub(in super::super) fn exhausted(run_id: &str, account: &str) -> bool {
 }
 
 pub(in super::super) fn exhausted_until(run_id: &str, account: &str) -> Option<i64> {
-    let mut held = EXHAUSTED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = (run_id.to_owned(), account.to_owned());
-    match held.get(&key) {
-        Some(until) if *until > now() => Some(*until),
-        Some(_) => {
-            held.remove(&key);
-            None
-        }
-        None => None,
-    }
+    learned::of(run_id, |run| {
+        learned::ahead(&mut run.exhausted, account, now())
+    })
 }
 
 /// A judge turn its account's usage limit refused or cut off mid-answer: the
@@ -319,10 +284,7 @@ pub(in super::super) const MOVED_ACCOUNT: &str =
 /// A turn on `scope` (see [`quota_scope`]) finished: the run no longer waits
 /// on its limit.
 pub(in super::super) fn quota_recovered(run_id: &str, scope: &str) {
-    QUOTA_SINCE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&(run_id.to_owned(), scope.to_owned()));
+    learned::of(run_id, |run| run.quota_since.remove(scope));
 }
 
 /// The error code of a Grok turn held back, before any session, until the
@@ -359,72 +321,57 @@ pub(in super::super) fn sign_in_retry(run_id: &str, provider: &str) -> i64 {
     })
 }
 
-/// One provider's cells of a run, held until a time the runner knows: a Grok
-/// sign-in the Grok CLI renews only later holds the run's Grok cells, and
-/// nothing else of the run. Kept in memory, like [`QUOTA_HOLDS`].
-pub(in super::super) static PROVIDER_HOLDS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
-> = std::sync::LazyLock::new(Default::default);
-
-/// Sends no cell of `provider_id` in `run_id` before `until`; the next
-/// dispatch after it asks again.
+/// Sends no cell of `provider_id` (a provider, or an account by its
+/// [`quota_scope`]) in `run_id` before `until`; the next dispatch after it
+/// asks again. A Grok sign-in the Grok CLI renews only later holds the run's
+/// Grok cells so, and nothing else of the run.
 pub(in super::super) fn hold_provider_until(run_id: &str, provider_id: &str, until: i64) {
-    PROVIDER_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert((run_id.to_owned(), provider_id.to_owned()), until);
+    learned::of(run_id, |run| {
+        run.holds.insert(provider_id.to_owned(), until)
+    });
 }
 
 /// Until when `provider_id`'s cells of `run_id` are held, while they are.
 pub(in super::super) fn provider_hold(run_id: &str, provider_id: &str) -> Option<i64> {
-    let mut holds = PROVIDER_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = (run_id.to_owned(), provider_id.to_owned());
-    match holds.get(&key) {
-        Some(until) if *until > now() => Some(*until),
-        Some(_) => {
-            holds.remove(&key);
-            None
+    learned::of(run_id, |run| {
+        learned::ahead(&mut run.holds, provider_id, now())
+    })
+}
+
+/// Ends the holds of `run_id`, or the one of `provider_id`: the time a test
+/// would otherwise wait out. Whether there was one.
+#[cfg(test)]
+pub(in super::super) fn end_holds(run_id: &str, provider_id: Option<&str>) -> bool {
+    learned::of(run_id, |run| match provider_id {
+        Some(provider_id) => run.holds.remove(provider_id).is_some(),
+        None => {
+            let held = !run.holds.is_empty();
+            run.holds.clear();
+            held
         }
-        None => None,
-    }
+    })
 }
 
 pub(in super::super) fn provider_held(run_id: &str, provider_id: &str) -> bool {
     provider_hold(run_id, provider_id).is_some()
 }
 
-/// What of a run waits for its operator while the run goes on with the rest:
-/// an account whose usage limit no wait of the run reaches (by its
+/// Sends nothing of `key` in `run_id` until the operator resumes the run,
+/// while the run goes on with the rest: an account whose usage limit no wait
+/// of the run reaches or whose runtime the host would not start (by its
 /// [`quota_scope`]), or one cell (by its id) that used up its tries. The run
-/// stops once nothing else of it can go on (see [`stop`](super::stop)). Kept
-/// in memory: a restart stops the run for the operator anyway, and their
-/// resume lets everything ask again ([`forget_quota_waits`]).
-static LEFT_FOR_OPERATOR: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashSet<(String, String)>>,
-> = std::sync::LazyLock::new(Default::default);
-
-/// Sends nothing of `key` (see [`LEFT_FOR_OPERATOR`]) in `run_id` until the
-/// operator resumes the run.
+/// stops once nothing else of it can go on (see [`stop`](super::stop)). A
+/// restart stops the run for the operator anyway, and their resume lets
+/// everything ask again ([`forget_quota_waits`]).
 pub(in super::super) fn leave_for_operator(run_id: &str, key: &str) {
-    LEFT_FOR_OPERATOR
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert((run_id.to_owned(), key.to_owned()));
-}
-
-fn is_left(run_id: &str, key: &str) -> bool {
-    LEFT_FOR_OPERATOR
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains(&(run_id.to_owned(), key.to_owned()))
+    learned::of(run_id, |run| run.left.insert(key.to_owned()));
 }
 
 /// Whether `attempt`, or the account it is sent on, waits for the operator.
 pub(in super::super) fn left_for_operator(attempt: &Attempt) -> bool {
-    is_left(&attempt.run_id, &attempt.id)
-        || is_left(&attempt.run_id, &quota_scope(&attempt.configuration))
+    learned::of(&attempt.run_id, |run| {
+        run.left.contains(&attempt.id) || run.left.contains(&quota_scope(&attempt.configuration))
+    })
 }
 
 #[cfg(test)]
@@ -558,10 +505,7 @@ mod tests {
             Some(reset)
         ));
         assert!(exhausted("third-run", "invented-claude"));
-        assert_eq!(
-            EXHAUSTED.lock().unwrap()[&("third-run".to_owned(), "invented-claude".to_owned())],
-            reset
-        );
+        assert_eq!(exhausted_until("third-run", "invented-claude"), Some(reset));
     }
 
     #[test]
@@ -661,10 +605,7 @@ mod tests {
         // Nothing is sent before the reset.
         s.tick().await.unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
-        PROVIDER_HOLDS
-            .lock()
-            .unwrap()
-            .retain(|(held, _), _| held != &run.id);
+        end_holds(&run.id, None);
         expire_saved_waits(&s, &run.id).await;
         for _ in 0..3 {
             s.tick().await.unwrap();
@@ -685,12 +626,7 @@ mod tests {
         let (dir, s, fake) = setup().await;
         fake.sign_in_waits.store(2, Ordering::SeqCst);
         let run = s.start_run(serial_request(&s).await).await.unwrap();
-        let release = || {
-            PROVIDER_HOLDS
-                .lock()
-                .unwrap()
-                .remove(&(run.id.clone(), "fake".to_owned()))
-        };
+        let release = || end_holds(&run.id, Some("fake"));
         s.tick().await.unwrap();
         let held = s.store.run(&run.id).await.unwrap();
         assert_eq!(held.state, "running");
@@ -708,13 +644,13 @@ mod tests {
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
         assert_eq!(s.store.run(&run.id).await.unwrap().state, "running");
         // The same wait again settles nothing and asks nobody.
-        assert!(release().is_some());
+        assert!(release());
         expire_saved_waits(&s, &run.id).await;
         s.tick().await.unwrap();
         let again = s.store.run(&run.id).await.unwrap();
         assert_eq!(again.state, "running");
         assert!(again.attempts.iter().all(|a| a.phase == "pending"));
-        assert!(release().is_some());
+        assert!(release());
         expire_saved_waits(&s, &run.id).await;
         for _ in 0..3 {
             s.tick().await.unwrap();
@@ -753,10 +689,7 @@ mod tests {
         let until = provider_hold(&run.id, "fake").expect("a short hold");
         assert!(until <= now() + SIGN_IN_RETRY_MS);
         assert_eq!(waiting.wait_until, Some(until));
-        PROVIDER_HOLDS
-            .lock()
-            .unwrap()
-            .remove(&(run.id.clone(), "fake".to_owned()));
+        end_holds(&run.id, Some("fake"));
         expire_saved_waits(&s, &run.id).await;
         for _ in 0..3 {
             s.tick().await.unwrap();
@@ -797,10 +730,7 @@ mod tests {
             }
         }
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
-        PROVIDER_HOLDS
-            .lock()
-            .unwrap()
-            .remove(&(run.id.clone(), "grok".to_owned()));
+        end_holds(&run.id, Some("grok"));
         for _ in 0..3 {
             s.tick().await.unwrap();
         }

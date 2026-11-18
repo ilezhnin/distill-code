@@ -9,10 +9,7 @@ use crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY;
 use std::sync::atomic::Ordering;
 
 fn release(run: &str) {
-    PROVIDER_HOLDS
-        .lock()
-        .unwrap()
-        .remove(&(run.to_owned(), "fake".to_owned()));
+    end_holds(run, Some("fake"));
 }
 
 #[tokio::test]

@@ -8,6 +8,7 @@ mod attempt;
 pub mod collection_context;
 pub(in crate::services::benchmarks) mod diagnostics;
 mod failure;
+mod learned;
 mod measure_again;
 mod pace;
 pub(super) mod preparation_watchdog;

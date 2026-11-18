@@ -41,10 +41,7 @@ async fn a_run_meets_a_transient_fault_of_every_kind_and_completes_unattended() 
             break;
         }
         // Time passes: holds end and waits come due.
-        PROVIDER_HOLDS
-            .lock()
-            .unwrap()
-            .retain(|(held, _), _| held != &run.id);
+        end_holds(&run.id, None);
         expire_saved_waits(&service, &run.id).await;
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
