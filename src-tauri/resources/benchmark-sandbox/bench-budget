@@ -1426,7 +1426,8 @@ def memory_line(active, kind, host_buffers, continuing, recorded):
     # One job of those running, this one or the repository attempt a text
     # attempt leaves room for may reach its class's high mark.
     spike = spike_room(kinds, recorded)
-    TRACE.update(claimedMemory=claims, expectedMemory=needed, spikeRoom=spike)
+    TRACE.update(claimedMemory=claims, expectedMemory=needed, spikeRoom=spike, repositoryRoom=repository_room,
+                 keptMemory=kept_memory, keptRepository=kept_repository)
     own = claims + needed_room + repository_room + spike
     if own > ADMISSION_MEMORY:
         busy = refused('sandbox memory the running jobs claim leaves no room for this job', 'memory', needed_room)

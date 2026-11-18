@@ -298,7 +298,8 @@ class BudgetTests(unittest.TestCase):
         for entry, busy in ((admitted, 0.30), (refused, 0.80)):
             self.assertEqual(entry['hostCpuSmoothed'], busy)
             self.assertEqual(entry['loadLine'], budget.LOAD_LINE)
-            for key in ('freshHeavy', 'heavyJobs', 'claimedMemory', 'expectedMemory', 'hostCpuBusy'):
+            for key in ('freshHeavy', 'heavyJobs', 'claimedMemory', 'expectedMemory', 'hostCpuBusy',
+                        'repositoryRoom', 'keptMemory', 'keptRepository'):
                 self.assertIn(key, entry)
         # The log keeps its newest lines once it grows past its size.
         budget.DECISION_BYTES, budget.DECISION_LINES = 2000, 3
