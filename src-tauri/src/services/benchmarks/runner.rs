@@ -11689,6 +11689,8 @@ mod turn_seat_tests;
 
 #[cfg(test)]
 mod mixed_profile_tests;
+#[cfg(test)]
+mod run_faults_tests;
 
 #[cfg(test)]
 mod tests {
@@ -15824,7 +15826,7 @@ mod tests {
         assert!(!stopped_for_quota(&limit, &capped, false));
         assert!(stopped_for_quota(&limit, &capped, true));
     }
-    async fn expire_saved_waits(service: &BenchmarkService, run_id: &str) {
+    pub(super) async fn expire_saved_waits(service: &BenchmarkService, run_id: &str) {
         for attempt in service.store.run(run_id).await.unwrap().attempts {
             if attempt.wait_until.is_some() {
                 let mut elapsed = service.store.attempt(&attempt.id).await.unwrap();
