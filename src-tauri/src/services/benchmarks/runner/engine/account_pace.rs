@@ -1,5 +1,5 @@
 //! How many turns one provider account takes at once. An account with no
-//! history starts at [`ACCOUNT_SLOTS`](super::ACCOUNT_SLOTS) in slow start:
+//! history starts at [`ACCOUNT_SLOTS`](crate::services::benchmarks::runner::ACCOUNT_SLOTS) in slow start:
 //! the level doubles after each clean round, as many clean turns as the
 //! level that were admitted with every slot taken (an account its demand
 //! keeps below its level never grows). The first sign the provider limits
@@ -55,7 +55,7 @@ const MIN_TOKENS: u64 = 200;
 const MIN_SECONDS: f64 = 5.0;
 
 #[derive(Clone, Debug)]
-pub(super) struct Pace {
+pub(in super::super) struct Pace {
     limit: usize,
     clean: usize,
     hold_until: i64,
@@ -87,7 +87,7 @@ pub(super) struct Pace {
 /// What a restart resumes an account's pace from (see [`Pace::resume`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Saved {
+pub(in super::super) struct Saved {
     level: usize,
     at: i64,
     slow_start: bool,
@@ -109,7 +109,7 @@ pub(super) struct Saved {
 }
 
 impl Pace {
-    pub(super) fn new(start: usize, now: i64) -> Self {
+    pub(in super::super) fn new(start: usize, now: i64) -> Self {
         let start = start.max(1);
         Self {
             limit: start,
@@ -162,7 +162,7 @@ impl Pace {
     /// nor a refusal, so restarts never halve it twice (10-31: Z.ai's account
     /// went 7, 3, 1 over three idle restarts and flew one turn at a time).
     /// The model ceilings still standing hold either way.
-    pub(super) fn resume(saved: &Saved, now: i64, start: usize) -> Self {
+    pub(in super::super) fn resume(saved: &Saved, now: i64, start: usize) -> Self {
         let active = saved.active_at.unwrap_or(saved.at);
         let fresh = Self::resumes_where_it_was(saved, now);
         let level = if fresh {
@@ -193,7 +193,7 @@ impl Pace {
     }
 
     /// What a restart would resume from now.
-    pub(super) fn saved(&self) -> Saved {
+    pub(in super::super) fn saved(&self) -> Saved {
         Saved {
             level: self.stable.0,
             at: self.stable.1,
@@ -259,12 +259,12 @@ impl Pace {
 
     /// Turns of `model` the account takes at once: its pace, below the
     /// model's standing ceiling.
-    pub(super) fn limit_for(&self, model: &str, now: i64) -> usize {
+    pub(in super::super) fn limit_for(&self, model: &str, now: i64) -> usize {
         self.ceiling(model, now)
             .map_or(self.limit, |ceiling| self.limit.min(ceiling))
     }
 
-    pub(super) fn limit(&self) -> usize {
+    pub(in super::super) fn limit(&self) -> usize {
         self.limit
     }
 
@@ -272,7 +272,12 @@ impl Pace {
     /// under a higher limit than the pace holds now belongs to a burst the
     /// pace already answered, so concurrent refusals halve it once; one sent
     /// under the current limit (or not known) halves it again.
-    pub(super) fn throttled(&mut self, model: &str, admitted_limit: Option<usize>, now: i64) {
+    pub(in super::super) fn throttled(
+        &mut self,
+        model: &str,
+        admitted_limit: Option<usize>,
+        now: i64,
+    ) {
         self.flew(now);
         if let Some(admitted) = admitted_limit.filter(|limit| *limit > self.limit) {
             // The level already went down (a refusal of the same burst, or a
@@ -290,7 +295,7 @@ impl Pace {
     /// In slow start the level doubles once as many turns as the level
     /// finished cleanly that were admitted with all its slots taken; after
     /// it, the level grows by one per hold and stretch of clean turns.
-    pub(super) fn finished(&mut self, turns: u32, speed: Option<f64>, now: i64) {
+    pub(in super::super) fn finished(&mut self, turns: u32, speed: Option<f64>, now: i64) {
         self.flew(now);
         if let Some(speed) = speed.filter(|speed| speed.is_finite() && *speed > 0.0) {
             let ring = self.speeds.entry(turns.max(1)).or_default();
@@ -412,12 +417,12 @@ fn with_pace<T>(key: &str, apply: impl FnOnce(&mut Pace) -> T) -> T {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let pace = paces.entry(key.to_owned()).or_insert_with(|| {
-        let now = super::now();
+        let now = crate::services::benchmarks::runner::now();
         let saved = split_key(key)
             .and_then(|(root, account)| read_saved(Path::new(root)).remove(account));
         match saved {
             Some(saved) => {
-                let pace = Pace::resume(&saved, now, super::ACCOUNT_SLOTS);
+                let pace = Pace::resume(&saved, now, crate::services::benchmarks::runner::ACCOUNT_SLOTS);
                 let idle = (now - saved.active_at.unwrap_or(saved.at)).max(0) / 1000;
                 log::info!(
                     "[benchmarks] account pace {} resumed at {} turns at once: it last flew turns {idle} s ago ({}), stable level {}, slow start {}",
@@ -433,7 +438,7 @@ fn with_pace<T>(key: &str, apply: impl FnOnce(&mut Pace) -> T) -> T {
                 );
                 pace
             }
-            None => Pace::new(super::ACCOUNT_SLOTS, now),
+            None => Pace::new(crate::services::benchmarks::runner::ACCOUNT_SLOTS, now),
         }
     });
     let before = pace.saved();
@@ -457,7 +462,7 @@ fn shown(key: &str) -> String {
 /// When `account` (its provider and id, as a seat names it) last flew a
 /// turn under any store this process paces, to the minute; none when it has
 /// no pace here.
-pub(super) fn last_flight(account: &str) -> Option<i64> {
+pub(in super::super) fn last_flight(account: &str) -> Option<i64> {
     PACES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -469,21 +474,28 @@ pub(super) fn last_flight(account: &str) -> Option<i64> {
 
 /// `account` starts a turn at `now`: it is flying, which a restart measures
 /// its pace's staleness from even before the turn ends.
-pub(super) fn record_flight(account: &str, now: i64) {
+pub(in super::super) fn record_flight(account: &str, now: i64) {
     with_pace(account, |pace| pace.flew(now));
 }
 
 /// Turns `account` (its provider and id, as a seat names it) takes at once.
-pub(super) fn limit(account: &str) -> usize {
+pub(in super::super) fn limit(account: &str) -> usize {
     with_pace(account, |pace| pace.limit())
 }
 
 /// Turns of `model` `account` takes at once (see [`Pace::limit_for`]).
-pub(super) fn limit_for(account: &str, model: &str) -> usize {
-    with_pace(account, |pace| pace.limit_for(model, super::now()))
+pub(in super::super) fn limit_for(account: &str, model: &str) -> usize {
+    with_pace(account, |pace| {
+        pace.limit_for(model, crate::services::benchmarks::runner::now())
+    })
 }
 
-pub(super) fn record_throttle(account: &str, model: &str, admitted_limit: Option<usize>, now: i64) {
+pub(in super::super) fn record_throttle(
+    account: &str,
+    model: &str,
+    admitted_limit: Option<usize>,
+    now: i64,
+) {
     with_pace(account, |pace| {
         let before = (pace.limit(), pace.ceiling(model, now));
         pace.throttled(model, admitted_limit, now);
@@ -497,7 +509,13 @@ pub(super) fn record_throttle(account: &str, model: &str, admitted_limit: Option
     });
 }
 
-pub(super) fn record_turn(account: &str, model: &str, turns: u32, speed: Option<f64>, now: i64) {
+pub(in super::super) fn record_turn(
+    account: &str,
+    model: &str,
+    turns: u32,
+    speed: Option<f64>,
+    now: i64,
+) {
     with_pace(account, |pace| {
         let before = (pace.limit(), pace.ceiling(model, now));
         pace.finished(turns, speed, now);
@@ -540,7 +558,7 @@ fn log_move(
 /// time, a port, a hash) and words a model might write ("overloaded" alone,
 /// "slow down") are not. Usage limits that ran out are quota waits, handled
 /// apart.
-pub(super) fn throttle_signal(text: &str) -> bool {
+pub(in super::super) fn throttle_signal(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     [
         "rate limit",
@@ -583,7 +601,7 @@ fn status_429(text: &str) -> bool {
 
 /// Tokens per second a finished turn streamed, from its own usage and native
 /// execution time; None where either is too small to say.
-pub(super) fn speed(
+pub(in super::super) fn speed(
     output_tokens: Option<u64>,
     reasoning_tokens: Option<u64>,
     native_ms: Option<u64>,
@@ -865,27 +883,39 @@ mod tests {
         let key =
             |account: &str| format!("{}\u{1e}invented-acp\u{1f}{account}", dir.path().display());
         let (saved, fresh, stale) = (key("pace-saved"), key("pace-new"), key("pace-stale"));
-        let now = super::super::now();
+        let now = crate::services::benchmarks::runner::now();
         for _ in 0..2 {
             let level = limit(&saved);
             for _ in 0..level {
                 record_turn(&saved, "m", level as u32, None, now);
             }
         }
-        assert_eq!(limit(&saved), 4 * super::super::ACCOUNT_SLOTS);
+        assert_eq!(
+            limit(&saved),
+            4 * crate::services::benchmarks::runner::ACCOUNT_SLOTS
+        );
         record_throttle(&saved, "m", None, now);
-        assert_eq!(limit(&saved), 2 * super::super::ACCOUNT_SLOTS);
+        assert_eq!(
+            limit(&saved),
+            2 * crate::services::benchmarks::runner::ACCOUNT_SLOTS
+        );
         // A restart forgets the pace in memory and resumes from the file.
         forget(&saved);
-        assert_eq!(limit(&saved), 2 * super::super::ACCOUNT_SLOTS);
+        assert_eq!(
+            limit(&saved),
+            2 * crate::services::benchmarks::runner::ACCOUNT_SLOTS
+        );
         assert!(!with_pace(&saved, |pace| pace.slow_start));
         let file = read_saved(dir.path());
         assert_eq!(
             file["invented-acp\u{1f}pace-saved"].level,
-            2 * super::super::ACCOUNT_SLOTS
+            2 * crate::services::benchmarks::runner::ACCOUNT_SLOTS
         );
         // An account with no history in the same store seeds its start.
-        assert_eq!(limit(&fresh), super::super::ACCOUNT_SLOTS);
+        assert_eq!(
+            limit(&fresh),
+            crate::services::benchmarks::runner::ACCOUNT_SLOTS
+        );
         // A level saved longer ago than the idle window resumes at half.
         let mut file = file;
         file.insert(
@@ -1112,11 +1142,23 @@ mod tests {
             "invented-acp\u{1f}pace-first",
             "invented-acp\u{1f}pace-second",
         );
-        assert_eq!(limit(first), super::super::ACCOUNT_SLOTS);
+        assert_eq!(
+            limit(first),
+            crate::services::benchmarks::runner::ACCOUNT_SLOTS
+        );
         record_throttle(first, "m", None, 0);
-        assert_eq!(limit(first), super::super::ACCOUNT_SLOTS / 2);
-        assert_eq!(limit(second), super::super::ACCOUNT_SLOTS);
+        assert_eq!(
+            limit(first),
+            crate::services::benchmarks::runner::ACCOUNT_SLOTS / 2
+        );
+        assert_eq!(
+            limit(second),
+            crate::services::benchmarks::runner::ACCOUNT_SLOTS
+        );
         record_turn(second, "m", 1, Some(50.0), 0);
-        assert_eq!(limit(second), super::super::ACCOUNT_SLOTS);
+        assert_eq!(
+            limit(second),
+            crate::services::benchmarks::runner::ACCOUNT_SLOTS
+        );
     }
 }

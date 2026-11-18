@@ -10,16 +10,16 @@
 //! attempt then settles as a `resource_busy` refusal, which the unstarted
 //! path requeues. Workflow roots stay `preparing` while their steps run, so
 //! they are never bounded here.
-use super::super::types::{BenchmarkError, Result};
+use crate::services::benchmarks::types::{BenchmarkError, Result};
 use std::future::Future;
 use std::time::Duration;
 
 /// Longer than the bounded waits of one preparation added together.
-pub(super) const PREPARATION_LIMIT: Duration = Duration::from_secs(30 * 60);
+pub(in super::super) const PREPARATION_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// How often a preparation past its limit is checked.
-pub(super) const CHECK_EVERY: Duration = Duration::from_secs(60);
+pub(in super::super) const CHECK_EVERY: Duration = Duration::from_secs(60);
 
-pub(super) const PREPARATION_EXPIRED: &str =
+pub(in super::super) const PREPARATION_EXPIRED: &str =
     "resource_busy: preparation did not reach a provider session within 30 min; nothing was sent";
 
 /// `execution`, unless it is still unstarted (`unstarted` answers from the
@@ -28,7 +28,7 @@ pub(super) const PREPARATION_EXPIRED: &str =
 /// saved its dispatch is no longer unstarted, and one that has not saved it
 /// has sent nothing. The execution is boxed: a turn's future is deep, and an
 /// unoptimized build gives each awaiting poll a stack slot for it.
-pub(super) async fn bounded<T, E, U>(
+pub(in super::super) async fn bounded<T, E, U>(
     execution: E,
     limit: Duration,
     every: Duration,

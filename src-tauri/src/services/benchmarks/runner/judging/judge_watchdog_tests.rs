@@ -125,7 +125,7 @@ async fn saved_answers() -> (
         queries: Default::default(),
         app: None,
     });
-    let mut request = super::super::tests::creative_request(&service).await;
+    let mut request = crate::services::benchmarks::runner::tests::creative_request(&service).await;
     request.repetitions = 2;
     request.max_executions = 8;
     let run = service.start_run(request).await.unwrap();

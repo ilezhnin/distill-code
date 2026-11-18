@@ -3,11 +3,11 @@
 //! same answer and scoring instructions: another calibrated judge takes its
 //! seat, or the panel settles with the judges it has, marked. Preregistered
 //! panels and calibrations never substitute.
-use super::*;
+use crate::services::benchmarks::runner::*;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Rejection {
+pub(in super::super) struct Rejection {
     evaluation_id: String,
     judge_batch_id: String,
     judge: Configuration,
@@ -16,7 +16,7 @@ pub(super) struct Rejection {
 
 /// Use the provider's structured status, never words in a candidate answer,
 /// a malformed score sheet, a quota response, or a generic internal error.
-pub(super) fn request_rejected(error: &Value) -> bool {
+pub(in super::super) fn request_rejected(error: &Value) -> bool {
     error.pointer("/data/http_status").and_then(Value::as_u64) == Some(403)
 }
 
@@ -27,7 +27,7 @@ pub(super) fn request_rejected(error: &Value) -> bool {
 /// asked again). Not its own: a usage limit, which waits for its reset; an
 /// abstention on unresolved critical checks, which is a verdict; a turn an
 /// interruption cut off or that never started, which asks the judge again.
-pub(super) fn judge_failed(evaluation: &Evaluation) -> bool {
+pub(in super::super) fn judge_failed(evaluation: &Evaluation) -> bool {
     let Some(details) = evaluation.details.as_ref() else {
         return false;
     };
@@ -53,11 +53,11 @@ fn same_judge(left: &Configuration, right: &Configuration) -> bool {
         && left.effort == right.effort
 }
 
-pub(super) fn excluded(judge: &Configuration, rejected: &[Rejection]) -> bool {
+pub(in super::super) fn excluded(judge: &Configuration, rejected: &[Rejection]) -> bool {
     rejected.iter().any(|r| same_judge(judge, &r.judge))
 }
 
-pub(super) fn accepts_marker(marker: &Evaluation, rejected: &[Rejection]) -> bool {
+pub(in super::super) fn accepts_marker(marker: &Evaluation, rejected: &[Rejection]) -> bool {
     rejected.is_empty()
         || marker
             .details
@@ -129,7 +129,7 @@ fn recovery_allowed(draft: &BenchmarkDraft, evidence: &JudgeEvidence<'_>) -> boo
 }
 
 impl NativeBackend {
-    pub(super) async fn rejected_judges(
+    pub(in super::super) async fn rejected_judges(
         &self,
         attempt: &Attempt,
         draft: &BenchmarkDraft,

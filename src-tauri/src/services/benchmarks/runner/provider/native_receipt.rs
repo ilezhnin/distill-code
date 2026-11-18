@@ -1,6 +1,5 @@
 //! Native execution identity from durable host owner/session/terminal records.
 //! Caller selection intent cannot manufacture a provider acknowledgement.
-use super::super::{fixtures, types::*};
 use crate::services::agent_host::{
     execution::{
         ExecutionDispatch, ExecutionProfile, NativeProvider, ObservedSelection, OwnedSessionRequest,
@@ -9,6 +8,7 @@ use crate::services::agent_host::{
     store::SessionStore,
     text_execution,
 };
+use crate::services::benchmarks::{fixtures, types::*};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const SOURCE: &str = "distill-native-owned-terminal-v1";
@@ -555,7 +555,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut attempt = super::super::super::pending_attempt(
+        let mut attempt = crate::services::benchmarks::pending_attempt(
             "invented-run",
             "invented-version",
             &Configuration {

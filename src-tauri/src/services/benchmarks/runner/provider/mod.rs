@@ -10,8 +10,10 @@ mod credentials;
 mod execution;
 mod fake;
 mod native;
+pub(crate) mod native_receipt;
 mod outcome;
 mod owned_turns;
+pub(in crate::services::benchmarks) mod reconnect;
 
 pub use self::{backend::*, fake::*, native::*};
 pub(super) use self::{capture::*, collection::*, credentials::*};

@@ -2,10 +2,15 @@
 //! to settle, what a failed try means, waits, and recovery.
 use super::*;
 
+pub(super) mod account_pace;
+pub(super) mod admission_window;
 mod attempt;
+pub mod collection_context;
+pub(in crate::services::benchmarks) mod diagnostics;
 mod failure;
 mod measure_again;
 mod pace;
+pub(super) mod preparation_watchdog;
 mod recovery;
 mod schedule;
 mod seats;

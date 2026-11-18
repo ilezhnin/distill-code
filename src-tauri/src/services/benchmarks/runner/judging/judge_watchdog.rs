@@ -1,8 +1,8 @@
 //! Bound preparation and stalled judge queues without discarding paid evidence.
-use super::*;
+use crate::services::benchmarks::runner::*;
 use std::future::Future;
 
-pub(super) const PREPARATION_LIMIT: Duration = Duration::from_secs(5 * 60);
+pub(in super::super) const PREPARATION_LIMIT: Duration = Duration::from_secs(5 * 60);
 const CHECK_EVERY: Duration = Duration::from_secs(5);
 const QUEUE_LIMIT_MS: i64 = 10 * 60 * 1000;
 const QUEUE_SINCE: &str = "judgeQueueSince";
@@ -77,7 +77,7 @@ where
     }
 }
 
-pub(super) async fn prepare<T>(
+pub(in super::super) async fn prepare<T>(
     store: &Store,
     id: &str,
     execution: impl Future<Output = Result<T>>,
@@ -100,7 +100,7 @@ pub(super) async fn prepare<T>(
 
 /// The deadline also covers a blocked dispatch/status/event RPC. Checking the
 /// clock only between those awaits cannot bound a judge's execution.
-pub(super) async fn until<T>(
+pub(in super::super) async fn until<T>(
     deadline: tokio::time::Instant,
     call: impl Future<Output = std::result::Result<T, String>>,
 ) -> std::result::Result<T, String> {
@@ -150,7 +150,7 @@ fn queue_since(attempt: &Attempt, progress: Option<i64>, own_work: bool, at: i64
         // A judge waiting for room the run's own attempts hold gets it when
         // they finish; a pause would free nothing and stop the judge too.
         || (own_work && judge_discovery_waiting(attempt))
-        || super::super::analysis::score(attempt).is_some()
+        || crate::services::benchmarks::analysis::score(attempt).is_some()
     {
         return None;
     }
@@ -171,7 +171,7 @@ fn queue_since(attempt: &Attempt, progress: Option<i64>, own_work: bool, at: i64
 /// A long backlog is healthy while judges finish calls. Ten minutes with no
 /// such progress requests a normal pause, preserving all pending work and paid
 /// evidence. Other runs continue; the operator can resume this exact run.
-pub(super) async fn check_queue(
+pub(in super::super) async fn check_queue(
     service: &BenchmarkService,
     run: &BenchmarkRun,
     at: i64,
@@ -200,7 +200,7 @@ pub(super) async fn check_queue(
             continue;
         }
         // The panel owns its evidence while it prepares or asks a judge.
-        let lock = super::super::evaluation_lock(&original.id);
+        let lock = crate::services::benchmarks::evaluation_lock(&original.id);
         let Ok(_guard) = lock.try_lock() else {
             continue;
         };

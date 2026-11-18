@@ -19,12 +19,12 @@
 //! its answer as its last message whether or not a failure was reported
 //! (owner, 11-16): of 4351 Codex text turns on record, the 8 of several
 //! messages were all streams a reconnect broke, three with no marker.
-use super::*;
+use crate::services::benchmarks::runner::*;
 
 /// What the lost connections of a turn leave of its answer, as its events
 /// are read in order.
 #[derive(Default)]
-pub(super) struct Restarts {
+pub(in super::super) struct Restarts {
     /// The message the newest piece of the answer belongs to.
     message: Option<String>,
     /// Whether a lost connection interrupted the answer.
@@ -36,7 +36,7 @@ pub(super) struct Restarts {
 
 impl Restarts {
     /// The reading of a turn of `provider_id` in `profile`.
-    pub(super) fn for_turn(provider_id: &str, profile: &str) -> Self {
+    pub(in super::super) fn for_turn(provider_id: &str, profile: &str) -> Self {
         Self {
             last_message_only: last_message_answers(provider_id, profile),
             ..Self::default()
@@ -45,7 +45,7 @@ impl Restarts {
 
     /// Reads the turn of `configuration` from now on as [`Self::for_turn`]
     /// would, for a capture made before it knew the attempt.
-    pub(super) fn turn_of(&mut self, configuration: &Configuration) {
+    pub(in super::super) fn turn_of(&mut self, configuration: &Configuration) {
         self.last_message_only =
             last_message_answers(&configuration.provider_id, &configuration.execution_profile);
     }
@@ -55,7 +55,7 @@ impl Restarts {
     /// nothing, and an answer of several messages that no lost connection
     /// interrupted is kept whole. A piece without a message id continues the
     /// message before it.
-    pub(super) fn settle(&mut self, event: &Value, answer: &mut String, answered: usize) {
+    pub(in super::super) fn settle(&mut self, event: &Value, answer: &mut String, answered: usize) {
         let params = event.get("params").unwrap_or(event);
         let update = params.get("update").unwrap_or(params);
         if update["sessionUpdate"] == "agent_message_chunk" {
@@ -79,7 +79,7 @@ impl Restarts {
 /// answers in one message and streams it again from its start, as a new
 /// message, after a retry it may never announce. A repository turn's report
 /// and a Claude answer of several messages stay whole.
-pub(super) fn last_message_answers(provider_id: &str, profile: &str) -> bool {
+pub(in super::super) fn last_message_answers(provider_id: &str, profile: &str) -> bool {
     provider_id == "codex-acp" && profile == "native_text"
 }
 
@@ -150,8 +150,8 @@ fn recaptured(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{request, setup};
     use super::*;
+    use crate::services::benchmarks::runner::tests::{request, setup};
 
     /// One piece of an answer as the host stores a Codex or Claude chunk.
     fn piece(message: &str, text: &str) -> Value {

@@ -1,13 +1,13 @@
 //! Ordinary scores belong to the retained artifact, not a calibration's runtime.
 //! Reseating appends a new batch referencing the same artifact and paid votes;
 //! it never rewrites the original receipts or charges their usage twice.
-use super::*;
+use crate::services::benchmarks::runner::*;
 
 const POLICY: &str = "retained-artifact-panel-v1";
 /// The error code of a saved panel nobody can complete, now or after a reset.
-pub(super) const PANEL_UNAVAILABLE: &str = "judge_panel_unavailable";
+pub(in super::super) const PANEL_UNAVAILABLE: &str = "judge_panel_unavailable";
 
-pub(super) fn recoverable(
+pub(in super::super) fn recoverable(
     attempt: &Attempt,
     draft: &BenchmarkDraft,
     prompt: &str,
@@ -21,7 +21,7 @@ pub(super) fn recoverable(
     })
 }
 
-pub(super) async fn for_attempt(store: &Store, attempt: &Attempt) -> Result<bool> {
+pub(in super::super) async fn for_attempt(store: &Store, attempt: &Attempt) -> Result<bool> {
     let policy: Option<Option<String>> = sqlx::query_scalar(
         "SELECT json_extract(request_json,'$.workflowPolicy') FROM run_plans WHERE id=?",
     )
@@ -37,7 +37,7 @@ pub(super) async fn for_attempt(store: &Store, attempt: &Attempt) -> Result<bool
     }
 }
 
-pub(super) fn protocol(draft: &BenchmarkDraft, panel: &[Configuration]) -> Value {
+pub(in super::super) fn protocol(draft: &BenchmarkDraft, panel: &[Configuration]) -> Value {
     let mut protocol = judge_protocol(draft, panel);
     let details = protocol.as_object_mut().expect("judge protocol object");
     details.remove("panelRecipe");
@@ -45,11 +45,11 @@ pub(super) fn protocol(draft: &BenchmarkDraft, panel: &[Configuration]) -> Value
     details.insert("artifactJudgingPolicy".into(), json!(POLICY));
     details.insert(
         "ordinaryPanelRecipe".into(),
-        json!(super::super::judge_pool::PANEL_RECIPE),
+        json!(crate::services::benchmarks::judge_pool::PANEL_RECIPE),
     );
     details.insert(
         "calibrationRecipe".into(),
-        json!(super::super::judge_pool::RECIPE),
+        json!(crate::services::benchmarks::judge_pool::RECIPE),
     );
     protocol
 }
@@ -67,7 +67,7 @@ fn same_model(left: &Configuration, right: &Configuration) -> bool {
 
 /// The offered judges that may take a seat of a saved panel. The combined
 /// replacement panel below still has to keep every original seat and sample.
-pub(super) fn available_replacements(
+pub(in super::super) fn available_replacements(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
     offered: Vec<(Option<f64>, Configuration)>,
@@ -80,13 +80,15 @@ pub(super) fn available_replacements(
     seatable(draft, by_headroom(offered), &[])
         .into_iter()
         .map(|(judge, _)| judge)
-        .filter(|judge| super::super::judge_pool::vendor(&judge.provider_id).is_some())
+        .filter(|judge| {
+            crate::services::benchmarks::judge_pool::vendor(&judge.provider_id).is_some()
+        })
         .collect()
 }
 
 /// Complete the saved panel before classifying a wait. Paid seats require no
 /// current account capacity; only eligible missing seats may defer on quota.
-pub(super) fn available_panel(
+pub(in super::super) fn available_panel(
     open: &OpenBatch,
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
@@ -125,7 +127,7 @@ pub(super) fn available_panel(
 /// are marked `reducedPanel` (see [`reseat`]), so boards can show or leave
 /// them out (owner, 11-14: a failed judge gives way to another, or the
 /// panel goes on with two).
-pub(super) fn reduced_panel(
+pub(in super::super) fn reduced_panel(
     open: &OpenBatch,
     offered: &[Configuration],
 ) -> Option<Vec<Configuration>> {
@@ -140,7 +142,7 @@ pub(super) fn reduced_panel(
 
 /// Paid seats stay. Only unfilled seats may take a currently eligible judge.
 /// The original panel size and samples keep the admitted call budget bounded.
-pub(super) fn replacement_panel(
+pub(in super::super) fn replacement_panel(
     open: &OpenBatch,
     offered: Vec<Configuration>,
 ) -> Option<Vec<Configuration>> {
@@ -159,8 +161,8 @@ pub(super) fn replacement_panel(
             if !panel.iter().any(|paid| same_model(paid, judge))
                 && (!distinct_lab
                     || !panel.iter().any(|paid| {
-                        super::super::judge_pool::vendor(&paid.provider_id)
-                            == super::super::judge_pool::vendor(&judge.provider_id)
+                        crate::services::benchmarks::judge_pool::vendor(&paid.provider_id)
+                            == crate::services::benchmarks::judge_pool::vendor(&judge.provider_id)
                     }))
             {
                 panel.push(judge.clone());
@@ -174,7 +176,7 @@ pub(super) fn replacement_panel(
 /// [`judge_recovery::judge_failed`]) and holds no valid vote in it: the
 /// seat moves to another judge. A judge with a vote in the batch keeps its
 /// seat, so its failed sample waits for an explicit recovery.
-pub(super) fn judge_interrupted(attempt: &Attempt, batch: &str) -> bool {
+pub(in super::super) fn judge_interrupted(attempt: &Attempt, batch: &str) -> bool {
     let of_batch = |e: &Evaluation| {
         e.details
             .as_ref()
@@ -190,7 +192,7 @@ pub(super) fn judge_interrupted(attempt: &Attempt, batch: &str) -> bool {
     })
 }
 
-pub(super) fn quota_interrupted(attempt: &Attempt, batch: &str) -> bool {
+pub(in super::super) fn quota_interrupted(attempt: &Attempt, batch: &str) -> bool {
     attempt.evaluations.iter().any(|e| {
         e.provenance == "judge_failure"
             && !in_flight(e)
@@ -209,20 +211,20 @@ fn marker<'a>(attempt: &'a Attempt, batch: &str) -> Option<&'a Evaluation> {
     })
 }
 
-pub(super) fn needs_reseating(
+pub(in super::super) fn needs_reseating(
     attempt: &Attempt,
     open: &OpenBatch,
     panel: &[Configuration],
 ) -> bool {
     open.panel != panel
         || marker(attempt, &open.id).is_some_and(|e| {
-            e.details
-                .as_ref()
-                .is_some_and(|d| d["protocol"]["panelRecipe"] == super::super::judge_panel::RECIPE)
+            e.details.as_ref().is_some_and(|d| {
+                d["protocol"]["panelRecipe"] == crate::services::benchmarks::judge_panel::RECIPE
+            })
         })
 }
 
-pub(super) fn reseat(
+pub(in super::super) fn reseat(
     attempt: &mut Attempt,
     draft: &BenchmarkDraft,
     open: &OpenBatch,
@@ -256,7 +258,7 @@ pub(super) fn reseat(
         &panel,
         prompt,
         renderer,
-        Some(super::super::judge_pool::PANEL_RECIPE),
+        Some(crate::services::benchmarks::judge_pool::PANEL_RECIPE),
         samples,
     );
     let at = now();

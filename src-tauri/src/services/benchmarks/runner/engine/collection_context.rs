@@ -1,10 +1,10 @@
 //! Initial native repository input for explicitly opted-in standalone collection.
 //! The attempt owns its immutable input; the existing budget row owns its clock.
-use super::super::{artifact_context, fixtures, repository, store::Store, types::*};
+use crate::services::benchmarks::{artifact_context, fixtures, repository, store::Store, types::*};
 use sqlx::Row;
 
 /// The context as the attempt record carries it.
-pub use super::super::types::CollectionContext as Context;
+pub use crate::services::benchmarks::types::CollectionContext as Context;
 
 fn invalid(message: &str) -> BenchmarkError {
     BenchmarkError::new("collection_context_conflict", message)
@@ -34,7 +34,7 @@ impl Context {
         Ok(fixtures::hash(&serde_json::to_vec(&context)?))
     }
 
-    pub(super) fn new(
+    pub(in super::super) fn new(
         attempt: &Attempt,
         version: &BenchmarkVersion,
         timeout: u32,
@@ -124,7 +124,7 @@ impl Context {
 /// goes back to the queue (see `runner::drop_collection_clock`); false, and
 /// nothing deleted, for a sealed attempt. A recorded preparation refusal
 /// stays.
-pub(super) async fn discard_clock(store: &Store, attempt: &Attempt) -> Result<bool> {
+pub(in super::super) async fn discard_clock(store: &Store, attempt: &Attempt) -> Result<bool> {
     if attempt.evidence_hash.is_some() {
         return Ok(false);
     }
@@ -138,7 +138,7 @@ pub(super) async fn discard_clock(store: &Store, attempt: &Attempt) -> Result<bo
     Ok(true)
 }
 
-pub(super) async fn reserve(
+pub(in super::super) async fn reserve(
     store: &Store,
     attempt: &Attempt,
     version: &BenchmarkVersion,
@@ -147,7 +147,11 @@ pub(super) async fn reserve(
     let key = format!("collection:{}", attempt.id);
     let saved = store.native_budget(&key).await?;
     let origin = saved.as_ref().map_or_else(
-        || attempt.started_at.unwrap_or_else(super::now),
+        || {
+            attempt
+                .started_at
+                .unwrap_or_else(crate::services::benchmarks::runner::now)
+        },
         |budget| budget.root_started_at_ms,
     );
     let root = artifact_context::BudgetLease {
@@ -173,7 +177,7 @@ pub(super) async fn reserve(
         .await
 }
 
-pub(super) async fn prepare(
+pub(in super::super) async fn prepare(
     store: &Store,
     attempt: &mut Attempt,
     version: BenchmarkVersion,
@@ -210,7 +214,8 @@ pub(super) async fn prepare(
             "Standalone collection requires a declared native repository contract",
         ));
     }
-    let timeout = super::effective_timeout_seconds(timeout, &version.manifest);
+    let timeout =
+        crate::services::benchmarks::runner::effective_timeout_seconds(timeout, &version.manifest);
     if let Some(context) = &attempt.collection_context {
         context.verify(store, attempt, &version).await?;
         if context.timeout_seconds != timeout {
@@ -233,7 +238,7 @@ pub(super) async fn prepare(
         &[],
         false,
         version.manifest.limits.max_artifact_bytes as usize,
-        super::unsigned_deadline(budget.deadline_at_ms()?)?,
+        crate::services::benchmarks::runner::unsigned_deadline(budget.deadline_at_ms()?)?,
     )
     .await?;
     let context = Context::new(

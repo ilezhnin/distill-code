@@ -1,10 +1,10 @@
 //! Preserve operational failures before retry/stop replaces the current reason.
-use super::*;
+use crate::services::benchmarks::runner::*;
 
 /// Metadata only: retaining a diagnostic never clones a candidate's answer,
 /// screenshots, rubric, or the panel's growing evaluation payload.
 pub(crate) fn identity(attempt: &Attempt) -> Attempt {
-    let mut identity = super::super::pending_attempt(
+    let mut identity = crate::services::benchmarks::pending_attempt(
         &attempt.run_id,
         &attempt.version_id,
         &attempt.configuration,
@@ -55,7 +55,7 @@ pub(crate) async fn record(
     error
 }
 
-pub(super) struct JudgeTrace {
+pub(in super::super) struct JudgeTrace {
     pub stage: &'static str,
     pub context: Value,
 }
@@ -87,8 +87,8 @@ mod tests {
 
     #[tokio::test]
     async fn diagnostic_storage_failure_keeps_the_original_error_visible() {
-        let (directory, service, _) = super::super::tests::setup().await;
-        let request = super::super::tests::request(&service).await;
+        let (directory, service, _) = crate::services::benchmarks::runner::tests::setup().await;
+        let request = crate::services::benchmarks::runner::tests::request(&service).await;
         let run = service.start_run(request).await.unwrap();
         let attempt = &run.attempts[0];
         sqlx::query("CREATE TRIGGER refuse_diagnostic_write BEFORE INSERT ON attempt_diagnostics BEGIN SELECT RAISE(FAIL,'invented diagnostic write failure'); END")

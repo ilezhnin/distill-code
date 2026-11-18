@@ -1,6 +1,6 @@
 //! Corrections to the interpretation of retained sheets. The original reply,
 //! usage and verdict stay intact; a dated correction belongs to its batch.
-use super::*;
+use crate::services::benchmarks::runner::*;
 
 const REVISION: &str = "critical-failure-precedence-v1";
 const ABSTAINED: &str = "Critical checks unresolved; judge abstained. ";
@@ -31,7 +31,7 @@ fn corrects(correction: &Evaluation, original: &Evaluation) -> bool {
 
 /// A corrected abstention is kept as evidence, but no longer prevents the
 /// remaining seats of that same batch from being asked on explicit resume.
-pub(super) fn effective_answers(evaluations: &[Evaluation]) -> Vec<&Evaluation> {
+pub(in super::super) fn effective_answers(evaluations: &[Evaluation]) -> Vec<&Evaluation> {
     evaluations
         .iter()
         .filter(|original| {
@@ -42,7 +42,7 @@ pub(super) fn effective_answers(evaluations: &[Evaluation]) -> Vec<&Evaluation> 
         .collect()
 }
 
-pub(super) fn repair(attempt: &mut Attempt, draft: &BenchmarkDraft, at: i64) -> usize {
+pub(in super::super) fn repair(attempt: &mut Attempt, draft: &BenchmarkDraft, at: i64) -> usize {
     if !text_judged(draft) || attempt.evidence_hash.is_none() {
         return 0;
     }
@@ -137,7 +137,7 @@ pub(super) fn repair(attempt: &mut Attempt, draft: &BenchmarkDraft, at: i64) -> 
 }
 
 impl BenchmarkService {
-    pub(super) async fn repair_saved_judge_assessments(&self) -> Result<()> {
+    pub(in super::super) async fn repair_saved_judge_assessments(&self) -> Result<()> {
         let at = now();
         // Only open, resumable runs. Archived and deliberately finished runs
         // retain their measurements exactly as recorded.
@@ -149,12 +149,12 @@ impl BenchmarkService {
                AND EXISTS(SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
                  WHERE json_extract(e.value,'$.details.criticalCheckStatus')='unknown')",
         )
-        .bind(at - super::super::analysis::RUN_WINDOW_MS)
+        .bind(at - crate::services::benchmarks::analysis::RUN_WINDOW_MS)
         .fetch_all(&self.store.pool)
         .await?;
         let mut repaired = 0;
         for id in ids {
-            let lock = super::super::evaluation_lock(&id);
+            let lock = crate::services::benchmarks::evaluation_lock(&id);
             let Ok(_guard) = lock.try_lock() else {
                 continue;
             };
@@ -164,8 +164,8 @@ impl BenchmarkService {
             if count == 0 {
                 continue;
             }
-            attempt = super::super::analysis::normalize_outcome(attempt);
-            if super::super::analysis::score(&attempt).is_some() {
+            attempt = crate::services::benchmarks::analysis::normalize_outcome(attempt);
+            if crate::services::benchmarks::analysis::score(&attempt).is_some() {
                 attempt.reason = None;
             }
             self.store.save_attempt(&attempt).await?;

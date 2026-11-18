@@ -19,7 +19,7 @@ const FRESH: Duration = Duration::from_secs(60);
 /// How long a preparation counts against the window before it is taken to
 /// wait for something other than the sandbox.
 const STALE: Duration = Duration::from_secs(5 * 60);
-pub(super) const RETRY: Duration = Duration::from_secs(15);
+pub(in super::super) const RETRY: Duration = Duration::from_secs(15);
 
 #[derive(Default)]
 struct Window {
@@ -155,7 +155,7 @@ const EVALUATION_LANE: &str = "\u{1e}evaluation";
 
 /// Two fixed preparation lanes share the actual native resource broker.
 /// Waiting CPU-heavy checks cannot occupy the candidate/judge preparation lane.
-pub(super) fn evaluation_scope(scope: &str) -> String {
+pub(in super::super) fn evaluation_scope(scope: &str) -> String {
     format!("{scope}{EVALUATION_LANE}")
 }
 
@@ -167,12 +167,12 @@ fn with<T>(scope: &str, apply: impl FnOnce(&mut Window) -> T) -> T {
 }
 
 /// Whether one more attempt may start preparing for `scope`.
-pub(super) fn has_room(scope: &str) -> bool {
+pub(in super::super) fn has_room(scope: &str) -> bool {
     with(scope, |window| window.has_room(Instant::now()))
 }
 
 /// Restore a pending resource wait after an app restart, once per store lane.
-pub(super) fn restore(scope: &str, remaining: Duration) {
+pub(in super::super) fn restore(scope: &str, remaining: Duration) {
     with(scope, |window| {
         if !window.restored {
             window.restored = true;
@@ -184,7 +184,7 @@ pub(super) fn restore(scope: &str, remaining: Duration) {
 }
 
 /// A shared wait, also used by already generated answers awaiting judges.
-pub(super) fn remaining(scope: &str) -> Duration {
+pub(in super::super) fn remaining(scope: &str) -> Duration {
     with(scope, |window| {
         window.retry_at.map_or(Duration::ZERO, |until| {
             until.saturating_duration_since(Instant::now())
@@ -192,7 +192,7 @@ pub(super) fn remaining(scope: &str) -> Duration {
     })
 }
 
-pub(super) fn finished(scope: &str, id: &str) -> bool {
+pub(in super::super) fn finished(scope: &str, id: &str) -> bool {
     finish_generation(scope, id, None)
 }
 
@@ -224,14 +224,14 @@ fn finish_generation(scope: &str, id: &str, generation: Option<u64>) -> bool {
 }
 
 #[cfg(test)]
-pub(super) fn expire_wait(scope: &str) {
+pub(in super::super) fn expire_wait(scope: &str) {
     with(scope, |window| window.retry_at = Some(Instant::now()));
 }
 
 /// An attempt's place in the window: it ends when dropped, however its
 /// flight ends (returned, failed or panicked), unless the sandbox answered
 /// first.
-pub(super) struct Preparing {
+pub(in super::super) struct Preparing {
     scope: String,
     id: String,
     generation: u64,
@@ -239,18 +239,18 @@ pub(super) struct Preparing {
 
 /// An evaluator can report native admission before its future completes.
 /// Its running marker is also released if that future is dropped or panics.
-pub(super) struct ObservedJob {
+pub(in super::super) struct ObservedJob {
     preparing: Preparing,
 }
 
 impl Preparing {
-    pub(super) fn observe(self) -> ObservedJob {
+    pub(in super::super) fn observe(self) -> ObservedJob {
         ObservedJob { preparing: self }
     }
 }
 
 impl ObservedJob {
-    pub(super) fn admitted(&self) {
+    pub(in super::super) fn admitted(&self) {
         let Preparing {
             scope,
             id,
@@ -269,7 +269,7 @@ impl ObservedJob {
         });
     }
 
-    pub(super) fn finished(&self) -> bool {
+    pub(in super::super) fn finished(&self) -> bool {
         let Preparing {
             scope,
             id,
@@ -292,7 +292,7 @@ impl Drop for Preparing {
 }
 
 /// Starts preparing `id` for `scope`; None while the window is full.
-pub(super) fn begin(scope: &str, id: &str) -> Option<Preparing> {
+pub(in super::super) fn begin(scope: &str, id: &str) -> Option<Preparing> {
     with(scope, |window| window.begin(id, Instant::now())).map(|generation| Preparing {
         scope: scope.to_owned(),
         id: id.to_owned(),
@@ -301,17 +301,17 @@ pub(super) fn begin(scope: &str, id: &str) -> Option<Preparing> {
 }
 
 /// The sandbox admitted `id`: it no longer counts, and the window widens.
-pub(super) fn admitted(scope: &str, id: &str) {
+pub(in super::super) fn admitted(scope: &str, id: &str) {
     with(scope, |window| window.admitted(id, Instant::now()));
 }
 
 /// The sandbox refused `id` before anything started: new work in its lane waits.
-pub(super) fn refused(scope: &str, id: &str) {
+pub(in super::super) fn refused(scope: &str, id: &str) {
     with(scope, |window| window.refused(id, Instant::now()));
 }
 
 /// `id` stopped preparing without the sandbox's answer.
-pub(super) fn ended(scope: &str, id: &str) {
+pub(in super::super) fn ended(scope: &str, id: &str) {
     with(scope, |window| {
         window.preparing.remove(id);
     });
