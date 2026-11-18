@@ -474,6 +474,22 @@ class BudgetTests(unittest.TestCase):
             budget.ADMISSION_MEMORY = production_memory
         self.assertEqual(budget.priority_waiting('text'), 'a check or preparation waits for room first')
 
+    def test_a_judge_fits_beside_repository_attempts_that_leave_a_new_text_attempt_no_room(self):
+        # Six repository sessions claim 19.5 of 23 GiB. A new text attempt
+        # also leaves room for one more repository attempt, which would not
+        # fit either, so it waits. A judge grades an answer already paid for
+        # and comes in as continuing work, needing only its own room.
+        self.roomy()
+        self.learn(repository=2600 * MIB, text=512 * MIB, check=256 * MIB, prep=256 * MIB)
+        self.measure(1.0)
+        for n in range(6):
+            self.reserve('repository', f'fictional-repository-{n}')
+            self.settle()
+        with self.assertRaisesRegex(BlockingIOError, 'memory the running jobs claim'):
+            self.reserve('text', 'fictional-new-text')
+        record = self.admit('text', 'fictional-judge', continuing=True)['admission']
+        self.assertTrue(record['continuing'])
+
     def test_a_group_that_vanishes_has_stopped(self):
         # The job's supervisor and the reaper remove groups too, so a group
         # can go between bench-kill's test and its kill write, or between

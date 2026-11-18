@@ -4432,6 +4432,11 @@ impl NativeBackend {
             attempt.id
         );
         let _sandbox_cleanup = sandbox::Cleanup(Some(job));
+        // A judge grades an answer a provider was already paid for: the
+        // sandbox admits its session ahead of new attempts, without the room
+        // a new text attempt leaves for one more repository attempt, and a
+        // refusal keeps memory from new attempts until the judge fits.
+        let continuing = sandbox::Continuing::new(judge_owner.clone());
         let mut session = host
             .create_owned_session(
                 OwnedSessionRequest {
@@ -4449,6 +4454,7 @@ impl NativeBackend {
             )
             .await
             .map_err(host_error)?;
+        drop(continuing);
         acknowledge_lane(&judge.provider_id, &judge.model_id, &mut session);
         trace.context["sessionId"] = json!(session.session_id);
         admission_window::admitted(

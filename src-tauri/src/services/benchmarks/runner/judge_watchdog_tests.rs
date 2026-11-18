@@ -197,11 +197,11 @@ async fn a_sandbox_check_renewal_does_not_turn_into_a_queue_failure() {
     let run = full_run(&service, &run.id).await;
     let attempt = &run.attempts[0];
     assert_eq!(attempt.phase, AWAITING_JUDGES);
-    assert!(queue_since(attempt, None, at).is_some());
+    assert!(queue_since(attempt, None, false, at).is_some());
     let mut renewing = attempt.clone();
     renewing.reason = Some(format!("{JUDGE_POLICY_RENEWAL}: Claude"));
     assert!(judging_deferred(&renewing));
-    assert_eq!(queue_since(&renewing, None, at), None);
+    assert_eq!(queue_since(&renewing, None, false, at), None);
     dir.close().await;
 }
 
@@ -249,7 +249,7 @@ async fn quota_and_pause_waits_do_not_turn_into_queue_failures() {
         ],
     });
     assert_eq!(
-        queue_since(&resumed, None, at + 100 * QUEUE_LIMIT_MS),
+        queue_since(&resumed, None, false, at + 100 * QUEUE_LIMIT_MS),
         Some(at + 100 * QUEUE_LIMIT_MS)
     );
     dir.close().await;
@@ -341,5 +341,44 @@ async fn a_pre_dispatch_abstention_does_not_reset_the_progress_clock() {
     evaluation.details = Some(json!({"sessionId":"invented-session", "usageComplete":true}));
     run.attempts[0].evaluations.push(evaluation);
     assert_eq!(last_progress(&run), None);
+    dir.close().await;
+}
+
+#[tokio::test]
+async fn a_judge_waiting_for_room_the_runs_own_attempts_hold_does_not_pause_the_run() {
+    let (dir, service, run) = saved_answers().await;
+    assert!(run.attempts.len() >= 2);
+    let at = now();
+    // One of the run's own attempts still runs in the sandbox.
+    let mut working = run.attempts[1].clone();
+    working.phase = "running".into();
+    working.reason = None;
+    service.store.save_attempt(&working).await.unwrap();
+    let run = full_run(&service, &run.id).await;
+    assert!(!check_queue(&service, &run, at).await.unwrap());
+    let run = full_run(&service, &run.id).await;
+    assert!(!check_queue(&service, &run, at + 100 * QUEUE_LIMIT_MS)
+        .await
+        .unwrap());
+    assert_eq!(service.store.run_state(&run.id).await.unwrap(), "running");
+    let waiting = service.store.attempt(&run.attempts[0].id).await.unwrap();
+    assert!(waiting
+        .phase_times
+        .as_ref()
+        .is_none_or(|times| !times.contains_key(QUEUE_SINCE)));
+    // Once it finishes, the judge's ten minutes start from then.
+    working.phase = "terminal".into();
+    service.store.save_attempt(&working).await.unwrap();
+    let later = at + 200 * QUEUE_LIMIT_MS;
+    let run = full_run(&service, &run.id).await;
+    assert!(!check_queue(&service, &run, later).await.unwrap());
+    let run = full_run(&service, &run.id).await;
+    assert!(!check_queue(&service, &run, later + QUEUE_LIMIT_MS - 1000)
+        .await
+        .unwrap());
+    assert!(check_queue(&service, &run, later + QUEUE_LIMIT_MS + 1000)
+        .await
+        .unwrap());
+    assert_eq!(service.store.run_state(&run.id).await.unwrap(), "pausing");
     dir.close().await;
 }

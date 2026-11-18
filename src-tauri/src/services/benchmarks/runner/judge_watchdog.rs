@@ -131,11 +131,25 @@ fn active_since(attempt: &Attempt) -> Option<i64> {
     Some(since)
 }
 
-fn queue_since(attempt: &Attempt, progress: Option<i64>, at: i64) -> Option<i64> {
+/// Whether the run's own attempts are under way. They hold sandbox room a
+/// waiting judge needs and give it back when they finish.
+fn own_work_in_flight(run: &BenchmarkRun) -> bool {
+    run.attempts.iter().any(|attempt| {
+        matches!(
+            attempt.phase.as_str(),
+            "preparing" | "running" | "collecting"
+        )
+    })
+}
+
+fn queue_since(attempt: &Attempt, progress: Option<i64>, own_work: bool, at: i64) -> Option<i64> {
     if attempt.phase != AWAITING_JUDGES
         || judge_quota_waiting(attempt)
         // The automatic sandbox check has its own deadline and failure wait.
         || judge_policy_waiting(attempt)
+        // A judge waiting for room the run's own attempts hold gets it when
+        // they finish; a pause would free nothing and stop the judge too.
+        || (own_work && judge_discovery_waiting(attempt))
         || super::super::analysis::score(attempt).is_some()
     {
         return None;
@@ -166,12 +180,13 @@ pub(super) async fn check_queue(
         return Ok(false);
     }
     let progress = last_progress(run);
+    let own_work = own_work_in_flight(run);
     let active = run
         .attempts
         .iter()
         .any(|attempt| Progress::read(attempt).in_flight);
     for original in run.attempts.iter().filter(|a| a.phase == AWAITING_JUDGES) {
-        let since = queue_since(original, progress, at);
+        let since = queue_since(original, progress, own_work, at);
         let previous = original
             .phase_times
             .as_ref()
@@ -190,7 +205,7 @@ pub(super) async fn check_queue(
             continue;
         };
         let mut attempt = service.store.attempt(&original.id).await?;
-        let since = queue_since(&attempt, progress, at);
+        let since = queue_since(&attempt, progress, own_work, at);
         let previous = attempt
             .phase_times
             .as_ref()
@@ -204,6 +219,7 @@ pub(super) async fn check_queue(
             if current.state != "running"
                 || last_progress(&current).is_some_and(|last| last > since)
                 || current.attempts.iter().any(|a| Progress::read(a).in_flight)
+                || (own_work_in_flight(&current) && judge_discovery_waiting(&attempt))
             {
                 continue;
             }
