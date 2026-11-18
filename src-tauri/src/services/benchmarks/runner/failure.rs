@@ -630,6 +630,7 @@ impl BenchmarkService {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::{blank_attempt, judge_row, request, setup};
     use super::*;
 
     /// A refusal before the prompt, under automatic retries, with everything
@@ -766,5 +767,207 @@ mod tests {
         assert_eq!(respond(&forbidden("validation")), settle(true));
         assert_eq!(respond(&forbidden("evidence_mismatch")), settle(true));
         assert_eq!(respond(&forbidden("dispatch_deadline")), settle(true));
+    }
+
+    #[test]
+    fn a_wall_budget_spent_before_the_session_started_is_the_infrastructures() {
+        // 10-18: attempts that kept a clock through a pause, and campaign
+        // steps that waited for a local slot, settled as budget_timeout with
+        // no model time: false zeros on the boards and in fit data.
+        let row = judge_row("sonnet");
+        let attempt = crate::services::benchmarks::pending_attempt("invented-run", "invented-version", &row, 0);
+        let exhausted =
+            BenchmarkError::new("budget_timeout", "Native root wall budget is exhausted");
+        let (outcome, reason) = settled_failure(&attempt, &exhausted);
+        assert_eq!(outcome, "infrastructure_failure");
+        assert!(reason.starts_with(UNSTARTED_TIMEOUT), "{reason}");
+        assert!(
+            reason.ends_with("Native root wall budget is exhausted"),
+            "{reason}"
+        );
+        // Anything of a model measured keeps the timeout: a session, native
+        // time, sealed evidence, an opened session, a step that ran.
+        let mut started = attempt.clone();
+        started.session_id = Some("invented-session".into());
+        let mut timed = attempt.clone();
+        timed.native_execution_ms = Some(5);
+        let mut sealed = attempt.clone();
+        sealed.evidence_hash = Some("invented-evidence".into());
+        let mut opened = attempt.clone();
+        mark_phase(&mut opened, "sessionOpened");
+        let step = |session: Option<&str>, evidence: Option<&str>| WorkflowStepEvidence {
+            root_task_id: "invented-root".into(),
+            step_id: "implement".into(),
+            parent_step_id: None,
+            entry_state_hash: "invented-entry".into(),
+            attempt_id: "invented-step".into(),
+            session_id: session.map(Into::into),
+            host_run_id: None,
+            evidence_hash: evidence.map(Into::into),
+            outcome: None,
+        };
+        let mut prefix = attempt.clone();
+        prefix
+            .workflow_steps
+            .push(step(None, Some("invented-evidence")));
+        let mut ran = attempt.clone();
+        ran.workflow_steps
+            .push(step(Some("invented-session"), None));
+        for unit in [started, timed, sealed, opened, prefix, ran] {
+            assert_eq!(settled_failure(&unit, &exhausted).0, "budget_timeout");
+        }
+        // A root whose steps never started is the infrastructure's too.
+        let mut unstarted_root = attempt.clone();
+        unstarted_root.workflow_steps.push(step(None, None));
+        assert_eq!(
+            settled_failure(&unstarted_root, &exhausted).0,
+            "infrastructure_failure"
+        );
+        // Other failures keep their code and message.
+        let capped = BenchmarkError::new("budget_reached", "Answer cap");
+        assert_eq!(
+            settled_failure(&attempt, &capped),
+            ("budget_reached".into(), "Answer cap".into())
+        );
+        // The host's proof that the deadline passed before any provider
+        // prompt, at either place a turn error carries it.
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind": "budget_timeout", "proof": NO_PROVIDER_START})),
+            "infrastructure_failure"
+        );
+        assert_eq!(
+            terminal_error_outcome(
+                &json!({"data": {"kind": "budget_timeout", "proof": NO_PROVIDER_START}})
+            ),
+            "infrastructure_failure"
+        );
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind": "budget_timeout"})),
+            "budget_timeout"
+        );
+    }
+
+    #[test]
+    fn only_a_try_refused_before_any_answer_goes_again() {
+        let mut attempt = blank_attempt();
+        attempt.phase = "preparing".into();
+        attempt.evaluations.clear();
+        attempt.output = None;
+        attempt.usage = TokenUsage::default();
+        let error = |code: &str, message: &str| BenchmarkError::new(code, message);
+        let host = |data: Value| json!({"code":-32603,"data":data}).to_string();
+        assert!(refused_before_answer(
+            &attempt,
+            &error("selection_changed", "substituted")
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error("capability_missing", "no sign-in")
+        ));
+        // A session lost before it acknowledged a model asked nothing.
+        assert!(refused_before_answer(
+            &attempt,
+            &error(SESSION_LOST, SESSION_LOST_BEFORE_ANSWER)
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error("account_busy", "Workflow worker slots are occupied")
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error(
+                "infrastructure_failure",
+                &host(json!({"dispatchStarted":false}))
+            )
+        ));
+        assert!(refused_before_answer(
+            &attempt,
+            &error(
+                "infrastructure_failure",
+                &host(json!({"dispatchStarted":true,"promptNotAccepted":true}))
+            )
+        ));
+        // A turn the provider accepted, or one that answered, is not.
+        assert!(!refused_before_answer(
+            &attempt,
+            &error(
+                "infrastructure_failure",
+                &host(json!({"dispatchStarted":true,"promptNotAccepted":false}))
+            )
+        ));
+        assert!(!refused_before_answer(
+            &attempt,
+            &error("dispatch_uncertain", "unknown")
+        ));
+        let mut running = attempt.clone();
+        running.phase = "running".into();
+        assert!(!refused_before_answer(
+            &running,
+            &error("selection_changed", "changed mid-turn")
+        ));
+        let mut answered = attempt.clone();
+        answered.usage.output = Some(12);
+        assert!(!refused_before_answer(
+            &answered,
+            &error("account_busy", "busy")
+        ));
+        let mut evaluated = attempt.clone();
+        evaluated.evaluations.push(Evaluation {
+            id: "invented".into(),
+            evaluator_revision: "invented".into(),
+            verdict: "pass".into(),
+            score: Some(1.0),
+            reason: String::new(),
+            created_at: 1,
+            provenance: "objective".into(),
+            artifacts: vec![],
+            details: None,
+            judge: None,
+            usage: None,
+        });
+        assert!(!refused_before_answer(
+            &evaluated,
+            &error("selection_changed", "late")
+        ));
+    }
+
+    #[tokio::test]
+    async fn only_the_same_refusal_after_a_resume_settles_a_cell() {
+        let (dir, s, _) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        let mut attempt = s.store.run(&run.id).await.unwrap().attempts.remove(0);
+        attempt.reason = Some("the Codex model list is not cached".into());
+        let again = BenchmarkError::new("capability_missing", "the Codex model list is not cached");
+        assert!(refused_again(&attempt, &again));
+        let other = BenchmarkError::new("capability_missing", "the Grok sign-in expires soon");
+        assert!(!refused_again(&attempt, &other));
+        attempt.reason = None;
+        assert!(!refused_again(&attempt, &again));
+        attempt.reason = Some("held".into());
+        assert!(!refused_again(
+            &attempt,
+            &BenchmarkError::new(QUOTA_WAIT, "held")
+        ));
+        attempt.reason = Some(SIGN_IN_WAIT_REASON.into());
+        assert!(!refused_again(
+            &attempt,
+            &BenchmarkError::new(SIGN_IN_WAIT, SIGN_IN_WAIT_REASON)
+        ));
+        dir.close().await;
+    }
+
+    #[test]
+    fn only_a_turn_the_provider_never_saw_returns_to_the_queue() {
+        assert!(returns_to_queue(QUOTA_WAIT, "running"));
+        // A session lost before it acknowledged a model asked nothing either.
+        for code in ["selection_changed", "capability_missing", SESSION_LOST] {
+            assert!(returns_to_queue(code, "preparing"), "{code}");
+            // Once the prompt is on its way, the turn is the provider's.
+            assert!(!returns_to_queue(code, "dispatching"), "{code}");
+            assert!(!returns_to_queue(code, "running"), "{code}");
+        }
+        for code in ["infrastructure_failure", "cancelled", "dispatch_uncertain"] {
+            assert!(!returns_to_queue(code, "preparing"), "{code}");
+        }
     }
 }
