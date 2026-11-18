@@ -303,7 +303,7 @@ Folded ids are still read, never written:
 - `src/shared/lib/foldedModelId.ts` — the renderer's only reader
   (`splitLegacyFoldedModelId`, `baseModelId`, `sameModelIdentity`). It has no
   compose function on purpose.
-- `split_effort_model` in `router.rs` — the host's inbound path inside
+- `split_effort_model` in `router/options.rs` — the host's inbound path inside
   `apply_model`, for a folded id from an old renderer, an old `distillctl` client or
   a stored value the lazy split skipped.
 - The host's lazy per-session split (kv flag `migrations/selection_split`):
