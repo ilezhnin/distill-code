@@ -166,114 +166,32 @@ impl BenchmarkService {
         let mut queues = Vec::new();
         let runs = self.store.active_runs().await?;
         let scope = self.store.root.display().to_string();
-        let saved_wait = runs
-            .iter()
-            .flat_map(|run| &run.attempts)
-            .filter(|a| {
-                matches!(a.phase.as_str(), "pending" | AWAITING_JUDGES)
-                    && a.reason.as_deref().is_some_and(|reason| {
-                        reason.starts_with("Waiting for local resources")
-                            && !reason.starts_with(EVALUATION_WAIT)
-                    })
-            })
-            .filter_map(|a| a.wait_until)
-            .max()
-            .unwrap_or_default()
-            .saturating_sub(now())
-            .max(0) as u64;
-        admission_window::restore(&scope, Duration::from_millis(saved_wait));
-        let evaluation_wait = runs
-            .iter()
-            .flat_map(|run| &run.attempts)
-            .filter(|attempt| {
-                matches!(attempt.phase.as_str(), "collecting" | "interrupted")
-                    && attempt
-                        .reason
-                        .as_deref()
-                        .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
-            })
-            .filter_map(|attempt| attempt.wait_until)
-            .max()
-            .unwrap_or_default()
-            .saturating_sub(now())
-            .max(0) as u64;
-        admission_window::restore(
-            &admission_window::evaluation_scope(&scope),
-            Duration::from_millis(evaluation_wait),
-        );
+        restore_saved_waits(&runs, &scope);
         for run in runs {
             let flying = self.flying(&run.id).await;
-            if run.state == "pausing" {
-                if flying == 0 {
-                    self.store.set_run_state(&run.id, "paused").await?;
-                    self.changed().await;
-                }
-                continue;
-            }
-            if run.state == "cancelling" {
-                if flying > 0 {
+            match run.state.as_str() {
+                "pausing" => {
+                    if flying == 0 {
+                        self.store.set_run_state(&run.id, "paused").await?;
+                        self.changed().await;
+                    }
                     continue;
                 }
-                for mut a in run.attempts {
-                    if a.phase == "pending" {
-                        a.phase = "terminal".into();
-                        a.outcome = Some("cancelled".into());
-                        a.finished_at = Some(now());
-                        self.store.save_attempt(&a).await?;
-                    } else if a.phase == AWAITING_JUDGES {
-                        // The sealed output stands; only its verdict is missing.
-                        let mut waiting = self.store.attempt(&a.id).await?;
-                        waiting.phase = "terminal".into();
-                        waiting.reason = Some(JUDGING_STOPPED.into());
-                        self.store.save_attempt(&waiting).await?;
+                "cancelling" => {
+                    if flying == 0 {
+                        self.finish_cancelling(run).await?;
                     }
+                    continue;
                 }
-                self.store.set_run_state(&run.id, "cancelled").await?;
-                self.changed().await;
-                continue;
-            }
-            if run.state != "running" {
-                continue;
+                "running" => {}
+                _ => continue,
             }
             if judge_watchdog::check_queue(self, &run, now()).await? {
                 continue;
             }
             // A rendering a pause or busy judges held back is judged beside the
             // run's generations; the run completes only once none is waiting.
-            let waiting = run
-                .attempts
-                .iter()
-                .find(|a| a.phase == AWAITING_JUDGES)
-                .map(|a| a.id.clone());
-            let ready_judge = run
-                .attempts
-                .iter()
-                .filter(|a| {
-                    a.phase == AWAITING_JUDGES
-                        && admission_window::has_room(&scope)
-                        && (judge_discovery_waiting(a)
-                            || a.wait_until.is_none_or(|until| until <= now()))
-                        // Temporary waits must resume within a long tick.
-                        // Busy accounts/renderers have a bounded retry time;
-                        // preparation waits follow the shared window instead.
-                        && (!tried.contains(&a.id)
-                            || a.wait_until.is_some()
-                            || judging_deferred(a))
-                })
-                // A refused panel must not monopolize every resource probe.
-                // Order by its last opportunity, or when an untried answer
-                // became ready, so fresh arrivals cannot starve older work.
-                .min_by_key(|a| {
-                    a.phase_times
-                        .as_ref()
-                        .and_then(|times| times.get("judgeStarted"))
-                        .copied()
-                        .or(a.finished_at)
-                        .or(a.started_at)
-                        .unwrap_or_default()
-                })
-                .map(|a| a.id.clone());
-            if let Some(id) = ready_judge {
+            if let Some(id) = ready_judge(&run, &scope, tried) {
                 self.start_waiting_judge(&run, id, flights, tried).await;
             }
             if !admission_window::remaining(&scope).is_zero()
@@ -284,30 +202,8 @@ impl BenchmarkService {
             let ready_at = now();
             let ready = self.dispatchable(&run, ready_at).await?;
             if ready.is_empty() {
-                // Cells held for their provider still wait for it; the run
-                // completes only once none is pending.
-                let held = run.attempts.iter().any(|a| {
-                    (a.phase == "pending"
-                        && (provider_held(&run.id, &a.configuration.provider_id)
-                            || provider_held(&run.id, &quota_scope(&a.configuration))
-                            || a.wait_until.is_some_and(|until| until > ready_at)))
-                        || a.phase == "interrupted"
-                });
-                if flying == 0 && waiting.is_none() && !held {
-                    // An unusable panel has stopped judging, not completed the
-                    // measurement. Preserve the paid answers for inspection.
-                    let state = if run.attempts.iter().any(|a| {
-                        a.outcome.as_deref() == Some("pending_review")
-                            && a.reason.is_some()
-                            && crate::services::benchmarks::analysis::score(a).is_none()
-                    }) {
-                        "needs_attention"
-                    } else {
-                        "completed"
-                    };
-                    self.store.set_run_state(&run.id, state).await?;
-                    self.changed().await;
-                }
+                self.close_if_nothing_is_left(&run, flying == 0, ready_at)
+                    .await?;
                 continue;
             }
             queues.push((run, ready.into_iter()));
@@ -346,6 +242,64 @@ impl BenchmarkService {
                 return Ok(());
             }
         }
+    }
+
+    /// Ends a cancelled run once nothing of it flies: its pending cells settle
+    /// as cancelled, and a sealed answer awaiting judges keeps its output and
+    /// only lacks its verdict.
+    async fn finish_cancelling(&self, run: BenchmarkRun) -> Result<()> {
+        for mut a in run.attempts {
+            if a.phase == "pending" {
+                a.phase = "terminal".into();
+                a.outcome = Some("cancelled".into());
+                a.finished_at = Some(now());
+                self.store.save_attempt(&a).await?;
+            } else if a.phase == AWAITING_JUDGES {
+                let mut waiting = self.store.attempt(&a.id).await?;
+                waiting.phase = "terminal".into();
+                waiting.reason = Some(JUDGING_STOPPED.into());
+                self.store.save_attempt(&waiting).await?;
+            }
+        }
+        self.store.set_run_state(&run.id, "cancelled").await?;
+        self.changed().await;
+        Ok(())
+    }
+
+    /// Closes a run with nothing ready when nothing of it flies, waits for
+    /// judges or is held: for its provider, for a time of its own, or
+    /// interrupted. An unusable panel has stopped judging, not completed the
+    /// measurement: the run then waits for the operator with its paid
+    /// answers kept.
+    async fn close_if_nothing_is_left(
+        &self,
+        run: &BenchmarkRun,
+        grounded: bool,
+        ready_at: i64,
+    ) -> Result<()> {
+        let waiting = run.attempts.iter().any(|a| a.phase == AWAITING_JUDGES);
+        let held = run.attempts.iter().any(|a| {
+            (a.phase == "pending"
+                && (provider_held(&run.id, &a.configuration.provider_id)
+                    || provider_held(&run.id, &quota_scope(&a.configuration))
+                    || a.wait_until.is_some_and(|until| until > ready_at)))
+                || a.phase == "interrupted"
+        });
+        if !grounded || waiting || held {
+            return Ok(());
+        }
+        let state = if run.attempts.iter().any(|a| {
+            a.outcome.as_deref() == Some("pending_review")
+                && a.reason.is_some()
+                && crate::services::benchmarks::analysis::score(a).is_none()
+        }) {
+            "needs_attention"
+        } else {
+            "completed"
+        };
+        self.store.set_run_state(&run.id, state).await?;
+        self.changed().await;
+        Ok(())
     }
 
     /// Starts `a` if its configuration, account and the app have a free slot.
@@ -714,4 +668,80 @@ impl BenchmarkService {
         }
         Ok(grouped_by_cell(run, ready))
     }
+}
+
+/// Restores, once per store after a restart, the waits the cells saved: the
+/// longest wait for local resources parks the preparation lane again, the
+/// longest wait of a check its own lane.
+fn restore_saved_waits(runs: &[BenchmarkRun], scope: &str) {
+    let saved_wait = runs
+        .iter()
+        .flat_map(|run| &run.attempts)
+        .filter(|a| {
+            matches!(a.phase.as_str(), "pending" | AWAITING_JUDGES)
+                && a.reason.as_deref().is_some_and(|reason| {
+                    reason.starts_with("Waiting for local resources")
+                        && !reason.starts_with(EVALUATION_WAIT)
+                })
+        })
+        .filter_map(|a| a.wait_until)
+        .max()
+        .unwrap_or_default()
+        .saturating_sub(now())
+        .max(0) as u64;
+    admission_window::restore(scope, Duration::from_millis(saved_wait));
+    let evaluation_wait = runs
+        .iter()
+        .flat_map(|run| &run.attempts)
+        .filter(|attempt| {
+            matches!(attempt.phase.as_str(), "collecting" | "interrupted")
+                && attempt
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.starts_with(EVALUATION_WAIT))
+        })
+        .filter_map(|attempt| attempt.wait_until)
+        .max()
+        .unwrap_or_default()
+        .saturating_sub(now())
+        .max(0) as u64;
+    admission_window::restore(
+        &admission_window::evaluation_scope(scope),
+        Duration::from_millis(evaluation_wait),
+    );
+}
+
+/// The answer of `run` whose panel may be asked now, the one that waited
+/// longest for it. A refused panel must not monopolize every resource probe:
+/// answers are ordered by their last opportunity, or by when an untried one
+/// became ready, so fresh arrivals cannot starve older work.
+fn ready_judge(
+    run: &BenchmarkRun,
+    scope: &str,
+    tried: &std::collections::HashSet<String>,
+) -> Option<String> {
+    run.attempts
+        .iter()
+        .filter(|a| {
+            a.phase == AWAITING_JUDGES
+                && admission_window::has_room(scope)
+                && (judge_discovery_waiting(a)
+                    || a.wait_until.is_none_or(|until| until <= now()))
+                // Temporary waits must resume within a long tick.
+                // Busy accounts/renderers have a bounded retry time;
+                // preparation waits follow the shared window instead.
+                && (!tried.contains(&a.id)
+                    || a.wait_until.is_some()
+                    || judging_deferred(a))
+        })
+        .min_by_key(|a| {
+            a.phase_times
+                .as_ref()
+                .and_then(|times| times.get("judgeStarted"))
+                .copied()
+                .or(a.finished_at)
+                .or(a.started_at)
+                .unwrap_or_default()
+        })
+        .map(|a| a.id.clone())
 }
