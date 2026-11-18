@@ -600,7 +600,7 @@ impl Store {
                     .ok_or_else(|| invalid("Training admission evidence is missing"))?;
                 let run = self.run(run_id).await?;
                 let version = self.version(&example.version_id).await?;
-                if super::runner::effective_timeout_seconds(
+                if super::types::effective_timeout_seconds(
                     run.request.timeout_seconds,
                     &version.manifest,
                 ) != contract.limits.timeout_seconds
@@ -786,7 +786,7 @@ impl Store {
         }
         for case in &campaign.plan.cases {
             let version = self.version(&case.version_id).await?;
-            if super::runner::effective_timeout_seconds(
+            if super::types::effective_timeout_seconds(
                 campaign.plan.request.timeout_seconds,
                 &version.manifest,
             ) != trajectory.root_budget_seconds
@@ -827,7 +827,7 @@ impl Store {
                     campaign.plan.request.timeout_seconds,
                 )?;
                 if Contract::from_task(&task) != *contract
-                    || super::runner::effective_timeout_seconds(
+                    || super::types::effective_timeout_seconds(
                         campaign.plan.request.timeout_seconds,
                         &version.manifest,
                     ) != contract.limits.timeout_seconds

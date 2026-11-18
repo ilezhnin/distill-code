@@ -343,7 +343,7 @@ fn a_short_panel_renews_only_stale_sandbox_checks_and_waits_for_them() {
 #[test]
 fn judge_diagnostics_do_not_replace_quota_or_resource_deferrals() {
     let candidate = judge("grok-acp");
-    let draft = seed_definitions()
+    let draft = crate::services::benchmarks::seeds::definitions()
         .into_iter()
         .find(|draft| draft.work_class_id == "creative")
         .unwrap();

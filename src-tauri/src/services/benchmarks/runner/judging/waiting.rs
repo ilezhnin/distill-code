@@ -1,12 +1,6 @@
 //! Judge counts, waits and the reasons a cell shows while judging is deferred.
 use super::*;
 
-/// Fewest judges whose votes may settle a rendering.
-pub(crate) const MIN_JUDGES: usize = 2;
-
-/// Most judges on one panel; plan admission reserves this many calls.
-pub(crate) const MAX_JUDGES: usize = 3;
-
 /// How long one judge turn may take. 10-18: Grok 4.7 high judged text
 /// rubrics in a median 122 s with a tenth at the old 180 s cap, and six of
 /// its sheets timed out; every other judge's 90th percentile stays near a
@@ -39,10 +33,6 @@ pub(in super::super) const JUDGE_POLICY_RENEWAL: &str = "Updating the sandbox ch
 
 /// How often a panel waiting on that renewal looks for its judges again.
 pub(in super::super) const JUDGE_POLICY_RETRY: Duration = Duration::from_secs(2 * 60);
-
-/// A rendering whose panel a pause or busy judges held back: its generation
-/// is sealed and the run asks the panel before any new generation.
-pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
 
 /// Whether a panel stopped short in a way its run can take up again.
 pub(in super::super) fn judging_deferred(attempt: &Attempt) -> bool {

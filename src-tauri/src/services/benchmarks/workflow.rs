@@ -1977,7 +1977,7 @@ mod tests {
             queries: Default::default(),
             app: None,
         };
-        let mut draft = super::super::runner::seed_definitions().remove(0);
+        let mut draft = super::super::seeds::definitions().remove(0);
         draft.split = "train".into();
         draft.workflow = Some(WorkflowSpec {
             schema_version: 1,
@@ -2612,7 +2612,7 @@ mod tests {
 
     #[test]
     fn workflow_rejects_ambiguous_feedback_and_unbounded_driver() {
-        let mut draft = super::super::runner::seed_definitions().remove(0);
+        let mut draft = super::super::seeds::definitions().remove(0);
         draft.workflow = Some(WorkflowSpec {
             schema_version: 1,
             driver_revision: "1".into(),

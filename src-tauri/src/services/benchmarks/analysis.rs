@@ -2977,7 +2977,7 @@ pub(super) mod tests {
         };
         let versions = (0..6)
             .map(|index| {
-                let mut manifest = super::super::runner::seed_definitions().remove(0);
+                let mut manifest = super::super::seeds::definitions().remove(0);
                 manifest.split = "train".into();
                 manifest.task_family = format!("family-{index}");
                 BenchmarkVersion {

@@ -816,7 +816,7 @@ pub struct Attempt {
     pub repository_result: Option<super::artifact_context::PublicResult>,
     /// Native initial repository input frozen before a standalone turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collection_context: Option<super::runner::collection_context::Context>,
+    pub collection_context: Option<CollectionContext>,
     /// The sandbox heavy-lane setting and competing load when the candidate
     /// session was admitted, also sealed in the evidence; on a workflow root,
     /// its most loaded step's. Absent on attempts recorded before it was kept
@@ -1379,4 +1379,48 @@ pub struct QueryData {
 
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+/// Fewest judges whose votes may settle a rendering.
+pub(crate) const MIN_JUDGES: usize = 2;
+
+/// Most judges on one panel; plan admission reserves this many calls.
+pub(crate) const MAX_JUDGES: usize = 3;
+
+/// A rendering whose panel a pause or busy judges held back: its generation
+/// is sealed and the run asks the panel before any new generation.
+pub(crate) const AWAITING_JUDGES: &str = "awaiting_judges";
+
+/// An evaluator error meaning the candidate's own code drove its check or
+/// browser job into the job's own ceiling (a root-owned receipt says so,
+/// see `benchmark_sandbox::Output::candidate_limit`): the answer past its
+/// budget, which settles as `budget_reached`, scored 0.
+pub(crate) const CANDIDATE_LIMIT: &str = "candidate_limit";
+
+/// The time a turn of `draft` gets from a run that allows `requested` seconds:
+/// the run's limit, or a continuation's frozen remaining budget when that is
+/// shorter. The case's own `limits.timeout_seconds` is the least a run must
+/// allow it, never a stop: a model takes the time it needs.
+pub(crate) fn effective_timeout_seconds(requested: u32, draft: &BenchmarkDraft) -> u32 {
+    requested.min(
+        draft
+            .entry_state
+            .as_ref()
+            .map_or(u32::MAX, |entry| entry.remaining_budget_seconds),
+    )
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollectionContext {
+    pub schema_version: u32,
+    pub attempt_id: String,
+    pub run_id: String,
+    pub version_id: String,
+    pub version_content_hash: String,
+    pub manifest_hash: String,
+    pub timeout_seconds: u32,
+    pub budget: super::artifact_context::BudgetLease,
+    pub repository: super::artifact_context::Input,
+    pub content_hash: String,
 }

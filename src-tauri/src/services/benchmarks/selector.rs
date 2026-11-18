@@ -641,7 +641,7 @@ mod tests {
         let finished = now() - 60_000;
         data.versions.clear();
         for index in 0..14 {
-            let mut manifest = super::super::runner::seed_definitions().remove(0);
+            let mut manifest = super::super::seeds::definitions().remove(0);
             manifest.work_class_id = "debug".into();
             manifest.task_family = format!("family-{index}");
             manifest.split = if index < 10 { "train" } else { "held_out" }.into();

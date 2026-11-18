@@ -97,7 +97,7 @@ fn identity(author: &BenchmarkAuthor) -> (String, String, Option<String>) {
     let normalize = |value: &str| value.trim().to_lowercase();
     let provider = normalize(&author.provider_id);
     let model = normalize(&author.model_id);
-    let model = super::runner::model_identity(&provider, &model).unwrap_or(model);
+    let model = super::model_catalog::model_identity(&provider, &model).unwrap_or(model);
     (provider, model, author.effort.as_deref().map(normalize))
 }
 

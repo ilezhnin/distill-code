@@ -404,7 +404,7 @@ pub fn ledger_rows_matching(
                 "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"authoredByCandidate":excluded,"outcomes":outcomes,
                 "meanCost":super::analysis::mean_case_cost(&selected,Some(cutoff)),
                 "runId":selected.first().map(|a|&a.run_id),
-                "effectiveTimeoutSeconds":selected.first().map(|a|super::runner::effective_timeout_seconds(runs[a.run_id.as_str()].request.timeout_seconds,&version.manifest)),
+                "effectiveTimeoutSeconds":selected.first().map(|a|super::types::effective_timeout_seconds(runs[a.run_id.as_str()].request.timeout_seconds,&version.manifest)),
                 "repetitions":selected.len()});
             if runtime == RuntimeMatch::ModelIdentity {
                 let revisions: BTreeSet<_> = selected
@@ -1230,7 +1230,7 @@ mod tests {
             app: None,
         };
         directory.register(&service.store.pool);
-        let mut draft = super::super::runner::seed_definitions().remove(0);
+        let mut draft = super::super::seeds::definitions().remove(0);
         draft.split = "train".into();
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();

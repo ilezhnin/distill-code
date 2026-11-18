@@ -246,7 +246,7 @@ fn only_a_failure_worth_asking_again_is_measured_again() {
         definition_id: "invented".into(),
         content_hash: "invented".into(),
         published_at: 0,
-        manifest: seed_definitions().remove(0),
+        manifest: crate::services::benchmarks::seeds::definitions().remove(0),
         carries_from: None,
     };
     let failed = |reason: &str, retries: u32| {

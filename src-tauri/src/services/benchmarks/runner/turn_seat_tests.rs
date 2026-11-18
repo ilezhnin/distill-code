@@ -55,7 +55,7 @@ async fn of_profile(service: &BenchmarkService, request: &RunRequest, profile: &
 
 /// The same cells of an invented planning lab.
 async fn planning_cells(service: &BenchmarkService, cells: u32, profile: &str) -> RunRequest {
-    let mut draft = seed_definitions().remove(0);
+    let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
     draft.split = "train".into();
     draft.name = "Invented planning lab".into();
     draft.work_class_id = "planning".into();

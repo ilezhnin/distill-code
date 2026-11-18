@@ -145,7 +145,7 @@ async fn evaluation_admission_releases_preparing_before_the_slow_check_finishes(
     );
     assert!(!evaluator.is_finished());
 
-    let mut draft = seed_definitions()
+    let mut draft = crate::services::benchmarks::seeds::definitions()
         .into_iter()
         .find(|draft| draft.work_class_id == "creative")
         .unwrap();

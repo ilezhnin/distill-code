@@ -20,7 +20,7 @@ fn judge(provider: &str, model: &str, account: &str) -> Configuration {
 }
 
 fn brief() -> BenchmarkDraft {
-    let mut draft = seed_definitions()
+    let mut draft = crate::services::benchmarks::seeds::definitions()
         .into_iter()
         .find(|draft| draft.work_class_id == "creative")
         .unwrap();

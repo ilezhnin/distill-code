@@ -119,7 +119,7 @@ impl Entry {
 
     /// The model it names, aliases resolved.
     fn model(&self) -> Option<String> {
-        runner::concrete_model(&self.provider_id, &self.model_id)
+        super::model_catalog::concrete_model(&self.provider_id, &self.model_id)
     }
 
     /// Whether `other` names the same judge: provider, model (aliases
@@ -378,7 +378,8 @@ pub(crate) fn seat_rows(
         .into_iter()
         .filter_map(|(headroom, row)| {
             let provider = &row.configuration.provider_id;
-            let model = runner::concrete_model(provider, &row.configuration.model_id)?;
+            let model =
+                super::model_catalog::concrete_model(provider, &row.configuration.model_id)?;
             // The first entry of the model that may sit on this row's account
             // at an effort the row offers: entries of one model may differ in
             // effort or accounts.

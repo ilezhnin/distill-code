@@ -154,7 +154,7 @@ async fn an_old_text_run_with_a_repository_case_finishes_on_its_profile() {
     let (dir, s, _) = setup().await;
     let mut req = request(&s).await;
     let text = req.version_ids[0].clone();
-    let mut draft = seed_definitions().remove(1);
+    let mut draft = crate::services::benchmarks::seeds::definitions().remove(1);
     draft.split = "train".into();
     let d = s.store.save_draft(None, None, draft).await.unwrap();
     let ledger = s.store.publish(&d.id, 1).await.unwrap().id;

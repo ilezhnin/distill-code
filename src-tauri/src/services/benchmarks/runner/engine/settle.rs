@@ -29,12 +29,6 @@ pub(in crate::services::benchmarks) const EVALUATION_RETRY: Duration = if cfg!(t
     Duration::from_secs(2)
 };
 
-/// An evaluator error meaning the candidate's own code drove its check or
-/// browser job into the job's own ceiling (a root-owned receipt says so,
-/// see `benchmark_sandbox::Output::candidate_limit`): the answer past its
-/// budget, which settles as `budget_reached`, scored 0.
-pub(in crate::services::benchmarks) const CANDIDATE_LIMIT: &str = "candidate_limit";
-
 /// The outcome of an answer whose evaluation failed with `error`: the
 /// candidate's own past its job's ceiling (scored 0), else an evaluator
 /// error (unscored).

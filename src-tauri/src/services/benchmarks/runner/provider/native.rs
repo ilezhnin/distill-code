@@ -307,18 +307,6 @@ impl NativeBackend {
     }
 }
 
-/// The model a row stands for: a declared alias resolves to its target, an
-/// undeclared moving alias to nothing.
-pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
-    let declared = crate::services::agent_host::harness::harness(provider)
-        .and_then(|h| h.models.iter().find(|m| m.id.eq_ignore_ascii_case(model)));
-    match declared.and_then(|m| m.alias_of) {
-        Some(target) => Some(target.to_lowercase()),
-        None if matches!(model.to_lowercase().as_str(), "default" | "current") => None,
-        None => Some(model.to_lowercase()),
-    }
-}
-
 /// A session opened on a context lane that its bridge acknowledges under the
 /// lane's declared alias acknowledged the lane: Claude Code 2.1.312 runs
 /// `opus[1m]` at Opus 5.5's native 1M window and names it `opus` (10-31),
@@ -345,28 +333,6 @@ pub(crate) fn acknowledge_lane(
     if session.selection.model_id.as_deref().is_some_and(lane) {
         session.selection.model_id = Some(requested.to_string());
     }
-}
-
-/// The model a model id names whatever context window it asks for, aliases
-/// resolved as [`concrete_model`] resolves them: Claude Code's `[1m]` suffix
-/// (`opus[1m]`, `claude-fable-5-1[1m]`) asks the same model for a longer
-/// context, so `opus`, `opus[1m]` and `default` are one Opus. A judge never
-/// sits on its own model's output by this identity, an author is matched by
-/// it, and a panel seats each such model once.
-pub(crate) fn model_identity(provider: &str, model: &str) -> Option<String> {
-    let concrete = concrete_model(provider, model)?;
-    if NativeProvider::for_harness(provider) != Some(NativeProvider::Claude) {
-        return Some(concrete);
-    }
-    Some(
-        match concrete
-            .strip_suffix(']')
-            .and_then(|rest| rest.rsplit_once('['))
-        {
-            Some((base, _)) if !base.is_empty() => base.to_owned(),
-            _ => concrete,
-        },
-    )
 }
 
 /// Why a configuration asking for fast mode never runs in a benchmark.
@@ -625,22 +591,6 @@ pub(in super::super) fn model_row_identity(inventory: &Value, model_id: &str) ->
                 .filter(|id| *id == model_id)?;
             Some(format!("{id}\u{1f}{}", row["name"].as_str().unwrap_or(id)))
         })
-}
-
-/// The time a turn of `draft` gets from a run that allows `requested` seconds:
-/// the run's limit, or a continuation's frozen remaining budget when that is
-/// shorter. The case's own `limits.timeout_seconds` is the least a run must
-/// allow it, never a stop: a model takes the time it needs.
-pub(in crate::services::benchmarks) fn effective_timeout_seconds(
-    requested: u32,
-    draft: &BenchmarkDraft,
-) -> u32 {
-    requested.min(
-        draft
-            .entry_state
-            .as_ref()
-            .map_or(u32::MAX, |entry| entry.remaining_budget_seconds),
-    )
 }
 
 pub(in super::super) fn prompt_with_fixtures(draft: &BenchmarkDraft) -> Result<String> {

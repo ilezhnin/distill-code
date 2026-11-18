@@ -74,13 +74,13 @@ pub fn candidate_key(c: &Configuration) -> String {
 }
 /// Whether `configuration` is the candidate an author identity names: the
 /// same provider, model (aliases resolved, a context window variant such as
-/// `opus[1m]` the same model as `opus`, see `runner::model_identity`) and
+/// `opus[1m]` the same model as `opus`, see `model_catalog::model_identity`) and
 /// reasoning effort. Account, speed and execution profile are not part of
 /// authorship.
 pub fn is_author(author: &BenchmarkAuthor, configuration: &Configuration) -> bool {
     let normalize = |value: &str| value.trim().to_lowercase();
     let concrete = |provider: &str, model: &str| {
-        super::runner::model_identity(provider, model).unwrap_or_else(|| model.into())
+        super::model_catalog::model_identity(provider, model).unwrap_or_else(|| model.into())
     };
     let provider = normalize(&configuration.provider_id);
     let model = concrete(&provider, &normalize(&configuration.model_id));

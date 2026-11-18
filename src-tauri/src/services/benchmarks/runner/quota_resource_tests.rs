@@ -163,7 +163,7 @@ async fn two_accounts(service: &BenchmarkService, judged: bool) -> RunRequest {
     available.account_id = Some("available".into());
     request.configurations.push(available);
     if judged {
-        let mut draft = seed_definitions()
+        let mut draft = crate::services::benchmarks::seeds::definitions()
             .into_iter()
             .find(|draft| draft.work_class_id == "creative")
             .unwrap();

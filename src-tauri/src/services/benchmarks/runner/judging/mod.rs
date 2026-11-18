@@ -14,5 +14,6 @@ mod votes;
 mod waiting;
 
 pub use self::discovery::*;
-pub(crate) use self::{documents::*, seating::*, votes::*, waiting::*};
+pub(in crate::services::benchmarks) use self::waiting::*;
+pub(crate) use self::{documents::*, seating::*, votes::*};
 pub(super) use self::{listings::*, panel::*};

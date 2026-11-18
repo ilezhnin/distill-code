@@ -4,6 +4,41 @@
 //! entry instead of rewriting history.
 use super::types::{CatalogEntry, Configuration, TokenUsage};
 
+/// The model a row stands for: a declared alias resolves to its target, an
+/// undeclared moving alias to nothing.
+pub(crate) fn concrete_model(provider: &str, model: &str) -> Option<String> {
+    let declared = crate::services::agent_host::harness::harness(provider)
+        .and_then(|h| h.models.iter().find(|m| m.id.eq_ignore_ascii_case(model)));
+    match declared.and_then(|m| m.alias_of) {
+        Some(target) => Some(target.to_lowercase()),
+        None if matches!(model.to_lowercase().as_str(), "default" | "current") => None,
+        None => Some(model.to_lowercase()),
+    }
+}
+
+/// The model a model id names whatever context window it asks for, aliases
+/// resolved as [`concrete_model`] resolves them: Claude Code's `[1m]` suffix
+/// (`opus[1m]`, `claude-fable-5-1[1m]`) asks the same model for a longer
+/// context, so `opus`, `opus[1m]` and `default` are one Opus. A judge never
+/// sits on its own model's output by this identity, an author is matched by
+/// it, and a panel seats each such model once.
+pub(crate) fn model_identity(provider: &str, model: &str) -> Option<String> {
+    let concrete = concrete_model(provider, model)?;
+    if crate::services::agent_host::execution::NativeProvider::for_harness(provider)
+        != Some(crate::services::agent_host::execution::NativeProvider::Claude)
+    {
+        return Some(concrete);
+    }
+    Some(
+        match concrete
+            .strip_suffix(']')
+            .and_then(|rest| rest.rsplit_once('['))
+        {
+            Some((base, _)) if !base.is_empty() => base.to_owned(),
+            _ => concrete,
+        },
+    )
+}
 pub const ANTHROPIC_PRICING: &str = "https://platform.claude.com/docs/en/about-claude/pricing";
 pub const ANTHROPIC_MODELS: &str = "https://platform.claude.com/docs/en/models/overview";
 pub const OPENAI_PRICING: &str = "https://developers.openai.com/api/docs/pricing";

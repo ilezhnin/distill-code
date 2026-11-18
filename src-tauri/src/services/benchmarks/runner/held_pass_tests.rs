@@ -265,7 +265,7 @@ async fn a_cell_the_broker_refused_starts_again_within_the_tick() {
         let held = HeldPass::open(&service, &backend).await;
         let mut request = one_cell(&service, "held-pass-refused-run").await;
         if workflow {
-            let mut draft = seed_definitions().remove(0);
+            let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
             draft.split = "train".into();
             draft.workflow = Some(WorkflowSpec {
                 schema_version: 1,

@@ -1,23 +1,10 @@
 //! Initial native repository input for explicitly opted-in standalone collection.
 //! The attempt owns its immutable input; the existing budget row owns its clock.
 use super::super::{artifact_context, fixtures, repository, store::Store, types::*};
-use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Context {
-    pub schema_version: u32,
-    pub attempt_id: String,
-    pub run_id: String,
-    pub version_id: String,
-    pub version_content_hash: String,
-    pub manifest_hash: String,
-    pub timeout_seconds: u32,
-    pub budget: artifact_context::BudgetLease,
-    pub repository: artifact_context::Input,
-    pub content_hash: String,
-}
+/// The context as the attempt record carries it.
+pub use super::super::types::CollectionContext as Context;
 
 fn invalid(message: &str) -> BenchmarkError {
     BenchmarkError::new("collection_context_conflict", message)

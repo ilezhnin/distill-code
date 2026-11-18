@@ -517,7 +517,7 @@ mod tests {
             app: None,
         };
         directory.register(&service.store.pool);
-        let draft = super::super::runner::seed_definitions().remove(0);
+        let draft = super::super::seeds::definitions().remove(0);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();
         let inventory = service
@@ -576,7 +576,7 @@ mod tests {
             app: None,
         };
         directory.register(&service.store.pool);
-        let mut draft = super::super::runner::seed_definitions().remove(0);
+        let mut draft = super::super::seeds::definitions().remove(0);
         draft.environment["authoredBy"] =
             serde_json::json!([{"providerId":"fake","modelId":"fake-fail","effort":null}]);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
@@ -639,7 +639,7 @@ mod tests {
         directory.register(&service.store.pool);
         // The saved candidate, first in inventory order, wrote the only case
         // and still owes it.
-        let mut draft = super::super::runner::seed_definitions().remove(0);
+        let mut draft = super::super::seeds::definitions().remove(0);
         draft.environment["authoredBy"] =
             serde_json::json!([{"providerId":"fake","modelId":"fake-pass","effort":null}]);
         let definition = service.store.save_draft(None, None, draft).await.unwrap();
@@ -697,11 +697,7 @@ mod tests {
         directory.register(&service.store.pool);
         let definition = service
             .store
-            .save_draft(
-                None,
-                None,
-                super::super::runner::seed_definitions().remove(0),
-            )
+            .save_draft(None, None, super::super::seeds::definitions().remove(0))
             .await
             .unwrap();
         let version = service.store.publish(&definition.id, 1).await.unwrap();

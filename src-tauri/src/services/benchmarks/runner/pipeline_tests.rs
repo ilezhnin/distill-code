@@ -482,7 +482,7 @@ async fn publish_with_entry(
 ) -> Vec<BenchmarkVersion> {
     let mut versions = Vec::new();
     for index in 0..count {
-        let mut draft = seed_definitions().remove(0);
+        let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
         draft.name = format!("Offline pipeline {split} {index}");
         draft.description = "Invented infrastructure fixture; no ranking evidence".into();
         draft.source = "Invented offline fixture".into();

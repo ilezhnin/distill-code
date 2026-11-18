@@ -177,7 +177,7 @@ async fn recovery_evaluation_does_not_block_other_candidates_or_judges() {
     let (dir, service, backend, recovered) = setup().await;
     backend.hold.store(true, Ordering::SeqCst);
     let mut request = tests::serial_request(&service).await;
-    let mut draft = seed_definitions()
+    let mut draft = crate::services::benchmarks::seeds::definitions()
         .into_iter()
         .find(|draft| draft.work_class_id == "creative")
         .unwrap();

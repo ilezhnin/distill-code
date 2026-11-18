@@ -633,7 +633,7 @@ mod tests {
         directory.register(&store.pool);
         let mut versions = Vec::new();
         for task_family in ["planned", "unplanned"] {
-            let mut draft = super::super::runner::seed_definitions().remove(0);
+            let mut draft = super::super::seeds::definitions().remove(0);
             draft.task_family = task_family.into();
             let definition = store.save_draft(None, None, draft).await.unwrap();
             versions.push(store.publish(&definition.id, 1).await.unwrap());
@@ -689,7 +689,7 @@ mod tests {
         let directory = crate::test_support::TempRoot::new();
         let store = Store::open(directory.path()).await.unwrap();
         directory.register(&store.pool);
-        let draft = super::super::runner::seed_definitions().remove(0);
+        let draft = super::super::seeds::definitions().remove(0);
         let definition = store.save_draft(None, None, draft.clone()).await.unwrap();
         let first = store.publish(&definition.id, 1).await.unwrap();
         sqlx::query("UPDATE benchmark_versions SET published_at=1 WHERE id=?")
@@ -779,7 +779,7 @@ mod tests {
         let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
         dir.register(&store.pool);
-        let draft = super::super::runner::seed_definitions().remove(0);
+        let draft = super::super::seeds::definitions().remove(0);
         let d = store.save_draft(None, None, draft.clone()).await.unwrap();
         let original = store.publish(&d.id, 1).await.unwrap();
         assert_eq!(original.id, store.publish(&d.id, 1).await.unwrap().id);
@@ -812,7 +812,7 @@ mod tests {
         let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
         dir.register(&store.pool);
-        let draft = super::super::runner::seed_definitions().remove(0);
+        let draft = super::super::seeds::definitions().remove(0);
         let d = store.save_draft(None, None, draft.clone()).await.unwrap();
         let hash = fixtures::publish_blob(&store.root, &draft).await.unwrap();
         assert!(store.versions_for(&d.id).await.unwrap().is_empty());
@@ -836,7 +836,7 @@ mod tests {
         let dir = crate::test_support::TempRoot::new();
         let store = Store::open(dir.path()).await.unwrap();
         dir.register(&store.pool);
-        let mut draft = super::super::runner::seed_definitions().remove(0);
+        let mut draft = super::super::seeds::definitions().remove(0);
         let d = store.save_draft(None, None, draft.clone()).await.unwrap();
         store.publish(&d.id, 1).await.unwrap();
         draft.split = "held_out".into();

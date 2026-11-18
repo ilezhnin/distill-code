@@ -1091,7 +1091,7 @@ pub async fn evaluate_reference(manifest: &BenchmarkDraft, patch: &str) -> Resul
                 }
                 if let Some(limit) = output.candidate_limit() {
                     return Err(BenchmarkError::new(
-                        super::runner::CANDIDATE_LIMIT,
+                        CANDIDATE_LIMIT,
                         format!(
                             "The candidate's code drove its check past the job's {limit} ceiling"
                         ),

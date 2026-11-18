@@ -1741,10 +1741,7 @@ fn batch_rendering(batch: &[Evaluation]) -> Option<String> {
 /// a settled attempt, anything else. A rendering awaiting its panel has a
 /// sealed generation and stands like a settled one.
 fn card_tier(attempt: &Attempt) -> u8 {
-    if !matches!(
-        attempt.phase.as_str(),
-        "terminal" | super::runner::AWAITING_JUDGES
-    ) {
+    if !matches!(attempt.phase.as_str(), "terminal" | AWAITING_JUDGES) {
         return 0;
     }
     let rendering = attempt
@@ -2458,11 +2455,11 @@ mod tests {
     #[tokio::test]
     async fn legacy_work_classes_move_once_and_keep_their_versions() {
         let directory = crate::test_support::TempRoot::new();
-        let mut draft = super::super::runner::seed_definitions().remove(0);
+        let mut draft = super::super::seeds::definitions().remove(0);
         draft.work_class_id = "coding-simple".into();
         draft.name = "Repair bounded clamp".into();
         draft.facets.difficulty = None;
-        let mut planning = super::super::runner::seed_definitions().remove(1);
+        let mut planning = super::super::seeds::definitions().remove(1);
         planning.work_class_id = "planning".into();
         planning.facets.difficulty = Some("hard".into());
         {

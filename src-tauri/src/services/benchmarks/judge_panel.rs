@@ -32,7 +32,7 @@ pub(super) fn frozen(
         .map_err(|_| invalid("Judge panel requires a recipe and exact judge configurations"))?;
     if draft.evaluator.kind != "rubric"
         || panel.recipe != RECIPE
-        || !(runner::MIN_JUDGES..=runner::MAX_JUDGES).contains(&panel.judges.len())
+        || !(MIN_JUDGES..=MAX_JUDGES).contains(&panel.judges.len())
     {
         return Err(invalid(
             "A frozen rubric panel requires two or three judges",
@@ -84,7 +84,7 @@ pub(super) fn frozen(
                 ));
             }
         }
-        let model = runner::model_identity(&judge.provider_id, &judge.model_id)
+        let model = super::model_catalog::model_identity(&judge.provider_id, &judge.model_id)
             .ok_or_else(|| invalid("Judge model must resolve to a concrete identity"))?;
         if !seats.insert((judge.provider_id.clone(), model))
             || judge.execution_profile != "native_text"
@@ -237,7 +237,7 @@ pub(super) fn bound_evaluations<'a>(
     if batch.is_empty()
         || protocol["panelRecipe"] != RECIPE
         || protocol["samplesPerJudge"] != 1
-        || !(runner::MIN_JUDGES..=runner::MAX_JUDGES).contains(&panel.len())
+        || !(MIN_JUDGES..=MAX_JUDGES).contains(&panel.len())
         || details["expectedJudges"].as_u64()? != panel.len() as u64
         || protocol["panelBinding"].as_str()?
             != binding(
@@ -314,7 +314,7 @@ mod tests {
             frozen(&base, &[&judge("sonnet")]).unwrap().unwrap().len(),
             2
         );
-        let concrete = runner::concrete_model("claude-acp", "haiku").unwrap();
+        let concrete = super::super::model_catalog::concrete_model("claude-acp", "haiku").unwrap();
         assert_eq!(
             frozen(&base, &[&judge(&concrete)]).unwrap().unwrap().len(),
             2

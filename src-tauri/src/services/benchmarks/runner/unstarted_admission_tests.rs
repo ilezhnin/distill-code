@@ -20,7 +20,7 @@ pub(super) async fn workflow_request(
     service: &BenchmarkService,
     retry_policy: RunRetryPolicy,
 ) -> RunRequest {
-    let mut draft = seed_definitions().remove(0);
+    let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
     draft.split = "train".into();
     draft.environment["nativeBudgetRecipe"] = json!(super::super::artifact_context::CLOCK_RECIPE);
     draft.limits.timeout_seconds = 600;

@@ -249,7 +249,7 @@ async fn execute(request: Value, timeout: Duration) -> Result<Value> {
     }
     if let Some(limit) = outcome.candidate_limit() {
         return Err(BenchmarkError::new(
-            super::runner::CANDIDATE_LIMIT,
+            CANDIDATE_LIMIT,
             format!("The candidate's page drove its browser job past the job's {limit} ceiling"),
         ));
     }
@@ -361,7 +361,7 @@ async fn settle(draft: &BenchmarkDraft, outcome: Result<Value>) -> Result<Settle
         // The candidate's page drove the job past its ceiling: a graded fail
         // that names the renderer and worker that ran it, so a certificate
         // can tell which renderer this zero came from.
-        Err(error) if error.code == super::runner::CANDIDATE_LIMIT => {
+        Err(error) if error.code == CANDIDATE_LIMIT => {
             let installed = Box::pin(ready()).await?;
             return Ok(Settled::Graded(Box::new(failed_artifact(
                 draft,

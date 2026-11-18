@@ -210,7 +210,7 @@ mod tests {
     }
 
     fn fixture() -> (BenchmarkDraft, Vec<Evaluation>, Rejection) {
-        let draft = seed_definitions()
+        let draft = crate::services::benchmarks::seeds::definitions()
             .into_iter()
             .find(|draft| draft.work_class_id == "creative")
             .unwrap();

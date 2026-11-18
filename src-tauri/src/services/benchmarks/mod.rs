@@ -128,7 +128,7 @@ pub(super) fn judge_execution_count(draft: &BenchmarkDraft) -> usize {
     judge_panel::frozen(draft, &[])
         .ok()
         .flatten()
-        .map_or(runner::MAX_JUDGES, |panel| panel.len())
+        .map_or(MAX_JUDGES, |panel| panel.len())
 }
 
 /// Whether `configuration` runs `case` at all: a repository case runs only on
@@ -1320,7 +1320,7 @@ impl BenchmarkService {
                     && attempt.session_id.is_none()
                     && attempt.host_run_id.is_none()
                     && attempt.workflow_steps.is_empty())
-                    || (attempt.phase == runner::AWAITING_JUDGES
+                    || (attempt.phase == AWAITING_JUDGES
                         && attempt.outcome.as_deref() == Some("pending_review")
                         && attempt.evidence_hash.is_some())
             }));
@@ -1339,7 +1339,7 @@ impl BenchmarkService {
                 // attempt before saving so resume never erases its output.
                 let mut waiting = self.store.attempt(&attempt.id).await?;
                 fixtures::restore_sealed_output(&self.store.root, &mut waiting).await?;
-                waiting.phase = runner::AWAITING_JUDGES.into();
+                waiting.phase = AWAITING_JUDGES.into();
                 waiting.reason = None;
                 self.store.save_attempt(&waiting).await?;
                 unfinished = true;
@@ -2087,7 +2087,7 @@ impl BenchmarkService {
         if self.store.has_definitions().await? {
             return Ok(());
         }
-        for draft in runner::seed_definitions() {
+        for draft in seeds::definitions() {
             let protected = matches!(draft.evaluator.kind.as_str(), "javascript" | "browser");
             let def = self.store.save_draft(None, None, draft).await?;
             if !protected || worker::available() {
