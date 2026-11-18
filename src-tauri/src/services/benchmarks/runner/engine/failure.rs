@@ -6,7 +6,7 @@ use super::*;
 /// Tries of one attempt refused before any answer that go back to the queue
 /// before the run stops for the operator; one more after the operator's
 /// resume settles the cell, as `refused_again` does under automatic retries.
-pub(in super::super) const PRE_ANSWER_TRIES: u32 = 3;
+const PRE_ANSWER_TRIES: u32 = 3;
 /// How long a try refused before any answer waits before the next one.
 const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
 /// What the reason of a cell refused before any answer starts with while it
@@ -640,8 +640,9 @@ impl BenchmarkService {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{blank_attempt, judge_row, request, setup};
     use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+    use std::sync::atomic::Ordering;
 
     /// A refusal before the prompt, under automatic retries, with everything
     /// else at rest.
@@ -987,5 +988,148 @@ mod tests {
         for code in ["infrastructure_failure", "cancelled", "dispatch_uncertain"] {
             assert!(!returns_to_queue(code, "preparing"), "{code}");
         }
+    }
+
+    #[tokio::test]
+    async fn workflow_tick_dispatches_children_once_and_evaluates_only_root() {
+        let (dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        draft.split = "train".into();
+        draft.workflow = Some(WorkflowSpec {
+            schema_version: 1,
+            driver_revision: "runner-workflow-test-v1".into(),
+            steps: vec![
+                WorkflowStep {
+                    id: "plan".into(),
+                    prompt: "Prepare the public plan.".into(),
+                    include_previous_output: false,
+                    scope: None,
+                },
+                WorkflowStep {
+                    id: "answer".into(),
+                    prompt: "Produce the final structured answer.".into(),
+                    include_previous_output: true,
+                    scope: None,
+                },
+            ],
+        });
+        let definition = s.store.save_draft(None, None, draft).await.unwrap();
+        let version = s.store.publish(&definition.id, 1).await.unwrap();
+        req.version_ids = vec![version.id];
+        req.repetitions = 1;
+        let run = s.start_run(req).await.unwrap();
+        s.tick().await.unwrap();
+        s.tick().await.unwrap();
+        s.tick().await.unwrap();
+        let completed = s.store.run(&run.id).await.unwrap();
+        assert_eq!(completed.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(completed.attempts.len(), 1);
+        let root = &completed.attempts[0];
+        assert_eq!(root.outcome.as_deref(), Some("pass"));
+        assert_eq!(root.evaluations.len(), 1);
+        assert_eq!(root.workflow_steps.len(), 2);
+        assert_eq!(root.usage.input, Some(20));
+        for child in &root.workflow_steps {
+            let attempt = s.store.attempt(&child.attempt_id).await.unwrap();
+            assert_eq!(attempt.phase, "terminal");
+            assert_eq!(attempt.outcome.as_deref(), Some("completed"));
+            assert!(attempt.evaluations.is_empty());
+        }
+        dir.close().await;
+    }
+
+    /// A selection no session of the run ever acknowledged is the run's own
+    /// refusal: the third cell refused stops the run for the operator, before
+    /// every remaining cell opens a session to be refused in its turn.
+    #[tokio::test]
+    async fn a_selection_refused_from_the_start_stops_at_the_third_cell() {
+        let (dir, s, fake) = setup().await;
+        fake.refused_selections.store(3, Ordering::SeqCst);
+        let mut request = serial_request(&s).await;
+        request.repetitions = 3;
+        request.max_executions = 3;
+        let run = s.start_run(request).await.unwrap();
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
+        let stopped = s.store.run(&run.id).await.unwrap();
+        assert_eq!(stopped.state, "needs_attention");
+        assert!(stopped
+            .attempts
+            .iter()
+            .all(|a| a.phase == "pending" && a.pre_answer_refusals == 1 && a.outcome.is_none()));
+        // Two wait for their next try; the third keeps the bare refusal the
+        // operator reads.
+        let waiting = stopped
+            .attempts
+            .iter()
+            .filter(|a| a.wait_until.is_some())
+            .count();
+        assert_eq!(waiting, 2);
+        assert!(stopped.attempts.iter().any(|a| a.wait_until.is_none()
+            && a.reason
+                .as_deref()
+                .is_some_and(|reason| !reason.starts_with(PRE_ANSWER_RETRIED))));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        // The operator resumed and the provider takes the selection now.
+        s.store.set_run_state(&run.id, "running").await.unwrap();
+        expire_saved_waits(&s, &run.id).await;
+        for _ in 0..5 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 3);
+        dir.close().await;
+    }
+
+    /// Beside attempts the provider did take, one cell refused again and
+    /// again stops the run at its third try, and the same refusal once more
+    /// after the operator's resume settles it.
+    #[tokio::test]
+    async fn a_cell_refused_three_times_before_dispatch_waits_for_the_operator() {
+        let (dir, s, fake) = setup().await;
+        fake.refused_selections.store(1, Ordering::SeqCst);
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        for tries in 2..=3 {
+            fake.refused_selections.store(1, Ordering::SeqCst);
+            expire_saved_waits(&s, &run.id).await;
+            for _ in 0..2 {
+                s.tick().await.unwrap();
+            }
+            let held = s.store.run(&run.id).await.unwrap();
+            assert!(held.attempts.iter().any(|a| a.pre_answer_refusals == tries));
+            assert_eq!(
+                held.state,
+                if tries < PRE_ANSWER_TRIES {
+                    "running"
+                } else {
+                    "needs_attention"
+                }
+            );
+        }
+        fake.refused_selections.store(1, Ordering::SeqCst);
+        s.store.set_run_state(&run.id, "running").await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        let settled: Vec<&Attempt> = done
+            .attempts
+            .iter()
+            .filter(|a| a.outcome.as_deref() == Some("selection_changed"))
+            .collect();
+        assert_eq!(settled.len(), 1);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
     }
 }

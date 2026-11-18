@@ -537,3 +537,248 @@ impl BenchmarkService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+    use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn a_cell_without_a_seat_waits_without_probing_the_host() {
+        let (dir, service, backend) = setup().await;
+        let mut request = serial_request(&service).await;
+        request.repetitions = 1;
+        request.max_executions = 1;
+        let run = service.start_run(request).await.unwrap();
+        let run = service.store.run(&run.id).await.unwrap();
+        let lane = crate::services::benchmarks::analysis::configuration_key(
+            &run.attempts[0].configuration,
+        );
+        // Another flight of the same configuration holds its only seat.
+        let holder = Seat {
+            id: "invented-holder",
+            lane: &lane,
+            lane_slots: 1,
+            account: "",
+            account_slots: ACCOUNT_SLOTS,
+            model: "",
+            model_slots: usize::MAX,
+        };
+        assert!(service.claim(&run.id, holder).await.is_some());
+        let mut flights = tokio::task::JoinSet::new();
+        let mut tried = std::collections::HashSet::new();
+        for _ in 0..3 {
+            service.fill(&mut flights, &mut tried).await.unwrap();
+        }
+        assert!(flights.is_empty());
+        assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 0);
+        // Once the seat frees, the cell asks the host once and starts.
+        service.release("invented-holder").await;
+        service.fill(&mut flights, &mut tried).await.unwrap();
+        assert_eq!(backend.resource_probes.load(Ordering::SeqCst), 1);
+        while flights.join_next().await.is_some() {}
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_run_flies_its_configurations_side_by_side_within_account_slots() {
+        let (dir, s, backend) = setup().await;
+        // Every account slot dispatches before any turn may finish.
+        backend
+            .gate_in_flight
+            .store(2 * ACCOUNT_SLOTS as u64, Ordering::SeqCst);
+        let run = s.start_run(wide_request(&s, &backend).await).await.unwrap();
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
+        let run = s.store.run(&run.id).await.unwrap();
+        assert_eq!(run.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 40);
+        // Every account slot dispatched before any turn could finish; full
+        // clean rounds then doubled the paces (slow start), and no more flew
+        // than the levels the turns were admitted under.
+        let most = |account: &str| {
+            run.attempts
+                .iter()
+                .filter(|a| a.configuration.account_id.as_deref() == Some(account))
+                .filter_map(|a| a.account_load.as_ref())
+                .map(|load| load.limit as usize)
+                .max()
+                .unwrap()
+        };
+        let peak = backend.peak_in_flight.load(Ordering::SeqCst) as usize;
+        assert!(peak >= 2 * ACCOUNT_SLOTS, "{peak}");
+        assert!(peak <= most("one") + most("two"), "{peak}");
+        // A configuration's own turns overlap at most as far as its account's
+        // pace allows: the run records no number of its own.
+        assert_eq!(run.request.parallelism, Some(AS_ADMITTED));
+        for a in &run.attempts {
+            let overlapping = run
+                .attempts
+                .iter()
+                .filter(|b| {
+                    b.configuration.id == a.configuration.id
+                        && b.started_at < a.finished_at
+                        && a.started_at < b.finished_at
+                })
+                .count();
+            let account = a.configuration.account_id.as_deref().unwrap();
+            assert!(overlapping <= most(account), "{overlapping}");
+        }
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_configuration_flies_its_attempts_in_parallel() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(deep_request(&s, "fake").await).await.unwrap();
+        assert_eq!(run.request.parallelism, Some(AS_ADMITTED));
+        let run = drain(&s, &run.id).await;
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 8);
+        // In parallel, never above the account's pace. How many fly at once
+        // also depends on the host's measured headroom, so a busy machine (a
+        // CI runner: 2 of 4 on 10-19) may admit fewer than the full pace.
+        let peak = backend.peak_in_flight.load(Ordering::SeqCst);
+        assert!((2..=ACCOUNT_SLOTS as u64).contains(&peak), "peak {peak}");
+        assert!(run
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        // The row notes the conditions its run flew under.
+        let data = s.query_data().await.unwrap();
+        let report =
+            crate::services::benchmarks::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows[0].parallelism, Some(AS_ADMITTED));
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn independent_grok_repository_bridges_fill_the_shared_account_slots() {
+        let (dir, s, _backend) = setup().await;
+        let mut request = deep_request(&s, "grok-acp").await;
+        request.parallelism = Some(4);
+        let mut configuration = request.configurations[0].clone();
+        configuration.execution_profile = "protected_repository".into();
+        let lane_slots = attempts_at_once(&request, &configuration) as usize;
+        let mut receivers = Vec::new();
+        // Both reasoning configurations share one account's four slots.
+        for index in 0..5 {
+            let id = format!("repository-attempt-{index}");
+            let lane = if index < 3 { "grok-low" } else { "grok-high" };
+            let seat = Seat {
+                id: &id,
+                lane,
+                lane_slots,
+                account: "grok-shared-account",
+                account_slots: ACCOUNT_SLOTS,
+                model: "",
+                model_slots: usize::MAX,
+            };
+            let claimed = s.claim("repository-run", seat).await;
+            assert_eq!(claimed.is_some(), index < ACCOUNT_SLOTS);
+            receivers.extend(claimed);
+        }
+        assert_eq!(s.active.lock().await.len(), ACCOUNT_SLOTS);
+        s.release("repository-attempt-0").await;
+        let replacement = s
+            .claim(
+                "repository-run",
+                Seat {
+                    id: "repository-attempt-4",
+                    lane: "grok-high",
+                    lane_slots,
+                    account: "grok-shared-account",
+                    account_slots: ACCOUNT_SLOTS,
+                    model: "",
+                    model_slots: usize::MAX,
+                },
+            )
+            .await;
+        assert!(replacement.is_some());
+        assert_eq!(s.active.lock().await.len(), ACCOUNT_SLOTS);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_panicking_judge_preserves_evidence_releases_its_lane_and_never_replays() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        let mut waiting = run.attempts[0].clone();
+        waiting.phase = AWAITING_JUDGES.into();
+        waiting.outcome = Some("pending_review".into());
+        waiting.output = Some(creative().evaluator.known_good);
+        waiting.evaluations.push(Evaluation {
+            id: "invented-render-marker".into(),
+            evaluator_revision: "invented".into(),
+            verdict: "rendered".into(),
+            score: None,
+            reason: "Preserved rendering".into(),
+            created_at: now(),
+            provenance: "render".into(),
+            artifacts: vec![],
+            details: Some(json!({"expectedJudges": 3})),
+            judge: None,
+            usage: None,
+        });
+        waiting.evaluations.push(Evaluation {
+            id: "invented-paid-vote".into(),
+            evaluator_revision: "invented".into(),
+            verdict: "scored".into(),
+            score: Some(0.7),
+            reason: "Preserved paid evidence".into(),
+            created_at: now(),
+            provenance: "judge".into(),
+            artifacts: vec![],
+            details: None,
+            judge: None,
+            usage: None,
+        });
+        s.store.save_attempt(&waiting).await.unwrap();
+        backend.panic_judges.store(true, Ordering::SeqCst);
+        s.tick().await.unwrap();
+        assert_eq!(s.flying(&run.id).await, 0);
+        let failed = s.store.attempt(&waiting.id).await.unwrap();
+        assert_eq!(failed.phase, "terminal");
+        assert_eq!(failed.outcome, waiting.outcome);
+        assert_eq!(failed.output, waiting.output);
+        assert_eq!(
+            serde_json::to_value(&failed.evaluations).unwrap(),
+            serde_json::to_value(&waiting.evaluations).unwrap()
+        );
+        assert!(failed.reason.as_deref().unwrap().contains("panicked"));
+        assert!(s.store.runs().await.unwrap()[0].attention.is_some());
+        backend.panic_judges.store(false, Ordering::SeqCst);
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run_state(&run.id).await.unwrap(), "needs_attention");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        // No leaked lane can hold a later pause in 'pausing'.
+        s.store.set_run_state(&run.id, "pausing").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run_state(&run.id).await.unwrap(), "paused");
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_panicking_panel_during_generation_keeps_the_sealed_answer() {
+        let (dir, s, backend) = setup().await;
+        backend.panic_judges.store(true, Ordering::SeqCst);
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let failed = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        assert_eq!(s.flying(&run.id).await, 0);
+        assert_eq!(failed.phase, "terminal");
+        assert_eq!(failed.outcome.as_deref(), Some("pending_review"));
+        assert!(failed.output.is_some());
+        assert!(failed
+            .evaluations
+            .iter()
+            .any(|e| e.provenance == "objective"));
+        s.tick().await.unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+}

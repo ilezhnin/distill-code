@@ -213,3 +213,22 @@ impl BenchmarkService {
             .find(|account| Some(account.as_str()) != current && !exhausted(run_id, account))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+
+    #[tokio::test]
+    async fn a_retried_turn_gets_a_new_owner_and_key() {
+        let (dir, s, _) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        let mut attempt = s.store.run(&run.id).await.unwrap().attempts.remove(0);
+        attempt.started_at = Some(1);
+        let (owner, key) = (turn_owner(&attempt), dispatch_key(&attempt));
+        attempt.started_at = Some(2);
+        assert_ne!(turn_owner(&attempt), owner);
+        assert_ne!(dispatch_key(&attempt), key);
+        dir.close().await;
+    }
+}

@@ -626,3 +626,205 @@ pub(in crate::services::benchmarks) fn public_task_prompt(
     }
     Ok(prompt)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+
+    #[test]
+    fn repository_pins_track_the_model_and_sandbox_but_not_unrelated_rows() {
+        let inventory =
+            json!({"models":[{"id":"m","name":"Model One"},{"id":"other","name":"Other"}]});
+        let original = repository_inventory_revision("sandbox-1", &inventory, "m");
+        let mut changed = inventory.clone();
+        changed["models"][1]["name"] = json!("New other");
+        assert_eq!(
+            original,
+            repository_inventory_revision("sandbox-1", &changed, "m")
+        );
+        changed["models"][0]["name"] = json!("Moved alias");
+        assert_ne!(
+            original,
+            repository_inventory_revision("sandbox-1", &changed, "m")
+        );
+        assert_ne!(
+            original,
+            repository_inventory_revision("sandbox-2", &inventory, "m")
+        );
+    }
+
+    #[test]
+    fn a_bridge_naming_the_1m_lane_by_its_alias_acknowledged_the_lane() {
+        use crate::services::agent_host::execution::{ObservedSelection, OwnedSession};
+        let session = |model: &str, substitutions: Vec<serde_json::Value>| OwnedSession {
+            session_id: "session".into(),
+            owner_id: "owner".into(),
+            policy_hash: "policy".into(),
+            selection: ObservedSelection {
+                model_id: Some(model.into()),
+                reasoning_effort: Some("high".into()),
+                fast_mode: Some(false),
+            },
+            substitutions,
+        };
+        let model = |applied: &str| {
+            json!({"role": "model", "requested": "opus[1m]", "applied": applied,
+                "reason": "not offered by claude-acp"})
+        };
+        // 10-31: opened on opus[1m], answered as opus.
+        let mut opus = session("opus", vec![model("opus")]);
+        acknowledge_lane("claude-acp", "opus[1m]", &mut opus);
+        assert_eq!(opus.selection.model_id.as_deref(), Some("opus[1m]"));
+        assert!(opus.substitutions.is_empty());
+        // Another model in its place is still a substitution, `default`
+        // included: declared Opus, but no context lane of it.
+        for other in ["sonnet", "default"] {
+            let mut moved = session(other, vec![model(other)]);
+            acknowledge_lane("claude-acp", "opus[1m]", &mut moved);
+            assert_eq!(moved.selection.model_id.as_deref(), Some(other));
+            assert_eq!(moved.substitutions.len(), 1, "{other}");
+        }
+        // So is an effort the lane would not take.
+        let effort =
+            json!({"role": "effort", "requested": "high", "applied": "low", "reason": "x"});
+        let mut slower = session("opus", vec![model("opus"), effort]);
+        acknowledge_lane("claude-acp", "opus[1m]", &mut slower);
+        assert_eq!(slower.substitutions.len(), 1);
+        // The lane is the harness's to declare.
+        let mut elsewhere = session("opus", vec![model("opus")]);
+        acknowledge_lane("codex-acp", "opus[1m]", &mut elsewhere);
+        assert_eq!(elsewhere.substitutions.len(), 1);
+    }
+
+    #[test]
+    fn codex_inventory_drops_ultra() {
+        let excluded = NativeProvider::Codex.excluded_efforts();
+        let row = json!({"modelId":"gpt-6-astra","reasoningEfforts":["low","medium","high","xhigh","max","ultra"]});
+        assert_eq!(
+            offered_efforts(&row, excluded),
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        let described = json!({"id":"gpt-6-sol","efforts":[{"value":"ultra"},{"value":"low"}]});
+        assert_eq!(offered_efforts(&described, excluded), ["low"]);
+        assert_eq!(
+            offered_efforts(&row, NativeProvider::Claude.excluded_efforts()).len(),
+            6
+        );
+        assert!(offered_efforts(&json!({"modelId":"m"}), excluded).is_empty());
+    }
+
+    #[test]
+    fn fast_mode_is_refused_and_an_acknowledged_none_is_off() {
+        // Owner, 10-18: no fast mode anywhere, for candidates, judges and
+        // campaign lanes alike.
+        let mut sonnet: Configuration = serde_json::from_value(json!({"id":"j",
+            "providerId":"claude-acp","accountId":"a","modelId":"sonnet","effort":"high",
+            "fastMode":false,"billingMode":"subscription","executionProfile":"native_text"}))
+        .unwrap();
+        assert_eq!(profile_refusal(&sonnet), None);
+        let mut fast = sonnet.clone();
+        fast.fast_mode = Some(true);
+        assert_eq!(profile_refusal(&fast).as_deref(), Some(FAST_MODE_REFUSED));
+        // A Claude session acknowledges no fast mode for Sonnet: that is off,
+        // and matches a seat pinned to off, never one asking for on.
+        let mut acknowledged = sonnet.clone();
+        acknowledged.fast_mode = None;
+        assert!(matches_selection(&sonnet, &acknowledged));
+        assert!(!matches_selection(&fast, &acknowledged));
+        acknowledged.fast_mode = Some(true);
+        assert!(!matches_selection(&sonnet, &acknowledged));
+        sonnet.fast_mode = None;
+        assert!(matches_selection(&sonnet, &acknowledged));
+    }
+
+    #[test]
+    fn codex_configurations_refuse_ultra_and_need_an_account() {
+        let configuration = |effort: Option<&str>, account: Option<&str>| -> Configuration {
+            serde_json::from_value(json!({"id":"c","providerId":"codex-acp","accountId":account,
+                "modelId":"gpt-6-sol","effort":effort,"billingMode":"subscription","executionProfile":"native_text"}))
+            .unwrap()
+        };
+        assert_eq!(
+            profile_refusal(&configuration(Some("max"), Some("a"))),
+            None
+        );
+        assert_eq!(
+            profile_refusal(&configuration(Some("ultra"), Some("a"))).as_deref(),
+            Some(
+                "effort 'ultra' delegates to subagents and is not a single-model no-tool configuration"
+            )
+        );
+        assert_eq!(
+            profile_refusal(&configuration(None, None)).as_deref(),
+            Some("Choose a managed account")
+        );
+        // Grok and Kimi run on their CLI sign-in identities.
+        let mut grok = configuration(Some("xhigh"), Some("cli-login-grok-acp"));
+        grok.provider_id = "grok-acp".into();
+        assert_eq!(profile_refusal(&grok), None);
+        let mut kimi = configuration(Some("max"), Some("cli-login-kimi-acp"));
+        kimi.provider_id = "kimi-acp".into();
+        assert_eq!(profile_refusal(&kimi), None);
+        kimi.account_id = None;
+        assert_eq!(
+            profile_refusal(&kimi).as_deref(),
+            Some("Choose the CLI sign-in")
+        );
+        kimi.account_id = Some(String::new());
+        assert_eq!(
+            profile_refusal(&kimi).as_deref(),
+            Some("Choose the CLI sign-in")
+        );
+        let mut unknown = configuration(None, Some("a"));
+        unknown.provider_id = "copilot-acp".into();
+        assert_eq!(
+            profile_refusal(&unknown).as_deref(),
+            Some("This provider/account has no verified native text execution policy")
+        );
+        unknown.account_id = None;
+        assert_eq!(
+            profile_refusal(&unknown).as_deref(),
+            Some("This provider/account has no verified native text execution policy")
+        );
+        // Kimi's, Codex's and Grok's profiles have passed their policy
+        // probes (NativeProvider::admission_issue covers one that has not).
+        kimi.account_id = Some("cli-login-kimi-acp".into());
+        assert_eq!(native_refusal(&kimi), None);
+        let mut codex = configuration(Some("max"), Some("a"));
+        codex.provider_id = "codex-acp".into();
+        assert_eq!(native_refusal(&codex), None);
+        assert_eq!(native_refusal(&grok), None);
+        let mut claude = configuration(Some("high"), Some("a"));
+        claude.provider_id = "claude-acp".into();
+        assert_eq!(native_refusal(&claude), None);
+        // An inventory without an account asks for what the provider uses.
+        assert_eq!(account_refusal("grok-acp"), "Choose the CLI sign-in");
+        assert_eq!(account_refusal("kimi-acp"), "Choose the CLI sign-in");
+        assert_eq!(account_refusal("codex-acp"), "Choose a managed account");
+    }
+
+    #[tokio::test]
+    async fn the_inventory_never_offers_the_cli_default_effort() {
+        let claude = NativeProvider::Claude.excluded_efforts();
+        let row = json!({"modelId":"sonnet","reasoningEfforts":["default","low","high","max"]});
+        assert_eq!(offered_efforts(&row, claude), ["low", "high", "max"]);
+        let described = json!({"id":"opus","efforts":[{"value":"default"},{"value":"xhigh"}]});
+        assert_eq!(offered_efforts(&described, claude), ["xhigh"]);
+        // A model whose only entry is the CLI's default has no effort control.
+        let haiku = json!({"modelId":"haiku","reasoningEfforts":["default"]});
+        assert!(offered_efforts(&haiku, claude).is_empty());
+        // The fake models have none either, and leave the effort unset.
+        let (dir, s, _) = setup().await;
+        for model in s
+            .backend
+            .inventory("fake", Some("isolated"), false)
+            .await
+            .unwrap()
+        {
+            assert!(model.efforts.is_empty());
+            assert_eq!(model.configuration.effort, None);
+        }
+        dir.close().await;
+    }
+}

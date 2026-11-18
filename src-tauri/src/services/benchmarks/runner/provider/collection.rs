@@ -4,11 +4,7 @@ use super::*;
 /// A repository answer comes from the stopped working copy, never the agent's
 /// final message. A collection error cannot masquerade as an empty patch.
 #[cfg(test)]
-pub(in super::super) async fn collect_repository(
-    attempt: &mut Attempt,
-    id: &str,
-    cap: u64,
-) -> Result<()> {
+async fn collect_repository(attempt: &mut Attempt, id: &str, cap: u64) -> Result<()> {
     collect_repository_until(attempt, id, cap, None).await
 }
 
@@ -275,10 +271,7 @@ pub(in super::super) async fn settle_session_limit(
     Some(json!(verdict))
 }
 
-pub(in super::super) fn apply_session_limit(
-    attempt: &mut Attempt,
-    verdict: &sandbox::SessionVerdict,
-) {
+fn apply_session_limit(attempt: &mut Attempt, verdict: &sandbox::SessionVerdict) {
     if attempt.outcome.as_deref() != Some("infrastructure_failure") {
         return;
     }
@@ -327,4 +320,197 @@ pub(in super::super) fn repository_collection_failure(
                 format!("{reason}; {diagnostic}")
             }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+
+    #[test]
+    fn a_session_s_own_memory_ceiling_on_the_candidate_s_command_is_its_budget() {
+        // A Grok session (10-18): the session's own memory.max killed the
+        // candidate's python3, the bridge died with the leaf, and the turn
+        // ended as an infrastructure failure the broker's verdict corrects.
+        let row = judge_row("sonnet");
+        let mut attempt = crate::services::benchmarks::pending_attempt(
+            "invented-run",
+            "invented-version",
+            &row,
+            0,
+        );
+        attempt.outcome = Some("infrastructure_failure".into());
+        attempt.reason = Some(r#"{"code":-32603,"message":"bridge exited"}"#.into());
+        let verdict = sandbox::SessionVerdict {
+            candidate_limit: "memory".into(),
+            victim: Some("python3".into()),
+        };
+        apply_session_limit(&mut attempt, &verdict);
+        assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
+        let reason = attempt.reason.as_deref().unwrap();
+        assert!(
+            reason.contains("(python3) passed the session's own memory ceiling"),
+            "{reason}"
+        );
+        assert!(reason.contains("bridge exited"), "{reason}");
+        // Only an infrastructure failure is the verdict's to settle.
+        for outcome in ["completed", "budget_timeout", "execution_violation"] {
+            attempt.outcome = Some(outcome.into());
+            attempt.reason = None;
+            apply_session_limit(&mut attempt, &verdict);
+            assert_eq!(attempt.outcome.as_deref(), Some(outcome));
+            assert!(attempt.reason.is_none());
+        }
+        assert_eq!(
+            json!(verdict),
+            json!({"candidateLimit": "memory", "victim": "python3"})
+        );
+    }
+
+    #[test]
+    fn the_session_admission_is_sealed_with_its_attempt_once() {
+        let row = judge_row("sonnet");
+        let mut attempt = crate::services::benchmarks::pending_attempt(
+            "invented-run",
+            "invented-version",
+            &row,
+            0,
+        );
+        let admission: sandbox::Admission = serde_json::from_value(json!({
+            "heavyLanes": 3, "lane": "heavy", "competing": {"repository": 2},
+            "competingHeavy": 2, "reservedMemory": 12_u64 << 30, "reservedCpu": 4,
+            "memoryCurrent": 9_u64 << 30, "guestLoad": [4.0, 3.5, 2.0], "guestCpus": 16,
+            "guestMemAvailable": 20_u64 << 30, "hostAvailableRam": 30_u64 << 30,
+            "hostAvailableCommit": 18_u64 << 30, "hostCpuBusy": 0.5,
+        }))
+        .unwrap();
+        sandbox::record_session_admission("invented-sealed-sandbox", admission.clone());
+        let mut evidence = json!({"turnEvents": []});
+        record_sandbox_admission(&mut attempt, &mut evidence, Some("invented-sealed-sandbox"));
+        assert_eq!(attempt.sandbox_admission.as_ref(), Some(&admission));
+        assert_eq!(evidence["sandboxAdmission"]["heavyLanes"], 3);
+        assert_eq!(evidence["sandboxAdmission"]["competingHeavy"], 2);
+        assert_eq!(evidence["sandboxAdmission"]["hostCpuBusy"], 0.5);
+        // The record belongs to one attempt; a later seal finds nothing.
+        let mut later = crate::services::benchmarks::pending_attempt(
+            "invented-run",
+            "invented-version",
+            &row,
+            1,
+        );
+        let mut empty = json!({});
+        record_sandbox_admission(&mut later, &mut empty, Some("invented-sealed-sandbox"));
+        assert!(later.sandbox_admission.is_none());
+        assert!(empty.get("sandboxAdmission").is_none());
+    }
+
+    /// A sealed attempt whose sandbox will not clean stays armed for the
+    /// guard's drop and the reaper, and the clean's failure is no error of
+    /// the attempt, so it keeps its score and its run goes on.
+    #[tokio::test]
+    async fn a_sandbox_that_will_not_clean_after_sealing_costs_no_score() {
+        // An id the guard's drop never sends to the sandbox.
+        let id = "invented/never-sent";
+        let mut cleanup = sandbox::Cleanup(Some(id.into()));
+        clean_sealed(&mut cleanup, |_| async {
+            Err(std::io::Error::other("bench-clean timed out after 25 s"))
+        })
+        .await;
+        assert_eq!(cleanup.0.as_deref(), Some(id));
+        clean_sealed(&mut cleanup, |_| async { Ok(()) }).await;
+        assert!(cleanup.0.is_none());
+    }
+
+    /// A sealed turn whose answer could not be collected before its deadline
+    /// because the sandbox had no room is unscored infrastructure, never the
+    /// model's timeout; a deadline the answer itself ran out keeps its score.
+    #[test]
+    fn collection_that_found_no_room_before_its_deadline_is_unscored() {
+        let row = judge_row("sonnet");
+        let mut attempt = crate::services::benchmarks::pending_attempt(
+            "invented-run",
+            "invented-version",
+            &row,
+            0,
+        );
+        attempt.outcome = Some("completed".into());
+        repository_collection_failure(
+            &mut attempt,
+            &sandbox_setup_error(
+                std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "resource_busy: benchmark preparation queue expired before worker startup",
+                ),
+                Some(1),
+            ),
+        );
+        assert_eq!(attempt.outcome.as_deref(), Some("infrastructure_failure"));
+        attempt.phase = "terminal".into();
+        assert!(!crate::services::benchmarks::analysis::is_measured(
+            &attempt
+        ));
+        let mut timed = crate::services::benchmarks::pending_attempt(
+            "invented-run",
+            "invented-version",
+            &row,
+            1,
+        );
+        timed.outcome = Some("completed".into());
+        repository_collection_failure(
+            &mut timed,
+            &BenchmarkError::new("budget_timeout", "Native sandbox deadline expired"),
+        );
+        assert_eq!(timed.outcome.as_deref(), Some("budget_timeout"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the provisioned distill-bench WSL distribution"]
+    async fn repository_answer_is_the_stopped_patch_and_never_the_final_message() {
+        sandbox::ready().await.unwrap();
+        let id = format!("collect-{}", uuid::Uuid::new_v4());
+        let mut cleanup = sandbox::Cleanup(Some(id.clone()));
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "answer.txt", b"old\n".as_slice())
+            .unwrap();
+        sandbox::copy(&id, &archive.into_inner().unwrap())
+            .await
+            .unwrap();
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":{"id":"c","providerId":"codex-acp","accountId":"a","modelId":"m","billingMode":"subscription","executionProfile":"protected_repository"},
+            "repetition":0,"phase":"collecting","outcome":"completed","output":"I changed everything",
+            "usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],"evaluations":[]})).unwrap();
+        collect_repository(&mut attempt, &id, 4096).await.unwrap();
+        assert_eq!(attempt.output.as_deref(), Some(""));
+        let result = sandbox::command("/usr/local/sbin/bench-run", &["session", &id, "--", "/bin/sh", "-c",
+            "printf 'new\\n' >answer.txt; setsid sh -c 'sleep 5; echo late >>answer.txt' </dev/null >/dev/null 2>&1 &"])
+            .output().await.unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        collect_repository(&mut attempt, &id, 4096).await.unwrap();
+        let patch = attempt.output.clone().unwrap();
+        assert!(patch.contains("+new"));
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        collect_repository(&mut attempt, &id, 4096).await.unwrap();
+        assert_eq!(
+            attempt.output.as_deref(),
+            Some(patch.as_str()),
+            "detached child survived collection"
+        );
+        collect_repository(&mut attempt, &id, 4).await.unwrap();
+        assert_eq!(attempt.outcome.as_deref(), Some("budget_reached"));
+        sandbox::clean(&id).await.unwrap();
+        cleanup.0 = None;
+        assert!(
+            collect_repository(&mut attempt, &id, 4096).await.is_err(),
+            "a missing recovery copy is not an empty answer"
+        );
+    }
 }

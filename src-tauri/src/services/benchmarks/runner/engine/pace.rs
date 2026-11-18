@@ -125,10 +125,54 @@ const HOST_CPU_LINE: f64 = 0.70;
 /// line: by the 30-second mean its admission recorded, which the broker's
 /// line compares too, or, on admissions from before the mean was kept, by
 /// its one-second sample.
-pub(in super::super) fn host_past_cpu_line(attempt: &Attempt) -> bool {
+fn host_past_cpu_line(attempt: &Attempt) -> bool {
     attempt
         .sandbox_admission
         .as_ref()
         .and_then(|admission| admission.host_cpu_mean.or(admission.host_cpu_busy))
         .is_some_and(|busy| busy >= HOST_CPU_LINE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+
+    #[test]
+    fn a_turn_admitted_past_the_hosts_cpu_line_teaches_the_pace_no_speed() {
+        // 10-18: our own load slowing the streaming must never read as the
+        // provider slowing the account.
+        let row = judge_row("sonnet");
+        let mut attempt = crate::services::benchmarks::pending_attempt(
+            "invented-run",
+            "invented-version",
+            &row,
+            0,
+        );
+        assert!(!host_past_cpu_line(&attempt));
+        let admitted = |busy: f64| -> sandbox::Admission {
+            serde_json::from_value(json!({
+                "heavyLanes": 3, "lane": "heavy", "competing": {}, "competingHeavy": 0,
+                "reservedMemory": 0, "reservedCpu": 0, "memoryCurrent": 0,
+                "guestLoad": [0.0, 0.0, 0.0], "guestCpus": 16, "guestMemAvailable": 0,
+                "hostAvailableRam": 0, "hostAvailableCommit": 0, "hostCpuBusy": busy,
+            }))
+            .unwrap()
+        };
+        attempt.sandbox_admission = Some(admitted(0.69));
+        assert!(!host_past_cpu_line(&attempt));
+        attempt.sandbox_admission = Some(admitted(0.70));
+        assert!(host_past_cpu_line(&attempt));
+        // The 30-second mean, the broker's own window, decides where it was
+        // recorded: a quiet second inside a busy stretch is still busy, and a
+        // spike inside a quiet one is not.
+        let mut busy_stretch = admitted(0.2);
+        busy_stretch.host_cpu_mean = Some(0.8);
+        attempt.sandbox_admission = Some(busy_stretch);
+        assert!(host_past_cpu_line(&attempt));
+        let mut spike = admitted(0.95);
+        spike.host_cpu_mean = Some(0.5);
+        attempt.sandbox_admission = Some(spike);
+        assert!(!host_past_cpu_line(&attempt));
+    }
 }

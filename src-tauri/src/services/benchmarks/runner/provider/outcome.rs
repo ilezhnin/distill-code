@@ -79,7 +79,7 @@ pub(in super::super) fn runtime_output_cap_stop(
 /// attempt is a budget failure scored zero, like an answer past the published
 /// cap, never an unscored infrastructure failure. The CLI's limit belongs to
 /// its pinned runtime, which every inventory revision already names.
-pub(in super::super) fn exceeded_output_cap(error: &Value) -> bool {
+fn exceeded_output_cap(error: &Value) -> bool {
     // Grok Build names its stop by kind: "response truncated by max_tokens".
     let kind = |path: &str| error.pointer(path).and_then(Value::as_str);
     if [
@@ -121,7 +121,7 @@ pub(in super::super) fn exceeded_output_cap(error: &Value) -> bool {
 /// provider never took, a usage limit and a refusal of the account or of
 /// the model are none. Claude's, Kimi's and a GLM answer's refusals end the
 /// turn with ACP's `refusal` stop instead, an answer graded like any other.
-pub(in super::super) fn refused_task(error: &Value) -> bool {
+fn refused_task(error: &Value) -> bool {
     let data = &error["data"];
     let failure = &data["sessionFailure"];
     let said = |text: &Value| {
@@ -248,5 +248,165 @@ pub(in super::super) fn terminal_error_outcome(error: &Value) -> &'static str {
         Some("dispatch_uncertain") => "dispatch_uncertain",
         Some("policy_violation" | "capability_missing") => "unsupported",
         _ => "infrastructure_failure",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_answer_past_the_providers_output_cap_is_a_scored_budget_failure() {
+        // The live Claude Code receipt (S7, 2026-10-18), with its account id.
+        let capped = json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+            "errorKind":"provider_failure","promptNotAccepted":false,"sessionFailure":{
+            "actions":["new_session"],"category":"limit","severity":"error",
+            "title":"API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."}},
+            "message":"API Error: Claude's response exceeded the 32000 output token maximum."});
+        assert!(exceeded_output_cap(&capped));
+        // The live Grok Build receipt (2026-10).
+        let grok = json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+            "error_kind":"max_tokens_truncation","message":"response truncated by max_tokens",
+            "promptNotAccepted":false},"message":"response truncated by max_tokens"});
+        assert_eq!(
+            terminal_outcome(&grok, "grok-4.7-build-fast"),
+            "budget_reached"
+        );
+        assert_eq!(terminal_outcome(&capped, "haiku"), "budget_reached");
+        // A usage limit stays a quota stop, and other limits stay infrastructure.
+        let session_limit = json!({"code":-32603,"data":{"dispatchStarted":true,"errorKind":"quota_exhausted",
+            "sessionFailure":{"actions":[],"category":"limit","severity":"error",
+            "title":"You've hit your session limit"}},"message":"You've hit your session limit"});
+        assert!(!exceeded_output_cap(&session_limit));
+        let other = json!({"code":-32603,"message":"exceeded the output token maximum"});
+        assert!(!exceeded_output_cap(&other));
+        assert_eq!(terminal_outcome(&other, "haiku"), "infrastructure_failure");
+    }
+
+    #[test]
+    fn a_task_the_providers_safeguards_refuse_is_the_candidates_failed_answer() {
+        // The two live Codex receipts (2026-11-14), with their account id.
+        let refusal = |category: &str, words: &str| {
+            json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+                "errorKind":"provider_failure","promptNotAccepted":false,"sessionFailure":{
+                "actions":[],"category":category,"id":"invented:error","revision":1,
+                "severity":"error","title":words}},"message":words,"nativeExecutionMs":11420})
+        };
+        let cyber = refusal(
+            "request",
+            "This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.",
+        );
+        let policy = refusal(
+            "service",
+            "Invalid prompt: your prompt was flagged as potentially violating our usage policy.",
+        );
+        for error in [&cyber, &policy] {
+            assert!(refused_task(error));
+            assert_eq!(terminal_outcome(error, "gpt-6-sol"), "fail");
+        }
+        // The refusal scores the attempt 0 and measures its cell.
+        let configuration: Configuration = serde_json::from_value(json!({
+            "id":"invented","providerId":"codex-acp","accountId":"invented","modelId":"gpt-6-sol",
+            "effort":"high","fastMode":false,"billingMode":"subscription",
+            "executionProfile":"native_text","inventoryRevision":"invented"}))
+        .unwrap();
+        let mut attempt =
+            crate::services::benchmarks::pending_attempt("run", "version", &configuration, 0);
+        attempt.phase = "terminal".into();
+        attempt.outcome = Some(terminal_outcome(&cyber, "gpt-6-sol").into());
+        attempt.reason = Some(cyber.to_string());
+        assert_eq!(
+            crate::services::benchmarks::analysis::score(&attempt),
+            Some(0.0)
+        );
+        // Another failed request is no refusal of the task, nor is a turn
+        // the provider never took, a usage limit, or the same words
+        // outside a provider's failure.
+        let other = refusal("request", "The request could not be completed");
+        let mut withdrawn = cyber.clone();
+        withdrawn["data"]["promptNotAccepted"] = json!(true);
+        let mut unsent = cyber.clone();
+        unsent["data"]["dispatchStarted"] = json!(false);
+        let mut limit = cyber.clone();
+        limit["data"]["errorKind"] = json!("quota_exhausted");
+        let words = json!({"code":-32603,"message":"This content was flagged"});
+        for error in [&other, &withdrawn, &unsent, &limit, &words] {
+            assert!(!refused_task(error), "{error}");
+        }
+        assert_eq!(
+            terminal_outcome(&other, "gpt-6-sol"),
+            "infrastructure_failure"
+        );
+    }
+
+    #[test]
+    fn a_task_zais_safeguards_refuse_is_the_candidates_failed_answer() {
+        // Z.ai's 1301 as OpenCode forwards it: its words as the error, the
+        // host's flags beside OpenCode's own, often with nothing streamed.
+        let opencode = |words: &str, started: bool| {
+            json!({"code":-32603,"message":words,"data":{"service":"session",
+                "errorName":"APIError","accountId":"invented",
+                "dispatchStarted":started,"promptNotAccepted":!started}})
+        };
+        let english = "System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.";
+        let chinese = "系统检测到输入或生成内容可能包含不安全或敏感内容，请您避免输入易产生敏感内容的提示语，感谢您的配合。";
+        for words in [english, chinese] {
+            for started in [true, false] {
+                let error = opencode(words, started);
+                assert!(refused_task(&error), "{error}");
+                assert_eq!(terminal_outcome(&error, "zai-coding-plan/glm-5.3"), "fail");
+            }
+        }
+        // Z.ai's other refusals (an exhausted balance, a rate limit, a bad
+        // parameter) are not of the task.
+        for words in [
+            "Insufficient balance or no resource package. Please recharge.",
+            "Rate limit reached for requests",
+            "Parameter `model` is invalid. Please check the documentation.",
+        ] {
+            assert!(!refused_task(&opencode(words, true)), "{words}");
+        }
+    }
+
+    #[test]
+    fn a_task_xais_safeguards_refuse_is_the_candidates_failed_answer() {
+        // The live Grok Build receipt (2026-11-16), its usage left out.
+        let grok = |status: u16, words: &str| {
+            json!({"code":-32603,"data":{"accountId":"invented","dispatchStarted":true,
+                "http_status":status,
+                "message":format!("API error (status {status} Forbidden): {words}"),
+                "promptNotAccepted":false},"message":"Internal error","nativeExecutionMs":3263})
+        };
+        let declined = grok(
+            403,
+            "permission-denied: I'm sorry, I can't help with that request.",
+        );
+        let curly = grok(
+            403,
+            "permission-denied: I\u{2019}m sorry, I can\u{2019}t help with that request.",
+        );
+        for error in [&declined, &curly] {
+            assert!(refused_task(error), "{error}");
+            assert_eq!(terminal_outcome(error, "grok-4.5"), "fail");
+        }
+        // A 403 that refuses the account or the model, a refusal the API
+        // never answered as a 403, a turn never sent and one withdrawn are
+        // none: they stay out of the score.
+        let account = grok(
+            403,
+            "permission-denied: this team cannot use the model grok-4.5",
+        );
+        let other_status = grok(
+            500,
+            "permission-denied: I'm sorry, I can't help with that request.",
+        );
+        let mut unsent = declined.clone();
+        unsent["data"]["dispatchStarted"] = json!(false);
+        let mut withdrawn = declined.clone();
+        withdrawn["data"]["promptNotAccepted"] = json!(true);
+        for error in [&account, &other_status, &unsent, &withdrawn] {
+            assert!(!refused_task(error), "{error}");
+            assert_ne!(terminal_outcome(error, "grok-4.5"), "fail", "{error}");
+        }
     }
 }

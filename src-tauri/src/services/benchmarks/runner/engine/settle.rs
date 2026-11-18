@@ -266,3 +266,25 @@ impl BenchmarkService {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A check or browser job the candidate's own code drove past its own
+    /// ceiling is the answer past its budget, scored 0; any other evaluator
+    /// failure stays unscored.
+    #[test]
+    fn a_candidate_past_its_jobs_own_ceiling_is_scored_like_any_budget() {
+        let limit = BenchmarkError::new(CANDIDATE_LIMIT, "past the job's memory ceiling");
+        assert_eq!(evaluation_failure_outcome(&limit), "budget_reached");
+        for code in [
+            "infrastructure_failure",
+            "evaluation_error",
+            "capability_missing",
+        ] {
+            let error = BenchmarkError::new(code, "invented");
+            assert_eq!(evaluation_failure_outcome(&error), "evaluation_error");
+        }
+    }
+}

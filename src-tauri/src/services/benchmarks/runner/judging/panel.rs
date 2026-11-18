@@ -532,3 +532,177 @@ impl PanelJudges for NativePanel<'_, '_> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+    use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn manifest_failure_never_admits_work() {
+        let (dir, s, backend) = setup().await;
+        let req = request(&s).await;
+        tokio::fs::write(dir.path().join("runs"), "blocked directory")
+            .await
+            .unwrap();
+        assert!(s.start_run(req).await.is_err());
+        assert!(s.store.all_runs().await.unwrap().is_empty());
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_panel_stops_paying_once_its_batch_cannot_settle() {
+        use JudgeAnswer::{Busy, NoVote, Vote};
+        let judges: Vec<(usize, Configuration)> = ["opus[1m]", "haiku", "claude-opus-4-8"]
+            .into_iter()
+            .map(judge_row)
+            .enumerate()
+            .collect();
+        let run = |answers: Vec<JudgeAnswer>, halt_after: Option<usize>, votes: usize| {
+            let judges = judges.clone();
+            async move {
+                let mut panel = ScriptedPanel {
+                    answers,
+                    asked: Vec::new(),
+                    halt_after,
+                };
+                // Every judge asked before a stop cast a valid vote.
+                let end = ask_panel(&judges[votes..], 3, votes, &mut panel)
+                    .await
+                    .unwrap();
+                (end, panel.asked)
+            }
+        };
+        // The first abstention ends the batch: nobody else is asked.
+        assert_eq!(
+            run(vec![NoVote, Vote, Vote], None, 0).await,
+            ((PanelEnd::Incomplete, 0), vec![0])
+        );
+        assert_eq!(
+            run(vec![Vote, NoVote, Vote], None, 0).await,
+            ((PanelEnd::Incomplete, 1), vec![0, 1])
+        );
+        assert_eq!(
+            run(vec![Vote, Vote, Vote], None, 0).await,
+            ((PanelEnd::Asked, 3), vec![0, 1, 2])
+        );
+        // A stop leaves the rest for the run; a resumed batch asks only them.
+        assert_eq!(
+            run(vec![Vote, Vote, Vote], Some(1), 0).await,
+            ((PanelEnd::Stopped, 1), vec![0])
+        );
+        assert_eq!(
+            run(vec![Vote, Vote, Vote], None, 1).await,
+            ((PanelEnd::Asked, 3), vec![1, 2])
+        );
+        // A judge whose account turned busy ends the pass without an answer.
+        assert_eq!(
+            run(vec![Vote, Busy, Vote], None, 0).await,
+            ((PanelEnd::Busy, 1), vec![0, 1])
+        );
+    }
+
+    #[test]
+    fn resumed_judging_uses_the_best_batch_and_a_new_key_without_repaying_valid_seats() {
+        let panel: Vec<_> = ["opus[1m]", "haiku", "claude-opus-4-8"]
+            .into_iter()
+            .map(judge_row)
+            .collect();
+        let marker = |id: &str| {
+            json!({"id":id,"evaluatorRevision":"1","verdict":"rendered",
+            "score":null,"reason":"","createdAt":1,"provenance":"render",
+            "artifacts":[{"kind":"text","path":"invented.txt","hash":"invented","label":"Response"}],
+            "details":{"judgeBatchId":id,"expectedJudges":3,"protocol":{"panel":panel}}})
+        };
+        let answer = |id: &str, batch: &str, seat: usize, valid: bool| {
+            json!({"id":id,"evaluatorRevision":"1",
+            "verdict":if valid {"judged"} else {"abstained"},"score":if valid {Some(0.8)} else {None},
+            "reason":"","createdAt":2,"provenance":if valid {"judge"} else {"judge_failure"},
+            "artifacts":[],"judge":panel[seat],"details":{"judgeBatchId":batch,"usageComplete":true}})
+        };
+        let mut attempt: Attempt = serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+            "configuration":panel[0],"repetition":0,"phase":"terminal","outcome":"pending_review",
+            "usage":TokenUsage::default(),"eventCursor":0,"evaluations":[marker("older"),
+                answer("good-0","older",0,true),answer("good-1","older",1,true),answer("bad-2","older",2,false),
+                marker("newer"),answer("bad-0","newer",0,false)]})).unwrap();
+        let before = attempt.evaluations.clone();
+        let open = open_batch(&attempt.evaluations).unwrap();
+        assert_eq!(open.id, "older");
+        assert_eq!(
+            seat_samples(&open.panel, 1, &open.asked),
+            vec![(2, panel[2].clone())]
+        );
+        assert_eq!(judge_call_index(&attempt, "older", 2, &panel[2]), 5);
+        insert_judge_evaluation(
+            &mut attempt,
+            "older",
+            serde_json::from_value(answer("retry", "older", 2, true)).unwrap(),
+        );
+        assert_eq!(attempt.evaluations[4].id, "retry");
+        assert_eq!(attempt.evaluations[5].id, "newer");
+        assert_eq!(
+            crate::services::benchmarks::analysis::score(&attempt),
+            Some(0.8)
+        );
+        attempt.evaluations.retain(|e| e.id != "retry");
+        assert_eq!(
+            serde_json::to_value(&attempt.evaluations).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+        attempt.evaluations[1].details.as_mut().unwrap()["inFlight"] = json!(true);
+        assert_ne!(open_batch(&attempt.evaluations).unwrap().id, "older");
+    }
+
+    #[test]
+    fn resume_never_mixes_votes_from_different_scoring_protocols() {
+        let panel = vec![judge_row("sonnet"), judge_row("haiku")];
+        let marker = |id: &str, prompt: &str| -> Evaluation {
+            serde_json::from_value(json!({"id":id,"evaluatorRevision":"1","verdict":"rendered",
+                "reason":"","createdAt":1,"provenance":"render",
+                "artifacts":[{"kind":"text","path":"invented.txt","hash":"sealed","label":"Response"}],
+                "details":{"judgeBatchId":id,"expectedJudges":2,
+                    "protocol":{"panel":panel,"prompt":prompt,"renderer":"text"}}}))
+            .unwrap()
+        };
+        let vote: Evaluation = serde_json::from_value(json!({"id":"vote","evaluatorRevision":"1",
+            "verdict":"judged","score":0.8,"reason":"","createdAt":2,"provenance":"judge",
+            "judge":panel[0],"details":{"judgeBatchId":"old","usageComplete":true}}))
+        .unwrap();
+        let mut evaluations = vec![marker("old", "old rules"), vote];
+        let before = serde_json::to_value(&evaluations).unwrap();
+        assert!(compatible_open_batch(&evaluations, "current rules", "text").is_none());
+        assert_eq!(serde_json::to_value(&evaluations).unwrap(), before);
+        evaluations.push(marker("current", "current rules"));
+        // The old batch has more votes but those votes used different rules.
+        let open = compatible_open_batch(&evaluations, "current rules", "text").unwrap();
+        assert_eq!(open.id, "current");
+        assert!(open.asked.is_empty());
+        assert_eq!(seat_samples(&open.panel, 1, &open.asked).len(), 2);
+        assert!(compatible_open_batch(&evaluations, "current rules", "other renderer").is_none());
+        let old = compatible_open_batch(&evaluations, "old rules", "text").unwrap();
+        assert_eq!(old.asked, vec![panel[0].clone()]);
+    }
+
+    #[tokio::test]
+    async fn saved_judge_evidence_refuses_changed_or_oversized_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("rendering.txt");
+        let bytes = b"invented evidence";
+        tokio::fs::write(&path, bytes).await.unwrap();
+        let open = OpenBatch {
+            id: "invented-batch".into(),
+            panel: Vec::new(),
+            asked: Vec::new(),
+            expected: 0,
+            rendering: path.to_string_lossy().into_owned(),
+            rendering_hash: fixtures::hash(bytes),
+        };
+        assert_eq!(saved_rendering(&open, true, 64).await.unwrap(), bytes);
+        assert!(saved_rendering(&open, true, 4).await.is_err());
+        tokio::fs::write(&path, b"changed evidence").await.unwrap();
+        assert!(saved_rendering(&open, true, 64).await.is_err());
+        assert!(saved_rendering(&open, false, 64).await.is_err());
+    }
+}

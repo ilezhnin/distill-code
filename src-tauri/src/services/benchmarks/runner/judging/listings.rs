@@ -407,3 +407,471 @@ impl NativeBackend {
         Ok(inventory)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+    use std::sync::atomic::Ordering;
+
+    /// A test added to a run inside its window joins that run: the sitting
+    /// grows and goes on, no second run starts beside it, and what the run
+    /// had measured stands.
+    #[tokio::test]
+    async fn a_run_inside_its_window_grows_by_the_tests_added_to_it() {
+        let (dir, s, backend) = setup().await;
+        let req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        let run = s.start_run(req).await.unwrap();
+        for attempt in &run.attempts {
+            s.store
+                .save_attempt(&settle(attempt, "pass"))
+                .await
+                .unwrap();
+        }
+        s.store.set_run_state(&run.id, "completed").await.unwrap();
+        // Complete on every test it planned, the run has nothing to resume.
+        let refused = s.control(&run.id, "resume").await.unwrap_err();
+        assert_eq!(refused.code, "validation");
+        let second = second_case(&s).await;
+        let grown = s
+            .extend_run(&run.id, std::slice::from_ref(&second), &[])
+            .await
+            .unwrap();
+        assert_eq!(grown.state, "running");
+        assert_eq!(
+            grown.request.version_ids,
+            vec![first.clone(), second.clone()]
+        );
+        assert_eq!(grown.attempts.len(), 4);
+        assert!(grown
+            .attempts
+            .iter()
+            .filter(|a| a.version_id == second)
+            .all(|a| a.phase == "pending"));
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert!(done
+            .attempts
+            .iter()
+            .filter(|a| a.version_id == first)
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        assert_eq!(
+            done.attempts
+                .iter()
+                .filter(|a| a.version_id == second
+                    && crate::services::benchmarks::analysis::score(a).is_some())
+                .count(),
+            2
+        );
+        // The same test again adds nothing and the run is complete.
+        let again = s.extend_run(&run.id, &[second], &[]).await.unwrap_err();
+        assert_eq!(again.message, "Every case of this run is complete");
+        assert_eq!(s.store.run(&run.id).await.unwrap().attempts.len(), 4);
+        dir.close().await;
+    }
+
+    /// Once a run's window closed it is final: nothing resumes it, and the
+    /// runner bakes it, keeping the cells measured whole and dropping the
+    /// rest, so a case half measured never reads as measured at all.
+    #[tokio::test]
+    async fn a_run_past_its_window_is_baked() {
+        let (dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        let second = second_case(&s).await;
+        req.version_ids.push(second.clone());
+        req.repetitions = 3;
+        req.max_executions = 6;
+        let run = s.start_run(req).await.unwrap();
+        // The first case is complete; the second holds one of three.
+        for attempt in &run.attempts {
+            if attempt.version_id == first || attempt.repetition == 0 {
+                s.store
+                    .save_attempt(&settle(attempt, "pass"))
+                    .await
+                    .unwrap();
+            }
+        }
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE run_plans SET created_at=? WHERE id=?")
+            .bind(now() - crate::services::benchmarks::analysis::RUN_WINDOW_MS - 60_000)
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        let refused = s.control(&run.id, "resume").await.unwrap_err();
+        assert_eq!(refused.code, "validation");
+        assert!(
+            refused.message.contains("window closed"),
+            "{}",
+            refused.message
+        );
+        let grown = s.extend_run(&run.id, &[], &[]).await.unwrap_err();
+        assert!(grown.message.contains("window closed"), "{}", grown.message);
+        s.tick().await.unwrap();
+        let baked = s.store.run(&run.id).await.unwrap();
+        assert!(baked.baked_at.is_some());
+        assert_eq!(baked.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        for attempt in &baked.attempts {
+            let expected = if attempt.version_id == first {
+                "pass"
+            } else {
+                "superseded"
+            };
+            assert_eq!(attempt.outcome.as_deref(), Some(expected), "{}", attempt.id);
+            assert_eq!(attempt.phase, "terminal");
+        }
+        // The ledger holds the complete case alone.
+        let data = s.query_data().await.unwrap();
+        let report =
+            crate::services::benchmarks::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].scored, 1);
+        assert_eq!(report.rows[0].complete, 1);
+        assert_eq!(report.rows[0].planned, 2);
+        // Baked once: the next tick leaves it alone.
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().baked_at, baked.baked_at);
+        dir.close().await;
+    }
+
+    #[test]
+    fn a_provider_usage_limit_before_any_answer_waits_for_quota() {
+        let limit = json!({"code":-32000,"data":{"accountId":"cli-login-kimi-acp",
+            "dispatchStarted":true,"promptNotAccepted":false},
+            "message":"Authentication required: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends."});
+        let empty = TokenUsage::default();
+        assert!(refused_for_quota(&limit, "", &empty));
+        // An answer already under way was measured; it settles as it ended.
+        assert!(!refused_for_quota(&limit, "partial", &empty));
+        let answered = TokenUsage {
+            output: Some(12),
+            ..Default::default()
+        };
+        assert!(!refused_for_quota(&limit, "", &answered));
+        // A model the plan leaves out is no quota.
+        let refused = json!({"code":-32000,"message":"Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed."});
+        assert!(!refused_for_quota(&refused, "", &empty));
+    }
+
+    /// Run 607f8612: Kimi answered every attempt on a model its plan leaves
+    /// out with a 401 that names the model. That is the configuration being
+    /// unsupported, not a broken bridge; a sign-in failure names no model.
+    #[test]
+    fn a_provider_refusing_the_model_makes_the_configuration_unsupported() {
+        let pro_highspeed = json!({"code": -32000,
+            "message": "Authentication required: 403 Your current subscription does not have access to k3.1-pro-highspeed. Upgrade to higher-tier Kimi Code plans."});
+        assert_eq!(
+            terminal_outcome(&pro_highspeed, "kimi-code/k3.1-pro-highspeed"),
+            "unsupported"
+        );
+        assert_eq!(
+            terminal_outcome(&pro_highspeed, "kimi-code/k3.1-pro"),
+            "infrastructure_failure"
+        );
+        let refused = json!({"code": -32000,
+            "data": {"accountId": "cli-login-kimi-acp", "dispatchStarted": true, "promptNotAccepted": false},
+            "message": "Authentication required: 401 Your current subscription does not have access to kimi-for-coding-highspeed. Upgrade to higher-tier Kimi Code plans. Upgrade: Upgrade: https://www.kimi.com/code?from=server_highspeed_error#pricing"});
+        assert_eq!(
+            terminal_outcome(&refused, "kimi-code/kimi-for-coding-highspeed"),
+            "unsupported"
+        );
+        // The same refusal does not name the plan's own model.
+        assert_eq!(
+            terminal_outcome(&refused, "kimi-code/kimi-for-coding"),
+            "infrastructure_failure"
+        );
+        // A sign-in that failed names no model.
+        let signed_out = json!({"code": -32000, "message": "Authentication required"});
+        assert_eq!(
+            terminal_outcome(&signed_out, "kimi-code/kimi-for-coding"),
+            "infrastructure_failure"
+        );
+        // Nor does one that mentions the model without refusing it.
+        for message in [
+            "Authentication required: 401 sign in again to keep using kimi-for-coding-highspeed",
+            "Authentication required: your subscription for kimi-for-coding-highspeed renews today; log in again",
+        ] {
+            assert_eq!(
+                terminal_outcome(
+                    &json!({"code": -32000, "message": message}),
+                    "kimi-code/kimi-for-coding-highspeed"
+                ),
+                "infrastructure_failure",
+                "{message}"
+            );
+        }
+        // The refusal reads the same in another case, and by the full id.
+        let shouting = json!({"code": -32000,
+            "message": "401 YOUR CURRENT SUBSCRIPTION DOES NOT HAVE ACCESS TO KIMI-CODE/KIMI-FOR-CODING-HIGHSPEED"});
+        assert_eq!(
+            terminal_outcome(&shouting, "kimi-code/kimi-for-coding-highspeed"),
+            "unsupported"
+        );
+        // Another error that names the model is not a refusal of it.
+        let crashed = json!({"code": -32603,
+            "message": "Internal error: kimi-for-coding-highspeed stream reset"});
+        assert_eq!(
+            terminal_outcome(&crashed, "kimi-code/kimi-for-coding-highspeed"),
+            "infrastructure_failure"
+        );
+        // Typed outcomes are read as before.
+        assert_eq!(
+            terminal_outcome(&json!({"kind": "budget_timeout"}), "m"),
+            "budget_timeout"
+        );
+        assert!(names("no access to grok-4.", "grok-4"));
+        assert!(!names("no access to grok-4.7", "grok-4"));
+        assert!(!names("no access to grok-4-fast", "grok-4"));
+        assert!(!names("no access to xgrok-4", "grok-4"));
+    }
+
+    /// Listing a bridge's models opens a session on the bridge the user's
+    /// chats use; a run does it once per provider and account, again only
+    /// when another executable serves them.
+    #[test]
+    fn a_run_lists_each_bridge_once_until_another_executable_serves_it() {
+        let kept = RunInventories::default();
+        let on = |len: u64| json!({"path":"bridge.js","len":len,"modified":1});
+        let inventory = json!({"executable": on(1), "models": [{"modelId":"m"}]});
+        assert_eq!(kept.current("run", "p", "a", &on(1)), None);
+        kept.keep("run", "p", "a", inventory.clone());
+        assert_eq!(
+            kept.current("run", "p", "a", &on(1)),
+            Some(inventory.clone())
+        );
+        // Another executable, account or run is listed again; nothing serving
+        // is never a match.
+        assert_eq!(kept.current("run", "p", "a", &on(2)), None);
+        assert_eq!(kept.current("run", "p", "b", &on(1)), None);
+        assert_eq!(kept.current("next", "p", "a", &on(1)), None);
+        assert_eq!(kept.current("run", "p", "a", &Value::Null), None);
+        // Bounded: past the limit, other runs' inventories go.
+        for n in 0..RunInventories::LIMIT {
+            kept.keep(&format!("old-{n}"), "p", "a", inventory.clone());
+        }
+        kept.keep("run", "p", "b", inventory.clone());
+        assert_eq!(kept.current("old-0", "p", "a", &on(1)), None);
+        assert!(kept.current("run", "p", "b", &on(1)).is_some());
+        // Whichever run listed an account last, judges see that listing, by
+        // the executable that serves it now.
+        let newest = json!({"executable": on(1), "models": [{"modelId":"newer"}]});
+        kept.keep("another-run", "p", "a", newest.clone());
+        let latest = kept.latest("p", "a", &on(1)).unwrap();
+        assert_eq!(latest.inventory, newest);
+        assert!(latest.listed_at.elapsed() < Duration::from_secs(60));
+        assert!(latest.refused_at.is_none());
+        assert!(kept.latest("p", "a", &on(2)).is_none());
+        assert!(kept.latest("p", "a", &Value::Null).is_none());
+        assert!(kept.latest("p", "c", &on(1)).is_none());
+        kept.refused("p", "a");
+        assert!(kept.latest("p", "a", &on(1)).unwrap().refused_at.is_some());
+        // An inventory probe counts as a listing too, and clears the refusal.
+        kept.observe("p", "a", inventory.clone());
+        let probed = kept.latest("p", "a", &on(1)).unwrap();
+        assert_eq!(probed.inventory, inventory);
+        assert!(probed.refused_at.is_none());
+    }
+
+    /// 10-18: under wave load the sandbox refused the live listing of the
+    /// Sol and Grok judge accounts as light jobs, leaving one judge, and the
+    /// rescore's rubric cells could not form a panel.
+    #[tokio::test]
+    async fn a_refused_live_listing_still_seats_the_judge_from_its_newest_listing() {
+        let listing = json!({"executable": {"path": "bridge.js"}, "models": [{"modelId": "m"}]});
+        // Ages, not instants: a Windows Instant counts from boot.
+        let kept = |listed: u64, refused: Option<u64>| ListingAge {
+            age: Duration::from_secs(listed),
+            refused_ago: refused.map(Duration::from_secs),
+            inventory: listing.clone(),
+        };
+        let refusal = || {
+            BenchmarkError::new(
+                "capability_missing",
+                "measured CPU load is above the light-job admission line",
+            )
+        };
+        let never = async { panic!("a fresh listing is not listed again") };
+        // Fresh: no live listing at all.
+        let (seated, refused) = judge_inventory(Some(kept(60, None)), never).await.unwrap();
+        assert_eq!(seated, listing);
+        assert!(refused.is_none());
+        // Older: a refresh is tried; refused, the listing still seats.
+        let (seated, refused) =
+            judge_inventory(Some(kept(2 * 3600, None)), async { Err(refusal()) })
+                .await
+                .unwrap();
+        assert_eq!(seated, listing);
+        let (age, error) = refused.unwrap();
+        assert!(age >= Duration::from_secs(2 * 3600));
+        assert!(error.message.contains("light-job admission line"));
+        // A refresh refused moments ago is not tried again.
+        let never = async { panic!("a refused refresh is not retried at once") };
+        let (seated, _) = judge_inventory(Some(kept(2 * 3600, Some(30))), never)
+            .await
+            .unwrap();
+        assert_eq!(seated, listing);
+        // A refresh that answers wins.
+        let newer = json!({"executable": {"path": "bridge.js"}, "models": [{"modelId": "n"}]});
+        let answered = newer.clone();
+        let (seated, refused) =
+            judge_inventory(
+                Some(kept(2 * 3600, Some(3600))),
+                async move { Ok(answered) },
+            )
+            .await
+            .unwrap();
+        assert_eq!(seated, newer);
+        assert!(refused.is_none());
+        // Too old, or never listed: only a live listing seats.
+        assert!(
+            judge_inventory(Some(kept(13 * 3600, None)), async { Err(refusal()) })
+                .await
+                .is_err()
+        );
+        assert!(judge_inventory(None, async { Err(refusal()) })
+            .await
+            .is_err());
+        let answered = newer.clone();
+        assert_eq!(
+            judge_inventory(None, async move { Ok(answered) })
+                .await
+                .unwrap()
+                .0,
+            newer
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_freezes_the_pool_until_the_next() {
+        let (dir, s, _) = setup().await;
+        let mut seeds = crate::services::benchmarks::seeds::definitions();
+        for draft in &mut seeds {
+            draft.split = "train".into();
+        }
+        let first = publish(&s, seeds.remove(0)).await;
+        let second = publish(&s, seeds.remove(0)).await;
+        let mut frozen = vec![first.id.clone(), second.id.clone()];
+        frozen.sort();
+        // Before any release the pool is every live test.
+        assert_eq!(board_pool(&s).await, frozen);
+        // Distinct milliseconds for the dated reads below.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let v1 = s.create_release(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(v1.name, "v1");
+        let refused = s.create_release(None).await.unwrap_err();
+        assert!(
+            refused.message.contains("not changed since v1"),
+            "{}",
+            refused.message
+        );
+        // A new test and a new version wait for the next release.
+        let third = publish(&s, seeds.remove(0)).await;
+        let mut draft = s
+            .store
+            .definition(&first.definition_id)
+            .await
+            .unwrap()
+            .draft;
+        draft.prompt.push_str(" Answer briefly.");
+        let saved = s
+            .store
+            .save_draft(Some(first.definition_id.as_str()), Some(1), draft)
+            .await
+            .unwrap();
+        let revised = s
+            .store
+            .publish(&first.definition_id, saved.draft_revision)
+            .await
+            .unwrap();
+        assert_eq!(board_pool(&s).await, frozen);
+        assert!(s.create_release(Some("v1".into())).await.is_err());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let v2 = s.create_release(None).await.unwrap();
+        assert_eq!(v2.name, "v2");
+        let mut released = vec![revised.id, second.id, third.id];
+        released.sort();
+        assert_eq!(board_pool(&s).await, released);
+        // A point dated before the first release reads the live tests of its day.
+        let data = s.query_data().await.unwrap();
+        let early = ResultQuery {
+            as_of: Some(v1.created_at - 1),
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::services::benchmarks::analysis::pool(&data, &early).len(),
+            2
+        );
+        let between = ResultQuery {
+            as_of: Some(v2.created_at - 1),
+            ..Default::default()
+        };
+        let mut then: Vec<String> = crate::services::benchmarks::analysis::pool(&data, &between)
+            .into_iter()
+            .map(|version| version.id.clone())
+            .collect();
+        then.sort();
+        assert_eq!(then, frozen);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_pins_are_plan_issues_and_quota_briefs_never_publish() {
+        let (dir, s, _) = setup().await;
+        let mut req = request(&s).await;
+        assert!(s.preview_run(&req).await.unwrap().valid);
+        req.configurations[0].inventory_revision = Some("runtime-before-an-update".into());
+        let preview = s.preview_run(&req).await.unwrap();
+        assert!(!preview.valid);
+        assert!(preview.issues.iter().any(|i| i.contains("Runtime changed")));
+        assert!(s.start_run(req).await.is_err());
+        // Quota and capacity batches are retired: such a case never publishes.
+        let mut quota = creative();
+        quota.measurement_profile = "controlled_quota".into();
+        let draft = s.store.save_draft(None, None, quota).await.unwrap();
+        let refused = s.store.publish(&draft.id, 1).await.unwrap_err();
+        assert!(
+            refused.message.contains("only task metrics"),
+            "{}",
+            refused.message
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn evaluating_again_without_a_panel_keeps_the_settled_score() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.evaluations.extend(settled_batch());
+        a.outcome = Some("judged".into());
+        s.store.save_attempt(&a).await.unwrap();
+        let before = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(
+            crate::services::benchmarks::analysis::score(&before),
+            Some(0.7)
+        );
+        // The fake panel starts no batch, so nothing may be written.
+        let refused = s.rescore(&a.id).await.unwrap_err();
+        assert_eq!(refused.code, "validation");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 2);
+        let after = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(after.evaluations.len(), before.evaluations.len());
+        assert_eq!(
+            crate::services::benchmarks::analysis::score(&after),
+            Some(0.7)
+        );
+        dir.close().await;
+    }
+}

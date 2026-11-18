@@ -203,7 +203,7 @@ pub(in super::super) fn quota_waiting(run_id: &str, scope: &str) -> bool {
 }
 
 /// Accounts whose usage limit ran out under a run, until their reset.
-pub(in super::super) static EXHAUSTED: std::sync::LazyLock<
+static EXHAUSTED: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
 > = std::sync::LazyLock::new(Default::default);
 
@@ -368,4 +368,483 @@ pub(in super::super) fn provider_hold(run_id: &str, provider_id: &str) -> Option
 
 pub(in super::super) fn provider_held(run_id: &str, provider_id: &str) -> bool {
     provider_hold(run_id, provider_id).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+    use std::sync::atomic::Ordering;
+
+    /// The pace learns speeds from text turns only (a repository turn's
+    /// native time includes its tools), and a turn that ran out of its own
+    /// time or was stopped is no rate-limit signal, whatever its reason says.
+    #[test]
+    fn only_text_turns_teach_the_pace_speed_and_timeouts_never_throttle() {
+        let row = judge_row("sonnet");
+        let busy_host: sandbox::Admission = serde_json::from_value(json!({
+            "heavyLanes": 3, "lane": "heavy", "competing": {}, "competingHeavy": 0,
+            "reservedMemory": 0, "reservedCpu": 0, "memoryCurrent": 0,
+            "guestLoad": [0.0, 0.0, 0.0], "guestCpus": 16, "guestMemAvailable": 0,
+            "hostAvailableRam": 0, "hostAvailableCommit": 0, "hostCpuBusy": 0.3,
+            "hostCpuMean": 0.9,
+        }))
+        .unwrap();
+        let turn = |profile: &str, turns: u32, output: u64, loaded: bool| {
+            let mut attempt = crate::services::benchmarks::pending_attempt(
+                "invented-run",
+                "invented-version",
+                &row,
+                0,
+            );
+            attempt.configuration.execution_profile = profile.into();
+            attempt.outcome = Some("completed".into());
+            attempt.session_id = Some("invented-session".into());
+            attempt.usage.output = Some(output);
+            attempt.native_execution_ms = Some(10_000);
+            attempt.account_load = Some(AccountLoad { turns, limit: 4 });
+            if loaded {
+                attempt.sandbox_admission = Some(busy_host.clone());
+            }
+            attempt
+        };
+        // Five turns alone at 500 tokens/s, five beside three others at 80
+        // each (320 in all, under three quarters of 500). A repository turn
+        // teaches no speed, so its full round at four doubles the pace; so do
+        // text turns at four admitted while the host's 30-second mean was past
+        // its CPU line. Only the text turns' slowdown at four sends it to three.
+        for (profile, account, loaded, limit) in [
+            (
+                "protected_repository",
+                "invented-acp\u{1f}pace-repository",
+                false,
+                8,
+            ),
+            ("native_text", "invented-acp\u{1f}pace-loaded", true, 8),
+            ("native_text", "invented-acp\u{1f}pace-text", false, 3),
+        ] {
+            for _ in 0..5 {
+                pace_turn(account, &turn(profile, 1, 5000, false), None);
+                pace_turn(account, &turn(profile, 4, 800, loaded), None);
+            }
+            assert_eq!(account_pace::limit(account), limit, "{account}");
+        }
+        let account = "invented-acp\u{1f}pace-timeout";
+        let mut timed = turn("native_text", 1, 0, false);
+        timed.outcome = Some("budget_timeout".into());
+        timed.reason = Some("rate limit reached; {\"nativeExecutionMs\":429810}".into());
+        pace_turn(account, &timed, None);
+        pace_turn(
+            account,
+            &timed,
+            Some(&BenchmarkError::new(
+                "budget_timeout",
+                "HTTP 429 rate limit",
+            )),
+        );
+        // A usage limit or a sign-in wait has its own hold, whatever its JSON
+        // says about rates.
+        for code in [QUOTA_WAIT, SIGN_IN_WAIT] {
+            pace_turn(
+                account,
+                &timed,
+                Some(&BenchmarkError::new(
+                    code,
+                    "{\"error\":{\"type\":\"rate_limit_error\"},\"dispatchStarted\":true}",
+                )),
+            );
+        }
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS);
+        let mut limited = timed.clone();
+        limited.outcome = Some("provider_error".into());
+        pace_turn(account, &limited, None);
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS / 2);
+        // The other turns of that burst, sent under the old limit, halve
+        // nothing more.
+        pace_turn(account, &limited, None);
+        pace_turn(account, &limited, None);
+        assert_eq!(account_pace::limit(account), ACCOUNT_SLOTS / 2);
+    }
+
+    #[test]
+    fn a_judge_account_its_limit_refused_leaves_the_runs_panels_until_its_reset() {
+        let reset = now() + 60_000;
+        let quota =
+            json!({"data": {"kind": QUOTA_WAIT, "dispatchStarted": false, "nextReset": reset}});
+        assert!(exhaust_judge_on_quota(
+            "invented-run",
+            "cli-login-grok-acp",
+            &quota,
+            None
+        ));
+        assert!(exhausted("invented-run", "cli-login-grok-acp"));
+        // Another run, or another account, is not held.
+        assert!(!exhausted("other-run", "cli-login-grok-acp"));
+        assert!(!exhausted("invented-run", "invented-claude"));
+        // Any other failure leaves the account in the panels.
+        let other = json!({"data": {"kind": "bridge_exited", "dispatchStarted": true}});
+        assert!(!exhaust_judge_on_quota(
+            "second-run",
+            "cli-login-grok-acp",
+            &other,
+            None
+        ));
+        assert!(!exhausted("second-run", "cli-login-grok-acp"));
+        // A limit that cut the judge off mid-answer holds the account too.
+        let cut = json!({"code":-32603,"data":{"errorKind":"quota_exhausted",
+            "dispatchStarted":true},"message":"You've hit your session limit"});
+        let reset = now() + 2 * 60 * 60 * 1000;
+        assert!(exhaust_judge_on_quota(
+            "third-run",
+            "invented-claude",
+            &cut,
+            Some(reset)
+        ));
+        assert!(exhausted("third-run", "invented-claude"));
+        assert_eq!(
+            EXHAUSTED.lock().unwrap()[&("third-run".to_owned(), "invented-claude".to_owned())],
+            reset
+        );
+    }
+
+    #[test]
+    fn a_quota_wait_leaves_one_flight_on_the_account_until_a_turn_lands() {
+        let run = "quota-slots-run";
+        let mut spent = judge_row("kimi");
+        spent.provider_id = "kimi-acp".into();
+        spent.account_id = Some("quota-slots-account".into());
+        let mut healthy = spent.clone();
+        healthy.account_id = Some("quota-slots-second".into());
+        let (scope, other) = (quota_scope(&spent), quota_scope(&healthy));
+        let account = "kimi-acp\u{1f}quota-slots-account";
+        assert_eq!(account_slots(run, &scope, account), ACCOUNT_SLOTS);
+        let error = json!({"data":{"kind":QUOTA_WAIT,"nextReset":now() + 60_000}}).to_string();
+        assert!(matches!(
+            quota_plan(run, &scope, &error, now()),
+            QuotaPlan::WaitUntil(_)
+        ));
+        assert_eq!(account_slots(run, &scope, account), 1);
+        // The provider's other account keeps its own pace, and another run on
+        // the provider flies as before.
+        assert_eq!(account_slots(run, &other, account), ACCOUNT_SLOTS);
+        assert_eq!(account_slots("another-run", &scope, account), ACCOUNT_SLOTS);
+        quota_recovered(run, &scope);
+        assert_eq!(account_slots(run, &scope, account), ACCOUNT_SLOTS);
+    }
+
+    /// A run the operator resumes asks every account again: a quota hold, an
+    /// exhausted account and a first refusal from before a long pause are
+    /// forgotten, so one refusal after the pause waits instead of stopping
+    /// the run, and a healthy account's cells are not held.
+    #[tokio::test]
+    async fn resuming_a_run_forgets_its_usage_limit_waits() {
+        let (dir, s, _) = setup().await;
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        let configuration = run.attempts[0].configuration.clone();
+        let scope = quota_scope(&configuration);
+        let error = json!({"data":{"kind":QUOTA_WAIT}}).to_string();
+        let long_ago = now() - QUOTA_WAIT_LIMIT_MS - 60_000;
+        assert!(matches!(
+            quota_plan(&run.id, &scope, &error, long_ago),
+            QuotaPlan::WaitUntil(_)
+        ));
+        exhaust(&run.id, "isolated", now() + QUOTA_WAIT_LIMIT_MS);
+        hold_provider_until(&run.id, &scope, now() + QUOTA_WAIT_LIMIT_MS);
+        assert!(s.dispatchable(&run, now()).await.unwrap().is_empty());
+        // Adding cases to a run still going on keeps what its turns learned.
+        s.extend_run(&run.id, &[], &[]).await.unwrap();
+        assert!(quota_waiting(&run.id, &scope));
+        assert!(exhausted(&run.id, "isolated"));
+        assert!(provider_held(&run.id, &scope));
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        assert!(!quota_waiting(&run.id, &scope));
+        assert!(!exhausted(&run.id, "isolated"));
+        assert!(!provider_held(&run.id, &scope));
+        let resumed = s.store.run(&run.id).await.unwrap();
+        assert_eq!(s.dispatchable(&resumed, now()).await.unwrap().len(), 2);
+        assert!(matches!(
+            quota_plan(&run.id, &scope, &error, now()),
+            QuotaPlan::WaitUntil(_)
+        ));
+        dir.close().await;
+    }
+
+    #[test]
+    fn a_limit_that_names_no_reset_waits_for_the_one_the_usage_read_shows() {
+        let reset = now() + 2 * 60 * 60 * 1000;
+        // Claude's stop mid-answer names its reset only in words.
+        let stop = json!({"code":-32603,"data":{"errorKind":"quota_exhausted",
+            "dispatchStarted":true},"message":"You've hit your session limit · resets 7pm"})
+        .to_string();
+        assert_eq!(quota_reset(&stop), None);
+        let filled = with_next_reset(&stop, reset);
+        assert_eq!(quota_reset(&filled), Some(reset));
+        assert!(filled.contains("quota_exhausted") && filled.contains("resets 7pm"));
+        assert_eq!(
+            quota_plan("invented-reset-run", "claude-acp", &filled, now()),
+            QuotaPlan::WaitUntil(reset)
+        );
+        // Words alone keep their text beside the reset.
+        let words = with_next_reset("usage limit reached", reset);
+        assert_eq!(quota_reset(&words), Some(reset));
+        assert!(words.contains("usage limit reached"));
+    }
+
+    #[tokio::test]
+    async fn a_quota_wait_keeps_the_cell_and_holds_the_run_until_the_reset() {
+        let (dir, s, fake) = setup().await;
+        fake.quota_waits.store(1, Ordering::SeqCst);
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        assert!(held.attempts.iter().all(|a| a.phase == "pending"));
+        assert!(held.attempts.iter().all(|a| a.host_run_id.is_none()));
+        // Nothing is sent before the reset.
+        s.tick().await.unwrap();
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        PROVIDER_HOLDS
+            .lock()
+            .unwrap()
+            .retain(|(held, _), _| held != &run.id);
+        expire_saved_waits(&s, &run.id).await;
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.phase == "terminal" && a.outcome.as_deref() != Some(QUOTA_WAIT)));
+        dir.close().await;
+    }
+
+    /// A Grok sign-in the CLI renews only later holds the provider's cells
+    /// until then, without the operator, however often it comes up; the run
+    /// then goes on with every cell.
+    #[tokio::test]
+    async fn a_sign_in_the_cli_renews_later_holds_the_run_on_its_own() {
+        let (dir, s, fake) = setup().await;
+        fake.sign_in_waits.store(2, Ordering::SeqCst);
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        let release = || {
+            PROVIDER_HOLDS
+                .lock()
+                .unwrap()
+                .remove(&(run.id.clone(), "fake".to_owned()))
+        };
+        s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        assert!(held
+            .attempts
+            .iter()
+            .all(|a| a.phase == "pending" && a.outcome.is_none()));
+        // The returned test says when the run tries it again.
+        assert!(held.attempts.iter().any(|a| {
+            a.reason.as_deref() == Some(SIGN_IN_WAIT_REASON)
+                && a.wait_until.is_some_and(|until| until > now())
+        }));
+        // Nothing is sent while it waits, and the run does not complete.
+        s.tick().await.unwrap();
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "running");
+        // The same wait again settles nothing and asks nobody.
+        assert!(release().is_some());
+        expire_saved_waits(&s, &run.id).await;
+        s.tick().await.unwrap();
+        let again = s.store.run(&run.id).await.unwrap();
+        assert_eq!(again.state, "running");
+        assert!(again.attempts.iter().all(|a| a.phase == "pending"));
+        assert!(release().is_some());
+        expire_saved_waits(&s, &run.id).await;
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.phase == "terminal" && a.outcome.as_deref() == Some("pass")));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
+    }
+
+    /// A Grok turn that finds another still running on the due sign-in goes
+    /// back to the queue without the operator and is asked again shortly:
+    /// its wait records when, so the runner retries it within the tick.
+    #[tokio::test]
+    async fn a_turn_waits_for_another_on_the_due_sign_in() {
+        let (dir, s, fake) = setup().await;
+        fake.busy_sign_ins.store(1, Ordering::SeqCst);
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        let waiting = held
+            .attempts
+            .iter()
+            .find(|a| a.reason.is_some())
+            .expect("a returned test");
+        assert_eq!(waiting.phase, "pending");
+        assert_eq!(
+            waiting.reason.as_deref(),
+            Some(crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY)
+        );
+        let until = provider_hold(&run.id, "fake").expect("a short hold");
+        assert!(until <= now() + SIGN_IN_RETRY_MS);
+        assert_eq!(waiting.wait_until, Some(until));
+        PROVIDER_HOLDS
+            .lock()
+            .unwrap()
+            .remove(&(run.id.clone(), "fake".to_owned()));
+        expire_saved_waits(&s, &run.id).await;
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        dir.close().await;
+    }
+
+    /// Run 607f8612 mixed Grok and Kimi: a Grok sign-in wait holds the Grok
+    /// cells alone. The other provider's cells run meanwhile, and the run
+    /// does not complete while a held cell is pending.
+    #[tokio::test]
+    async fn a_sign_in_wait_holds_only_that_providers_cells() {
+        let (dir, s, fake) = setup().await;
+        let mut req = request(&s).await;
+        let mut grok = req.configurations[0].clone();
+        grok.id = "grok-pass".into();
+        grok.provider_id = "grok".into();
+        req.configurations.push(grok);
+        req.max_executions = 4;
+        let run = s.start_run(req).await.unwrap();
+        hold_provider_until(&run.id, "grok", now() + 60_000);
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        for attempt in &held.attempts {
+            if attempt.configuration.provider_id == "grok" {
+                assert_eq!(attempt.phase, "pending");
+            } else {
+                assert_eq!(attempt.outcome.as_deref(), Some("pass"));
+            }
+        }
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        PROVIDER_HOLDS
+            .lock()
+            .unwrap()
+            .remove(&(run.id.clone(), "grok".to_owned()));
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 4);
+        dir.close().await;
+    }
+
+    #[test]
+    fn only_an_identifier_before_the_colon_is_a_host_error_code() {
+        assert_eq!(host_error("validation: bad key".into()).code, "validation");
+        let crash = host_error("Internal error: {\"details\":\"exited\"}".into());
+        assert_eq!(crash.code, "infrastructure_failure");
+        assert!(crash.message.starts_with("Internal error:"));
+        assert!(is_quota_wait(
+            &json!({"code":-32010,"data":{"kind":QUOTA_WAIT,"dispatchStarted":false}})
+        ));
+        assert!(!is_quota_wait(
+            &json!({"code":-32010,"data":{"kind":QUOTA_WAIT,"dispatchStarted":true}})
+        ));
+    }
+
+    #[test]
+    fn a_usage_limit_waits_for_a_reset_it_can_reach_and_stops_otherwise() {
+        let at = 1_800_000_000_000i64;
+        let hour = 3_600_000i64;
+        let five_hour = r#"{"code":-32000,"message":"Authentication required: 403 You've reached your 5-hour usage limit."}"#;
+        // No reset named: try again shortly, as long as the refusals last no
+        // longer than a 5-hour window can.
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, at),
+            QuotaPlan::WaitUntil(at + QUOTA_RETRY_MS)
+        );
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, at + 3 * hour),
+            QuotaPlan::WaitUntil(at + 3 * hour + QUOTA_RETRY_MS)
+        );
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, at + QUOTA_WAIT_LIMIT_MS + 1),
+            QuotaPlan::Stop
+        );
+        // After a stop, or a turn that went through, a refusal starts a new wait.
+        let later = at + QUOTA_WAIT_LIMIT_MS + 2;
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, later),
+            QuotaPlan::WaitUntil(later + QUOTA_RETRY_MS)
+        );
+        quota_recovered("run-a", "kimi-acp");
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, later + 6 * hour),
+            QuotaPlan::WaitUntil(later + 6 * hour + QUOTA_RETRY_MS)
+        );
+        // A reset the host names: wait for it when near, stop when far.
+        let reset = |next: i64| {
+            json!({"code":-32010,"data":{"kind":QUOTA_WAIT,"dispatchStarted":false,"nextReset":next}})
+                .to_string()
+        };
+        assert_eq!(
+            quota_plan("run-b", "claude-acp", &reset(at + hour), at),
+            QuotaPlan::WaitUntil(at + hour)
+        );
+        assert_eq!(
+            quota_plan("run-c", "claude-acp", &reset(at + 72 * hour), at),
+            QuotaPlan::Stop
+        );
+        // A weekly or monthly limit is never waited out.
+        let weekly = r#"{"message":"You've reached your weekly usage limit."}"#;
+        assert_eq!(quota_plan("run-d", "kimi-acp", weekly, at), QuotaPlan::Stop);
+        let zai = json!({"code":-32603,"data":{"errorName":"APIError",
+            "dispatchStarted":true,"promptNotAccepted":false},
+            "message":"Internal error: Weekly/Monthly Limit Exhausted. Your limit will reset at 2030-01-02 12:00:00"});
+        let mut capture = TurnCapture::new(1024);
+        capture.output = "unfinished solution".into();
+        assert!(stopped_for_quota(&zai, &capture, true));
+        assert_eq!(
+            quota_plan("run-zai", "zai-acp", &zai.to_string(), at),
+            QuotaPlan::Stop
+        );
+        // A key with nothing to spend (a Standard key on an empty balance,
+        // or a Coding Plan key without a plan) is refused before any answer,
+        // and no usage reset lifts it: the run stops at once for the
+        // operator instead of retrying for hours.
+        let lapsed = json!({"code":-32603,"data":{"errorName":"APIError",
+            "dispatchStarted":true,"promptNotAccepted":false},
+            "message":"Internal error: Insufficient balance or no resource package. Please recharge."});
+        assert!(refused_for_quota(&lapsed, "", &TokenUsage::default()));
+        assert!(!stopped_for_quota(&lapsed, &capture, true));
+        assert!(refused_for_good(&lapsed.to_string()));
+        assert!(refused_for_good(
+            "Insufficient balance or no resource package"
+        ));
+        assert!(!refused_for_good(five_hour));
+        assert_eq!(
+            quota_plan("run-lapsed", "zai-acp", &lapsed.to_string(), at),
+            QuotaPlan::Stop
+        );
+        assert!(!quota_waiting("run-lapsed", "zai-acp"));
+    }
 }

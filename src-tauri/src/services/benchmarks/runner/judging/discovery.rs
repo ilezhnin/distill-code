@@ -708,3 +708,467 @@ pub(in crate::services::benchmarks) fn qualification_carrier(
     carrier.phase = "terminal".into();
     carrier
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::benchmarks::runner::tests::*;
+    use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn a_failing_turn_never_takes_a_stop_back() {
+        let (dir, s, _backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.store.set_run_state(&run.id, "cancelling").await.unwrap();
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelling");
+        s.store.set_run_state(&run.id, "cancelled").await.unwrap();
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelled");
+        dir.close().await;
+    }
+
+    /// A run resumed inside its window keeps what it measured: a case short
+    /// of its repetitions keeps the scored ones and runs only the rest, a
+    /// cancelled repetition measured again, as the cell is the run's across
+    /// a pause. A case complete when the run stopped, passed or failed,
+    /// stands, and the board counts the cell finished across the pause as
+    /// complete.
+    #[tokio::test]
+    async fn a_resumed_run_keeps_scored_repetitions_and_runs_only_the_rest() {
+        let (dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        let second = second_case(&s).await;
+        req.version_ids.push(second.clone());
+        req.repetitions = 3;
+        req.max_executions = 6;
+        let run = s.start_run(req).await.unwrap();
+        // The first case failed all three repetitions; the second was
+        // measured once and its second repetition was cut off.
+        for attempt in &run.attempts {
+            if attempt.version_id == first {
+                s.store
+                    .save_attempt(&settle(attempt, "fail"))
+                    .await
+                    .unwrap();
+            } else if attempt.repetition == 0 {
+                s.store
+                    .save_attempt(&settle(attempt, "pass"))
+                    .await
+                    .unwrap();
+            } else if attempt.repetition == 1 {
+                s.store
+                    .save_attempt(&settle(attempt, "cancelled"))
+                    .await
+                    .unwrap();
+            }
+        }
+        s.control(&run.id, "pause").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "paused");
+        s.control(&run.id, "resume").await.unwrap();
+        let resumed = s.store.run(&run.id).await.unwrap();
+        // The failed cell is a result, not a gap: nothing of it is planned again.
+        assert!(cell_of(&resumed, &first)
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("fail")));
+        // The scored repetition stands; the cancelled one is superseded and
+        // queued anew beside the one never started.
+        let unfinished = cell_of(&resumed, &second);
+        assert_eq!(unfinished.len(), 4);
+        assert_eq!(
+            unfinished
+                .iter()
+                .find(|a| a.repetition == 0)
+                .and_then(|a| a.outcome.as_deref()),
+            Some("pass")
+        );
+        assert_eq!(
+            unfinished
+                .iter()
+                .filter(|a| a.outcome.as_deref() == Some("superseded"))
+                .count(),
+            1
+        );
+        let mut queued: Vec<u32> = unfinished
+            .iter()
+            .filter(|a| a.phase == "pending")
+            .map(|a| a.repetition)
+            .collect();
+        queued.sort_unstable();
+        assert_eq!(queued, vec![1, 2]);
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        // Only the two owed repetitions were paid for.
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            cell_of(&done, &second)
+                .iter()
+                .filter(|a| crate::services::benchmarks::analysis::score(a).is_some())
+                .count(),
+            3
+        );
+        // The board and ledger read the cell finished across the pause as
+        // complete, both cases measured whole.
+        let data = s.query_data().await.unwrap();
+        let report =
+            crate::services::benchmarks::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].scored, 2);
+        assert_eq!(report.rows[0].complete, 2);
+        dir.close().await;
+    }
+
+    /// Stop then Finish is the same run: the repetitions scored before the
+    /// stop count, the cancelled one runs again, and the cell completed
+    /// across the stop is complete on the board and survives the bake.
+    #[tokio::test]
+    async fn stop_then_finish_completes_a_cell_from_its_scored_repetitions() {
+        let (dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        req.repetitions = 3;
+        req.max_executions = 3;
+        let run = s.start_run(req).await.unwrap();
+        for attempt in &run.attempts {
+            if attempt.repetition < 2 {
+                s.store
+                    .save_attempt(&settle(attempt, "pass"))
+                    .await
+                    .unwrap();
+            }
+        }
+        s.control(&run.id, "cancel").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelled");
+        let finished = s.extend_run(&run.id, &[], &[]).await.unwrap();
+        assert_eq!(finished.id, run.id);
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        let scored = |run: &BenchmarkRun| {
+            cell_of(run, &first)
+                .iter()
+                .filter(|a| crate::services::benchmarks::analysis::score(a).is_some())
+                .count()
+        };
+        assert_eq!(scored(&done), 3);
+        let data = s.query_data().await.unwrap();
+        let report =
+            crate::services::benchmarks::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows[0].complete, 1);
+        sqlx::query("UPDATE run_plans SET created_at=? WHERE id=?")
+            .bind(now() - crate::services::benchmarks::analysis::RUN_WINDOW_MS - 60_000)
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        s.tick().await.unwrap();
+        let baked = s.store.run(&run.id).await.unwrap();
+        assert!(baked.baked_at.is_some());
+        assert_eq!(scored(&baked), 3);
+        let data = s.query_data().await.unwrap();
+        let report =
+            crate::services::benchmarks::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows[0].complete, 1);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn sealing_and_restarting_preserve_superseded_evidence() {
+        let (dir, s, _) = setup().await;
+        let mut req = request(&s).await;
+        req.repetitions = 3;
+        req.max_executions = 3;
+        let run = s.start_run(req).await.unwrap();
+        // A paid repetition the owner's stop cut off is measured again on
+        // resume; its evidence stays.
+        let mut original = settle(&run.attempts[0], "cancelled");
+        original.output = Some("Paid original answer".into());
+        original.usage.cost = Some(0.25);
+        s.store.save_attempt(&original).await.unwrap();
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        s.control(&run.id, "resume").await.unwrap();
+        let archived = s.store.attempt(&original.id).await.unwrap();
+        assert_eq!(archived.outcome.as_deref(), Some("superseded"));
+        assert_eq!(archived.output, original.output);
+        assert_eq!(archived.usage.cost, original.usage.cost);
+        let resumed = s.store.run(&run.id).await.unwrap();
+        let mut partial = settle(
+            resumed
+                .attempts
+                .iter()
+                .find(|a| a.phase == "pending")
+                .unwrap(),
+            "fail",
+        );
+        partial.output = Some("Second paid answer".into());
+        partial.usage.cost = Some(0.5);
+        s.store.save_attempt(&partial).await.unwrap();
+        s.bake(&s.store.run(&run.id).await.unwrap(), now())
+            .await
+            .unwrap();
+        let archived = s.store.attempt(&partial.id).await.unwrap();
+        assert_eq!(archived.outcome.as_deref(), Some("superseded"));
+        assert_eq!(archived.output, partial.output);
+        assert_eq!(archived.usage.cost, partial.usage.cost);
+        dir.close().await;
+    }
+
+    /// A stop never costs a cell measured whole: once the stopped run's
+    /// window closes and it is baked, its 3/3 cells stand and only the
+    /// unfinished one is dropped.
+    #[tokio::test]
+    async fn complete_cells_survive_a_cancel_and_the_bake() {
+        let (dir, s, backend) = setup().await;
+        let mut req = request(&s).await;
+        let first = req.version_ids[0].clone();
+        let second = second_case(&s).await;
+        req.version_ids.push(second.clone());
+        req.repetitions = 3;
+        req.max_executions = 6;
+        let run = s.start_run(req).await.unwrap();
+        for attempt in &run.attempts {
+            if attempt.version_id == first || attempt.repetition == 0 {
+                s.store
+                    .save_attempt(&settle(attempt, "pass"))
+                    .await
+                    .unwrap();
+            }
+        }
+        s.control(&run.id, "cancel").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelled");
+        sqlx::query("UPDATE run_plans SET created_at=? WHERE id=?")
+            .bind(now() - crate::services::benchmarks::analysis::RUN_WINDOW_MS - 60_000)
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        s.tick().await.unwrap();
+        let baked = s.store.run(&run.id).await.unwrap();
+        assert!(baked.baked_at.is_some());
+        assert!(cell_of(&baked, &first)
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("pass")));
+        assert!(cell_of(&baked, &second)
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("superseded")));
+        let data = s.query_data().await.unwrap();
+        let report =
+            crate::services::benchmarks::analysis::leaderboard(&data, &ResultQuery::default());
+        assert_eq!(report.rows[0].complete, 1);
+        assert_eq!(report.rows[0].planned, 2);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    /// An app restart while the owner stops a run finishes the stop: the
+    /// run is cancelled once nothing of it flies, never left for attention.
+    #[tokio::test]
+    async fn a_restart_during_a_stop_finishes_the_cancel() {
+        let (dir, s, backend) = setup().await;
+        let req = request(&s).await;
+        let run = s.start_run(req).await.unwrap();
+        let mut a = run.attempts[0].clone();
+        a.phase = "dispatching".into();
+        s.store.save_attempt(&a).await.unwrap();
+        s.store.set_run_state(&run.id, "cancelling").await.unwrap();
+        s.store.recover().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "cancelling");
+        s.tick().await.unwrap();
+        s.tick().await.unwrap();
+        let stopped = s.store.run(&run.id).await.unwrap();
+        assert_eq!(stopped.state, "cancelled");
+        assert!(stopped.attempts[1..]
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("cancelled")));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn pause_and_cancel_never_send_queued_work() {
+        let (dir, s, backend) = setup().await;
+        let req = request(&s).await;
+        let run = s.start_run(req).await.unwrap();
+        s.control(&run.id, "pause").await.unwrap();
+        s.tick().await.unwrap();
+        assert_eq!(s.store.run(&run.id).await.unwrap().state, "paused");
+        s.control(&run.id, "cancel").await.unwrap();
+        s.tick().await.unwrap();
+        let run = s.store.run(&run.id).await.unwrap();
+        assert_eq!(run.state, "cancelled");
+        assert!(run
+            .attempts
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("cancelled")));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn resume_renews_a_stale_sandbox_check_and_adopts_the_updated_runtime() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        // An update of the app: a new runtime whose check is stale.
+        *backend.inventory_revision.lock().unwrap() = Some("fake-v2".into());
+        backend.stale_policy_check.store(true, Ordering::SeqCst);
+        let resumed = s.control(&run.id, "resume").await.unwrap();
+        assert_eq!(resumed.state, "running");
+        assert_eq!(backend.policy_renewals.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            resumed.request.configurations[0]
+                .inventory_revision
+                .as_deref(),
+            Some("fake-v2")
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn resume_keeps_a_stale_sandbox_check_refusal_when_renewing_fails() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(request(&s).await).await.unwrap();
+        s.store.set_run_state(&run.id, "paused").await.unwrap();
+        *backend.inventory_revision.lock().unwrap() = Some("fake-v2".into());
+        backend.stale_policy_check.store(true, Ordering::SeqCst);
+        backend.failing_policy_renewal.store(true, Ordering::SeqCst);
+        let error = s.control(&run.id, "resume").await.unwrap_err();
+        assert_eq!(error.code, "capability_missing");
+        assert!(
+            error.message.contains("Linux text policy proof"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.ends_with(
+                "the sandbox check could not be renewed: Sandbox check failed: invented probe failure"
+            ),
+            "{}",
+            error.message
+        );
+        assert_eq!(backend.policy_renewals.load(Ordering::SeqCst), 1);
+        let unchanged = s.store.run(&run.id).await.unwrap();
+        assert_eq!(unchanged.state, "paused");
+        assert_eq!(
+            unchanged.request.configurations[0]
+                .inventory_revision
+                .as_deref(),
+            Some("fake-v1")
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn saved_judge_repairs_only_append_to_open_runs_and_make_no_provider_calls() {
+        let (dir, s, backend) = setup().await;
+        let draft = critical_text();
+        let version = publish(&s, draft.clone()).await;
+        let mut req = creative_request(&s).await;
+        req.version_ids = vec![version.id];
+        let run = s.start_run(req).await.unwrap();
+        let mut attempt = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        attempt.phase = "terminal".into();
+        attempt.outcome = Some("pending_review".into());
+        attempt.output =
+            Some("Remove only the acknowledged revision. Wait for every participant.".into());
+        attempt.evidence_hash = Some("sealed".into());
+        let mut original = settled_batch()[1].clone();
+        original.evaluator_revision = draft.evaluator.revision.clone();
+        original.provenance = "judge_failure".into();
+        original.verdict = "abstained".into();
+        original.score = None;
+        original.reason = "Critical checks unresolved; judge abstained. Trace".into();
+        let mut checks = critical_reply()["checks"].clone();
+        checks["retention"]["verdict"] = json!("fail");
+        checks["barrier"]["verdict"] = json!("unknown");
+        checks["barrier"]["evidence"] = json!([]);
+        original.details = Some(
+            json!({"judgeBatchId":"batch","sessionId":"session","requestKey":"key",
+            "usageComplete":true,"criteria":{"quality":0.9},"criticalCheckPolicy":judge_checks::POLICY,
+            "criticalCheckStatus":"unknown","criticalChecks":checks}),
+        );
+        attempt.evaluations = vec![original];
+        s.store.save_attempt(&attempt).await.unwrap();
+        for state in ["completed", "cancelled"] {
+            s.store.set_run_state(&run.id, state).await.unwrap();
+            s.repair_saved_judge_assessments().await.unwrap();
+            assert_eq!(
+                s.store
+                    .attempt(&attempt.id)
+                    .await
+                    .unwrap()
+                    .evaluations
+                    .len(),
+                1,
+                "{state}"
+            );
+        }
+        s.store
+            .set_run_state(&run.id, "needs_attention")
+            .await
+            .unwrap();
+        // A new fixture state, rather than a product transition out of cancel.
+        sqlx::query("UPDATE run_plans SET state='needs_attention',baked_at=1 WHERE id=?")
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        s.repair_saved_judge_assessments().await.unwrap();
+        assert_eq!(
+            s.store
+                .attempt(&attempt.id)
+                .await
+                .unwrap()
+                .evaluations
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE run_plans SET baked_at=NULL WHERE id=?")
+            .bind(&run.id)
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        s.repair_saved_judge_assessments().await.unwrap();
+        s.repair_saved_judge_assessments().await.unwrap();
+        let repaired = s.store.attempt(&attempt.id).await.unwrap();
+        assert_eq!(repaired.evaluations.len(), 2);
+        assert_eq!(repaired.output, attempt.output);
+        assert_eq!(repaired.evidence_hash, attempt.evidence_hash);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 0);
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_restart_while_cancelling_settles_the_rendering() {
+        let (dir, s, backend) = setup().await;
+        let run = s.start_run(creative_request(&s).await).await.unwrap();
+        s.tick().await.unwrap();
+        let mut a = s.store.attempt(&run.attempts[0].id).await.unwrap();
+        a.phase = "collecting".into();
+        s.store.save_attempt(&a).await.unwrap();
+        s.store.set_run_state(&run.id, "cancelled").await.unwrap();
+        s.store.recover().await.unwrap();
+        s.tick().await.unwrap();
+        let settled = s.store.attempt(&a.id).await.unwrap();
+        assert_eq!(settled.phase, "terminal");
+        assert_eq!(backend.judges.load(Ordering::SeqCst), 1);
+        dir.close().await;
+    }
+}

@@ -317,3 +317,51 @@ pub fn host_error(message: String) -> BenchmarkError {
         _ => BenchmarkError::new("infrastructure_failure", message),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_violation_is_its_own_unscored_outcome() {
+        assert_eq!(
+            terminal_error_outcome(
+                &json!({"kind":"execution_violation","message":"execution_violation: native execution violated the declared no-tool policy"})
+            ),
+            "execution_violation"
+        );
+        assert_eq!(
+            terminal_error_outcome(&json!({"kind":"capability_missing"})),
+            "unsupported"
+        );
+        let tagged = json!({"params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","_meta":{"executionViolation":"native tool activity in no-tool profile"}}}});
+        assert_eq!(
+            violation_of(&tagged).as_deref(),
+            Some("native tool activity in no-tool profile")
+        );
+        assert_eq!(
+            violation_of(&tagged["params"]).as_deref(),
+            Some("native tool activity in no-tool profile")
+        );
+        assert_eq!(
+            violation_of(&json!({"update":{"sessionUpdate":"agent_message_chunk"}})),
+            None
+        );
+        let attempt = |outcome: &str| -> Attempt {
+            serde_json::from_value(json!({"id":"a","runId":"r","versionId":"v",
+                "configuration":{"id":"c","providerId":"claude-acp","accountId":"x","modelId":"m","billingMode":"subscription","executionProfile":"native_text"},
+                "repetition":0,"phase":"terminal","outcome":outcome,"output":"answer","finishedAt":1,
+                "usage":{"schema":"native"},"eventCursor":0,"workflowSteps":[],
+                "evaluations":[{"id":"e","evaluatorRevision":"r","verdict":"pass","score":1.0,"reason":"","createdAt":1,"provenance":"deterministic"}]}))
+            .unwrap()
+        };
+        assert_eq!(
+            crate::services::benchmarks::analysis::score(&attempt("pass")),
+            Some(1.0)
+        );
+        assert_eq!(
+            crate::services::benchmarks::analysis::score(&attempt("execution_violation")),
+            None
+        );
+    }
+}
