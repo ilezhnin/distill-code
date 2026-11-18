@@ -164,6 +164,9 @@ async fn execution_limits_substitutions_that_persist_stop_for_the_operator_unset
         held.wait_until = None;
         service.store.save_attempt(&held).await.unwrap();
     }
+    // The cell is left for the operator, and nothing else of the run can
+    // go on.
+    service.tick().await.unwrap();
     let stopped = service.store.run(&run.id).await.unwrap();
     assert_eq!(stopped.state, "needs_attention");
     assert_eq!(stopped.attempts.len(), 1);

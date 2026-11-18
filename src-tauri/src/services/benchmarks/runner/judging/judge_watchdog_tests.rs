@@ -382,3 +382,35 @@ async fn a_judge_waiting_for_room_the_runs_own_attempts_hold_does_not_pause_the_
     assert_eq!(service.store.run_state(&run.id).await.unwrap(), "pausing");
     dir.close().await;
 }
+
+/// While the run still measures, a stalled judge queue is its answers' wait,
+/// not the run's stop: the queue's ten minutes start once nothing else of
+/// the run goes on.
+#[tokio::test]
+async fn a_stalled_queue_does_not_pause_a_run_that_still_measures() {
+    let (dir, service, run) = saved_answers().await;
+    let at = now();
+    let mut queued = service.store.attempt(&run.attempts[0].id).await.unwrap();
+    queued.phase = "pending".into();
+    queued.outcome = None;
+    queued.output = None;
+    queued.evidence_hash = None;
+    queued.session_id = None;
+    queued.reason = None;
+    service.store.save_attempt(&queued).await.unwrap();
+    let run = full_run(&service, &run.id).await;
+    assert!(!check_queue(&service, &run, at).await.unwrap());
+    let run = full_run(&service, &run.id).await;
+    let late = at + QUEUE_LIMIT_MS + 2000;
+    assert!(!check_queue(&service, &run, late).await.unwrap());
+    assert_eq!(service.store.run_state(&run.id).await.unwrap(), "running");
+    // Left for the operator, the queued test no longer goes on by itself.
+    leave_for_operator(&run.id, &queued.id);
+    assert!(!check_queue(&service, &run, late).await.unwrap());
+    let run = full_run(&service, &run.id).await;
+    assert!(check_queue(&service, &run, late + QUEUE_LIMIT_MS + 2000)
+        .await
+        .unwrap());
+    assert_eq!(service.store.run_state(&run.id).await.unwrap(), "pausing");
+    dir.close().await;
+}

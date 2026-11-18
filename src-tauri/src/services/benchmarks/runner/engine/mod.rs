@@ -16,8 +16,9 @@ mod schedule;
 mod seats;
 mod settle;
 mod steps;
+mod stop;
 mod waits;
 
 pub(in crate::services::benchmarks) use self::{attempt::*, failure::*, waits::*};
-pub(super) use self::{measure_again::*, pace::*};
+pub(super) use self::{measure_again::*, pace::*, stop::*};
 pub use self::{seats::*, settle::*};

@@ -268,9 +268,9 @@ impl BenchmarkService {
 
     /// Closes a run with nothing ready when nothing of it flies, waits for
     /// judges or is held: for its provider, for a time of its own, or
-    /// interrupted. An unusable panel has stopped judging, not completed the
-    /// measurement: the run then waits for the operator with its paid
-    /// answers kept.
+    /// interrupted. Cells left for the operator, or an unusable panel that
+    /// stopped judging, have not completed the measurement: the run then
+    /// waits for the operator with its paid answers kept.
     async fn close_if_nothing_is_left(
         &self,
         run: &BenchmarkRun,
@@ -278,8 +278,12 @@ impl BenchmarkService {
         ready_at: i64,
     ) -> Result<()> {
         let waiting = run.attempts.iter().any(|a| a.phase == AWAITING_JUDGES);
+        // A cell left for the operator goes nowhere by itself, so no wait of
+        // its own keeps the run open.
+        let left = |a: &Attempt| a.phase == "pending" && left_for_operator(a);
         let held = run.attempts.iter().any(|a| {
             (a.phase == "pending"
+                && !left(a)
                 && (provider_held(&run.id, &a.configuration.provider_id)
                     || provider_held(&run.id, &quota_scope(&a.configuration))
                     || a.wait_until.is_some_and(|until| until > ready_at)))
@@ -288,16 +292,18 @@ impl BenchmarkService {
         if !grounded || waiting || held {
             return Ok(());
         }
-        let state = if run.attempts.iter().any(|a| {
-            a.outcome.as_deref() == Some("pending_review")
-                && a.reason.is_some()
-                && crate::services::benchmarks::analysis::score(a).is_none()
-        }) {
-            "needs_attention"
+        let needs_operator = run.attempts.iter().any(|a| {
+            left(a)
+                || (a.outcome.as_deref() == Some("pending_review")
+                    && a.reason.is_some()
+                    && crate::services::benchmarks::analysis::score(a).is_none())
+        });
+        if needs_operator {
+            self.stop_for_operator(&run.id, Stop::NothingCanGoOn)
+                .await?;
         } else {
-            "completed"
-        };
-        self.store.set_run_state(&run.id, state).await?;
+            self.store.set_run_state(&run.id, "completed").await?;
+        }
         self.changed().await;
         Ok(())
     }
@@ -448,8 +454,8 @@ impl BenchmarkService {
     }
 
     /// A run that forbids retries never replays an attempt that had started:
-    /// the attempt settles as an uncertain dispatch and the run waits for the
-    /// operator. Whether it did.
+    /// the attempt settles as an uncertain dispatch, a cell the run lost.
+    /// Whether it did.
     async fn refuses_replay(&self, run: &BenchmarkRun, a: &mut Attempt) -> Result<bool> {
         if run.request.automatic_retry()
             || !(a.started_at.is_some()
@@ -464,7 +470,7 @@ impl BenchmarkService {
         a.reason = Some("This run forbids replay of a previously started attempt".into());
         a.finished_at = Some(now());
         self.store.save_attempt(a).await?;
-        self.store.set_run_state(&run.id, "needs_attention").await?;
+        self.cell_lost(run, &quota_scope(&a.configuration)).await?;
         Ok(true)
     }
 
@@ -619,8 +625,9 @@ impl BenchmarkService {
     /// The pending attempts ready to dispatch. In a run admitted before author
     /// cells were measured, a pending cell whose candidate authored the case
     /// settles as excluded here, without any model call. A cell whose
-    /// provider is held (see [`hold_provider_until`]) waits, and
-    /// nothing starts once the run's window closed.
+    /// provider is held (see [`hold_provider_until`]) waits, one left for
+    /// the operator (see [`leave_for_operator`]) stays, and nothing starts
+    /// once the run's window closed.
     pub(in super::super) async fn dispatchable(
         &self,
         run: &BenchmarkRun,
@@ -641,6 +648,7 @@ impl BenchmarkService {
             a.phase == "pending"
                 && !provider_held(&run.id, &a.configuration.provider_id)
                 && !provider_held(&run.id, &quota_scope(&a.configuration))
+                && !left_for_operator(a)
                 && !pending_waiting(a, &self.store.root.display().to_string(), at)
         }) {
             if !versions.contains_key(&pending.version_id) {

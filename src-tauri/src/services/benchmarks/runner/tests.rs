@@ -1561,14 +1561,16 @@ async fn a_selection_refused_once_before_dispatch_is_tried_again() {
 }
 /// A sign-in near expiry, a refused preflight or a missing runtime stops
 /// the session before any provider call. The cell keeps its place and
-/// the reason, and the run waits for the operator instead of settling
-/// every remaining cell within seconds.
+/// the reason, and its account's cells are left for the operator with it
+/// instead of each being refused in its turn, or settling within seconds.
 #[tokio::test]
 async fn a_refusal_before_the_session_keeps_the_cell_for_the_operator() {
     let (dir, s, fake) = setup().await;
     fake.capability_refusals.store(1, Ordering::SeqCst);
     let run = s.start_run(serial_request(&s).await).await.unwrap();
-    s.tick().await.unwrap();
+    for _ in 0..2 {
+        s.tick().await.unwrap();
+    }
     let stopped = s.store.run(&run.id).await.unwrap();
     assert_eq!(stopped.state, "needs_attention");
     assert!(stopped
@@ -1582,7 +1584,8 @@ async fn a_refusal_before_the_session_keeps_the_cell_for_the_operator() {
     // Nothing more is tried until the operator resumes.
     s.tick().await.unwrap();
     assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
-    s.store.set_run_state(&run.id, "running").await.unwrap();
+    assert_eq!(fake.capability_refusals.load(Ordering::SeqCst), 0);
+    s.control(&run.id, "resume").await.unwrap();
     for _ in 0..3 {
         s.tick().await.unwrap();
     }
@@ -1603,9 +1606,11 @@ async fn a_refusal_repeated_after_a_resume_settles_its_cell() {
     let (dir, s, fake) = setup().await;
     fake.capability_refusals.store(2, Ordering::SeqCst);
     let run = s.start_run(serial_request(&s).await).await.unwrap();
-    s.tick().await.unwrap();
+    for _ in 0..2 {
+        s.tick().await.unwrap();
+    }
     assert_eq!(s.store.run(&run.id).await.unwrap().state, "needs_attention");
-    s.store.set_run_state(&run.id, "running").await.unwrap();
+    s.control(&run.id, "resume").await.unwrap();
     for _ in 0..5 {
         s.tick().await.unwrap();
     }

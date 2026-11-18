@@ -87,6 +87,10 @@ pub(in crate::services::benchmarks) fn forget_quota_waits(run_id: &str) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .retain(|(run, _), _| run != run_id);
+    LEFT_FOR_OPERATOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(run, _)| run != run_id);
 }
 
 /// Explicit resume probes quota/sign-in availability again. Preserve unrelated
@@ -127,13 +131,14 @@ static QUOTA_SINCE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
 > = std::sync::LazyLock::new(Default::default);
 
-/// Why a run stopped instead of waiting on a provider's usage limit; the
-/// provider's own words follow it.
+/// Why a test is left for the operator instead of waiting on its account's
+/// usage limit; the provider's own words follow it.
 pub(in super::super) const QUOTA_STOPPED: &str =
     "A test did not finish: the usage limit ran out and does not reset in time for the run to wait";
 
-/// Why a run stopped on a provider that refuses the account for a reason no
-/// reset lifts ([`lasting_quota`]); the provider's own words follow it.
+/// Why a test is left for the operator on an account its provider refuses
+/// for a reason no reset lifts ([`lasting_quota`]); the provider's own words
+/// follow it.
 pub(in super::super) const QUOTA_REFUSED: &str = "A test did not finish: the provider refused this account's request, and a usage reset will not change that. Once the account's balance, plan or key is in order with the provider, resume";
 
 /// What a run does once its provider refused a turn for quota.
@@ -141,22 +146,42 @@ pub(in super::super) const QUOTA_REFUSED: &str = "A test did not finish: the pro
 pub(in super::super) enum QuotaPlan {
     /// Hold the provider's cells until this time and try again.
     WaitUntil(i64),
-    /// Stop the run for the operator: the limit will not reset soon.
-    Stop,
+    /// The limit will not reset soon: the account's cells are left for the
+    /// operator (see [`leave_for_operator`]).
+    LeaveForOperator,
 }
 
-/// Waits for a reset the run can reach: one the host names within
-/// [`QUOTA_WAIT_LIMIT_MS`], or, with no time named, a retry every
-/// [`QUOTA_RETRY_MS`] while the refusals last no longer than that. A weekly or
-/// longer window, a reset further off, refusals past the limit, or a limit
-/// no reset lifts ([`lasting_quota`]) stop it.
+/// What `run_id` does about the usage limit of `scope` (see [`quota_scope`])
+/// that `error` refused a turn for: it waits for a reset it can reach (see
+/// [`reachable_reset`]), else the account is left for the operator. Once
+/// left it stays so until their resume ([`forget_quota_waits`]): a turn of
+/// it that was under way and is refused in its turn never starts a wait of
+/// its own.
 pub(in super::super) fn quota_plan(run_id: &str, scope: &str, error: &str, at: i64) -> QuotaPlan {
+    if is_left(run_id, scope) {
+        return QuotaPlan::LeaveForOperator;
+    }
+    match reachable_reset(run_id, scope, error, at) {
+        Some(until) => QuotaPlan::WaitUntil(until),
+        None => {
+            leave_for_operator(run_id, scope);
+            QuotaPlan::LeaveForOperator
+        }
+    }
+}
+
+/// The reset the run waits for: one the host names within
+/// [`QUOTA_WAIT_LIMIT_MS`], or, with no time named, a retry every
+/// [`QUOTA_RETRY_MS`] while the refusals last no longer than that. None for
+/// a weekly or longer window, a reset further off, refusals past the limit,
+/// or a limit no reset lifts ([`lasting_quota`]).
+fn reachable_reset(run_id: &str, scope: &str, error: &str, at: i64) -> Option<i64> {
     if refused_for_good(error) {
         QUOTA_SINCE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&(run_id.to_owned(), scope.to_owned()));
-        return QuotaPlan::Stop;
+        return None;
     }
     let parsed = serde_json::from_str::<Value>(error).ok();
     let next_reset = parsed
@@ -188,9 +213,9 @@ pub(in super::super) fn quota_plan(run_id: &str, scope: &str, error: &str, at: i
         || at - first > QUOTA_WAIT_LIMIT_MS
     {
         since.remove(&key);
-        return QuotaPlan::Stop;
+        return None;
     }
-    QuotaPlan::WaitUntil(next_reset.unwrap_or(at + QUOTA_RETRY_MS))
+    Some(next_reset.unwrap_or(at + QUOTA_RETRY_MS))
 }
 
 /// Whether `run_id` still waits out the usage limit of `scope` (see
@@ -368,6 +393,38 @@ pub(in super::super) fn provider_hold(run_id: &str, provider_id: &str) -> Option
 
 pub(in super::super) fn provider_held(run_id: &str, provider_id: &str) -> bool {
     provider_hold(run_id, provider_id).is_some()
+}
+
+/// What of a run waits for its operator while the run goes on with the rest:
+/// an account whose usage limit no wait of the run reaches (by its
+/// [`quota_scope`]), or one cell (by its id) that used up its tries. The run
+/// stops once nothing else of it can go on (see [`stop`](super::stop)). Kept
+/// in memory: a restart stops the run for the operator anyway, and their
+/// resume lets everything ask again ([`forget_quota_waits`]).
+static LEFT_FOR_OPERATOR: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Sends nothing of `key` (see [`LEFT_FOR_OPERATOR`]) in `run_id` until the
+/// operator resumes the run.
+pub(in super::super) fn leave_for_operator(run_id: &str, key: &str) {
+    LEFT_FOR_OPERATOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((run_id.to_owned(), key.to_owned()));
+}
+
+fn is_left(run_id: &str, key: &str) -> bool {
+    LEFT_FOR_OPERATOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&(run_id.to_owned(), key.to_owned()))
+}
+
+/// Whether `attempt`, or the account it is sent on, waits for the operator.
+pub(in super::super) fn left_for_operator(attempt: &Attempt) -> bool {
+    is_left(&attempt.run_id, &attempt.id)
+        || is_left(&attempt.run_id, &quota_scope(&attempt.configuration))
 }
 
 #[cfg(test)]
@@ -772,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn a_usage_limit_waits_for_a_reset_it_can_reach_and_stops_otherwise() {
+    fn a_usage_limit_waits_for_a_reset_it_can_reach_and_leaves_its_account_otherwise() {
         let at = 1_800_000_000_000i64;
         let hour = 3_600_000i64;
         let five_hour = r#"{"code":-32000,"message":"Authentication required: 403 You've reached your 5-hour usage limit."}"#;
@@ -788,10 +845,18 @@ mod tests {
         );
         assert_eq!(
             quota_plan("run-a", "kimi-acp", five_hour, at + QUOTA_WAIT_LIMIT_MS + 1),
-            QuotaPlan::Stop
+            QuotaPlan::LeaveForOperator
         );
-        // After a stop, or a turn that went through, a refusal starts a new wait.
+        // Left for the operator, the account stays so: a later refusal of
+        // it starts no wait of its own.
         let later = at + QUOTA_WAIT_LIMIT_MS + 2;
+        assert_eq!(
+            quota_plan("run-a", "kimi-acp", five_hour, later),
+            QuotaPlan::LeaveForOperator
+        );
+        // After the operator's resume, or a turn that went through, a
+        // refusal starts a new wait.
+        forget_quota_waits("run-a");
         assert_eq!(
             quota_plan("run-a", "kimi-acp", five_hour, later),
             QuotaPlan::WaitUntil(later + QUOTA_RETRY_MS)
@@ -812,11 +877,14 @@ mod tests {
         );
         assert_eq!(
             quota_plan("run-c", "claude-acp", &reset(at + 72 * hour), at),
-            QuotaPlan::Stop
+            QuotaPlan::LeaveForOperator
         );
         // A weekly or monthly limit is never waited out.
         let weekly = r#"{"message":"You've reached your weekly usage limit."}"#;
-        assert_eq!(quota_plan("run-d", "kimi-acp", weekly, at), QuotaPlan::Stop);
+        assert_eq!(
+            quota_plan("run-d", "kimi-acp", weekly, at),
+            QuotaPlan::LeaveForOperator
+        );
         let zai = json!({"code":-32603,"data":{"errorName":"APIError",
             "dispatchStarted":true,"promptNotAccepted":false},
             "message":"Internal error: Weekly/Monthly Limit Exhausted. Your limit will reset at 2030-01-02 12:00:00"});
@@ -825,12 +893,12 @@ mod tests {
         assert!(stopped_for_quota(&zai, &capture, true));
         assert_eq!(
             quota_plan("run-zai", "zai-acp", &zai.to_string(), at),
-            QuotaPlan::Stop
+            QuotaPlan::LeaveForOperator
         );
         // A key with nothing to spend (a Standard key on an empty balance,
         // or a Coding Plan key without a plan) is refused before any answer,
-        // and no usage reset lifts it: the run stops at once for the
-        // operator instead of retrying for hours.
+        // and no usage reset lifts it: the account is left for the
+        // operator at once instead of retrying for hours.
         let lapsed = json!({"code":-32603,"data":{"errorName":"APIError",
             "dispatchStarted":true,"promptNotAccepted":false},
             "message":"Internal error: Insufficient balance or no resource package. Please recharge."});
@@ -843,7 +911,7 @@ mod tests {
         assert!(!refused_for_good(five_hour));
         assert_eq!(
             quota_plan("run-lapsed", "zai-acp", &lapsed.to_string(), at),
-            QuotaPlan::Stop
+            QuotaPlan::LeaveForOperator
         );
         assert!(!quota_waiting("run-lapsed", "zai-acp"));
     }

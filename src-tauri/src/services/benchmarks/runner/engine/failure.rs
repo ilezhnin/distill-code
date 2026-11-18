@@ -1,22 +1,23 @@
 //! What a failed try means for its attempt and for its run: whether the try
-//! counts, whether the cell goes back to the queue and for how long, and when
-//! the operator is asked.
+//! counts, whether the cell goes back to the queue and for how long, whether
+//! it is left for the operator, and what its end means for the run (see
+//! [`stop`](super::stop)).
 use super::*;
 
 /// Tries of one attempt refused before any answer that go back to the queue
-/// before the run stops for the operator; one more after the operator's
+/// before the cell is left for the operator; one more after the operator's
 /// resume settles the cell, as `refused_again` does under automatic retries.
 const PRE_ANSWER_TRIES: u32 = 3;
 /// How long a try refused before any answer waits before the next one.
 const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
 /// What the reason of a cell refused before any answer starts with while it
-/// waits for its next try; the refusal's own words follow. At the bound the
-/// cell keeps the bare refusal, so the same one after the operator's resume
-/// reads as `refused_again` and settles it.
+/// waits for its next try; the refusal's own words follow. Left for the
+/// operator, the cell keeps the bare refusal, so the same one after their
+/// resume reads as `refused_again` and settles it.
 pub(in super::super) const PRE_ANSWER_RETRIED: &str = "Refused before any answer; tried again.";
 
-/// Refusals before any answer a cell goes back with before the operator is
-/// asked: a runtime the host would not start needs the operator at once.
+/// Refusals before any answer a cell goes back with before it is left for
+/// the operator: a runtime the host would not start needs them at once.
 fn pre_answer_limit(error: &BenchmarkError) -> u32 {
     if error.code == "capability_missing" {
         1
@@ -215,7 +216,19 @@ enum Response {
     /// pause, up to the bound, while the run goes on with its other cells.
     RetryRefusal,
     /// The try is the attempt's outcome.
-    Settle { ask_operator: bool },
+    Settle(ForRun),
+}
+
+/// What a settled failure means for its run.
+#[derive(Debug, PartialEq, Eq)]
+enum ForRun {
+    /// The cell's own: the run goes on.
+    Nothing,
+    /// The cell is lost to a cause that may be the run's: the run stops once
+    /// as many in a row are as it affords (see [`lost_cells_limit`]).
+    Lost,
+    /// The run's own.
+    Stop(Stop),
 }
 
 /// What the response is decided on, read from the try and its run.
@@ -238,17 +251,31 @@ struct Facts<'a> {
     refused_again: bool,
 }
 
-/// Failures that need the operator under a run that forbids retries, beside
-/// those that return to the queue.
-const OPERATOR_CODES: [&str; 5] = [
+/// Failures that lose a cell of a run that forbids retries, beside those
+/// that would return to its queue.
+const LOST_WITHOUT_RETRY: [&str; 4] = [
     "account_busy",
-    "dispatch_deadline",
     "selection_changed",
     "validation",
     "evidence_mismatch",
 ];
-/// Failures that need the operator under every retry policy.
-const ALWAYS_OPERATOR_CODES: [&str; 2] = ["dispatch_uncertain", "storage_unavailable"];
+
+/// What the failure that settles a cell means for its run: a store that
+/// failed and a dispatch deadline that passed are the run's own, and an
+/// uncertain dispatch loses the cell under every retry policy.
+fn for_run(facts: &Facts) -> ForRun {
+    match facts.code {
+        "storage_unavailable" => ForRun::Stop(Stop::Storage),
+        "dispatch_deadline" => ForRun::Stop(Stop::DispatchDeadline),
+        "dispatch_uncertain" => ForRun::Lost,
+        code if !facts.retry_allowed
+            && (facts.returns_to_queue || LOST_WITHOUT_RETRY.contains(&code)) =>
+        {
+            ForRun::Lost
+        }
+        _ => ForRun::Nothing,
+    }
+}
 
 /// The response to a failed try. A turn the provider never saw keeps its
 /// cell: a quota wait holds it until the reset, a sign-in wait until the CLI
@@ -284,11 +311,7 @@ fn respond(facts: &Facts) -> Response {
             Response::RetryRefusal
         };
     }
-    Response::Settle {
-        ask_operator: (!facts.retry_allowed
-            && (facts.returns_to_queue || OPERATOR_CODES.contains(&facts.code)))
-            || ALWAYS_OPERATOR_CODES.contains(&facts.code),
-    }
+    Response::Settle(for_run(facts))
 }
 
 /// A failed try with what it belongs to.
@@ -308,8 +331,8 @@ impl FailedTry<'_> {
 
 impl BenchmarkService {
     /// Settles the try of `a` that ended with `error`: back to the queue, on
-    /// to another account, or settled with its outcome; and the run, where
-    /// the operator has to decide.
+    /// to another account, left for the operator, or settled with its
+    /// outcome; and the run, where the failure is its own.
     pub(in super::super) async fn try_failed(
         &self,
         run: &BenchmarkRun,
@@ -362,15 +385,28 @@ impl BenchmarkService {
             }
             Response::WaitForSignIn => self.wait_for_sign_in(&failure, failed).await,
             Response::RetryRefusal => self.retry_refusal(&failure, failed).await,
-            Response::Settle { ask_operator } => {
-                self.settle_failed(&failure, failed, ask_operator).await
-            }
+            Response::Settle(for_run) => self.settle_failed(&failure, failed, for_run).await,
         }
     }
 
-    /// The one place a failed try stops its run for the operator.
-    async fn ask_operator(&self, run: &BenchmarkRun) -> Result<()> {
-        self.store.set_run_state(&run.id, "needs_attention").await
+    /// A cell refused before any answer stopped trying by itself: the run
+    /// stops where the refusal is its own, else the cell is left for the
+    /// operator and the run goes on. A runtime the host would not start (a
+    /// sign-in near expiry, a refused preflight) refuses every cell of its
+    /// account, so the account's cells are left with it.
+    async fn stops_trying(&self, failure: &FailedTry<'_>, refused: &Attempt) -> Result<()> {
+        let run = failure.run;
+        if self.refused_from_the_start(&run.id, refused).await? {
+            return self
+                .stop_for_operator(&run.id, Stop::SelectionRefused)
+                .await;
+        }
+        if failure.error.code == "capability_missing" {
+            leave_for_operator(&run.id, &quota_scope(&failure.dispatched.configuration));
+        } else {
+            leave_for_operator(&run.id, &refused.id);
+        }
+        Ok(())
     }
 
     /// Puts the cell back in the queue with `reason`. A workflow root keeps
@@ -427,8 +463,8 @@ impl BenchmarkService {
         self.store.save_attempt(&failed).await
     }
 
-    /// The same attempt goes again on the same account, and at its bound the
-    /// run waits for the operator; the cell is never settled here.
+    /// The same attempt goes again on the same account, and at its bound it
+    /// stops trying by itself; the cell is never settled here.
     async fn try_again(
         &self,
         failure: &FailedTry<'_>,
@@ -437,23 +473,24 @@ impl BenchmarkService {
     ) -> Result<()> {
         let error = failure.error;
         let tries = failed.pre_answer_refusals + u32::from(!busy);
-        requeue(
-            &mut failed,
-            format!("{PRE_ANSWER_RETRIED} {}", error.message),
-        );
+        let done = !busy && tries >= pre_answer_limit(error);
+        requeue(&mut failed, error.message.clone());
         failed.pre_answer_refusals = tries;
         drop_collection_clock(&self.store, &mut failed).await?;
-        failed.wait_until = Some(
-            now()
-                + if busy {
-                    ACCOUNT_BUSY_RETRY_MS
-                } else {
-                    PRE_ANSWER_RETRY_MS
-                },
-        );
+        if !done {
+            failed.reason = Some(format!("{PRE_ANSWER_RETRIED} {}", error.message));
+            failed.wait_until = Some(
+                now()
+                    + if busy {
+                        ACCOUNT_BUSY_RETRY_MS
+                    } else {
+                        PRE_ANSWER_RETRY_MS
+                    },
+            );
+        }
         self.store.save_attempt(&failed).await?;
-        if !busy && tries >= pre_answer_limit(error) {
-            self.ask_operator(failure.run).await?;
+        if done {
+            self.stops_trying(failure, &failed).await?;
         }
         self.changed().await;
         Ok(())
@@ -476,7 +513,8 @@ impl BenchmarkService {
     /// A limit that ran out on this account moves the test to another
     /// account of the provider with room, where the run may. Otherwise the
     /// unfinished turn is discarded and the run waits for a reset it can
-    /// reach, or stops for the operator with the reason on the test.
+    /// reach, or leaves the account's tests for the operator, with the
+    /// reason on this one, and goes on with its other accounts.
     async fn wait_for_quota(
         &self,
         failure: &FailedTry<'_>,
@@ -527,7 +565,7 @@ impl BenchmarkService {
         }
         let plan = quota_plan(&run.id, &quota_scope(asked), &message, now());
         let reason = match plan {
-            QuotaPlan::Stop => {
+            QuotaPlan::LeaveForOperator => {
                 let stopped = if refused_for_good(&error.message) {
                     QUOTA_REFUSED
                 } else {
@@ -543,9 +581,6 @@ impl BenchmarkService {
             failed.wait_until = Some(until);
         }
         self.store.save_attempt(&failed).await?;
-        if plan == QuotaPlan::Stop {
-            self.ask_operator(run).await?;
-        }
         self.changed().await;
         Ok(())
     }
@@ -567,25 +602,25 @@ impl BenchmarkService {
     /// session lost at open) is one try's until it repeats: the cell goes
     /// again after a pause. At its bound, at once for a runtime the host
     /// would not start or a workflow root (whose steps are not tried apart),
-    /// and when the run's selection was refused from its start, the run
-    /// waits for the operator with the bare refusal on the cell.
+    /// and when the run's selection was refused from its start, it stops
+    /// trying by itself, with the bare refusal on the cell.
     async fn retry_refusal(&self, failure: &FailedTry<'_>, mut failed: Attempt) -> Result<()> {
         let error = failure.error;
         self.back_in_queue(failure, &mut failed, error.message.clone())
             .await?;
         failed.pre_answer_refusals = failed.pre_answer_refusals.saturating_add(1);
-        let stop = failure.workflow()
+        let done = failure.workflow()
             || failed.pre_answer_refusals >= pre_answer_limit(error)
             || self
                 .refused_from_the_start(&failure.run.id, &failed)
                 .await?;
-        if !stop {
+        if !done {
             failed.reason = Some(format!("{PRE_ANSWER_RETRIED} {}", error.message));
             failed.wait_until = Some(now() + PRE_ANSWER_RETRY_MS);
         }
         self.store.save_attempt(&failed).await?;
-        if stop {
-            self.ask_operator(failure.run).await?;
+        if done {
+            self.stops_trying(failure, &failed).await?;
         }
         self.changed().await;
         Ok(())
@@ -596,7 +631,7 @@ impl BenchmarkService {
         &self,
         failure: &FailedTry<'_>,
         mut failed: Attempt,
-        ask_operator: bool,
+        for_run: ForRun,
     ) -> Result<()> {
         let (outcome, reason) = settled_failure(&failed, failure.error);
         failed.phase = "terminal".into();
@@ -604,10 +639,14 @@ impl BenchmarkService {
         failed.reason = Some(reason);
         failed.finished_at = Some(now());
         self.store.save_attempt(&failed).await?;
-        if ask_operator {
-            self.ask_operator(failure.run).await?;
+        match for_run {
+            ForRun::Nothing => Ok(()),
+            ForRun::Lost => {
+                let scope = quota_scope(&failure.dispatched.configuration);
+                self.cell_lost(failure.run, &scope).await
+            }
+            ForRun::Stop(why) => self.stop_for_operator(&failure.run.id, why).await,
         }
-        Ok(())
     }
 
     /// Whether the refusal of `refused` before any answer reads as its run's
@@ -662,7 +701,10 @@ mod tests {
 
     #[test]
     fn the_response_follows_what_the_try_was_and_what_the_run_allows() {
-        let settle = |ask_operator| Response::Settle { ask_operator };
+        // The cell's own, a cell the run lost, and the run's own.
+        let own = || Response::Settle(ForRun::Nothing);
+        let lost = || Response::Settle(ForRun::Lost);
+        let stop = |why| Response::Settle(ForRun::Stop(why));
         // Under automatic retries.
         assert_eq!(respond(&facts("account_busy")), Response::WaitForSeat);
         assert_eq!(
@@ -693,21 +735,21 @@ mod tests {
                 refused_again: true,
                 ..before_prompt("selection_changed")
             }),
-            settle(false)
+            own()
         );
-        // A turn that ran is its attempt's outcome; only an uncertain
-        // dispatch or a store that failed asks the operator.
-        assert_eq!(respond(&facts("budget_timeout")), settle(false));
-        assert_eq!(respond(&facts("selection_changed")), settle(false));
-        assert_eq!(respond(&facts("dispatch_uncertain")), settle(true));
-        assert_eq!(respond(&facts("storage_unavailable")), settle(true));
+        // A turn that ran is its attempt's outcome. An uncertain dispatch
+        // loses the cell, and a store that failed is the run's own.
+        assert_eq!(respond(&facts("budget_timeout")), own());
+        assert_eq!(respond(&facts("selection_changed")), own());
+        assert_eq!(respond(&facts("dispatch_uncertain")), lost());
+        assert_eq!(respond(&facts("storage_unavailable")), stop(Stop::Storage));
         // A limit after part of the turn was evaluated never discards it.
         assert_eq!(
             respond(&Facts {
                 unevaluated: false,
                 ..facts(QUOTA_WAIT)
             }),
-            settle(false)
+            own()
         );
 
         // Under a run that forbids retries.
@@ -732,27 +774,27 @@ mod tests {
             Response::TryAgain { busy: true }
         );
         // Past its bound, a workflow root, or a deadline that passed: the
-        // operator.
+        // cell is lost.
         assert_eq!(
             respond(&Facts {
                 within_tries: false,
                 ..refused("selection_changed")
             }),
-            settle(true)
+            lost()
         );
         assert_eq!(
             respond(&Facts {
                 workflow: true,
                 ..refused("selection_changed")
             }),
-            settle(true)
+            lost()
         );
         assert_eq!(
             respond(&Facts {
                 admission_open: false,
                 ..refused("selection_changed")
             }),
-            settle(true)
+            lost()
         );
         // It still waits for a usage reset, on the same account, unless the
         // attempt is a workflow root.
@@ -766,21 +808,25 @@ mod tests {
                 returns_to_queue: true,
                 ..forbidden(QUOTA_WAIT)
             }),
-            settle(true)
+            lost()
         );
         assert_eq!(
             respond(&Facts {
                 returns_to_queue: true,
                 ..forbidden(SIGN_IN_WAIT)
             }),
-            settle(true)
+            lost()
         );
-        // A turn that ran settles without the operator, a validation or
-        // evidence failure with them.
-        assert_eq!(respond(&forbidden("budget_timeout")), settle(false));
-        assert_eq!(respond(&forbidden("validation")), settle(true));
-        assert_eq!(respond(&forbidden("evidence_mismatch")), settle(true));
-        assert_eq!(respond(&forbidden("dispatch_deadline")), settle(true));
+        // A turn that ran is the cell's own, a validation or evidence
+        // failure loses it, and a dispatch deadline that passed is the
+        // run's own.
+        assert_eq!(respond(&forbidden("budget_timeout")), own());
+        assert_eq!(respond(&forbidden("validation")), lost());
+        assert_eq!(respond(&forbidden("evidence_mismatch")), lost());
+        assert_eq!(
+            respond(&forbidden("dispatch_deadline")),
+            stop(Stop::DispatchDeadline)
+        );
     }
 
     #[test]
@@ -1086,38 +1132,53 @@ mod tests {
     }
 
     /// Beside attempts the provider did take, one cell refused again and
-    /// again stops the run at its third try, and the same refusal once more
-    /// after the operator's resume settles it.
+    /// again is left for the operator at its third try while the run
+    /// measures its other cells; the run stops once nothing else of it can
+    /// go on, and the same refusal once more after the operator's resume
+    /// settles the cell.
     #[tokio::test]
-    async fn a_cell_refused_three_times_before_dispatch_waits_for_the_operator() {
+    async fn a_cell_refused_three_times_before_dispatch_is_left_for_the_operator() {
         let (dir, s, fake) = setup().await;
+        let mut request = serial_request(&s).await;
+        request.repetitions = 3;
+        request.max_executions = 3;
+        // The provider refuses one cell on each of its tries and takes the
+        // other two beside it.
         fake.refused_selections.store(1, Ordering::SeqCst);
-        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        let run = s.start_run(request).await.unwrap();
         for _ in 0..3 {
             s.tick().await.unwrap();
         }
-        let held = s.store.run(&run.id).await.unwrap();
-        assert_eq!(held.state, "running");
-        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
-        for tries in 2..=3 {
+        assert_eq!(s.store.run_state(&run.id).await.unwrap(), "running");
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        for tries in 2..=PRE_ANSWER_TRIES {
             fake.refused_selections.store(1, Ordering::SeqCst);
             expire_saved_waits(&s, &run.id).await;
-            for _ in 0..2 {
-                s.tick().await.unwrap();
-            }
-            let held = s.store.run(&run.id).await.unwrap();
-            assert!(held.attempts.iter().any(|a| a.pre_answer_refusals == tries));
-            assert_eq!(
-                held.state,
-                if tries < PRE_ANSWER_TRIES {
-                    "running"
-                } else {
-                    "needs_attention"
-                }
-            );
+            s.tick().await.unwrap();
+            let seen = s.store.run(&run.id).await.unwrap();
+            assert!(seen.attempts.iter().any(|a| a.pre_answer_refusals == tries));
         }
+        // Nothing else of the run can go on: it stops, and the refused cell
+        // kept the bare refusal and no wait of its own.
+        s.tick().await.unwrap();
+        let stopped = s.store.run(&run.id).await.unwrap();
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(stopped.state, "needs_attention");
+        let left: Vec<&Attempt> = stopped
+            .attempts
+            .iter()
+            .filter(|a| a.phase == "pending")
+            .collect();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].pre_answer_refusals, PRE_ANSWER_TRIES);
+        assert!(left[0].wait_until.is_none());
+        assert!(left[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| !reason.starts_with(PRE_ANSWER_RETRIED)));
+        // The operator resumed, and the provider refuses the cell as before.
         fake.refused_selections.store(1, Ordering::SeqCst);
-        s.store.set_run_state(&run.id, "running").await.unwrap();
+        s.control(&run.id, "resume").await.unwrap();
         for _ in 0..3 {
             s.tick().await.unwrap();
         }
@@ -1129,7 +1190,7 @@ mod tests {
             .filter(|a| a.outcome.as_deref() == Some("selection_changed"))
             .collect();
         assert_eq!(settled.len(), 1);
-        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
         dir.close().await;
     }
 }

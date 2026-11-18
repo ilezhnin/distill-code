@@ -804,9 +804,10 @@ limit no reset lifts (billing, an account on hold, no credit) settles the
 attempt as it ended, and so does a turn the runner had already stopped itself.
 A limit that names no reset (Claude's stop mid-answer says only "resets 7pm")
 waits until the reset the account's last usage read shows (a weekly window
-read spent makes it a reset the run cannot wait for, so the run stops for the
-operator), or asks again every five minutes where the read shows none. A judge whose turn a limit refused or
-cut off leaves the run's panels until that reset.
+read spent makes it a reset the run cannot wait for, so that account's tests
+are left for the operator while the run goes on with its other accounts), or
+asks again every five minutes where the read shows none. A judge whose turn a
+limit refused or cut off leaves the run's panels until that reset.
 A persisted queue wait survives ticks and application restarts without
 claiming an account seat or preparation slot; eligible candidates and judge
 panels can continue while another account waits. Explicitly resuming a stopped
@@ -862,17 +863,38 @@ A workflow root under it settles with its quota outcome instead, since its
 committed steps are never replayed. A try the provider refused before any
 answer (another model acknowledged at session open, a busy account, a prompt
 the host never dispatched) goes again as the same attempt on the same account
-after five minutes; after three such tries the run waits for the operator, and
-a runtime the host would not start waits for the operator at once. A run with
-automatic retries does the same for a selection the provider would not make
-or a session lost at open (until 11-18 the first one stopped the run: one
-Claude session that could not confirm its model with the API, beside five
-that did), and the run goes on with its other cells meanwhile. When three
+after five minutes; after three such tries the cell is left for the operator,
+and a runtime the host would not start leaves its account's cells for them at
+once. A run with automatic retries does the same for a selection the provider
+would not make or a session lost at open. The run goes on with its other
+cells meanwhile, and stops once nothing else of it can go on. When three
 attempts are refused that way before any attempt of the run was dispatched on
 that selection, the run waits for the operator at once: a model the provider
 no longer offers refuses every session. The same refusal again after the
 operator resumed settles the cell with it; before that the cell is
-never settled by such a refusal. A model write the provider refuses in words
+never settled by such a refusal.
+
+A run stops for the operator in these cases only, and logs each as `run <id>
+waits for the operator: <why>`:
+
+- the store could not keep its results;
+- the provider refused its selection from the first test on;
+- its dispatch deadline passed;
+- tests in a row were lost to a failure that is not their own (an uncertain
+  dispatch; in a run that forbids retries also a validation, evidence or
+  selection failure): five on one account with none measured between them
+  under automatic retries, the first one in a run that forbids retries, where
+  a lost cell is gone for good;
+- nothing of it can go on by itself, and tests are left for the operator: a
+  usage limit out of reach, a refusal that used up its tries, a rendering
+  without a panel.
+
+Everything else is one test's or one account's: it waits, settles, or is left
+for the operator while the run measures the rest. Two stops are not a
+failure's: a restart of the app stops the runs it found running, and a judge
+queue with no completed call for ten minutes pauses its run once nothing else
+of the run goes on (while the run still measures, its answers wait for their
+judges beside it). Resume lets everything that was left ask again. A model write the provider refuses in words
 that ask for another try (Claude Code: "Couldn't confirm model ... with the
 API. Try again, ...") is first sent again in the same session, after two and
 then five seconds, and counts as a refusal only when the third answer is the

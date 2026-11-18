@@ -142,14 +142,17 @@ fn own_work_in_flight(run: &BenchmarkRun) -> bool {
     })
 }
 
-fn queue_since(attempt: &Attempt, progress: Option<i64>, own_work: bool, at: i64) -> Option<i64> {
+fn queue_since(attempt: &Attempt, progress: Option<i64>, going: bool, at: i64) -> Option<i64> {
     if attempt.phase != AWAITING_JUDGES
         || judge_quota_waiting(attempt)
         // The automatic sandbox check has its own deadline and failure wait.
         || judge_policy_waiting(attempt)
-        // A judge waiting for room the run's own attempts hold gets it when
-        // they finish; a pause would free nothing and stop the judge too.
-        || (own_work && judge_discovery_waiting(attempt))
+        // While the run still measures, its answers wait for their judges
+        // beside it: a judge waiting for room or a seat the run's own
+        // attempts hold gets it when they finish, and a pause would free
+        // nothing and stop the judge too. The queue's time starts once
+        // nothing else of the run goes on.
+        || going
         || crate::services::benchmarks::analysis::score(attempt).is_some()
     {
         return None;
@@ -168,9 +171,21 @@ fn queue_since(attempt: &Attempt, progress: Option<i64>, own_work: bool, at: i64
     )
 }
 
+/// Whether anything of the run but its waiting judges still goes on by
+/// itself: an attempt under way, or a cell in the queue that is not left for
+/// the operator.
+fn goes_on(run: &BenchmarkRun) -> bool {
+    own_work_in_flight(run)
+        || run
+            .attempts
+            .iter()
+            .any(|attempt| attempt.phase == "pending" && !left_for_operator(attempt))
+}
+
 /// A long backlog is healthy while judges finish calls. Ten minutes with no
-/// such progress requests a normal pause, preserving all pending work and paid
-/// evidence. Other runs continue; the operator can resume this exact run.
+/// such progress and nothing else of the run going on request a normal
+/// pause, preserving all pending work and paid evidence. Other runs
+/// continue; the operator can resume this exact run.
 pub(in super::super) async fn check_queue(
     service: &BenchmarkService,
     run: &BenchmarkRun,
@@ -180,13 +195,13 @@ pub(in super::super) async fn check_queue(
         return Ok(false);
     }
     let progress = last_progress(run);
-    let own_work = own_work_in_flight(run);
+    let going = goes_on(run);
     let active = run
         .attempts
         .iter()
         .any(|attempt| Progress::read(attempt).in_flight);
     for original in run.attempts.iter().filter(|a| a.phase == AWAITING_JUDGES) {
-        let since = queue_since(original, progress, own_work, at);
+        let since = queue_since(original, progress, going, at);
         let previous = original
             .phase_times
             .as_ref()
@@ -205,7 +220,7 @@ pub(in super::super) async fn check_queue(
             continue;
         };
         let mut attempt = service.store.attempt(&original.id).await?;
-        let since = queue_since(&attempt, progress, own_work, at);
+        let since = queue_since(&attempt, progress, going, at);
         let previous = attempt
             .phase_times
             .as_ref()
@@ -219,7 +234,7 @@ pub(in super::super) async fn check_queue(
             if current.state != "running"
                 || last_progress(&current).is_some_and(|last| last > since)
                 || current.attempts.iter().any(|a| Progress::read(a).in_flight)
-                || (own_work_in_flight(&current) && judge_discovery_waiting(&attempt))
+                || goes_on(&current)
             {
                 continue;
             }
