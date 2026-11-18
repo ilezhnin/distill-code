@@ -19,6 +19,9 @@ mod tests;
 /// The status of a first qualification an interruption stopped before any
 /// verdict; its request goes on with it.
 const INTERRUPTED: &str = "interrupted";
+/// How often a running qualification that another writer keeps changing is
+/// read again before its interruption gives up.
+const INTERRUPTION_TRIES: u32 = 8;
 /// Admission may wait before a call starts, but may not reserve the only
 /// qualification forever. A timeout leaves it for an explicit resume.
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -859,32 +862,48 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         for id in ids {
-            let mut record = self.qualification(&id).await?;
-            if resumable(&record) && !self.qualification_stopped(&id).await? {
-                self.interrupt_qualification(&mut record).await?;
-                continue;
-            }
-            record.failure.get_or_insert_with(|| "Application restarted before the first qualification settled; partial judge evidence and unknown usage are preserved without replay".into());
-            self.finish_qualification(&mut record).await?;
+            self.settle_running_qualification(&id, || {
+                "Application restarted before the first qualification settled; partial judge evidence and unknown usage are preserved without replay".into()
+            })
+            .await?;
         }
         Ok(())
     }
     /// Settles what an error left of the running first qualification `id`:
     /// interrupted when nothing decided it, failed otherwise.
     pub(super) async fn stop_qualification(&self, id: &str, error: &BenchmarkError) -> Result<()> {
-        let mut record = self.qualification(id).await?;
-        if record.status != "reserved" {
-            return Ok(());
-        }
-        if resumable(&record) && !self.qualification_stopped(id).await? {
-            return self.interrupt_qualification(&mut record).await;
-        }
-        record
-            .failure
-            .get_or_insert_with(|| format!("{}: {}", error.code, error.message));
-        self.finish_qualification(&mut record).await
+        self.settle_running_qualification(id, || format!("{}: {}", error.code, error.message))
+            .await
     }
-    async fn interrupt_qualification(&self, record: &mut Record) -> Result<()> {
+    /// Interrupts or fails the first qualification `id` while it still runs.
+    /// Its own task may write the record meanwhile: one that changed under
+    /// the interruption is read and decided again, a few times.
+    async fn settle_running_qualification(
+        &self,
+        id: &str,
+        failure: impl Fn() -> String,
+    ) -> Result<()> {
+        for _ in 0..INTERRUPTION_TRIES {
+            let mut record = self.qualification(id).await?;
+            if record.status != "reserved" {
+                return Ok(());
+            }
+            if resumable(&record) && !self.qualification_stopped(id).await? {
+                if self.interrupt_qualification(&mut record).await? {
+                    return Ok(());
+                }
+                continue;
+            }
+            record.failure.get_or_insert_with(&failure);
+            return self.finish_qualification(&mut record).await;
+        }
+        Err(invalid(
+            "Qualification changed before it could be interrupted",
+        ))
+    }
+    /// Marks the running `record` interrupted. False when another writer
+    /// changed it first: the caller reads it again.
+    async fn interrupt_qualification(&self, record: &mut Record) -> Result<bool> {
         let held = hash(record)?;
         record.status = INTERRUPTED.into();
         for control in &mut record.controls {
@@ -895,13 +914,11 @@ impl Store {
             .bind(&record.status).bind(serde_json::to_string(record)?).bind(hash(record)?).bind(&record.id).bind(held)
             .execute(&mut *tx).await?.rows_affected();
         if updated != 1 {
-            return Err(invalid(
-                "Qualification changed before it could be interrupted",
-            ));
+            return Ok(false);
         }
         event(&mut tx, &record.id, "qualification_interrupted").await?;
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
     /// Takes up the interrupted `record` as `resumed`, unless it was revoked
     /// or another request took it up first.
