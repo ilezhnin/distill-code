@@ -863,8 +863,20 @@ committed steps are never replayed. A try the provider refused before any
 answer (another model acknowledged at session open, a busy account, a prompt
 the host never dispatched) goes again as the same attempt on the same account
 after five minutes; after three such tries the run waits for the operator, and
-a runtime the host would not start waits for the operator at once. The cell is
-never settled by such a refusal. An answer the provider's CLI cut off at its own
+a runtime the host would not start waits for the operator at once. A run with
+automatic retries does the same for a selection the provider would not make
+or a session lost at open (until 11-18 the first one stopped the run: one
+Claude session that could not confirm its model with the API, beside five
+that did), and the run goes on with its other cells meanwhile. When three
+attempts are refused that way before any attempt of the run was dispatched on
+that selection, the run waits for the operator at once: a model the provider
+no longer offers refuses every session. The same refusal again after the
+operator resumed settles the cell with it; before that the cell is
+never settled by such a refusal. A model write the provider refuses in words
+that ask for another try (Claude Code: "Couldn't confirm model ... with the
+API. Try again, ...") is first sent again in the same session, after two and
+then five seconds, and counts as a refusal only when the third answer is the
+same. An answer the provider's CLI cut off at its own
 output-token maximum is the model's own: it settles as a budget failure scored
 zero. OpenCode (Z.ai) gives no error for such a cut; a last request whose
 output and reasoning reach its maximum is read as one (see [Z.ai](zai.md)).

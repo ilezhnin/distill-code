@@ -2669,6 +2669,11 @@ pub(super) async fn reset_account_waits(store: &Store, run: &BenchmarkRun) -> Re
 const PRE_ANSWER_TRIES: u32 = 3;
 /// How long a try refused before any answer waits before the next one.
 const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
+/// What the reason of a cell refused before any answer starts with while it
+/// waits for its next try; the refusal's own words follow. At the bound the
+/// cell keeps the bare refusal, so the same one after the operator's resume
+/// reads as `refused_again` and settles it.
+const PRE_ANSWER_RETRIED: &str = "Refused before any answer; tried again.";
 
 /// Refusals before any answer a cell goes back with before the operator is
 /// asked: a runtime the host would not start needs the operator at once.
@@ -10255,7 +10260,7 @@ impl BenchmarkService {
                     let tries = failed.pre_answer_refusals + u32::from(!busy);
                     requeue(
                         &mut failed,
-                        format!("Refused before any answer; tried again. {}", error.message),
+                        format!("{PRE_ANSWER_RETRIED} {}", error.message),
                     );
                     failed.pre_answer_refusals = tries;
                     drop_collection_clock(&self.store, &mut failed).await?;
@@ -10291,10 +10296,13 @@ impl BenchmarkService {
                 // A turn the provider never saw keeps its cell: a quota wait
                 // holds the run until the reset, a sign-in wait until the
                 // Grok CLI renews the sign-in, and a refusal before the
-                // prompt (a model the provider would not select, a runtime,
-                // sign-in or policy the host would not start) waits for the
-                // operator with its reason. The same refusal again after the
-                // operator resumed settles the cell instead.
+                // prompt (a model the provider would not select, a session
+                // lost at open) is tried again after a while, a few times,
+                // while the run goes on with its other cells; at the bound,
+                // or at once for a runtime, sign-in or policy the host would
+                // not start, it waits for the operator with its reason. The
+                // same refusal again after the operator resumed settles the
+                // cell instead.
                 // A limit that ran out on this account moves the test to
                 // another account of the provider with room, if there is one.
                 // A limit that names no reset (Claude's stop mid-answer says
@@ -10394,7 +10402,29 @@ impl BenchmarkService {
                             failed.wait_until = Some(until);
                         }
                         Some(QuotaPlan::Stop) => stop = true,
-                        None if error.code != SIGN_IN_WAIT => stop = true,
+                        // A refusal before the prompt. The first one stopped
+                        // the run: on 11-18 one Claude session of six could
+                        // not confirm its model with the API ("Try again"),
+                        // beside five that did, and a run of 1035 attempts
+                        // stood a minute after its start. The cell now goes
+                        // again under the bound a run that forbids retries
+                        // has, unless the run's selection was refused from
+                        // its start; a workflow root, whose steps are not
+                        // tried apart, still asks the operator at once.
+                        None if error.code != SIGN_IN_WAIT => {
+                            failed.pre_answer_refusals =
+                                failed.pre_answer_refusals.saturating_add(1);
+                            if version.manifest.workflow.is_some()
+                                || failed.pre_answer_refusals >= pre_answer_limit(&error)
+                                || self.refused_from_the_start(&run.id, &failed).await?
+                            {
+                                stop = true;
+                            } else {
+                                failed.reason =
+                                    Some(format!("{PRE_ANSWER_RETRIED} {}", error.message));
+                                failed.wait_until = Some(now() + PRE_ANSWER_RETRY_MS);
+                            }
+                        }
                         None => failed.wait_until = Some(sign_in_retry(&run.id, provider)),
                     }
                     self.store.save_attempt(&failed).await?;
@@ -10428,6 +10458,32 @@ impl BenchmarkService {
             }
         }
         Ok(())
+    }
+    /// Whether the refusal of `refused` before any answer reads as its run's
+    /// own, not one try's: no attempt of the run on the same selection was
+    /// ever dispatched, and `PRE_ANSWER_TRIES` of them were refused. A model
+    /// the provider no longer offers refuses every session; trying each cell
+    /// in turn would open hundreds of sessions before one cell reached its
+    /// own bound.
+    async fn refused_from_the_start(&self, run_id: &str, refused: &Attempt) -> Result<bool> {
+        let asked = &refused.configuration;
+        let mut cells = 1;
+        for other in self.store.run(run_id).await?.attempts {
+            let selection = &other.configuration;
+            if other.id == refused.id
+                || selection.provider_id != asked.provider_id
+                || selection.model_id != asked.model_id
+                || selection.effort != asked.effort
+                || selection.fast_mode != asked.fast_mode
+            {
+                continue;
+            }
+            if other.host_run_id.is_some() {
+                return Ok(false);
+            }
+            cells += u32::from(other.pre_answer_refusals > 0);
+        }
+        Ok(cells >= PRE_ANSWER_TRIES)
     }
     /// Opens an idle credit for a workflow root that goes back to the queue
     /// with its native root clock running, so the wait is not spent from its
@@ -15806,19 +15862,133 @@ mod tests {
             .all(|a| a.phase == "terminal" && a.outcome.as_deref() != Some(QUOTA_WAIT)));
         dir.close().await;
     }
+    /// One refusal before the prompt is one try's, not the run's: on 11-18
+    /// one Claude session of six could not confirm its model with the API
+    /// beside five that did, and the run stopped a minute after its start.
+    /// The cell waits and goes again, and the run goes on.
     #[tokio::test]
-    async fn a_selection_refused_before_dispatch_keeps_the_cell_for_the_operator() {
+    async fn a_selection_refused_once_before_dispatch_is_tried_again() {
         let (dir, s, fake) = setup().await;
         fake.refused_selections.store(1, Ordering::SeqCst);
         let run = s.start_run(serial_request(&s).await).await.unwrap();
         s.tick().await.unwrap();
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        let refused: Vec<&Attempt> = held
+            .attempts
+            .iter()
+            .filter(|a| a.pre_answer_refusals > 0)
+            .collect();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].pre_answer_refusals, 1);
+        assert!(refused[0].phase == "pending" && refused[0].observed.is_none());
+        assert!(refused[0].wait_until.is_some_and(|until| until > now()));
+        assert!(refused[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with(PRE_ANSWER_RETRIED)));
+        expire_saved_waits(&s, &run.id).await;
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert!(done
+            .attempts
+            .iter()
+            .all(|a| a.phase == "terminal" && a.outcome.as_deref() != Some("selection_changed")));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+        dir.close().await;
+    }
+    /// A selection no session of the run ever acknowledged is the run's own
+    /// refusal: the third cell refused stops the run for the operator, before
+    /// every remaining cell opens a session to be refused in its turn.
+    #[tokio::test]
+    async fn a_selection_refused_from_the_start_stops_at_the_third_cell() {
+        let (dir, s, fake) = setup().await;
+        fake.refused_selections.store(3, Ordering::SeqCst);
+        let mut request = serial_request(&s).await;
+        request.repetitions = 3;
+        request.max_executions = 3;
+        let run = s.start_run(request).await.unwrap();
+        for _ in 0..4 {
+            s.tick().await.unwrap();
+        }
         let stopped = s.store.run(&run.id).await.unwrap();
         assert_eq!(stopped.state, "needs_attention");
         assert!(stopped
             .attempts
             .iter()
-            .all(|a| a.phase == "pending" && a.observed.is_none()));
+            .all(|a| a.phase == "pending" && a.pre_answer_refusals == 1 && a.outcome.is_none()));
+        // Two wait for their next try; the third keeps the bare refusal the
+        // operator reads.
+        let waiting = stopped
+            .attempts
+            .iter()
+            .filter(|a| a.wait_until.is_some())
+            .count();
+        assert_eq!(waiting, 2);
+        assert!(stopped.attempts.iter().any(|a| a.wait_until.is_none()
+            && a.reason
+                .as_deref()
+                .is_some_and(|reason| !reason.starts_with(PRE_ANSWER_RETRIED))));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+        // The operator resumed and the provider takes the selection now.
+        s.store.set_run_state(&run.id, "running").await.unwrap();
+        expire_saved_waits(&s, &run.id).await;
+        for _ in 0..5 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 3);
+        dir.close().await;
+    }
+    /// Beside attempts the provider did take, one cell refused again and
+    /// again stops the run at its third try, and the same refusal once more
+    /// after the operator's resume settles it.
+    #[tokio::test]
+    async fn a_cell_refused_three_times_before_dispatch_waits_for_the_operator() {
+        let (dir, s, fake) = setup().await;
+        fake.refused_selections.store(1, Ordering::SeqCst);
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let held = s.store.run(&run.id).await.unwrap();
+        assert_eq!(held.state, "running");
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        for tries in 2..=3 {
+            fake.refused_selections.store(1, Ordering::SeqCst);
+            expire_saved_waits(&s, &run.id).await;
+            for _ in 0..2 {
+                s.tick().await.unwrap();
+            }
+            let held = s.store.run(&run.id).await.unwrap();
+            assert!(held.attempts.iter().any(|a| a.pre_answer_refusals == tries));
+            assert_eq!(
+                held.state,
+                if tries < PRE_ANSWER_TRIES {
+                    "running"
+                } else {
+                    "needs_attention"
+                }
+            );
+        }
+        fake.refused_selections.store(1, Ordering::SeqCst);
+        s.store.set_run_state(&run.id, "running").await.unwrap();
+        for _ in 0..3 {
+            s.tick().await.unwrap();
+        }
+        let done = s.store.run(&run.id).await.unwrap();
+        assert_eq!(done.state, "completed");
+        let settled: Vec<&Attempt> = done
+            .attempts
+            .iter()
+            .filter(|a| a.outcome.as_deref() == Some("selection_changed"))
+            .collect();
+        assert_eq!(settled.len(), 1);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
         dir.close().await;
     }
     /// A sign-in near expiry, a refused preflight or a missing runtime stops

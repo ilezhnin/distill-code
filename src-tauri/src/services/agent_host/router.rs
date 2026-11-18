@@ -141,6 +141,26 @@ fn owned_prompt_params(
     json!({"sessionId":session_id,"prompt":blocks,"_meta":meta})
 }
 
+/// How long a model write waits before it is sent again, in the same session,
+/// when the provider's refusal itself says to try again. Claude Code confirms
+/// a model with the API when a session is put on it and answers "Couldn't
+/// confirm model ... with the API. Try again, or run /model ..." when that
+/// call fails: on 11-18 two benchmark runs stopped within a minute of their
+/// start on one such refusal each, beside sessions that took the same model.
+#[cfg(not(test))]
+const MODEL_RETRY_PAUSES: [std::time::Duration; 2] = [
+    std::time::Duration::from_secs(2),
+    std::time::Duration::from_secs(5),
+];
+#[cfg(test)]
+const MODEL_RETRY_PAUSES: [std::time::Duration; 2] = [std::time::Duration::from_millis(1); 2];
+
+/// Whether a refusal asks, in the provider's own words, for the same request
+/// again.
+fn asks_again(error: &Value) -> bool {
+    error_text(error).to_ascii_lowercase().contains("try again")
+}
+
 /// The error kind an owned turn settles with when its terminal check fails: a
 /// broken no-tool policy is its own outcome, any other failure a selection
 /// the bridge did not keep.
@@ -5564,7 +5584,21 @@ impl Inner {
                 if offered {
                     let request =
                         json!({ "configId": Self::model_option_id(snapshot), "value": model_id });
-                    match write(OptionRole::Model, request).await {
+                    let mut answer = write(OptionRole::Model, request.clone()).await;
+                    // A refusal that says to try again is no substitution
+                    // yet: the same write goes again in this session.
+                    for pause in MODEL_RETRY_PAUSES {
+                        if !answer.as_ref().is_err_and(asks_again) {
+                            break;
+                        }
+                        log::info!(
+                            "[agent-host] {harness_id} asks to try {model_id} again; asking in {} ms",
+                            pause.as_millis()
+                        );
+                        tokio::time::sleep(pause).await;
+                        answer = write(OptionRole::Model, request.clone()).await;
+                    }
+                    match answer {
                         Ok(answer) => {
                             Self::take_options(snapshot, &answer);
                             Self::capture_reported(snapshot, &answer, Some(OptionRole::Model));
@@ -12571,6 +12605,74 @@ mod tests {
         assert_eq!(refused[0]["role"], "model");
         assert_eq!(refused[0]["applied"], "default");
         assert_eq!(untouched, opened());
+    }
+
+    #[tokio::test]
+    async fn a_model_the_provider_says_to_try_again_is_asked_again_in_its_session() {
+        // 11-18: one Claude session of a run could not confirm its model with
+        // the API beside others that did, and the refusal stopped the run.
+        let opened = || {
+            json!({
+                "models": Value::Null,
+                "configOptions": claude_answer("default", Some("high"), EVERY_EFFORT, Some(false))["configOptions"],
+            })
+        };
+        let wanted = Selection {
+            model: Some("claude-opus-4-6".to_string()),
+            effort: None,
+            fast: None,
+        };
+        let try_again = || {
+            protocol::internal(
+                "Couldn't confirm model \"claude-opus-4-6\" with the API. Try again, or run /model to see available models.",
+            )
+        };
+        // Refused once, taken the second time: nothing was substituted.
+        let mut snapshot = opened();
+        let asked = StdMutex::new(0u32);
+        let substitutions =
+            Inner::apply_selection("claude-acp", &mut snapshot, &wanted, true, |_, _| {
+                let mut asked = asked.lock().expect("asked");
+                *asked += 1;
+                let answer = if *asked == 1 {
+                    Err(try_again())
+                } else {
+                    Ok(claude_answer("claude-opus-4-6", Some("default"), NO_XHIGH, None))
+                };
+                async move { answer }
+            })
+            .await;
+        assert_eq!(*asked.lock().expect("asked"), 2);
+        assert!(substitutions.is_empty(), "{substitutions:?}");
+        assert_eq!(
+            Inner::current_model(&snapshot).as_deref(),
+            Some("claude-opus-4-6")
+        );
+        // Refused every time: asked three times, then the refusal stands.
+        let mut snapshot = opened();
+        let asked = StdMutex::new(0u32);
+        let substitutions =
+            Inner::apply_selection("claude-acp", &mut snapshot, &wanted, true, |_, _| {
+                *asked.lock().expect("asked") += 1;
+                let answer = Err(try_again());
+                async move { answer }
+            })
+            .await;
+        assert_eq!(*asked.lock().expect("asked"), 3);
+        assert_eq!(substitutions.len(), 1, "{substitutions:?}");
+        assert_eq!(substitutions[0]["role"], "model");
+        assert_eq!(substitutions[0]["requested"], "claude-opus-4-6");
+        // A refusal that does not ask for another try is written once.
+        let mut snapshot = opened();
+        let asked = StdMutex::new(0u32);
+        let substitutions =
+            Inner::apply_selection("claude-acp", &mut snapshot, &wanted, true, |_, _| {
+                *asked.lock().expect("asked") += 1;
+                async { Err(protocol::internal("Invalid params")) }
+            })
+            .await;
+        assert_eq!(*asked.lock().expect("asked"), 1);
+        assert_eq!(substitutions.len(), 1, "{substitutions:?}");
     }
 
     #[tokio::test]

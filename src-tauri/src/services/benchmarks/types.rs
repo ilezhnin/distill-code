@@ -777,9 +777,9 @@ pub struct Attempt {
     /// knows: a usage limit's reset or retry, a sign-in's renewal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_until: Option<i64>,
-    /// Tries of this attempt the provider refused before any answer under a
-    /// run that forbids retries. Kept with the attempt, so an operator's
-    /// resume never resets the bound on in-place retries.
+    /// Tries of this attempt the provider refused before any answer. Kept
+    /// with the attempt, so an operator's resume never resets the bound on
+    /// in-place retries.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pre_answer_refusals: u32,
     /// Tries of this repetition an infrastructure failure ended that its run
