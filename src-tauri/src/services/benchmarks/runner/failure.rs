@@ -185,6 +185,117 @@ pub(in crate::services::benchmarks) fn requeue(attempt: &mut Attempt, reason: St
     attempt.wait_until = None;
 }
 
+/// How the run answers a failed try that a provider saw, or that could not be
+/// forgotten.
+#[derive(Debug, PartialEq, Eq)]
+enum Response {
+    /// Refused before any answer under a run that forbids retries: the same
+    /// attempt again after a pause, up to its bound. A busy account is waited
+    /// out and never counts toward it.
+    TryAgain { busy: bool },
+    /// The account had no free seat: asked again shortly.
+    WaitForSeat,
+    /// A usage limit before anything of the turn was evaluated: another
+    /// account with room where the run may move the test, else the reset the
+    /// run can reach.
+    WaitForQuota { may_move: bool },
+    /// The Grok CLI renews the sign-in later.
+    WaitForSignIn,
+    /// Refused before the prompt under automatic retries: again after a
+    /// pause, up to the bound, while the run goes on with its other cells.
+    RetryRefusal,
+    /// The try is the attempt's outcome.
+    Settle { ask_operator: bool },
+}
+
+/// What the response is decided on, read from the try and its run.
+struct Facts<'a> {
+    code: &'a str,
+    /// The run retries by itself and may still dispatch.
+    retry_allowed: bool,
+    /// The run's dispatch deadline has not passed.
+    admission_open: bool,
+    workflow: bool,
+    /// Nothing of the turn was evaluated.
+    unevaluated: bool,
+    /// See [`refused_before_answer`].
+    refused_before_answer: bool,
+    /// See [`within_pre_answer_tries`].
+    within_tries: bool,
+    /// See [`returns_to_queue`].
+    returns_to_queue: bool,
+    /// See [`refused_again`].
+    refused_again: bool,
+}
+
+/// Failures that need the operator under a run that forbids retries, beside
+/// those that return to the queue.
+const OPERATOR_CODES: [&str; 5] = [
+    "account_busy",
+    "dispatch_deadline",
+    "selection_changed",
+    "validation",
+    "evidence_mismatch",
+];
+/// Failures that need the operator under every retry policy.
+const ALWAYS_OPERATOR_CODES: [&str; 2] = ["dispatch_uncertain", "storage_unavailable"];
+
+/// The response to a failed try. A turn the provider never saw keeps its
+/// cell: a quota wait holds it until the reset, a sign-in wait until the CLI
+/// renews the sign-in, a refusal before the prompt goes again a few times.
+/// The same refusal again after the operator resumed settles the cell.
+fn respond(facts: &Facts) -> Response {
+    if !facts.retry_allowed
+        && !facts.workflow
+        && facts.admission_open
+        && facts.refused_before_answer
+        && facts.within_tries
+    {
+        return Response::TryAgain {
+            busy: facts.code == "account_busy",
+        };
+    }
+    if facts.retry_allowed && facts.code == "account_busy" {
+        return Response::WaitForSeat;
+    }
+    if facts.code == QUOTA_WAIT {
+        // A run that forbids retries never moves the test to another
+        // account, and settles a workflow root, whose committed steps it
+        // never replays.
+        if facts.unevaluated && facts.admission_open && (facts.retry_allowed || !facts.workflow) {
+            return Response::WaitForQuota {
+                may_move: facts.retry_allowed,
+            };
+        }
+    } else if facts.retry_allowed && facts.returns_to_queue && !facts.refused_again {
+        return if facts.code == SIGN_IN_WAIT {
+            Response::WaitForSignIn
+        } else {
+            Response::RetryRefusal
+        };
+    }
+    Response::Settle {
+        ask_operator: (!facts.retry_allowed
+            && (facts.returns_to_queue || OPERATOR_CODES.contains(&facts.code)))
+            || ALWAYS_OPERATOR_CODES.contains(&facts.code),
+    }
+}
+
+/// A failed try with what it belongs to.
+struct FailedTry<'a> {
+    run: &'a BenchmarkRun,
+    /// The attempt as it was dispatched.
+    dispatched: &'a Attempt,
+    version: &'a BenchmarkVersion,
+    error: &'a BenchmarkError,
+}
+
+impl FailedTry<'_> {
+    fn workflow(&self) -> bool {
+        self.version.manifest.workflow.is_some()
+    }
+}
+
 impl BenchmarkService {
     /// Settles the try of `a` that ended with `error`: back to the queue, on
     /// to another account, or settled with its outcome; and the run, where
@@ -196,7 +307,7 @@ impl BenchmarkService {
         version: &BenchmarkVersion,
         error: BenchmarkError,
     ) -> Result<()> {
-        let mut failed = self.store.attempt(&a.id).await?;
+        let failed = self.store.attempt(&a.id).await?;
         let error = diagnostics::record(
             &self.store,
             &failed,
@@ -206,126 +317,172 @@ impl BenchmarkService {
             json!({"sessionId": failed.session_id, "hostRunId": failed.host_run_id}),
         )
         .await;
-        if never_started(&failed, &error)
-            && run.request.require_dispatch_admission(now()).is_ok()
-            && self.forget_unstarted_try(&failed, &version).await?
-        {
-            // This is unstarted admission at whatever stage it was
-            // refused, under every retry policy, including research
-            // runs that forbid replay. No paid execution is retried,
-            // and the cell is neither an attempt nor a failure.
-            if error.code == SIGN_IN_WAIT {
-                requeue(&mut failed, error.message.clone());
-                failed.wait_until =
-                    Some(sign_in_retry(&run.id, &a.configuration.provider_id));
-            } else {
-                // Refused for room at whatever stage (the host's
-                // preparation queue, a copy, the Windows floors, the
-                // broker): the attempts prepared next are paced as
-                // after any sandbox refusal.
-                admission_window::refused(&self.store.root.display().to_string(), &a.id);
-                requeue(
-                    &mut failed,
-                    format!("Waiting for local resources: {}", error.message),
-                );
-                failed.wait_until =
-                    Some(now() + admission_window::RETRY.as_millis() as i64);
-            }
-            failed.workflow_steps.clear();
-            if version.manifest.workflow.is_none() {
-                drop_collection_clock(&self.store, &mut failed).await?;
-            }
-            // The flight's end tells the app, once.
-            self.store.save_attempt(&failed).await?;
-            return Ok(());
-        }
-        let retry_allowed = run.request.automatic_retry()
-            && run.request.require_dispatch_admission(now()).is_ok();
-        // A usage limit that stopped the turn before anything of it
-        // was evaluated waits for the reset under every retry policy:
-        // the unfinished turn is discarded and the same attempt goes
-        // again. A run that forbids retries never moves it to another
-        // account, and settles a workflow root, whose committed steps
-        // it never replays.
-        let waits_for_quota = error.code == QUOTA_WAIT
-            && failed.evaluations.is_empty()
-            && run.request.require_dispatch_admission(now()).is_ok()
-            && (retry_allowed || version.manifest.workflow.is_none());
-        let back_to_queue = if error.code == QUOTA_WAIT {
-            waits_for_quota
-        } else {
-            retry_allowed
+        let failure = FailedTry {
+            run,
+            dispatched: a,
+            version,
+            error: &error,
         };
-        // A run that forbids retries replays no answer, but a try the
-        // provider refused before answering anything is no answer: the
-        // same attempt goes again on the same account, a few times,
-        // then waits for the operator, never settling the cell.
-        if !retry_allowed
-            && version.manifest.workflow.is_none()
-            && run.request.require_dispatch_admission(now()).is_ok()
-            && refused_before_answer(&failed, &error)
-            && within_pre_answer_tries(&failed, &error)
+        let admission_open = run.request.require_dispatch_admission(now()).is_ok();
+        // A try no provider saw counts for nothing under every retry policy,
+        // research runs that forbid replay included: no paid execution is
+        // retried, and the cell is neither an attempt nor a failure.
+        if never_started(&failed, &error)
+            && admission_open
+            && self.forget_unstarted_try(&failed, version).await?
         {
-            // A busy account is waited out like under automatic
-            // retries and never counts toward the bound.
-            let busy = error.code == "account_busy";
-            let tries = failed.pre_answer_refusals + u32::from(!busy);
-            requeue(
-                &mut failed,
-                format!("{PRE_ANSWER_RETRIED} {}", error.message),
-            );
-            failed.pre_answer_refusals = tries;
-            drop_collection_clock(&self.store, &mut failed).await?;
-            failed.wait_until = Some(
-                now()
-                    + if busy {
-                        ACCOUNT_BUSY_RETRY_MS
-                    } else {
-                        PRE_ANSWER_RETRY_MS
-                    },
-            );
-            self.store.save_attempt(&failed).await?;
-            if !busy && tries >= pre_answer_limit(&error) {
-                self.store.set_run_state(&run.id, "needs_attention").await?;
-            }
-            self.changed().await;
-            return Ok(());
+            return self.wait_unstarted(&failure, failed).await;
         }
-        if retry_allowed && error.code == "account_busy" {
+        let facts = Facts {
+            code: &error.code,
+            retry_allowed: run.request.automatic_retry() && admission_open,
+            admission_open,
+            workflow: failure.workflow(),
+            unevaluated: failed.evaluations.is_empty(),
+            refused_before_answer: refused_before_answer(&failed, &error),
+            within_tries: within_pre_answer_tries(&failed, &error),
+            returns_to_queue: returns_to_queue(&error.code, &failed.phase),
+            refused_again: refused_again(a, &error),
+        };
+        match respond(&facts) {
+            Response::TryAgain { busy } => self.try_again(&failure, failed, busy).await,
+            Response::WaitForSeat => self.wait_for_seat(&failure, failed).await,
+            Response::WaitForQuota { may_move } => {
+                self.wait_for_quota(&failure, failed, may_move).await
+            }
+            Response::WaitForSignIn => self.wait_for_sign_in(&failure, failed).await,
+            Response::RetryRefusal => self.retry_refusal(&failure, failed).await,
+            Response::Settle { ask_operator } => {
+                self.settle_failed(&failure, failed, ask_operator).await
+            }
+        }
+    }
+
+    /// The one place a failed try stops its run for the operator.
+    async fn ask_operator(&self, run: &BenchmarkRun) -> Result<()> {
+        self.store.set_run_state(&run.id, "needs_attention").await
+    }
+
+    /// Puts the cell back in the queue with `reason`. A workflow root keeps
+    /// its saved steps, their sessions and usage, and waits on an idle
+    /// credit; a standalone attempt discards the try and its clock, so the
+    /// next one is a new owner and key.
+    async fn back_in_queue(
+        &self,
+        failure: &FailedTry<'_>,
+        failed: &mut Attempt,
+        reason: String,
+    ) -> Result<()> {
+        if failure.workflow() {
             failed.phase = "pending".into();
             failed.started_at = None;
-            if version.manifest.workflow.is_none() {
-                drop_collection_clock(&self.store, &mut failed).await?;
-            } else {
-                self.idle_root(&failed).await?;
-            }
-            // Asked again shortly, within this tick: a seat frees
-            // long before every other run's turns land.
-            failed.wait_until = Some(now() + ACCOUNT_BUSY_RETRY_MS);
-            self.store.save_attempt(&failed).await?;
-            return Ok(());
+            failed.reason = Some(reason);
+            failed.wait_until = None;
+            self.idle_root(failed).await
+        } else {
+            requeue(failed, reason);
+            drop_collection_clock(&self.store, failed).await
         }
-        // A turn the provider never saw keeps its cell: a quota wait
-        // holds the run until the reset, a sign-in wait until the
-        // Grok CLI renews the sign-in, and a refusal before the
-        // prompt (a model the provider would not select, a session
-        // lost at open) is tried again after a while, a few times,
-        // while the run goes on with its other cells; at the bound,
-        // or at once for a runtime, sign-in or policy the host would
-        // not start, it waits for the operator with its reason. The
-        // same refusal again after the operator resumed settles the
-        // cell instead.
-        // A limit that ran out on this account moves the test to
-        // another account of the provider with room, if there is one.
-        // A limit that names no reset (Claude's stop mid-answer says
-        // only "resets 7pm") waits until the reset the account's last
-        // usage read shows, where it shows one.
-        let quota_message = if waits_for_quota && quota_reset(&error.message).is_none() {
+    }
+
+    /// No provider process started: the cell waits for the sign-in or for
+    /// room, and its next admission is its first.
+    async fn wait_unstarted(&self, failure: &FailedTry<'_>, mut failed: Attempt) -> Result<()> {
+        let error = failure.error;
+        if error.code == SIGN_IN_WAIT {
+            requeue(&mut failed, error.message.clone());
+            failed.wait_until = Some(sign_in_retry(
+                &failure.run.id,
+                &failure.dispatched.configuration.provider_id,
+            ));
+        } else {
+            // Refused for room at whatever stage (the host's preparation
+            // queue, a copy, the Windows floors, the broker): the attempts
+            // prepared next are paced as after any sandbox refusal.
+            admission_window::refused(
+                &self.store.root.display().to_string(),
+                &failure.dispatched.id,
+            );
+            requeue(
+                &mut failed,
+                format!("Waiting for local resources: {}", error.message),
+            );
+            failed.wait_until = Some(now() + admission_window::RETRY.as_millis() as i64);
+        }
+        failed.workflow_steps.clear();
+        if !failure.workflow() {
+            drop_collection_clock(&self.store, &mut failed).await?;
+        }
+        // The flight's end tells the app, once.
+        self.store.save_attempt(&failed).await
+    }
+
+    /// The same attempt goes again on the same account, and at its bound the
+    /// run waits for the operator; the cell is never settled here.
+    async fn try_again(
+        &self,
+        failure: &FailedTry<'_>,
+        mut failed: Attempt,
+        busy: bool,
+    ) -> Result<()> {
+        let error = failure.error;
+        let tries = failed.pre_answer_refusals + u32::from(!busy);
+        requeue(
+            &mut failed,
+            format!("{PRE_ANSWER_RETRIED} {}", error.message),
+        );
+        failed.pre_answer_refusals = tries;
+        drop_collection_clock(&self.store, &mut failed).await?;
+        failed.wait_until = Some(
+            now()
+                + if busy {
+                    ACCOUNT_BUSY_RETRY_MS
+                } else {
+                    PRE_ANSWER_RETRY_MS
+                },
+        );
+        self.store.save_attempt(&failed).await?;
+        if !busy && tries >= pre_answer_limit(error) {
+            self.ask_operator(failure.run).await?;
+        }
+        self.changed().await;
+        Ok(())
+    }
+
+    /// Asked again shortly, within this tick: a seat frees long before every
+    /// other run's turns land.
+    async fn wait_for_seat(&self, failure: &FailedTry<'_>, mut failed: Attempt) -> Result<()> {
+        failed.phase = "pending".into();
+        failed.started_at = None;
+        if failure.workflow() {
+            self.idle_root(&failed).await?;
+        } else {
+            drop_collection_clock(&self.store, &mut failed).await?;
+        }
+        failed.wait_until = Some(now() + ACCOUNT_BUSY_RETRY_MS);
+        self.store.save_attempt(&failed).await
+    }
+
+    /// A limit that ran out on this account moves the test to another
+    /// account of the provider with room, where the run may. Otherwise the
+    /// unfinished turn is discarded and the run waits for a reset it can
+    /// reach, or stops for the operator with the reason on the test.
+    async fn wait_for_quota(
+        &self,
+        failure: &FailedTry<'_>,
+        mut failed: Attempt,
+        may_move: bool,
+    ) -> Result<()> {
+        let (run, error) = (failure.run, failure.error);
+        let asked = &failure.dispatched.configuration;
+        // A limit that names no reset waits until the reset the account's
+        // last usage read shows, where it shows one.
+        let message = if quota_reset(&error.message).is_none() {
             match self
                 .backend
                 .spent_until(
-                    a.configuration.account_id.as_deref().unwrap_or_default(),
-                    &a.configuration.model_id,
+                    asked.account_id.as_deref().unwrap_or_default(),
+                    &asked.model_id,
                 )
                 .await
             {
@@ -335,140 +492,114 @@ impl BenchmarkService {
         } else {
             error.message.clone()
         };
-        if retry_allowed && waits_for_quota {
-            if let Some(account) = a.configuration.account_id.as_deref() {
-                // A refusal no reset lifts holds the account for as
-                // long as the run would ever wait.
-                let until = if refused_for_good(&quota_message) {
+        if may_move {
+            if let Some(account) = asked.account_id.as_deref() {
+                // A refusal no reset lifts holds the account for as long as
+                // the run would ever wait.
+                let until = if refused_for_good(&message) {
                     now() + QUOTA_WAIT_LIMIT_MS
                 } else {
-                    quota_reset(&quota_message).unwrap_or(now() + QUOTA_RETRY_MS)
+                    quota_reset(&message).unwrap_or(now() + QUOTA_RETRY_MS)
                 };
                 exhaust(&run.id, account, until);
             }
-            if let Some(other) = self.room_elsewhere(&run.id, &a.configuration).await {
+            if let Some(other) = self.room_elsewhere(&run.id, asked).await {
                 let reason = format!("{MOVED_ACCOUNT}. {}", error.message);
-                if version.manifest.workflow.is_some() {
-                    failed.phase = "pending".into();
-                    failed.started_at = None;
-                    failed.reason = Some(reason);
-                    failed.wait_until = None;
-                    self.idle_root(&failed).await?;
-                } else {
-                    requeue(&mut failed, reason);
-                    drop_collection_clock(&self.store, &mut failed).await?;
-                }
+                self.back_in_queue(failure, &mut failed, reason).await?;
                 failed.configuration.account_id = Some(other);
-                // It goes on at once on the other account, within
-                // this tick, while the spent one is held.
+                // It goes on at once on the other account, within this
+                // tick, while the spent one is held.
                 failed.wait_until = Some(now());
                 self.store.save_attempt(&failed).await?;
                 self.changed().await;
                 return Ok(());
             }
         }
-        if back_to_queue
-            && returns_to_queue(&error.code, &failed.phase)
-            && !refused_again(&a, &error)
-        {
-            // A limit that ran out mid-run discards the unfinished
-            // turn; the run waits for a reset it can reach, or stops
-            // for the operator with the reason on the test.
-            let plan = (error.code == QUOTA_WAIT).then(|| {
-                quota_plan(
-                    &run.id,
-                    &quota_scope(&a.configuration),
-                    &quota_message,
-                    now(),
-                )
-            });
-            let reason = if plan == Some(QuotaPlan::Stop) {
+        let plan = quota_plan(&run.id, &quota_scope(asked), &message, now());
+        let reason = match plan {
+            QuotaPlan::Stop => {
                 let stopped = if refused_for_good(&error.message) {
                     QUOTA_REFUSED
                 } else {
                     QUOTA_STOPPED
                 };
                 format!("{stopped}. {}", error.message)
-            } else {
-                error.message.clone()
-            };
-            if version.manifest.workflow.is_some() {
-                // Its saved steps keep their sessions and usage, and
-                // the root's sums of them stand.
-                failed.phase = "pending".into();
-                failed.started_at = None;
-                failed.reason = Some(reason);
-                failed.wait_until = None;
-                self.idle_root(&failed).await?;
-            } else {
-                // A limit hit mid-turn discards the turn and its
-                // clock: the next try is a new owner and key.
-                requeue(&mut failed, reason);
-                drop_collection_clock(&self.store, &mut failed).await?;
             }
-            let provider = &a.configuration.provider_id;
-            let mut stop = false;
-            match plan {
-                Some(QuotaPlan::WaitUntil(until)) => {
-                    hold_provider_until(&run.id, &quota_scope(&a.configuration), until);
-                    failed.wait_until = Some(until);
-                }
-                Some(QuotaPlan::Stop) => stop = true,
-                // A refusal before the prompt. The first one stopped
-                // the run: on 11-18 one Claude session of six could
-                // not confirm its model with the API ("Try again"),
-                // beside five that did, and a run of 1035 attempts
-                // stood a minute after its start. The cell now goes
-                // again under the bound a run that forbids retries
-                // has, unless the run's selection was refused from
-                // its start; a workflow root, whose steps are not
-                // tried apart, still asks the operator at once.
-                None if error.code != SIGN_IN_WAIT => {
-                    failed.pre_answer_refusals =
-                        failed.pre_answer_refusals.saturating_add(1);
-                    if version.manifest.workflow.is_some()
-                        || failed.pre_answer_refusals >= pre_answer_limit(&error)
-                        || self.refused_from_the_start(&run.id, &failed).await?
-                    {
-                        stop = true;
-                    } else {
-                        failed.reason =
-                            Some(format!("{PRE_ANSWER_RETRIED} {}", error.message));
-                        failed.wait_until = Some(now() + PRE_ANSWER_RETRY_MS);
-                    }
-                }
-                None => failed.wait_until = Some(sign_in_retry(&run.id, provider)),
-            }
-            self.store.save_attempt(&failed).await?;
-            if stop {
-                self.store.set_run_state(&run.id, "needs_attention").await?;
-            }
-            self.changed().await;
-            return Ok(());
+            QuotaPlan::WaitUntil(_) => error.message.clone(),
+        };
+        self.back_in_queue(failure, &mut failed, reason).await?;
+        if let QuotaPlan::WaitUntil(until) = plan {
+            hold_provider_until(&run.id, &quota_scope(asked), until);
+            failed.wait_until = Some(until);
         }
-        let needs_operator = !retry_allowed
-            && (returns_to_queue(&error.code, &failed.phase)
-                || matches!(
-                    error.code.as_str(),
-                    "account_busy"
-                        | "dispatch_deadline"
-                        | "selection_changed"
-                        | "validation"
-                        | "evidence_mismatch"
-                ));
-        let (outcome, reason) = settled_failure(&failed, &error);
+        self.store.save_attempt(&failed).await?;
+        if plan == QuotaPlan::Stop {
+            self.ask_operator(run).await?;
+        }
+        self.changed().await;
+        Ok(())
+    }
+
+    /// The cell waits until the Grok CLI renews the sign-in.
+    async fn wait_for_sign_in(&self, failure: &FailedTry<'_>, mut failed: Attempt) -> Result<()> {
+        let reason = failure.error.message.clone();
+        self.back_in_queue(failure, &mut failed, reason).await?;
+        failed.wait_until = Some(sign_in_retry(
+            &failure.run.id,
+            &failure.dispatched.configuration.provider_id,
+        ));
+        self.store.save_attempt(&failed).await?;
+        self.changed().await;
+        Ok(())
+    }
+
+    /// A refusal before the prompt (a model the provider would not select, a
+    /// session lost at open) is one try's until it repeats: the cell goes
+    /// again after a pause. At its bound, at once for a runtime the host
+    /// would not start or a workflow root (whose steps are not tried apart),
+    /// and when the run's selection was refused from its start, the run
+    /// waits for the operator with the bare refusal on the cell.
+    async fn retry_refusal(&self, failure: &FailedTry<'_>, mut failed: Attempt) -> Result<()> {
+        let error = failure.error;
+        self.back_in_queue(failure, &mut failed, error.message.clone())
+            .await?;
+        failed.pre_answer_refusals = failed.pre_answer_refusals.saturating_add(1);
+        let stop = failure.workflow()
+            || failed.pre_answer_refusals >= pre_answer_limit(error)
+            || self
+                .refused_from_the_start(&failure.run.id, &failed)
+                .await?;
+        if !stop {
+            failed.reason = Some(format!("{PRE_ANSWER_RETRIED} {}", error.message));
+            failed.wait_until = Some(now() + PRE_ANSWER_RETRY_MS);
+        }
+        self.store.save_attempt(&failed).await?;
+        if stop {
+            self.ask_operator(failure.run).await?;
+        }
+        self.changed().await;
+        Ok(())
+    }
+
+    /// The try is the attempt's outcome.
+    async fn settle_failed(
+        &self,
+        failure: &FailedTry<'_>,
+        mut failed: Attempt,
+        ask_operator: bool,
+    ) -> Result<()> {
+        let (outcome, reason) = settled_failure(&failed, failure.error);
         failed.phase = "terminal".into();
         failed.outcome = Some(outcome);
         failed.reason = Some(reason);
         failed.finished_at = Some(now());
         self.store.save_attempt(&failed).await?;
-        if needs_operator
-            || ["dispatch_uncertain", "storage_unavailable"].contains(&error.code.as_str())
-        {
-            self.store.set_run_state(&run.id, "needs_attention").await?;
+        if ask_operator {
+            self.ask_operator(failure.run).await?;
         }
         Ok(())
     }
+
     /// Whether the refusal of `refused` before any answer reads as its run's
     /// own, not one try's: no attempt of the run on the same selection was
     /// ever dispatched, and `PRE_ANSWER_TRIES` of them were refused. A model
@@ -494,5 +625,146 @@ impl BenchmarkService {
             cells += u32::from(other.pre_answer_refusals > 0);
         }
         Ok(cells >= PRE_ANSWER_TRIES)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A refusal before the prompt, under automatic retries, with everything
+    /// else at rest.
+    fn facts(code: &str) -> Facts<'_> {
+        Facts {
+            code,
+            retry_allowed: true,
+            admission_open: true,
+            workflow: false,
+            unevaluated: true,
+            refused_before_answer: false,
+            within_tries: true,
+            returns_to_queue: false,
+            refused_again: false,
+        }
+    }
+
+    #[test]
+    fn the_response_follows_what_the_try_was_and_what_the_run_allows() {
+        let settle = |ask_operator| Response::Settle { ask_operator };
+        // Under automatic retries.
+        assert_eq!(respond(&facts("account_busy")), Response::WaitForSeat);
+        assert_eq!(
+            respond(&facts(QUOTA_WAIT)),
+            Response::WaitForQuota { may_move: true }
+        );
+        let before_prompt = |code| Facts {
+            returns_to_queue: true,
+            refused_before_answer: true,
+            ..facts(code)
+        };
+        assert_eq!(
+            respond(&before_prompt("selection_changed")),
+            Response::RetryRefusal
+        );
+        assert_eq!(respond(&before_prompt(SESSION_LOST)), Response::RetryRefusal);
+        assert_eq!(
+            respond(&before_prompt(SIGN_IN_WAIT)),
+            Response::WaitForSignIn
+        );
+        // The same refusal after the operator resumed settles the cell, and
+        // the run goes on.
+        assert_eq!(
+            respond(&Facts {
+                refused_again: true,
+                ..before_prompt("selection_changed")
+            }),
+            settle(false)
+        );
+        // A turn that ran is its attempt's outcome; only an uncertain
+        // dispatch or a store that failed asks the operator.
+        assert_eq!(respond(&facts("budget_timeout")), settle(false));
+        assert_eq!(respond(&facts("selection_changed")), settle(false));
+        assert_eq!(respond(&facts("dispatch_uncertain")), settle(true));
+        assert_eq!(respond(&facts("storage_unavailable")), settle(true));
+        // A limit after part of the turn was evaluated never discards it.
+        assert_eq!(
+            respond(&Facts {
+                unevaluated: false,
+                ..facts(QUOTA_WAIT)
+            }),
+            settle(false)
+        );
+
+        // Under a run that forbids retries.
+        let forbidden = |code| Facts {
+            retry_allowed: false,
+            ..facts(code)
+        };
+        let refused = |code| Facts {
+            returns_to_queue: true,
+            refused_before_answer: true,
+            ..forbidden(code)
+        };
+        assert_eq!(
+            respond(&refused("selection_changed")),
+            Response::TryAgain { busy: false }
+        );
+        assert_eq!(
+            respond(&Facts {
+                refused_before_answer: true,
+                ..forbidden("account_busy")
+            }),
+            Response::TryAgain { busy: true }
+        );
+        // Past its bound, a workflow root, or a deadline that passed: the
+        // operator.
+        assert_eq!(
+            respond(&Facts {
+                within_tries: false,
+                ..refused("selection_changed")
+            }),
+            settle(true)
+        );
+        assert_eq!(
+            respond(&Facts {
+                workflow: true,
+                ..refused("selection_changed")
+            }),
+            settle(true)
+        );
+        assert_eq!(
+            respond(&Facts {
+                admission_open: false,
+                ..refused("selection_changed")
+            }),
+            settle(true)
+        );
+        // It still waits for a usage reset, on the same account, unless the
+        // attempt is a workflow root.
+        assert_eq!(
+            respond(&forbidden(QUOTA_WAIT)),
+            Response::WaitForQuota { may_move: false }
+        );
+        assert_eq!(
+            respond(&Facts {
+                workflow: true,
+                returns_to_queue: true,
+                ..forbidden(QUOTA_WAIT)
+            }),
+            settle(true)
+        );
+        assert_eq!(
+            respond(&Facts {
+                returns_to_queue: true,
+                ..forbidden(SIGN_IN_WAIT)
+            }),
+            settle(true)
+        );
+        // A turn that ran settles without the operator, a validation or
+        // evidence failure with them.
+        assert_eq!(respond(&forbidden("budget_timeout")), settle(false));
+        assert_eq!(respond(&forbidden("validation")), settle(true));
+        assert_eq!(respond(&forbidden("evidence_mismatch")), settle(true));
+        assert_eq!(respond(&forbidden("dispatch_deadline")), settle(true));
     }
 }
