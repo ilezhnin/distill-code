@@ -51,7 +51,7 @@ function validators(source) {
 const fields = (gate) => gate.split(",").length;
 
 test("the app and broker preserve the same shared memory floor", () => {
-  const rust = read("src-tauri/src/services/benchmark_sandbox.rs").match(
+  const rust = read("src-tauri/src/services/benchmark_sandbox/host.rs").match(
     /const HOST_MEMORY_FLOOR: u64 = (\d+) \* GIB;/u,
   );
   const broker = read(
@@ -81,7 +81,7 @@ test("every operator script accepts the gate its own emitter writes", () => {
 });
 
 test("the app, bench-run and bench-budget expect the same number of fields", () => {
-  const rust = read("src-tauri/src/services/benchmark_sandbox.rs").match(
+  const rust = read("src-tauri/src/services/benchmark_sandbox/host.rs").match(
     /"\{now\}((?:,\{\})+)"/u,
   );
   assert.ok(rust, "the app formats its gate");
@@ -99,4 +99,22 @@ test("the app, bench-run and bench-budget expect the same number of fields", () 
   assert.equal(budget[1].split(", ").length, expected, "bench-budget");
   for (const script of SCRIPTS)
     assert.equal(fields(emitted(read(script))), expected, script);
+});
+
+// The policy a sandbox check attests binds the router's source. The app reads
+// it from `router.rs` and the modules its methods live in; the probe that
+// renews a check from a checkout must read the same files in the same order,
+// or its check answers to an identity the app never asks for.
+test("the policy probe reads the router files the app binds", () => {
+  const bound = [
+    ...read("src-tauri/src/services/agent_host/text_execution.rs").matchAll(
+      /include_str!\("router\/([a-z_]+)\.rs"\)/gu,
+    ),
+  ].map((match) => match[1]);
+  const probe = read("scripts/benchmark-linux-text-policy-probe.mjs").match(
+    /const routerModules = \[([^\]]*)\]/u,
+  );
+  assert.ok(bound.length > 0 && probe, "both sides name the router modules");
+  const probed = [...probe[1].matchAll(/"([a-z_]+)"/gu)].map((m) => m[1]);
+  assert.deepEqual(probed, bound);
 });

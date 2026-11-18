@@ -58,6 +58,27 @@ pub(crate) fn policy_fingerprint(provider: NativeProvider) -> String {
     FINGERPRINTS[provider.key()].clone()
 }
 
+/// The router as the policy binds it: `router.rs` and the modules its methods
+/// live in, in this order. `scripts/benchmark-linux-text-policy-probe.mjs`
+/// reads the same files in the same order.
+const ROUTER_SOURCE: &str = concat!(
+    include_str!("router.rs"),
+    include_str!("router/bridges.rs"),
+    include_str!("router/events.rs"),
+    include_str!("router/frontend.rs"),
+    include_str!("router/inventory.rs"),
+    include_str!("router/kimi_follow.rs"),
+    include_str!("router/moves.rs"),
+    include_str!("router/options.rs"),
+    include_str!("router/owned.rs"),
+    include_str!("router/prompts.rs"),
+    include_str!("router/selection.rs"),
+    include_str!("router/sessions.rs"),
+    include_str!("router/sign_in.rs"),
+    include_str!("router/titles.rs"),
+    include_str!("router/turns.rs"),
+);
+
 fn calculate_policy_fingerprint(provider: NativeProvider) -> String {
     execution::digest(execution::canonical_json(&json!({
         "recipe": RECIPE,
@@ -68,7 +89,7 @@ fn calculate_policy_fingerprint(provider: NativeProvider) -> String {
         "attestation": ATTESTATION,
         "launcher": include_str!("text_execution.rs"),
         "contract": include_str!("execution.rs"),
-        "router": include_str!("router.rs"),
+        "router": ROUTER_SOURCE,
     })))
 }
 
@@ -327,6 +348,29 @@ pub(super) fn launch(
 mod tests {
     use super::super::execution::ExecutionProfile;
     use super::*;
+
+    /// The policy binds the router's whole source. A router module the
+    /// fingerprint does not read could change what a text session may do
+    /// without making a sandbox check stale. Steering is chat-only and was
+    /// never bound; the tests bind nothing.
+    #[test]
+    fn the_policy_binds_every_router_module() {
+        let router =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/services/agent_host/router");
+        let mut unbound = Vec::new();
+        for entry in std::fs::read_dir(router).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if matches!(name.as_str(), "steering.rs" | "tests.rs") || !name.ends_with(".rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            if !ROUTER_SOURCE.contains(&source) {
+                unbound.push(name);
+            }
+        }
+        assert!(unbound.is_empty(), "{unbound:?}");
+    }
 
     #[test]
     fn every_text_provider_uses_a_private_linux_launch_without_repository_tools() {

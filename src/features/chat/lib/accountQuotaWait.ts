@@ -24,7 +24,7 @@ export interface AccountQuotaWait {
   resetTokensAvailable: boolean;
 }
 
-/** The host's wait kinds (`agent_host/router.rs`). */
+/** The host's wait kinds (`agent_host/router/prompts.rs`). */
 const ACCOUNT_QUOTA_WAIT = "account_quota_wait";
 const PROVIDER_RATE_LIMIT_WAIT = "provider_rate_limit_wait";
 

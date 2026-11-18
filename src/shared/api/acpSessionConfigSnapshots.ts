@@ -269,7 +269,7 @@ export function readSessionExecutionConfigSnapshot(
  * payload. Deliberately one identity, never a list.
  *
  * A session snapshot is not, and cannot become, a model inventory. The agent
- * host (`presented_snapshot` in `src-tauri/src/services/agent_host/router.rs`)
+ * host (`presented_snapshot` in `src-tauri/src/services/agent_host/router/options.rs`)
  * passes on whatever model option the bridge stated for this one session, and
  * synthesizes one from the bridge's `models` block only when the bridge has no
  * model option at all. Either way the values are what one bridge session said

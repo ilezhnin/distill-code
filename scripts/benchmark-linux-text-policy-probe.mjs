@@ -13,6 +13,35 @@ import { readFile } from "node:fs/promises";
 
 const repo = new URL("../", import.meta.url);
 const source = async (path) => readFile(new URL(path, repo), "utf8");
+// The router as the policy binds it: ROUTER_SOURCE in text_execution.rs reads
+// the same files in the same order.
+const routerModules = [
+  "bridges",
+  "events",
+  "frontend",
+  "inventory",
+  "kimi_follow",
+  "moves",
+  "options",
+  "owned",
+  "prompts",
+  "selection",
+  "sessions",
+  "sign_in",
+  "titles",
+  "turns",
+];
+const routerSource = async () =>
+  (
+    await Promise.all(
+      [
+        "src-tauri/src/services/agent_host/router.rs",
+        ...routerModules.map(
+          (name) => `src-tauri/src/services/agent_host/router/${name}.rs`,
+        ),
+      ].map(source),
+    )
+  ).join("");
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) =>
   Array.isArray(value)
@@ -209,10 +238,12 @@ async function inputs(provider) {
         "src-tauri/src/services/agent_host/text_execution.rs",
       ),
       contract: await source("src-tauri/src/services/agent_host/execution.rs"),
-      router: await source("src-tauri/src/services/agent_host/router.rs"),
+      router: await routerSource(),
     }),
   );
-  const host = await source("src-tauri/src/services/benchmark_sandbox.rs");
+  const host = await source(
+    "src-tauri/src/services/benchmark_sandbox/identity.rs",
+  );
   const list = host.match(/const FILES:[\s\S]*?resources!\[([\s\S]*?)\];/)?.[1];
   assert(list, "Sandbox resource manifest not found");
   const names = [...list.matchAll(/"([a-z0-9.-]+)"/g)].map((match) => match[1]);
