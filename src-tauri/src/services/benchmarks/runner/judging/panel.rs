@@ -223,10 +223,7 @@ pub(in super::super) fn recoverable_open_batch(
     })
 }
 
-pub(in super::super) fn incomplete_batch(
-    marker: &Evaluation,
-    evaluations: &[Evaluation],
-) -> Option<OpenBatch> {
+fn incomplete_batch(marker: &Evaluation, evaluations: &[Evaluation]) -> Option<OpenBatch> {
     let details = marker.details.as_ref()?;
     let panel: Vec<Configuration> =
         serde_json::from_value(details.pointer("/protocol/panel")?.clone()).ok()?;

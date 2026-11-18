@@ -14,7 +14,7 @@ pub(in super::super) const INFRASTRUCTURE_STREAK: u32 = 5;
 
 /// How long a try's replacement waits before it asks, and how long when the
 /// provider pushed back for its rate.
-pub(in super::super) const INFRASTRUCTURE_RETRY_MS: i64 = if cfg!(test) { 20 } else { 60 * 1000 };
+const INFRASTRUCTURE_RETRY_MS: i64 = if cfg!(test) { 20 } else { 60 * 1000 };
 
 pub(in super::super) const THROTTLED_RETRY_MS: i64 = 5 * 60 * 1000;
 

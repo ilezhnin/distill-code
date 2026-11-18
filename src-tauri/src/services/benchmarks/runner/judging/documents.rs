@@ -28,7 +28,7 @@ pub(crate) fn rubric_criteria(draft: &BenchmarkDraft) -> Vec<RubricCriterion> {
 }
 
 /// The markup without a Markdown fence on either side; a lone opening fence counts too.
-pub(in super::super) fn unfence_markup(output: &str) -> &str {
+fn unfence_markup(output: &str) -> &str {
     let mut body = output.trim();
     if body.starts_with("```") {
         body = body.split_once('\n').map_or("", |(_, rest)| rest);
@@ -45,7 +45,7 @@ pub(in super::super) fn head(body: &str) -> String {
 
 /// The drawing or page in an answer: the answer itself when it starts with
 /// markup, else the first `<svg>`…`</svg>` or HTML document anywhere in it.
-pub(in super::super) fn markup_body<'a>(output: &'a str, format: Option<&str>) -> Option<&'a str> {
+fn markup_body<'a>(output: &'a str, format: Option<&str>) -> Option<&'a str> {
     let body = unfence_markup(output);
     let start = head(body);
     if start.starts_with("<svg")
@@ -353,11 +353,11 @@ pub(crate) fn render_document(output: &str, format: Option<&str>) -> Option<Stri
 
 /// The page style that sizes a drawing's root `<svg>` to the frame, above
 /// any width, height or margin the drawing sets on itself.
-pub(in super::super) const SVG_FRAME: &str = "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body>svg{display:block!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;margin:0!important}";
+const SVG_FRAME: &str = "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body>svg{display:block!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;margin:0!important}";
 
 /// The offset of the `>` that ends the tag opening at `open`, past any
 /// quoted attribute value (a quoted `>` does not end it).
-pub(in super::super) fn tag_close(text: &str, open: usize) -> Option<usize> {
+fn tag_close(text: &str, open: usize) -> Option<usize> {
     let mut quote = None;
     for (offset, &byte) in text.as_bytes()[open..].iter().enumerate() {
         match quote {
@@ -415,7 +415,7 @@ pub(in super::super) fn one_root_svg(body: &str) -> bool {
 /// The one `<svg>`...`</svg>` of `body` when nothing but text surrounds it
 /// (no other tag before or after); none for an HTML document or a page with
 /// other markup.
-pub(in super::super) fn lone_svg(body: &str) -> Option<&str> {
+fn lone_svg(body: &str) -> Option<&str> {
     // ASCII lowering keeps byte offsets, and every offset found is ASCII.
     let lowered = body.to_ascii_lowercase();
     let lead = lowered.trim_start();
@@ -432,7 +432,7 @@ pub(in super::super) fn lone_svg(body: &str) -> Option<&str> {
 
 /// `svg` with a viewBox taken from its root element's width and height when
 /// it declares both as plain lengths but no viewBox; anything else as it is.
-pub(in super::super) fn with_view_box(svg: &str) -> std::borrow::Cow<'_, str> {
+fn with_view_box(svg: &str) -> std::borrow::Cow<'_, str> {
     // ASCII lowering keeps byte offsets, and every offset found is ASCII.
     let lowered = svg.to_ascii_lowercase();
     let Some(open) = lowered.find("<svg") else {
@@ -472,7 +472,7 @@ pub(in super::super) fn with_view_box(svg: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// The attributes of an opening tag's text after its name, names lowered.
-pub(in super::super) fn svg_attributes(tag: &str) -> Vec<(String, String)> {
+fn svg_attributes(tag: &str) -> Vec<(String, String)> {
     let mut attributes = Vec::new();
     let mut rest = tag;
     loop {

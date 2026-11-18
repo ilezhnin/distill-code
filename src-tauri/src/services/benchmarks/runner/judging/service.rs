@@ -169,7 +169,7 @@ impl BenchmarkService {
     }
 
     /// Asks the panel of one rendering a pause or busy judges held back.
-    pub(in super::super) async fn resume_judging(
+    async fn resume_judging(
         &self,
         run: &BenchmarkRun,
         id: &str,

@@ -125,7 +125,7 @@ pub(in super::super) fn consume_event(event: &Value, output: &mut String, usage:
 /// counts only when Grok reports it complete: session sign-ins often leave
 /// calls unpriced, and an undercounted cost is worse than none (D1). More than
 /// one model call in the turn is auxiliary work inside it.
-pub(in super::super) fn consume_xai_turn_usage(raw: &Value, usage: &mut TokenUsage) {
+fn consume_xai_turn_usage(raw: &Value, usage: &mut TokenUsage) {
     if let Some(v) = raw["reasoningTokens"].as_u64() {
         usage.reasoning = Some(v);
     }

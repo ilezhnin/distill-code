@@ -123,7 +123,7 @@ pub(in crate::services::benchmarks) async fn reset_account_waits(
 
 /// When each run's account first refused for quota (see [`quota_scope`]),
 /// while the run waits on it. Kept in memory: a restart begins the wait again.
-pub(in super::super) static QUOTA_SINCE: std::sync::LazyLock<
+static QUOTA_SINCE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
 > = std::sync::LazyLock::new(Default::default);
 

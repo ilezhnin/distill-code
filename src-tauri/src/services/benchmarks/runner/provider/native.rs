@@ -24,11 +24,7 @@ pub(in super::super) struct CreditTurn {
 /// A turn whose plan usage is spent, refused before any provider call
 /// because it may not run on credits: it waits for plan usage to reset like
 /// any usage limit, with `reason` on the test.
-pub(in super::super) fn credit_wait(
-    account: &str,
-    plan_reset: Option<i64>,
-    reason: &str,
-) -> BenchmarkError {
+fn credit_wait(account: &str, plan_reset: Option<i64>, reason: &str) -> BenchmarkError {
     BenchmarkError::new(
         QUOTA_WAIT,
         json!({"code":-32010,"message":reason,"data":{"kind":QUOTA_WAIT,"type":QUOTA_WAIT,
@@ -408,7 +404,7 @@ pub(in super::super) async fn repository_runtime_for_budget(
         .map(|(revision, _)| revision)
 }
 
-pub(in super::super) async fn repository_runtime_snapshot(
+async fn repository_runtime_snapshot(
     c: &Configuration,
     budget: Option<u32>,
 ) -> Result<(String, sandbox::Status)> {
@@ -541,11 +537,7 @@ pub(in super::super) fn text_inventory_revision(
 /// The revision of a configuration on `model_id` pinned to `runtime`, which
 /// each row completes with its own model, so a change to another row of the
 /// vendor's list leaves a configuration's revision alone.
-pub(in super::super) fn model_revision(
-    mut hash: Sha256,
-    inventory: &Value,
-    model_id: &str,
-) -> String {
+fn model_revision(mut hash: Sha256, inventory: &Value, model_id: &str) -> String {
     hash.update(b"committed-entry-v2\0");
     match model_row_identity(inventory, model_id) {
         Some(row) => {
@@ -578,7 +570,7 @@ pub(in super::super) fn offered_efforts(row: &Value, excluded: &[String]) -> Vec
 
 /// The row of `model_id` in an inventory as `id` and display name, for
 /// profiles configured by the policy resource; `None` when it is not listed.
-pub(in super::super) fn model_row_identity(inventory: &Value, model_id: &str) -> Option<String> {
+fn model_row_identity(inventory: &Value, model_id: &str) -> Option<String> {
     inventory["models"]
         .as_array()
         .into_iter()

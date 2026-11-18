@@ -7,11 +7,11 @@ use super::*;
 /// 180 s more than the cleanup margin) and a minute for the checks between
 /// the renewal and the start, so a test admitted here is never refused at
 /// staging.
-pub(in super::super) const RENEWAL_SLACK_MS: i64 = 240_000;
+const RENEWAL_SLACK_MS: i64 = 240_000;
 
 /// How many seconds of a test of `timeout_seconds` a lease of `provider`
 /// must cover (see [`credential_lease::lease_span_ms`]).
-pub(in super::super) fn lease_seconds(provider: NativeProvider, timeout_seconds: u32) -> u32 {
+fn lease_seconds(provider: NativeProvider, timeout_seconds: u32) -> u32 {
     let span = credential_lease::lease_span_ms(provider, i64::from(timeout_seconds) * 1000);
     u32::try_from(span / 1000).unwrap_or(timeout_seconds)
 }

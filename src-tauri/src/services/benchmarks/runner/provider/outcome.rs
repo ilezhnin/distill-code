@@ -2,7 +2,7 @@
 use super::*;
 
 /// ACP's `auth_required` error code.
-pub(in super::super) const ACP_AUTH_REQUIRED: i64 = -32000;
+const ACP_AUTH_REQUIRED: i64 = -32000;
 
 /// The outcome of a turn that ended with `error` on `model_id`: a task the
 /// provider refused as content ([`refused_task`]) is the candidate's failed
@@ -143,7 +143,7 @@ pub(in super::super) fn refused_task(error: &Value) -> bool {
 /// see no dispatch: the verdict itself is the provider's answer to the
 /// prompt it received. A refusal of the generation mid-stream ends the turn
 /// with a `sensitive` finish, which OpenCode settles as a plain turn.
-pub(in super::super) fn zai_declined_task(error: &Value) -> bool {
+fn zai_declined_task(error: &Value) -> bool {
     let said = |text: &Value| {
         text.as_str().is_some_and(|text| {
             text.to_ascii_lowercase()
@@ -161,7 +161,7 @@ pub(in super::super) fn zai_declined_task(error: &Value) -> bool {
 /// one repetition of a repository case whose other two passed). It stopped
 /// the run as an infrastructure failure. A 403 without those words (an
 /// account or a model the API does not allow) is no refusal of the task.
-pub(in super::super) fn grok_declined_task(data: &Value) -> bool {
+fn grok_declined_task(data: &Value) -> bool {
     let Some(message) = data["message"].as_str() else {
         return false;
     };
@@ -176,7 +176,7 @@ pub(in super::super) fn grok_declined_task(data: &Value) -> bool {
 /// The words with which a provider's message refuses the model it names:
 /// Kimi's API, forwarded verbatim by the pinned Kimi Code bundle, says the
 /// subscription "does not have access to" the model.
-pub(in super::super) const MODEL_REFUSAL: &str = "does not have access to";
+const MODEL_REFUSAL: &str = "does not have access to";
 
 /// Whether a turn's error is the provider refusing the requested model to
 /// the account: ACP's `auth_required` code with a provider message that
@@ -188,7 +188,7 @@ pub(in super::super) const MODEL_REFUSAL: &str = "does not have access to";
 /// no model, even when its message mentions one, and stays an
 /// infrastructure failure; the attempt's reason keeps the whole message
 /// either way.
-pub(in super::super) fn refuses_model(error: &Value, model_id: &str) -> bool {
+fn refuses_model(error: &Value, model_id: &str) -> bool {
     let code = error["code"]
         .as_i64()
         .or_else(|| error.pointer("/data/code").and_then(Value::as_i64));

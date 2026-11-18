@@ -8,7 +8,7 @@ use super::*;
 /// resume settles the cell, as `refused_again` does under automatic retries.
 pub(in super::super) const PRE_ANSWER_TRIES: u32 = 3;
 /// How long a try refused before any answer waits before the next one.
-pub(in super::super) const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
+const PRE_ANSWER_RETRY_MS: i64 = 5 * 60 * 1000;
 /// What the reason of a cell refused before any answer starts with while it
 /// waits for its next try; the refusal's own words follow. At the bound the
 /// cell keeps the bare refusal, so the same one after the operator's resume
@@ -17,7 +17,7 @@ pub(in super::super) const PRE_ANSWER_RETRIED: &str = "Refused before any answer
 
 /// Refusals before any answer a cell goes back with before the operator is
 /// asked: a runtime the host would not start needs the operator at once.
-pub(in super::super) fn pre_answer_limit(error: &BenchmarkError) -> u32 {
+fn pre_answer_limit(error: &BenchmarkError) -> u32 {
     if error.code == "capability_missing" {
         1
     } else {
@@ -28,7 +28,7 @@ pub(in super::super) fn pre_answer_limit(error: &BenchmarkError) -> u32 {
 /// Whether one more refusal before any answer still goes back to the queue:
 /// once the operator resumed a run stopped at the bound, the next refusal
 /// settles the cell instead of cycling forever.
-pub(in super::super) fn within_pre_answer_tries(attempt: &Attempt, error: &BenchmarkError) -> bool {
+fn within_pre_answer_tries(attempt: &Attempt, error: &BenchmarkError) -> bool {
     error.code == "account_busy" || attempt.pre_answer_refusals < pre_answer_limit(error)
 }
 
@@ -162,7 +162,7 @@ pub(in crate::services::benchmarks) fn settled_failure(
 
 /// Whether `code` holds its run until a time it already knows, rather than
 /// asking the operator.
-pub(in super::super) fn is_wait(code: &str) -> bool {
+fn is_wait(code: &str) -> bool {
     matches!(code, QUOTA_WAIT | SIGN_IN_WAIT)
 }
 
@@ -174,7 +174,7 @@ pub(in super::super) fn is_wait(code: &str) -> bool {
 /// refuse the same cell on every resume, so it settles with that outcome
 /// instead, and the run goes on with its other cells. A quota wait and a
 /// sign-in renewal wait always wait.
-pub(in super::super) fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
+fn refused_again(attempt: &Attempt, error: &BenchmarkError) -> bool {
     !is_wait(&error.code) && attempt.reason.as_deref() == Some(error.message.as_str())
 }
 

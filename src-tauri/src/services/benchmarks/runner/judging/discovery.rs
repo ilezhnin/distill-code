@@ -143,7 +143,7 @@ impl JudgeDiscoveryIssue {
     }
 }
 
-pub(in super::super) fn judge_provider_label(provider: NativeProvider) -> &'static str {
+fn judge_provider_label(provider: NativeProvider) -> &'static str {
     match provider {
         NativeProvider::Claude => "Claude",
         NativeProvider::Codex => "Codex",

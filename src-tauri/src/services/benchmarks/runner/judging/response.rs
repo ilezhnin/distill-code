@@ -43,7 +43,7 @@ impl NativeBackend {
         }
     }
 
-    pub(in super::super) async fn judge_response_inner(
+    async fn judge_response_inner(
         &self,
         store: &Store,
         mut attempt: Attempt,

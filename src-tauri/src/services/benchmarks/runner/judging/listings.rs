@@ -35,7 +35,7 @@ pub(in super::super) struct ListingAge {
 }
 
 impl KeptListing {
-    pub(in super::super) fn aged(self) -> ListingAge {
+    fn aged(self) -> ListingAge {
         ListingAge {
             age: self.listed_at.elapsed(),
             refused_ago: self.refused_at.map(|at| at.elapsed()),
@@ -133,19 +133,19 @@ impl RunInventories {
 
 /// Whether the executable `serving` an account now listed `inventory`;
 /// nothing serving is never a match.
-pub(in super::super) fn listed_by(inventory: &Value, serving: &Value) -> bool {
+fn listed_by(inventory: &Value, serving: &Value) -> bool {
     !serving.is_null() && inventory.get("executable") == Some(serving)
 }
 
 /// A judge sits on its account's newest listing without listing again while
 /// the listing is this young.
-pub(in super::super) const JUDGE_LISTING_FRESH: Duration = Duration::from_secs(3600);
+const JUDGE_LISTING_FRESH: Duration = Duration::from_secs(3600);
 
 /// The oldest listing a judge falls back to when a refresh is refused.
-pub(in super::super) const JUDGE_LISTING_MAX_AGE: Duration = Duration::from_secs(12 * 3600);
+const JUDGE_LISTING_MAX_AGE: Duration = Duration::from_secs(12 * 3600);
 
 /// How long a refused refresh is not tried again; the listing stands.
-pub(in super::super) const JUDGE_REFRESH_RETRY: Duration = Duration::from_secs(600);
+const JUDGE_REFRESH_RETRY: Duration = Duration::from_secs(600);
 
 /// The inventory a judge's account is seated from, and, when it fell back,
 /// the age of that listing and why the refresh failed. A live listing
@@ -391,7 +391,7 @@ impl NativeBackend {
     }
 
     /// Lists `provider`'s models on `account` now and keeps them for `run`.
-    pub(in super::super) async fn list_inventory(
+    async fn list_inventory(
         &self,
         host: &Arc<crate::services::agent_host::router::Inner>,
         run: &str,

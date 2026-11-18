@@ -119,7 +119,7 @@ pub(in super::super) fn trusted_headroom(
 
 /// The host CPU busy share past which heavy jobs wait (bench-budget's
 /// LOAD_LINE, measured-load-v1).
-pub(in super::super) const HOST_CPU_LINE: f64 = 0.70;
+const HOST_CPU_LINE: f64 = 0.70;
 
 /// Whether `attempt` was admitted while the Windows host was past the CPU
 /// line: by the 30-second mean its admission recorded, which the broker's

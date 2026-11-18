@@ -124,7 +124,7 @@ impl BenchmarkService {
     /// Bakes every run whose window closed, once nothing of it flies. A
     /// rendering still before its judges keeps the run open until the
     /// verdict, as its generation is paid for; no other cell starts.
-    pub(in super::super) async fn bake_closed_windows(&self) -> Result<()> {
+    async fn bake_closed_windows(&self) -> Result<()> {
         let at = now();
         // A campaign owns first attempts across its whole repetition series;
         // ordinary sitting expiry must not supersede them, so its runs are

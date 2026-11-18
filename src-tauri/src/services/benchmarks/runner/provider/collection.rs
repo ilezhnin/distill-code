@@ -85,9 +85,7 @@ pub(in super::super) fn unsigned_deadline(deadline: i64) -> Result<u64> {
         .map_err(|_| BenchmarkError::new("budget_clock_conflict", "Native deadline is invalid"))
 }
 
-pub(in super::super) async fn preparation_gate(
-    deadline: Option<u64>,
-) -> Result<sandbox::HostPreparation> {
+async fn preparation_gate(deadline: Option<u64>) -> Result<sandbox::HostPreparation> {
     let admission_deadline = deadline.unwrap_or((now() as u64).saturating_add(420_000));
     sandbox::host_preparation(admission_deadline)
         .await

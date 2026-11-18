@@ -320,9 +320,7 @@ pub(in super::super) struct OwnedTurnWait<'a> {
     pub(in super::super) terminal_drain_grace: Duration,
 }
 
-pub(in super::super) fn reconcile_owned_cancel_request(
-    result: std::result::Result<(), String>,
-) -> Result<()> {
+fn reconcile_owned_cancel_request(result: std::result::Result<(), String>) -> Result<()> {
     match result {
         // The host may have stopped its sandbox while its terminal receipt is
         // still being committed. Only that notification race gets a grace

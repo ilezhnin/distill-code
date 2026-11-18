@@ -57,7 +57,7 @@ impl Flight {
     pub(in super::super) fn uses_lane(&self, lane: &str) -> bool {
         !self.checking && (self.lane == lane || self.workers.iter().any(|w| w.lane == lane))
     }
-    pub(in super::super) fn uses_model(&self, account: &str, model: &str) -> bool {
+    fn uses_model(&self, account: &str, model: &str) -> bool {
         !model.is_empty() && self.model == model && self.uses_account(account)
     }
 }
@@ -166,7 +166,7 @@ pub(in crate::services::benchmarks) fn account_slots_within(
 /// step-admission recipe, served oldest root first. Kept in memory beside the
 /// flights they wait for, scoped to the store they belong to; a waiter whose
 /// root no longer flies is ignored, and a dropped wait removes itself.
-pub(in super::super) static STEP_WAITERS: std::sync::LazyLock<std::sync::Mutex<Vec<StepWaiter>>> =
+static STEP_WAITERS: std::sync::LazyLock<std::sync::Mutex<Vec<StepWaiter>>> =
     std::sync::LazyLock::new(Default::default);
 
 #[derive(Clone, PartialEq, Eq)]
@@ -205,7 +205,7 @@ impl Drop for Waiting {
 }
 
 /// A campaign child's cell index from its request key, else zero.
-pub(in super::super) fn cell_order(request_key: &str) -> u64 {
+fn cell_order(request_key: &str) -> u64 {
     request_key
         .rsplit(':')
         .next()

@@ -99,7 +99,7 @@ impl BenchmarkService {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(in super::super) async fn recover_one(
+    async fn recover_one(
         &self,
         mut a: Attempt,
         request: &RunRequest,

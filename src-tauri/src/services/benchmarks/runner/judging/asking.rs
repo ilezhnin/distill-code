@@ -93,7 +93,7 @@ impl NativeBackend {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(in super::super) async fn ask_judge_inner(
+    async fn ask_judge_inner(
         &self,
         store: &Store,
         attempt: &mut Attempt,

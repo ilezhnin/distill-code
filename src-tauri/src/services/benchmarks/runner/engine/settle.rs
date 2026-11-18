@@ -12,14 +12,14 @@ pub(in super::super) const EVALUATION_WAIT: &str = "Waiting for local resources 
 pub(in super::super) const CHECK_RERUNS: u32 = 2;
 
 /// How long such a check waits before it runs again.
-pub(in super::super) const CHECK_RERUN_WAIT: Duration = if cfg!(test) {
+const CHECK_RERUN_WAIT: Duration = if cfg!(test) {
     Duration::from_millis(10)
 } else {
     Duration::from_secs(20)
 };
 
 /// The reason a sealed answer carries while its check waits to run again.
-pub(in super::super) const CHECK_AGAIN: &str = "Checking again after an infrastructure failure";
+const CHECK_AGAIN: &str = "Checking again after an infrastructure failure";
 
 /// How long an evaluation the sandbox refused before starting waits before it
 /// asks again. The broker's own admission already waited out its window.
@@ -44,7 +44,7 @@ pub(in super::super) fn evaluation_failure_outcome(error: &BenchmarkError) -> &'
 /// answer, after `reruns` such runs: the sandbox's infrastructure ended it
 /// (see [`CHECK_RERUNS`]). The candidate's own limit, an evaluator's defect
 /// and a missing runtime decide the answer or need the operator, and settle.
-pub(in super::super) fn check_runs_again(error: &BenchmarkError, reruns: u32) -> bool {
+fn check_runs_again(error: &BenchmarkError, reruns: u32) -> bool {
     error.code == "infrastructure_failure" && reruns < CHECK_RERUNS
 }
 
