@@ -463,7 +463,7 @@ impl NativeBackend {
                 .get_or_start(&self.app)
                 .await
                 .map_err(host_error)?;
-            with_app_sign_in(&host, c, budget, false, check)
+            with_app_sign_in(&host, c, budget, SignInAsker::Running, check)
                 .await
                 .map(|((), _)| ())
         })

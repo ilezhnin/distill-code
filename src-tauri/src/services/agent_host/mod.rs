@@ -4,6 +4,7 @@
 //! defaults, MCP configuration, and skill/agent/project files itself.
 
 mod app_sign_in;
+pub(crate) use self::app_sign_in::Asker as SignInAsker;
 mod background;
 pub mod bridge;
 mod context_meter;

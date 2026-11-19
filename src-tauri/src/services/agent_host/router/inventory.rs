@@ -27,7 +27,7 @@ impl Inner {
             // The listing session's lease must cover 120 s and its 480 s
             // start margin, plus a minute for the checks before it starts.
             .saturating_add(240_000);
-            self.renew_app_sign_in(provider, account, until, true)
+            self.renew_app_sign_in(provider, account, until, app_sign_in::Asker::New)
                 .await?;
             let status = text_execution::readiness(native, account).await?;
             let revision = text_execution::revision(native, &status);

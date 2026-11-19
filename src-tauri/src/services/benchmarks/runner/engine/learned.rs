@@ -1,7 +1,7 @@
 //! What a run learned while it runs, kept in memory by one owner: when its
 //! accounts first refused for quota, which of them are exhausted or held and
-//! until when, how many turns the infrastructure ended in a row, and what
-//! waits for the operator. A restart forgets it, and the operator's resume
+//! until when, which wait for a sign-in, how many turns the infrastructure
+//! ended in a row, and what waits for the operator. A restart forgets it, and the operator's resume
 //! drops it whole ([`forget`]), so everything of the run asks again.
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, PoisonError};
@@ -20,6 +20,8 @@ pub(super) struct Learned {
     pub(super) streaks: HashMap<String, u32>,
     /// Accounts and cells left for the operator.
     pub(super) left: HashSet<String>,
+    /// Accounts whose tests wait for a sign-in, until one is admitted.
+    pub(super) sign_in_waits: HashSet<String>,
 }
 
 static RUNS: LazyLock<Mutex<HashMap<String, Learned>>> = LazyLock::new(Default::default);

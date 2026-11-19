@@ -1454,7 +1454,11 @@ impl NativeBackend {
             &host,
             &attempt.configuration,
             Some(timeout),
-            !continues,
+            if continues {
+                SignInAsker::Running
+            } else {
+                SignInAsker::Test
+            },
             || {
                 self.admitted_runtime(
                     &host,
@@ -1467,6 +1471,9 @@ impl NativeBackend {
             },
         )
         .await?;
+        // The account's sign-in admits tests again: its queued ones need not
+        // ask one at a time any longer.
+        sign_in_admitted(attempt);
         let credentials = CredentialWindow::new(grant, status);
         // The pin guards the account the run was planned on. A test the
         // run moved to another account (its usage limit ran out) runs on

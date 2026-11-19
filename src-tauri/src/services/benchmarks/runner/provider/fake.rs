@@ -469,6 +469,7 @@ impl ExecutionBackend for FakeBackend {
                     crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY,
                 ));
             }
+            sign_in_admitted(&a);
             if take(&self.busy_accounts) {
                 return Err(BenchmarkError::new(
                     ACCOUNT_BUSY,

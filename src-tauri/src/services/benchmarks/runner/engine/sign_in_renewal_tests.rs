@@ -347,3 +347,43 @@ async fn a_cell_refused_for_a_busy_account_is_retried_within_the_tick() {
     assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
     dir.close().await;
 }
+
+/// While an account's sign-in waits, one test of the run asks at a time: on
+/// 11-18 a draining Grok account was asked by every queued test at each
+/// retry, forty workspaces prepared every fifteen seconds to be told the
+/// same. Once one test is admitted the rest follow at the account's pace.
+#[tokio::test]
+async fn while_a_sign_in_waits_one_test_of_the_run_asks_at_a_time() {
+    let (dir, service, backend) = setup().await;
+    let mut request = serial_request(&service).await;
+    request.repetitions = 4;
+    request.max_executions = 4;
+    request.parallelism = Some(4);
+    backend.sign_in_waits.store(7, Ordering::SeqCst);
+    let run = service.start_run(request).await.unwrap();
+    let asked = || 7 - backend.sign_in_waits.load(Ordering::SeqCst);
+    // Until the first answer says the account waits, its free seats ask.
+    service.tick().await.unwrap();
+    let first = asked();
+    assert!((1..=4).contains(&first), "{first}");
+    // From then on one asks per retry, whatever the seats.
+    for retry in 1..=2 {
+        release(&run.id);
+        crate::services::benchmarks::runner::tests::expire_saved_waits(&service, &run.id).await;
+        service.tick().await.unwrap();
+        assert_eq!(asked(), first + retry);
+    }
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    // The sign-in admits tests again: the one that asks is admitted, and
+    // the others start beside it in the same tick.
+    backend.sign_in_waits.store(0, Ordering::SeqCst);
+    release(&run.id);
+    crate::services::benchmarks::runner::tests::expire_saved_waits(&service, &run.id).await;
+    for _ in 0..3 {
+        service.tick().await.unwrap();
+    }
+    let done = service.store.run(&run.id).await.unwrap();
+    assert_eq!(done.state, "completed");
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 4);
+    dir.close().await;
+}

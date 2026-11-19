@@ -70,8 +70,10 @@ impl CredentialWindow {
 /// provider turn, once the Flock sign-in of `c`'s account lasts for the
 /// attempt: `budget` seconds (none for planning) and the cleanup margin,
 /// renewed first on Windows when it does not (see
-/// `Inner::renew_app_sign_in`). With `drain`, an attempt whose own limit the
-/// grant still covers waits for a waiting renewal too. Returns what `admit`
+/// `Inner::renew_app_sign_in`). `asker` says what the renewal may cost the
+/// attempt: new work waits for a waiting renewal even when the grant still
+/// covers its own limit, and a run's new test has a half-spent grant renewed
+/// first while nothing runs on it. Returns what `admit`
 /// returned and the grant its lease will be staged from; a provider that
 /// keeps its own sandbox sign-in (Kimi) runs `admit` alone, whose checks
 /// cover it.
@@ -79,7 +81,7 @@ pub(in super::super) fn with_app_sign_in<'a, T, F, Fut>(
     host: &'a Arc<crate::services::agent_host::router::Inner>,
     c: &'a Configuration,
     budget: Option<u32>,
-    drain: bool,
+    asker: SignInAsker,
     admit: F,
 ) -> BoxFuture<'a, Result<(T, AppGrant)>>
 where
@@ -105,7 +107,7 @@ where
                 &c.provider_id,
                 c.account_id.as_deref().unwrap_or_default(),
                 until.saturating_add(RENEWAL_SLACK_MS),
-                drain,
+                asker,
             )
             .await
             .map_err(host_error)?;

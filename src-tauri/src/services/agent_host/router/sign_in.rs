@@ -88,7 +88,7 @@ impl Inner {
         provider: &'a str,
         account: &'a str,
         until_ms: i64,
-        drain: bool,
+        asker: app_sign_in::Asker,
     ) -> BoxFuture<'a, Result<Option<i64>, String>> {
         Box::pin(async move {
             let Some(native) = NativeProvider::for_harness(provider)
@@ -103,7 +103,7 @@ impl Inner {
             let host = Arc::clone(self);
             let account = account.to_owned();
             tokio::spawn(async move {
-                host.renew_app_sign_in_now(native, account, until_ms, drain)
+                host.renew_app_sign_in_now(native, account, until_ms, asker)
                     .await
             })
             .await
@@ -116,7 +116,7 @@ impl Inner {
         native: NativeProvider,
         account: String,
         until_ms: i64,
-        drain: bool,
+        asker: app_sign_in::Asker,
     ) -> Result<Option<i64>, String> {
         {
             let key = account_route_key(native.harness_id(), Some(&account));
@@ -133,7 +133,7 @@ impl Inner {
                 &key,
                 native,
                 until_ms,
-                drain,
+                asker,
                 &mut io,
             )
             .await
@@ -184,7 +184,7 @@ impl Inner {
             // Failures are logged where the renewal ran; a wait for live
             // leases is retried on the next pass.
             if let Err(error) = self
-                .renew_app_sign_in(&provider, &account, until, true)
+                .renew_app_sign_in(&provider, &account, until, app_sign_in::Asker::New)
                 .await
             {
                 log::debug!(

@@ -436,6 +436,10 @@ impl BenchmarkService {
     async fn wait_unstarted(&self, failure: &FailedTry<'_>, mut failed: Attempt) -> Result<()> {
         let error = failure.error;
         if error.code == SIGN_IN_WAIT {
+            sign_in_waits(
+                &failure.run.id,
+                &quota_scope(&failure.dispatched.configuration),
+            );
             requeue(&mut failed, error.message.clone());
             failed.wait_until = Some(sign_in_retry(
                 &failure.run.id,
@@ -588,6 +592,10 @@ impl BenchmarkService {
     /// The cell waits until the Grok CLI renews the sign-in.
     async fn wait_for_sign_in(&self, failure: &FailedTry<'_>, mut failed: Attempt) -> Result<()> {
         let reason = failure.error.message.clone();
+        sign_in_waits(
+            &failure.run.id,
+            &quota_scope(&failure.dispatched.configuration),
+        );
         self.back_in_queue(failure, &mut failed, reason).await?;
         failed.wait_until = Some(sign_in_retry(
             &failure.run.id,

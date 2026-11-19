@@ -139,6 +139,7 @@ impl BenchmarkService {
         match result {
             Ok(mut completed) => {
                 quota_recovered(&run.id, &quota_scope(&a.configuration));
+                sign_in_admitted(&a);
                 completed.phase = self.settled_phase(run, &completed).await?.into();
                 self.store.save_attempt(&completed).await?;
                 let streak = infrastructure_streak(

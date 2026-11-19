@@ -17,6 +17,11 @@
 //! account drains (see [`super::sandbox_sign_in`]), and a lease is never
 //! staged while a renewal runs. The keep-alive asks for a renewal well
 //! before a grant expires, so a quiet night never leaves a dead sign-in.
+//!
+//! A drain admits nothing new until the account's longest test ends, so a
+//! grant is also renewed ahead of need, while nothing runs on it (see
+//! [`half_spent`]): a run then starts on a whole grant, not on the rest of
+//! one that drains its account an hour later.
 use super::{
     execution::NativeProvider,
     sandbox_sign_in::{SignInRenewals, Step},
@@ -60,6 +65,21 @@ pub(crate) const KEEPALIVE_FIRST_PASS: std::time::Duration = std::time::Duration
 /// How often the keep-alive looks at every app sign-in.
 pub(crate) const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// Who asks for a grant to last, which decides what its renewal may cost
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asker {
+    /// A later step of work already running: it goes on while its grant
+    /// lasts, whatever waits for a renewal.
+    Running,
+    /// New work: it waits as well while the account drains for a renewal.
+    New,
+    /// A run's new test: as [`Asker::New`], and a grant past half of the
+    /// time it admits such a test for is renewed first, while nothing runs
+    /// on it (see [`half_spent`]).
+    Test,
+}
+
 /// What a renewal needs from the app, its account and the provider. Tests
 /// replace it to drive the real control flow.
 pub(super) trait RenewalIo: Send {
@@ -97,7 +117,7 @@ pub(super) async fn ensure(
     key: &str,
     provider: NativeProvider,
     until_ms: i64,
-    drain: bool,
+    asker: Asker,
     io: &mut impl RenewalIo,
 ) -> Result<Option<i64>, String> {
     let expiry = io.expiry().map_err(|error| {
@@ -111,7 +131,7 @@ pub(super) async fn ensure(
     let lasts = expiry >= needed;
     // A later step of work already running needs only a grant that lasts;
     // new work also waits while the account drains for a renewal.
-    if !drain && lasts {
+    if asker == Asker::Running && lasts {
         return Ok(Some(expiry));
     }
     // A renewal of this grant failed a moment ago: the account does not
@@ -153,10 +173,20 @@ pub(super) async fn ensure(
         }
     }
     let live = io.live_leases().await;
-    match renewals.step(key, expiry, needed, live) {
-        Step::Covered => return Ok(Some(expiry)),
-        Step::Wait => return Err(format!("sign_in_wait: {APP_SIGN_IN_DRAIN}")),
-        Step::Renew => {}
+    // Nothing waits for this renewal, so it never makes a test wait or fail:
+    // a holder, a refusal or a grant that came back no newer leaves the test
+    // on the grant it has, and that grant is not tried again.
+    let ahead = asker == Asker::Test
+        && lasts
+        && live == 0
+        && half_spent(provider, expiry, needed, io.now())
+        && !renewals.failed_for(key, expiry);
+    if !ahead {
+        match renewals.step(key, expiry, needed, live) {
+            Step::Covered => return Ok(Some(expiry)),
+            Step::Wait => return Err(format!("sign_in_wait: {APP_SIGN_IN_DRAIN}")),
+            Step::Renew => {}
+        }
     }
     // A grant that still lasts renews only for a drain other waiters asked
     // for; that renewal waits for the same holders, and the drain ends.
@@ -170,23 +200,30 @@ pub(super) async fn ensure(
     log::info!(
         "[agent-host] renewing the Flock {} sign-in of {key}{}",
         provider.key(),
-        if natural { " (in its own window)" } else { "" }
+        if natural {
+            " (in its own window)"
+        } else if ahead {
+            " (ahead of need, while nothing runs on it)"
+        } else {
+            ""
+        }
     );
     let result = io.renew(natural).await;
     renewals.settle(key);
+    let kept = |error: String| if ahead { Ok(Some(expiry)) } else { Err(error) };
     let after = match result.and_then(|()| io.expiry()) {
         Ok(after) => after,
         Err(error) => {
             // Contention is not a refused refresh token and must not poison
             // this grant's renewal cache for fifteen minutes.
             if let Some(wait) = changing(&error) {
-                return Err(wait);
+                return kept(wait);
             }
-            return Err(failed(renewals, key, provider, expiry, io.now(), &error));
+            return kept(failed(renewals, key, provider, expiry, io.now(), &error));
         }
     };
     if after.is_some_and(|after| after <= expiry) {
-        return Err(failed(
+        return kept(failed(
             renewals,
             key,
             provider,
@@ -211,6 +248,19 @@ pub(super) async fn ensure(
         ));
     }
     Ok(after)
+}
+
+/// Whether the grant that expires at `expiry` is past half of the time a
+/// fresh one admits a test that needs it until `needed`. A Grok grant lasts
+/// six hours and admits a test for its first 3 h 44 min; a run that began 2
+/// h 45 min into one sent tests for 45 minutes and then drained its account
+/// for over an hour (11-18).
+fn half_spent(provider: NativeProvider, expiry: i64, needed: i64, now: i64) -> bool {
+    let Some(lifetime) = credential_lease::fresh_lifetime_ms(provider) else {
+        return false;
+    };
+    let admits = lifetime.saturating_sub(needed.saturating_sub(now));
+    admits > 0 && expiry.saturating_sub(needed) < admits / 2
 }
 
 fn failed(
@@ -307,7 +357,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + HOUR,
-            true,
+            Asker::New,
             &mut io,
         )
         .await
@@ -322,7 +372,7 @@ mod tests {
                 "zai",
                 NativeProvider::Zai,
                 i64::MAX,
-                true,
+                Asker::New,
                 &mut key
             )
             .await,
@@ -342,7 +392,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 2 * HOUR,
-            true,
+            Asker::New,
             &mut early,
         )
         .await
@@ -352,9 +402,16 @@ mod tests {
         assert_eq!(early.retired, 2);
         for left in [credential_lease::CLAUDE_RENEWAL_WINDOW_MS, 0, -HOUR] {
             let mut late = Scripted::new(Some(NOW + left), Some(NOW + 8 * HOUR));
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut late)
-                .await
-                .unwrap();
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW,
+                Asker::New,
+                &mut late,
+            )
+            .await
+            .unwrap();
             assert_eq!(late.renewals, [true], "{left}");
         }
     }
@@ -371,7 +428,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 2 * HOUR,
-            true,
+            Asker::New,
             &mut busy,
         )
         .await
@@ -380,12 +437,17 @@ mod tests {
         assert!(busy.renewals.is_empty());
         assert!(renewals.is_due(KEY));
         // A short test the grant still covers waits as well.
-        assert!(
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut busy)
-                .await
-                .unwrap_err()
-                .starts_with("sign_in_wait:")
-        );
+        assert!(ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            NOW,
+            Asker::New,
+            &mut busy
+        )
+        .await
+        .unwrap_err()
+        .starts_with("sign_in_wait:"));
         // A later step of work already running goes on while its grant lasts.
         assert_eq!(
             ensure(
@@ -393,7 +455,7 @@ mod tests {
                 KEY,
                 NativeProvider::Claude,
                 NOW,
-                false,
+                Asker::Running,
                 &mut busy
             )
             .await,
@@ -402,7 +464,15 @@ mod tests {
         assert!(renewals.is_due(KEY));
         busy.leases = 0;
         assert_eq!(
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut busy).await,
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW,
+                Asker::New,
+                &mut busy
+            )
+            .await,
             Ok(Some(NOW + 8 * HOUR))
         );
         assert_eq!(busy.renewals, [false]);
@@ -422,7 +492,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             until,
-            true,
+            Asker::New,
             &mut refused,
         )
         .await
@@ -437,7 +507,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             until,
-            true,
+            Asker::New,
             &mut refused,
         )
         .await
@@ -451,7 +521,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             until,
-            true,
+            Asker::New,
             &mut refused,
         )
         .await;
@@ -464,7 +534,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             until,
-            true,
+            Asker::New,
             &mut stale
         )
         .await
@@ -477,7 +547,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             until,
-            true,
+            Asker::New,
             &mut signed_in_again
         )
         .await
@@ -496,7 +566,7 @@ mod tests {
                 KEY,
                 NativeProvider::Claude,
                 NOW,
-                true,
+                Asker::New,
                 &mut missing
             )
             .await,
@@ -517,7 +587,7 @@ mod tests {
                 KEY,
                 NativeProvider::Claude,
                 NOW + 2 * HOUR,
-                true,
+                Asker::New,
                 &mut io,
             )
             .await;
@@ -532,7 +602,7 @@ mod tests {
                     KEY,
                     NativeProvider::Claude,
                     NOW + 2 * HOUR,
-                    true,
+                    Asker::New,
                     &mut io
                 )
                 .await,
@@ -544,7 +614,15 @@ mod tests {
         let mut io = Scripted::new(None, None);
         io.grant = Err(AUTHORIZATION_CHANGING.into());
         assert_eq!(
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut io).await,
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW,
+                Asker::New,
+                &mut io
+            )
+            .await,
             Err(format!("sign_in_wait: {APP_SIGN_IN_CHANGING}"))
         );
         assert!(io.renewals.is_empty());
@@ -562,7 +640,7 @@ mod tests {
                 KEY,
                 NativeProvider::Claude,
                 NOW + 2 * HOUR,
-                true,
+                Asker::New,
                 &mut io,
             )
             .await;
@@ -590,13 +668,100 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + KEEPALIVE_LEAD_MS,
-            true,
+            Asker::New,
             &mut idle,
         )
         .await
         .unwrap();
         assert_eq!(idle.renewals, [false]);
     }
+    /// A run's new test on an idle account has a grant past half of its
+    /// admitting time renewed first; nothing else asks for that, and it
+    /// never costs the test anything.
+    #[tokio::test]
+    async fn a_half_spent_grant_is_renewed_for_a_test_while_nothing_runs_on_it() {
+        // A fresh Grok grant lasts six hours; this one has three left and
+        // the test needs one.
+        const GROK: &str = "grok-acp\u{1f}invented";
+        async fn asked(asker: Asker, io: &mut Scripted) -> Result<Option<i64>, String> {
+            let renewals = SignInRenewals::default();
+            ensure(&renewals, GROK, NativeProvider::Grok, NOW + HOUR, asker, io).await
+        }
+        let mut idle = Scripted::new(Some(NOW + 3 * HOUR), Some(NOW + 6 * HOUR));
+        assert_eq!(
+            asked(Asker::Test, &mut idle).await,
+            Ok(Some(NOW + 6 * HOUR))
+        );
+        assert_eq!(idle.renewals, [false]);
+        // The whole grant it left is not renewed again.
+        assert_eq!(
+            asked(Asker::Test, &mut idle).await,
+            Ok(Some(NOW + 6 * HOUR))
+        );
+        assert_eq!(idle.renewals.len(), 1);
+        // A listing, a judge or the keep-alive never asks for it, and a test
+        // does not while a lease of the account is alive.
+        let mut other = Scripted::new(Some(NOW + 3 * HOUR), Some(NOW + 6 * HOUR));
+        assert_eq!(
+            asked(Asker::New, &mut other).await,
+            Ok(Some(NOW + 3 * HOUR))
+        );
+        other.leases = 1;
+        assert_eq!(
+            asked(Asker::Test, &mut other).await,
+            Ok(Some(NOW + 3 * HOUR))
+        );
+        assert!(other.renewals.is_empty());
+        // A chat or CLI that holds the sign-in keeps the grant as it is.
+        let mut held = Scripted::new(Some(NOW + 3 * HOUR), Some(NOW + 6 * HOUR));
+        held.holders = 1;
+        assert_eq!(
+            asked(Asker::Test, &mut held).await,
+            Ok(Some(NOW + 3 * HOUR))
+        );
+        assert!(held.renewals.is_empty());
+    }
+
+    /// A renewal ahead of need that the provider refuses leaves the test on
+    /// the grant it has, and is not tried on that grant again.
+    #[tokio::test]
+    async fn a_refused_renewal_ahead_of_need_costs_the_test_nothing() {
+        const GROK: &str = "grok-acp\u{1f}invented";
+        let renewals = SignInRenewals::default();
+        let mut refused = Scripted::new(Some(NOW + 3 * HOUR), None);
+        refused.outcome = Err("invented refusal".into());
+        for _ in 0..2 {
+            assert_eq!(
+                ensure(
+                    &renewals,
+                    GROK,
+                    NativeProvider::Grok,
+                    NOW + HOUR,
+                    Asker::Test,
+                    &mut refused
+                )
+                .await,
+                Ok(Some(NOW + 3 * HOUR))
+            );
+        }
+        assert_eq!(refused.renewals.len(), 1);
+        // Long after, the same grant is still left alone.
+        refused.now = NOW + HOUR / 2;
+        assert_eq!(
+            ensure(
+                &renewals,
+                GROK,
+                NativeProvider::Grok,
+                NOW + HOUR,
+                Asker::Test,
+                &mut refused
+            )
+            .await,
+            Ok(Some(NOW + 3 * HOUR))
+        );
+        assert_eq!(refused.renewals.len(), 1);
+    }
+
     /// A failed renewal does not make the account drain again: what the
     /// grant still covers goes on, and the keep-alive sets no wait.
     #[tokio::test]
@@ -609,7 +774,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 2 * HOUR,
-            true,
+            Asker::New,
             &mut refused
         )
         .await
@@ -621,7 +786,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 2 * HOUR,
-            true,
+            Asker::New,
             &mut refused
         )
         .await
@@ -635,7 +800,7 @@ mod tests {
                 KEY,
                 NativeProvider::Claude,
                 NOW,
-                true,
+                Asker::New,
                 &mut refused
             )
             .await,
@@ -654,7 +819,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 9 * HOUR,
-            true,
+            Asker::New,
             &mut io,
         )
         .await
@@ -680,7 +845,7 @@ mod tests {
                 KEY,
                 NativeProvider::Claude,
                 NOW + 2 * HOUR,
-                true,
+                Asker::New,
                 &mut held
             )
             .await,
@@ -688,16 +853,31 @@ mod tests {
         );
         // What the grant covers still starts.
         assert_eq!(
-            ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut held).await,
+            ensure(
+                &renewals,
+                KEY,
+                NativeProvider::Claude,
+                NOW,
+                Asker::New,
+                &mut held
+            )
+            .await,
             Ok(Some(NOW + HOUR))
         );
         assert!(held.renewals.is_empty());
         assert!(!renewals.is_due(KEY));
         let mut late = Scripted::new(Some(NOW + 60_000), Some(NOW + 8 * HOUR));
         late.holders = 2;
-        ensure(&renewals, KEY, NativeProvider::Claude, NOW, true, &mut late)
-            .await
-            .unwrap();
+        ensure(
+            &renewals,
+            KEY,
+            NativeProvider::Claude,
+            NOW,
+            Asker::New,
+            &mut late,
+        )
+        .await
+        .unwrap();
         assert_eq!(late.renewals, [true]);
         held.holders = 0;
         held.leases = 0;
@@ -706,7 +886,7 @@ mod tests {
             KEY,
             NativeProvider::Claude,
             NOW + 2 * HOUR,
-            true,
+            Asker::New,
             &mut held,
         )
         .await

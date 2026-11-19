@@ -164,11 +164,14 @@ impl NativeBackend {
             return Ok(refused);
         }
         let timeout = Duration::from_secs(u64::from(JUDGE_TIMEOUT_SECONDS));
-        let ((runtime_revision, status), grant) =
-            with_app_sign_in(&host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
-                text_runtime_snapshot(judge, Some(JUDGE_TIMEOUT_SECONDS))
-            })
-            .await?;
+        let ((runtime_revision, status), grant) = with_app_sign_in(
+            &host,
+            judge,
+            Some(JUDGE_TIMEOUT_SECONDS),
+            SignInAsker::New,
+            || text_runtime_snapshot(judge, Some(JUDGE_TIMEOUT_SECONDS)),
+        )
+        .await?;
         let credentials = CredentialWindow::new(grant, status);
         let index = judge_call_index(attempt, batch, index, judge);
         let judge_owner = format!("{}:judge:{batch}:{index}", attempt.id);
@@ -444,8 +447,12 @@ impl NativeBackend {
                 account,
             );
             let diagnostic_target = Some((store, attempt));
-            let (offered, _) =
-                with_app_sign_in(host, judge, Some(JUDGE_TIMEOUT_SECONDS), true, || {
+            let (offered, _) = with_app_sign_in(
+                host,
+                judge,
+                Some(JUDGE_TIMEOUT_SECONDS),
+                SignInAsker::New,
+                || {
                     let (host, run, provider, account) = listing;
                     async move {
                         let listed = self
@@ -460,8 +467,9 @@ impl NativeBackend {
                             .await?;
                         self.inventory_rows(provider, account, &listed).await
                     }
-                })
-                .await?;
+                },
+            )
+            .await?;
             if !offered
                 .iter()
                 .any(|row| crate::services::benchmarks::judge_panel::offered(judge, row))

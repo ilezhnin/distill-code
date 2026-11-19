@@ -321,6 +321,31 @@ pub(in super::super) fn sign_in_retry(run_id: &str, provider: &str) -> i64 {
     })
 }
 
+/// A test of `scope` (see [`quota_scope`]) in `run_id` was held back for its
+/// account's sign-in: a renewal that waits for the account's running tests,
+/// or for a chat or CLI that holds the sign-in. Until one test of the account
+/// is admitted ([`sign_in_admitted`]) one of the run's asks at a time (see
+/// `BenchmarkService::waits_for_its_sign_in`): asked by every queued test at each retry, the
+/// account's forty seats prepared forty workspaces every fifteen seconds to
+/// be told the same (11-18: 500 preparations in half an hour of one drain).
+pub(in super::super) fn sign_in_waits(run_id: &str, scope: &str) {
+    learned::of(run_id, |run| run.sign_in_waits.insert(scope.to_owned()));
+}
+
+/// Whether tests of `scope` in `run_id` still wait for its sign-in.
+pub(in super::super) fn sign_in_waiting(run_id: &str, scope: &str) -> bool {
+    learned::of(run_id, |run| run.sign_in_waits.contains(scope))
+}
+
+/// A test of `attempt`'s account passed its sign-in, or ran: the account's
+/// wait is over, and its seats are its pace's again.
+pub(in super::super) fn sign_in_admitted(attempt: &Attempt) {
+    learned::of(&attempt.run_id, |run| {
+        run.sign_in_waits
+            .remove(&quota_scope(&attempt.configuration))
+    });
+}
+
 /// Sends no cell of `provider_id` (a provider, or an account by its
 /// [`quota_scope`]) in `run_id` before `until`; the next dispatch after it
 /// asks again. A Grok sign-in the Grok CLI renews only later holds the run's

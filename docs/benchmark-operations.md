@@ -588,7 +588,18 @@ unstarted admissions while later steps of workflows already running finish on
 the grant they were admitted with. A renewal the provider refuses keeps the
 grant and is not retried for the same grant for 15 minutes, nor does the
 account drain for it meanwhile (tests the grant still covers go on); sign in
-again in Settings > AI providers. Thirty seconds after the app starts and every five
+again in Settings > AI providers.
+
+A drain admits nothing new until the account's longest test ends, so a run's
+new test also has a grant renewed ahead of need: while no lease of the account
+is alive, a grant past half of the time a fresh one admits such a test for (a
+six-hour Grok grant after about 1 h 50 min) is renewed before the test starts,
+and the run begins on a whole grant instead of draining its account an hour
+in. A chat or CLI that holds the sign-in, or a provider that refuses, leaves
+the test on the grant it has, and that grant is not tried again. While an
+account's sign-in waits (a drain, a chat or CLI that holds it), one test of
+each run asks at a time until one is admitted; the others stay queued without
+preparing a workspace to be told the same. Thirty seconds after the app starts and every five
 minutes after that, the app also renews each Claude, Codex and Grok sign-in
 that would otherwise reach its CLI's own window within 30 minutes, whether or
 not anything runs, so a quiet night never ends with an expired sign-in; the
@@ -1121,6 +1132,10 @@ transcript replays a finished attempt's turn from the sealed record, read-only;
 a running attempt opens its live chat. A judge's full reply is kept only when
 it gave no valid score sheet; a valid vote keeps its scores, reasons and
 critical checks. Application task chats are not benchmark chats and stay.
+A chat's events are removed 2 000 to a transaction, so the store's one writer
+is never kept for a whole chat (a long turn leaves over a hundred thousand
+events) while other turns settle; a removal the app stops in the middle is
+finished on the next pass.
 
 A provider's runtime that loses its connection mid-answer asks for the response
 again, and the answer streams from its start as a new message. The attempt's

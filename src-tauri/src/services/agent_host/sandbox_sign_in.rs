@@ -127,6 +127,18 @@ impl SignInRenewals {
     pub(super) fn clear_failure(&self, key: &str) {
         self.with(key, |account| account.failure = None);
     }
+
+    /// Whether the last renewal of `key`'s grant that expires at `expiry`
+    /// failed, however long ago: a renewal nothing waits for is not tried on
+    /// that grant again.
+    pub(super) fn failed_for(&self, key: &str, expiry: i64) -> bool {
+        self.with(key, |account| {
+            account
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.expiry == expiry)
+        })
+    }
 }
 
 /// What a renewal asked for a grant that expires at `expiry` does, asked to

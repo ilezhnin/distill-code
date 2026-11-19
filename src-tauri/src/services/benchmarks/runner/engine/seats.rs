@@ -276,6 +276,24 @@ impl BenchmarkService {
         room(&*self.active.lock().await, seat, workers)
     }
 
+    /// Whether a test of `run_id` on `account` waits for the one that asks
+    /// whether the account's sign-in admits tests again (see
+    /// [`sign_in_waits`]): one of the run's own is in flight there. Another
+    /// run's turn on the account keeps nobody from asking.
+    pub(in super::super) async fn waits_for_its_sign_in(
+        &self,
+        run_id: &str,
+        account: &str,
+    ) -> bool {
+        sign_in_waiting(run_id, account)
+            && self
+                .active
+                .lock()
+                .await
+                .values()
+                .any(|flight| flight.run_id == run_id && flight.uses_account(account))
+    }
+
     /// Attempts and panels of `run_id` in flight.
     pub(in super::super) async fn flying(&self, run_id: &str) -> usize {
         self.active

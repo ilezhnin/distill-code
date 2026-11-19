@@ -346,6 +346,9 @@ impl BenchmarkService {
                 a.configuration.account_id.as_deref().unwrap_or_default()
             )
         };
+        if !account.is_empty() && self.waits_for_its_sign_in(&run.id, &account).await {
+            return Ok(false);
+        }
         let id = a.id.clone();
         let seat = Seat {
             id: &id,

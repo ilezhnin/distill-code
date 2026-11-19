@@ -12,7 +12,7 @@ mod shared {
         BenchmarkService,
     };
     pub(super) use crate::services::{
-        agent_host::{execution::*, repository_execution, text_execution, AgentHost},
+        agent_host::{execution::*, repository_execution, text_execution, AgentHost, SignInAsker},
         benchmark_sandbox as sandbox, credential_lease,
     };
     pub(super) use futures_util::{future::BoxFuture, FutureExt};
