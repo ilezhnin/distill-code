@@ -1,10 +1,10 @@
 //! Optional immutable judge seats for repeatable rubric measurement.
-use super::{fixtures, runner, types::*};
+use crate::services::benchmarks::{fixtures, runner, types::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-pub(super) const RECIPE: &str = "frozen-native-panel-v1";
+pub(in crate::services::benchmarks) const RECIPE: &str = "frozen-native-panel-v1";
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -21,7 +21,7 @@ fn invalid(message: impl Into<String>) -> BenchmarkError {
 /// an author of the case. A candidate's own model keeps its seat, its score
 /// diluted by the others and the evaluation marked `ownModel`, as on an
 /// ordinary panel. Absence retains the ordinary discovery behavior.
-pub(super) fn frozen(
+pub(in crate::services::benchmarks) fn frozen(
     draft: &BenchmarkDraft,
     candidates: &[&Configuration],
 ) -> Result<Option<Vec<Configuration>>> {
@@ -84,8 +84,11 @@ pub(super) fn frozen(
                 ));
             }
         }
-        let model = super::model_catalog::model_identity(&judge.provider_id, &judge.model_id)
-            .ok_or_else(|| invalid("Judge model must resolve to a concrete identity"))?;
+        let model = crate::services::benchmarks::model_catalog::model_identity(
+            &judge.provider_id,
+            &judge.model_id,
+        )
+        .ok_or_else(|| invalid("Judge model must resolve to a concrete identity"))?;
         if !seats.insert((judge.provider_id.clone(), model))
             || judge.execution_profile != "native_text"
             || !matches!(judge.billing_mode.as_str(), "subscription" | "api")
@@ -121,7 +124,11 @@ fn identity(judge: &Configuration) -> Value {
 
 /// Unlike the display protocol hash, calibration authority binds accounts and
 /// runtime pins as well as the exact scoring prompt and renderer.
-pub(super) fn binding(panel: &[Configuration], prompt: &str, renderer: &str) -> String {
+pub(in crate::services::benchmarks) fn binding(
+    panel: &[Configuration],
+    prompt: &str,
+    renderer: &str,
+) -> String {
     fixtures::hash(
         json!({"recipe":RECIPE,"judges":panel.iter().map(identity).collect::<Vec<_>>(),
             "prompt":prompt,"renderer":renderer,"samplesPerJudge":1})
@@ -130,7 +137,10 @@ pub(super) fn binding(panel: &[Configuration], prompt: &str, renderer: &str) -> 
     )
 }
 
-pub(super) fn offered(judge: &Configuration, row: &InventoryModel) -> bool {
+pub(in crate::services::benchmarks) fn offered(
+    judge: &Configuration,
+    row: &InventoryModel,
+) -> bool {
     let current = &row.configuration;
     row.available
         && judge.provider_id == current.provider_id
@@ -148,7 +158,7 @@ pub(super) fn offered(judge: &Configuration, row: &InventoryModel) -> bool {
 
 /// Research labels must use the same native protocol as the published task's
 /// calibration. A human override or a different panel cannot inherit it.
-pub(super) fn validate_evidence(
+pub(in crate::services::benchmarks) fn validate_evidence(
     draft: &BenchmarkDraft,
     attempt: &Attempt,
     as_of: i64,
@@ -158,7 +168,7 @@ pub(super) fn validate_evidence(
     let Some(_) = frozen(draft, &candidates)? else {
         return Ok(());
     };
-    let score = super::analysis::score_as_of(attempt, Some(as_of))
+    let score = crate::services::benchmarks::analysis::score_as_of(attempt, Some(as_of))
         .ok_or_else(|| invalid("Frozen rubric evidence has no settled native score"))?;
     let evaluations: Vec<_> = attempt
         .evaluations
@@ -226,7 +236,7 @@ pub(super) fn validate_evidence(
 
 /// One complete, attributable vote per seat. Duplicate, foreign or cross-batch
 /// votes cannot complete a frozen panel. Legacy records use their own reader.
-pub(super) fn bound_evaluations<'a>(
+pub(in crate::services::benchmarks) fn bound_evaluations<'a>(
     marker: &Evaluation,
     answers: &[&'a Evaluation],
 ) -> Option<Vec<&'a Evaluation>> {
@@ -294,7 +304,7 @@ mod tests {
     }
 
     fn draft() -> BenchmarkDraft {
-        let mut draft = super::super::seeds::definitions().remove(0);
+        let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
         draft.evaluator.kind = "rubric".into();
         draft.environment = json!({"authoredBy": [], "judgeInput":"text",
             "rubricCriteria":[{"id":"meaning","weight":1}], "judgePanel": {
@@ -314,7 +324,9 @@ mod tests {
             frozen(&base, &[&judge("sonnet")]).unwrap().unwrap().len(),
             2
         );
-        let concrete = super::super::model_catalog::concrete_model("claude-acp", "haiku").unwrap();
+        let concrete =
+            crate::services::benchmarks::model_catalog::concrete_model("claude-acp", "haiku")
+                .unwrap();
         assert_eq!(
             frozen(&base, &[&judge(&concrete)]).unwrap().unwrap().len(),
             2
@@ -479,7 +491,7 @@ mod tests {
     fn only_complete_distinct_bound_votes_score_the_frozen_panel() {
         let (marker, answers) = evidence();
         let score = |marker: &Evaluation, answers: &[Evaluation]| {
-            super::super::analysis::score_of(
+            crate::services::benchmarks::analysis::score_of(
                 Some("judged"),
                 Some(2),
                 &[vec![marker.clone()], answers.to_vec()].concat(),
@@ -519,8 +531,12 @@ mod tests {
         let panel = frozen(&draft, &[]).unwrap().unwrap();
         let (mut marker, answers) = evidence();
         marker.details.as_mut().unwrap()["protocol"] = runner::judge_protocol(&draft, &panel);
-        let mut attempt =
-            super::super::pending_attempt("run", "version", &judge("invented-worker"), 0);
+        let mut attempt = crate::services::benchmarks::pending_attempt(
+            "run",
+            "version",
+            &judge("invented-worker"),
+            0,
+        );
         attempt.outcome = Some("judged".into());
         attempt.finished_at = Some(2);
         attempt.evaluations = [vec![marker], answers].concat();

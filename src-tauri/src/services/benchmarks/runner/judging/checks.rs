@@ -1,11 +1,11 @@
 //! Optional critical conditions for text rubrics. A valid quote anchors a
 //! judgment to the submitted response; it does not prove the judgment is true.
-use super::types::BenchmarkDraft;
+use crate::services::benchmarks::types::BenchmarkDraft;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) const POLICY: &str = "critical-text-v1";
+pub(in crate::services::benchmarks) const POLICY: &str = "critical-text-v1";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -36,19 +36,22 @@ fn requirements(draft: &BenchmarkDraft) -> Option<Vec<Requirement>> {
     Some(entries)
 }
 
-pub(super) fn enabled(draft: &BenchmarkDraft) -> bool {
+pub(in crate::services::benchmarks) fn enabled(draft: &BenchmarkDraft) -> bool {
     draft.environment.get("criticalChecks").is_some()
 }
 
-pub(super) fn validate(draft: &BenchmarkDraft) -> Vec<String> {
-    if enabled(draft) && (!super::runner::text_judged(draft) || requirements(draft).is_none()) {
+pub(in crate::services::benchmarks) fn validate(draft: &BenchmarkDraft) -> Vec<String> {
+    if enabled(draft)
+        && (!crate::services::benchmarks::runner::text_judged(draft)
+            || requirements(draft).is_none())
+    {
         vec!["Critical checks require a text rubric and 1–16 unique IDs (letters, digits, _ or -; at most 64 bytes) with nonempty requirements up to 4096 bytes".into()]
     } else {
         Vec::new()
     }
 }
 
-pub(super) fn instructions(draft: &BenchmarkDraft) -> String {
+pub(in crate::services::benchmarks) fn instructions(draft: &BenchmarkDraft) -> String {
     let Some(requirements) = requirements(draft) else {
         return String::new();
     };
@@ -121,7 +124,7 @@ struct Listed {
 /// Nothing is repaired or guessed: prose, fences, an object closed early and
 /// continued, conflicting members and a missing member stay invalid, and the
 /// sheet still goes through every check of [`parse`].
-pub(super) fn canonical_sheet(reply: &str) -> Option<String> {
+pub(in crate::services::benchmarks) fn canonical_sheet(reply: &str) -> Option<String> {
     if serde_json::from_str::<Reply>(reply).is_ok() {
         return None;
     }
@@ -189,7 +192,7 @@ struct Reply {
     checks: BTreeMap<String, Check>,
 }
 
-pub(super) struct Assessment {
+pub(in crate::services::benchmarks) struct Assessment {
     pub status: &'static str,
     pub checks: Value,
     /// Passes the judge gave without a quote, on conditions met by leaving
@@ -198,7 +201,7 @@ pub(super) struct Assessment {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) struct QuoteLess {
+pub(in crate::services::benchmarks) struct QuoteLess {
     pub omission: usize,
     pub positive: usize,
 }
@@ -206,7 +209,7 @@ pub(super) struct QuoteLess {
 /// Whether a condition reads as one the response meets by leaving something
 /// out ("does not mention", "contain no", "Fail if they do"). Only the monitor
 /// uses it: a quote-less pass on any condition is valid.
-pub(super) fn omission(requirement: &str) -> bool {
+pub(in crate::services::benchmarks) fn omission(requirement: &str) -> bool {
     let text = format!(" {} ", requirement.to_lowercase());
     [
         " do not ",
@@ -228,7 +231,7 @@ pub(super) fn omission(requirement: &str) -> bool {
 
 /// Strict parsing is opt-in with the new protocol. Old sheets retain their
 /// existing parser and identity. A failed check cannot repair an invalid sheet.
-pub(super) fn parse(
+pub(in crate::services::benchmarks) fn parse(
     draft: &BenchmarkDraft,
     reply: &str,
     response: &str,
@@ -238,7 +241,7 @@ pub(super) fn parse(
 }
 
 /// Explain a rejected sheet without exposing the candidate's text or quotes.
-pub(super) fn assess(
+pub(in crate::services::benchmarks) fn assess(
     draft: &BenchmarkDraft,
     reply: &str,
     response: &str,

@@ -14,9 +14,6 @@ pub mod fixtures;
 pub mod flights;
 pub mod generated;
 pub mod home_advantage;
-mod judge_checks;
-mod judge_panel;
-pub mod judge_pool;
 pub mod learned;
 pub mod model_catalog;
 pub mod mutation;
@@ -36,6 +33,10 @@ pub mod worker;
 pub mod workflow;
 pub mod workflow_campaign;
 pub mod workflow_policy;
+
+// The judging system's parts under the names the service knows them by.
+pub use runner::pool as judge_pool;
+use runner::{checks as judge_checks, frozen as judge_panel};
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock, Weak};

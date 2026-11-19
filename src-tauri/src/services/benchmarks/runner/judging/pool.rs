@@ -11,10 +11,10 @@ use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
+use crate::services::agent_host::execution::NativeProvider;
+use crate::services::benchmarks::{
     data_use::DataUse, qualification, runner, store::now, store::Store, types::*, BenchmarkService,
 };
-use crate::services::agent_host::execution::NativeProvider;
 use crate::services::provider_account_status::Headroom;
 
 /// The calibration recipe: a calibration counts for this recipe only.
@@ -72,7 +72,7 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accounts: Option<Vec<String>>,
     /// Read and ignored: whether a provider may judge is its data use
-    /// (see [`super::data_use`]), one rule for judges and candidates. Kept
+    /// (see [`crate::services::benchmarks::data_use`]), one rule for judges and candidates. Kept
     /// so pools written before that still read.
     #[serde(default)]
     pub disclosure_confirmed: bool,
@@ -119,7 +119,10 @@ impl Entry {
 
     /// The model it names, aliases resolved.
     fn model(&self) -> Option<String> {
-        super::model_catalog::concrete_model(&self.provider_id, &self.model_id)
+        crate::services::benchmarks::model_catalog::concrete_model(
+            &self.provider_id,
+            &self.model_id,
+        )
     }
 
     /// Whether `other` names the same judge: provider, model (aliases
@@ -378,8 +381,10 @@ pub(crate) fn seat_rows(
         .into_iter()
         .filter_map(|(headroom, row)| {
             let provider = &row.configuration.provider_id;
-            let model =
-                super::model_catalog::concrete_model(provider, &row.configuration.model_id)?;
+            let model = crate::services::benchmarks::model_catalog::concrete_model(
+                provider,
+                &row.configuration.model_id,
+            )?;
             // The first entry of the model that may sit on this row's account
             // at an effort the row offers: entries of one model may differ in
             // effort or accounts.
@@ -791,7 +796,7 @@ impl BenchmarkService {
                     ))
                     .unwrap_or_default()
             );
-            super::notify_changed(&store, app.as_ref()).await;
+            crate::services::benchmarks::notify_changed(&store, app.as_ref()).await;
         });
         Ok(calibration)
     }

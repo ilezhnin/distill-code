@@ -3,14 +3,17 @@
 use super::*;
 
 mod asking;
+pub(in crate::services::benchmarks) mod checks;
 mod discovery;
 mod documents;
+pub(in crate::services::benchmarks) mod frozen;
 pub(super) mod judge_corrections;
 pub(super) mod judge_recovery;
 pub(super) mod judge_watchdog;
 mod listings;
 pub(super) mod ordinary_judging;
 mod panel;
+pub mod pool;
 mod response;
 mod seating;
 mod service;
