@@ -281,12 +281,6 @@ pub(super) fn measurement_report(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let work_class = |version_id: &str| {
-        pool_versions
-            .get(version_id)
-            .map(|v| v.manifest.work_class_id.as_str())
-            .unwrap_or("unknown")
-    };
     let graded = |version_id: &str| {
         pool_versions
             .get(version_id)
@@ -337,7 +331,7 @@ pub(super) fn measurement_report(
             .push(attempt);
     }
     let mut contributing: BTreeSet<&str> = BTreeSet::new();
-    let mut rows: Vec<LeaderboardRow> = cells
+    let rows: Vec<LeaderboardRow> = cells
         .into_values()
         .filter_map(|(mut configuration, by_run, set_aside)| {
             // A sealed sitting contributes only if it retained a complete
@@ -498,40 +492,14 @@ pub(super) fn measurement_report(
                 pool_versions.get(a.version_id.as_str()).is_some_and(|v|
                     runs[a.run_id.as_str()].request.timeout_seconds >= v.manifest.limits.timeout_seconds)
             });
-            // A class board is the mean over its cases; the row is the mean
-            // over its measured class boards, so a class with many cases does
-            // not outweigh a class with few.
-            let axes: Vec<LeaderboardAxis> = work_classes
-                .iter()
-                .map(|class| {
-                    let subset: BTreeMap<&str, CaseCell> = cells
-                        .iter()
-                        .filter(|(version, _)| work_class(version) == class)
-                        .map(|(version, cell)| (*version, *cell))
-                        .collect();
-                    let cases = eligible
-                        .iter()
-                        .filter(|v| v.manifest.work_class_id == *class)
-                        .count() as u32;
-                    let stats = board_stats(&subset, records);
-                    let class_cells: BTreeMap<&str, CaseCell> = every_cells
-                        .iter()
-                        .filter(|(version, _)| work_class(version) == class)
-                        .map(|(version, cell)| (*version, *cell))
-                        .collect();
-                    let resources = board_stats(&class_cells, records);
-                    LeaderboardAxis {
-                        id: class.clone(),
-                        quality: stats.quality,
-                        points: stats.points,
-                        speed_share: resources.speed_share,
-                        cost_share: resources.cost_share,
-                        passed: stats.passed,
-                        scored: stats.scored,
-                        planned: cases,
-                    }
-                })
-                .collect();
+            let axes = class_axes(
+                &work_classes,
+                &pool_versions,
+                &eligible,
+                &cells,
+                &every_cells,
+                records,
+            );
             let overall = board_stats(&cells, records);
             let measured_axes: Vec<&LeaderboardAxis> =
                 axes.iter().filter(|axis| axis.scored > 0).collect();
@@ -553,37 +521,7 @@ pub(super) fn measurement_report(
                 .map(|v| v.id.clone())
                 .collect();
             let suite_complete = complete_version_ids.len() as u32;
-            // Every complete cell the row ever held, by case: one run's
-            // repetitions under one requested configuration.
-            let mut completions: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
-            for list in by_run.values() {
-                let mut by_request: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
-                for &attempt in list.iter().filter(|a| !own_cell(a)) {
-                    by_request.entry(attempt.configuration.id.as_str()).or_default().push(attempt);
-                }
-                for cell_attempts in by_request.values() {
-                    let cells = case_cells_scored(cell_attempts, protocol, &score);
-                    // Gather each case's last settlement in one pass. Scanning
-                    // the whole sitting again for every case made history grow
-                    // quadratically with the number of measured cases.
-                    let mut done: BTreeMap<&str, i64> = BTreeMap::new();
-                    for &attempt in cell_attempts {
-                        if !cells.get(attempt.version_id.as_str()).is_some_and(|cell| cell.complete)
-                            || score(attempt).is_none()
-                        {
-                            continue;
-                        }
-                        if let Some(at) = settled_at(attempt) {
-                            done.entry(attempt.version_id.as_str())
-                                .and_modify(|last| *last = (*last).max(at))
-                                .or_insert(at);
-                        }
-                    }
-                    for (version, done) in done {
-                        completions.entry(version).or_default().push(done);
-                    }
-                }
-            }
+            let completions = cell_completions(&by_run, &own_cell, protocol, &score);
             let suite_cases: Vec<(i64, Vec<i64>)> = suite
                 .iter()
                 .map(|v| {
@@ -673,7 +611,121 @@ pub(super) fn measurement_report(
             })
         })
         .collect();
-    let cohort = (!pool.is_empty()).then(|| {
+    let cohort = report_cohort(&pool, &contributing, runs, &work_classes);
+    let rows = ranked_page(rows, &pool, own, query);
+    LeaderboardReport {
+        cohort,
+        rows,
+        models: Vec::new(),
+    }
+}
+
+/// The boards of a row by class of work. A class board is the mean over its
+/// cases; the row is the mean over its measured class boards, so a class
+/// with many cases does not outweigh a class with few. Speed and cost read
+/// every cell of the sitting (`every_cells`), the candidate's own cases too.
+fn class_axes(
+    work_classes: &[String],
+    pool_versions: &BTreeMap<&str, &BenchmarkVersion>,
+    eligible: &[&BenchmarkVersion],
+    cells: &BTreeMap<&str, CaseCell>,
+    every_cells: &BTreeMap<&str, CaseCell>,
+    records: &CaseRecords,
+) -> Vec<LeaderboardAxis> {
+    let work_class = |version_id: &str| {
+        pool_versions
+            .get(version_id)
+            .map(|v| v.manifest.work_class_id.as_str())
+            .unwrap_or("unknown")
+    };
+    work_classes
+        .iter()
+        .map(|class| {
+            let subset: BTreeMap<&str, CaseCell> = cells
+                .iter()
+                .filter(|(version, _)| work_class(version) == class)
+                .map(|(version, cell)| (*version, *cell))
+                .collect();
+            let cases = eligible
+                .iter()
+                .filter(|v| v.manifest.work_class_id == *class)
+                .count() as u32;
+            let stats = board_stats(&subset, records);
+            let class_cells: BTreeMap<&str, CaseCell> = every_cells
+                .iter()
+                .filter(|(version, _)| work_class(version) == class)
+                .map(|(version, cell)| (*version, *cell))
+                .collect();
+            let resources = board_stats(&class_cells, records);
+            LeaderboardAxis {
+                id: class.clone(),
+                quality: stats.quality,
+                points: stats.points,
+                speed_share: resources.speed_share,
+                cost_share: resources.cost_share,
+                passed: stats.passed,
+                scored: stats.scored,
+                planned: cases,
+            }
+        })
+        .collect()
+}
+
+/// Every complete cell a row ever held, by case: one run's repetitions under
+/// one requested configuration, each dated by when its last scored
+/// repetition settled. The candidate's own cells are left out.
+fn cell_completions<'a>(
+    by_run: &BTreeMap<&str, Vec<&'a Attempt>>,
+    own_cell: &dyn Fn(&Attempt) -> bool,
+    protocol: CaseProtocol<'_>,
+    score: &dyn Fn(&Attempt) -> Option<f64>,
+) -> BTreeMap<&'a str, Vec<i64>> {
+    let mut completions: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+    for list in by_run.values() {
+        let mut by_request: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
+        for &attempt in list.iter().filter(|a| !own_cell(a)) {
+            by_request
+                .entry(attempt.configuration.id.as_str())
+                .or_default()
+                .push(attempt);
+        }
+        for cell_attempts in by_request.values() {
+            let cells = case_cells_scored(cell_attempts, protocol, &score);
+            // Gather each case's last settlement in one pass. Scanning
+            // the whole sitting again for every case made history grow
+            // quadratically with the number of measured cases.
+            let mut done: BTreeMap<&str, i64> = BTreeMap::new();
+            for &attempt in cell_attempts {
+                if !cells
+                    .get(attempt.version_id.as_str())
+                    .is_some_and(|cell| cell.complete)
+                    || score(attempt).is_none()
+                {
+                    continue;
+                }
+                if let Some(at) = settled_at(attempt) {
+                    done.entry(attempt.version_id.as_str())
+                        .and_modify(|last| *last = (*last).max(at))
+                        .or_insert(at);
+                }
+            }
+            for (version, done) in done {
+                completions.entry(version).or_default().push(done);
+            }
+        }
+    }
+    completions
+}
+
+/// What the rows of a board were measured on: the runs that contributed and
+/// the widest request among them.
+fn report_cohort(
+    pool: &[&BenchmarkVersion],
+    contributing: &BTreeSet<&str>,
+    runs: &BTreeMap<&str, &BenchmarkRun>,
+    work_classes: &[String],
+) -> Option<LeaderboardCohort> {
+    (!pool.is_empty()).then(|| {
         let counted: Vec<&BenchmarkRun> = contributing.iter().map(|id| runs[id]).collect();
         LeaderboardCohort {
             run_ids: contributing.iter().map(|id| (*id).to_string()).collect(),
@@ -690,9 +742,19 @@ pub(super) fn measurement_report(
                 .unwrap_or(0),
             max_executions: pool.len() as u32,
             newest_run_at: counted.iter().map(|run| run.created_at).max().unwrap_or(0),
-            work_classes: work_classes.clone(),
+            work_classes: work_classes.to_vec(),
         }
-    });
+    })
+}
+
+/// The rows in rank order, one page of them, with the shared rank kept for
+/// one measurement suite only.
+fn ranked_page(
+    mut rows: Vec<LeaderboardRow>,
+    pool: &[&BenchmarkVersion],
+    own: OwnCases,
+    query: &ResultQuery,
+) -> Vec<LeaderboardRow> {
     // Author exclusions can produce different measurement suites. One
     // reference suite keeps the shared rank: the whole suite when a comparable
     // row covers it, else the suite most comparable rows share (then the
@@ -742,16 +804,10 @@ pub(super) fn measurement_report(
                     .total_cmp(&a.quality.unwrap_or(-1.0))
             })
     });
-    let rows: Vec<_> = rows
-        .into_iter()
+    rows.into_iter()
         .skip(query.offset.unwrap_or(0) as usize)
         .take(query.limit.unwrap_or(100).min(500) as usize)
-        .collect();
-    LeaderboardReport {
-        cohort,
-        rows,
-        models: Vec::new(),
-    }
+        .collect()
 }
 
 /// The automated evaluation that defines an attempt's scoring protocol: the
