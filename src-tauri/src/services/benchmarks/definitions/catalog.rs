@@ -1,0 +1,869 @@
+use crate::services::benchmarks::{
+    evaluation, fixtures,
+    store::{event, now, Store},
+    types::*,
+};
+
+pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
+    let mut issues = fixtures::validate(d);
+    issues.extend(crate::services::benchmarks::routing::validate_draft(d));
+    issues.extend(crate::services::benchmarks::routing::validate_authored_by(
+        d,
+    ));
+    issues.extend(crate::services::benchmarks::workflow::validate(d));
+    issues.extend(evaluation::validate(&d.evaluator));
+    issues.extend(crate::services::benchmarks::repository::validate(d));
+    issues.extend(crate::services::benchmarks::runner::validate_judge_input(d));
+    if d.schema_version != 1 {
+        issues.push("Unsupported schema version".into());
+    }
+    for (name, v) in [
+        ("Name", &d.name),
+        ("Category", &d.category),
+        ("Task family", &d.task_family),
+        ("Prompt", &d.prompt),
+        ("Source", &d.source),
+        ("License", &d.license),
+    ] {
+        if v.trim().is_empty() {
+            issues.push(format!("{name} is required"));
+        }
+    }
+    if !["development", "train", "held_out"].contains(&d.split.as_str()) {
+        issues.push("Invalid dataset split".into());
+    }
+    if !["native_text", "protected_repository", "isolated_ui"]
+        .contains(&d.execution_profile.as_str())
+    {
+        issues.push("Invalid execution profile".into());
+    }
+    if d.measurement_profile != crate::services::benchmarks::TASK_METRICS {
+        issues.push("Invalid measurement profile: only task metrics are measured".into());
+    }
+    if d.permissions.context != "clean" {
+        issues.push("Benchmark context must be clean".into());
+    }
+    if d.environment["authorshipStatus"] == "unverified" {
+        issues.push("Confirm source and task model provenance before publication".into());
+    }
+    // Only the native workflow runner writes these into a step's derived
+    // manifest; an authored definition cannot carry clock or lineage authority.
+    for key in [
+        crate::services::benchmarks::artifact_context::CLOCK_KEY,
+        crate::services::benchmarks::artifact_context::INPUT_KEY,
+    ] {
+        if d.environment.get(key).is_some() {
+            issues.push(format!(
+                "environment.{key} is reserved for native execution"
+            ));
+        }
+    }
+    if d.limits.timeout_seconds == 0
+        || d.limits.timeout_seconds > crate::services::benchmarks::MAX_TIME_LIMIT_SECONDS
+        || d.limits.max_turns != 1
+        || d.limits.max_artifact_bytes == 0
+        || d.limits.max_artifact_bytes > 16 * 1024 * 1024
+        || d.repetitions == 0
+        || d.repetitions > 100
+    {
+        issues.push(format!(
+            "Limits require 1–{} seconds, one turn, 1–16 MiB artifacts and 1–100 repetitions",
+            crate::services::benchmarks::MAX_TIME_LIMIT_SECONDS
+        ));
+    }
+    if d.prompt.len() > 128 * 1024 {
+        issues.push("Prompt exceeds 128 KiB".into());
+    }
+    if d.prompt.len()
+        + d.fixtures
+            .iter()
+            .map(|f| f.content.len() + f.path.len() + 20)
+            .sum::<usize>()
+        > 256 * 1024
+    {
+        issues.push("Prompt and public fixtures exceed the 256 KiB native text limit".into());
+    }
+    ValidationReport {
+        valid: issues.is_empty(),
+        issues,
+    }
+}
+
+impl Store {
+    pub async fn save_draft(
+        &self,
+        id: Option<&str>,
+        revision: Option<i64>,
+        mut draft: BenchmarkDraft,
+    ) -> Result<BenchmarkDefinition> {
+        // Incomplete drafts are allowed, but imports still cannot carry execution actions or unsafe paths.
+        crate::services::benchmarks::routing::normalize_draft(&mut draft);
+        let structural = fixtures::validate(&draft);
+        if !structural.is_empty() {
+            return Err(BenchmarkError::new("validation", structural.join("; ")));
+        }
+        if serde_json::to_vec(&draft)?.len() > 10 * 1024 * 1024 {
+            return Err(BenchmarkError::new(
+                "validation",
+                "Definition exceeds 10 MiB",
+            ));
+        }
+        let key = id
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let mut tx = self.pool.begin().await?;
+        if id.is_some() {
+            let changed=sqlx::query("UPDATE benchmark_definitions SET draft_json=?,revision=revision+1 WHERE id=? AND revision=?").bind(serde_json::to_string(&draft)?).bind(&key).bind(revision.unwrap_or(-1)).execute(&mut *tx).await?.rows_affected();
+            if changed != 1 {
+                return Err(BenchmarkError::new(
+                    "revision_conflict",
+                    "Draft changed elsewhere; reload before saving",
+                ));
+            }
+        } else {
+            sqlx::query("INSERT INTO benchmark_definitions(id,draft_json,revision) VALUES(?,?,1)")
+                .bind(&key)
+                .bind(serde_json::to_string(&draft)?)
+                .execute(&mut *tx)
+                .await?;
+        }
+        event(&mut tx, &key, "definition_changed").await?;
+        tx.commit().await?;
+        self.definition(&key).await
+    }
+    pub async fn publish(&self, id: &str, revision: i64) -> Result<BenchmarkVersion> {
+        self.publish_as(id, revision, false).await
+    }
+    /// Publishes a version that changes the current one's evaluator alone and
+    /// keeps its measured answers: the new version carries the current one's
+    /// cells, and [`crate::services::benchmarks::BenchmarkService::evaluate_carried`] evaluates
+    /// their saved answers again. Only the operator asks for this, test by
+    /// test; an ordinary publication never carries anything.
+    pub async fn publish_carrying(&self, id: &str, revision: i64) -> Result<BenchmarkVersion> {
+        self.publish_as(id, revision, true).await
+    }
+    async fn publish_as(&self, id: &str, revision: i64, carry: bool) -> Result<BenchmarkVersion> {
+        let def = self.definition(id).await?;
+        if def.draft_revision != revision {
+            return Err(BenchmarkError::new(
+                "revision_conflict",
+                "Draft changed before publication",
+            ));
+        }
+        let check = validate(&def.draft);
+        if !check.valid {
+            return Err(BenchmarkError::new("validation", check.issues.join("; ")));
+        }
+        if carry {
+            let current = self.versions_for(id).await?.into_iter().next();
+            carried_evaluator(
+                current.as_ref().map(|version| &version.manifest),
+                &def.draft,
+            )?;
+        }
+        if matches!(def.draft.evaluator.kind.as_str(), "javascript" | "browser") {
+            let good = crate::services::benchmarks::worker::evaluate(
+                &def.draft,
+                &def.draft.evaluator.known_good,
+            )
+            .await?;
+            let bad = crate::services::benchmarks::worker::evaluate(
+                &def.draft,
+                &def.draft.evaluator.known_bad,
+            )
+            .await?;
+            if good.verdict != "pass" || bad.verdict != "fail" {
+                return Err(BenchmarkError::new("validation","Protected evaluator must accept its known-good and reject its known-bad reference"));
+            }
+        }
+        // A repository check must pass its reference patch and fail the
+        // known-bad one on the snapshot itself before anyone is measured.
+        if def.draft.evaluator.kind == crate::services::benchmarks::repository::EVALUATOR {
+            let good = crate::services::benchmarks::repository::evaluate_reference(
+                &def.draft,
+                &def.draft.evaluator.known_good,
+            )
+            .await?;
+            let bad = crate::services::benchmarks::repository::evaluate_reference(
+                &def.draft,
+                &def.draft.evaluator.known_bad,
+            )
+            .await?;
+            if good.verdict != "pass" || bad.verdict == "pass" {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    format!(
+                        "The repository check must pass the reference patch and fail the known-bad one (reference: {}; known-bad: {}): {} / {}",
+                        good.verdict, bad.verdict, good.reason, bad.reason
+                    ),
+                ));
+            }
+        }
+        let hash = fixtures::publish_blob(&self.root, &def.draft).await?;
+        // Immediate: it reads before it writes, and SQLite refuses at once,
+        // without waiting, to upgrade a read another writer has overtaken.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current =
+            sqlx::query_scalar::<_, i64>("SELECT revision FROM benchmark_definitions WHERE id=?")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if current != revision {
+            return Err(BenchmarkError::new(
+                "revision_conflict",
+                "Draft changed during publication",
+            ));
+        }
+        let cross_split:i64=sqlx::query_scalar("SELECT COUNT(*) FROM benchmark_versions WHERE json_extract(manifest_json,'$.taskFamily')=? AND json_extract(manifest_json,'$.split')!=?").bind(&def.draft.task_family).bind(&def.draft.split).fetch_one(&mut *tx).await?;
+        if cross_split != 0 {
+            return Err(BenchmarkError::new(
+                "validation",
+                "A task family cannot cross dataset splits",
+            ));
+        }
+        let existing = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM benchmark_versions WHERE definition_id=? AND content_hash=?",
+        )
+        .bind(id)
+        .bind(&hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(key) = existing {
+            // The pool takes a definition's newest version, so content an older
+            // version holds cannot become current again; only the current
+            // version republishes.
+            let superseded = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM benchmark_versions newer JOIN benchmark_versions found ON found.definition_id=newer.definition_id WHERE found.id=? AND newer.published_at>found.published_at",
+            )
+            .bind(&key)
+            .fetch_one(&mut *tx)
+            .await?;
+            if superseded != 0 {
+                return Err(BenchmarkError::new(
+                    "validation",
+                    "This draft matches an earlier published version; change it before publishing it again",
+                ));
+            }
+            tx.commit().await?;
+            return self.version(&key).await;
+        }
+        // Publication retires earlier versions for new work. Their original
+        // manifests, evaluations and results remain independent and immutable.
+        let previous: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(published_at) FROM benchmark_versions WHERE definition_id=?",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let published_at = now().max(previous.unwrap_or(0).saturating_add(1));
+        // The version current inside this transaction is the one checked
+        // above, or the draft revision would have changed with it.
+        let carries_from = if carry {
+            sqlx::query_scalar::<_, String>(
+                "SELECT id FROM benchmark_versions WHERE definition_id=? ORDER BY published_at DESC,rowid DESC LIMIT 1",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            None
+        };
+        let v = BenchmarkVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            definition_id: id.into(),
+            content_hash: hash,
+            published_at,
+            manifest: def.draft,
+            carries_from,
+        };
+        sqlx::query("INSERT INTO benchmark_versions(id,definition_id,content_hash,manifest_json,published_at,carries_from) VALUES(?,?,?,?,?,?)").bind(&v.id).bind(id).bind(&v.content_hash).bind(serde_json::to_string(&v.manifest)?).bind(v.published_at).bind(&v.carries_from).execute(&mut *tx).await?;
+        event(&mut tx, id, "version_published").await?;
+        tx.commit().await?;
+        Ok(v)
+    }
+    pub async fn archive(&self, id: &str, archived: bool) -> Result<BenchmarkDefinition> {
+        let mut tx = self.pool.begin().await?;
+        let at = now();
+        // A restore keeps the period it ends, so a dated pool inside it never
+        // owes the definition; a later archive starts a new period. An archive
+        // older than its recorded time starts where `analysis::pool` puts it:
+        // after the last non-preview run that planned one of its versions, or
+        // at the start of time when none did.
+        if !archived {
+            sqlx::query(
+                "INSERT INTO benchmark_definition_archives(definition_id,archived_at,restored_at)
+                 SELECT d.id,COALESCE(d.archived_at,
+                    (SELECT MAX(r.updated_at)+1 FROM run_plans r
+                     JOIN json_each(r.request_json,'$.versionIds') planned
+                     JOIN benchmark_versions v ON v.id=planned.value
+                     WHERE v.definition_id=d.id
+                        AND COALESCE(json_extract(r.request_json,'$.preview'),0)=0),
+                    0),?
+                 FROM benchmark_definitions d WHERE d.id=? AND d.archived=1",
+            )
+            .bind(at)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        // Dated pools retire a definition from its first archive time on.
+        sqlx::query("UPDATE benchmark_definitions SET archived=?,archived_at=CASE WHEN ? THEN COALESCE(archived_at,?) ELSE NULL END,revision=revision+1 WHERE id=?")
+            .bind(archived)
+            .bind(archived)
+            .bind(at)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        event(&mut tx, id, "definition_changed").await?;
+        tx.commit().await?;
+        self.definition(id).await
+    }
+    pub async fn duplicate(&self, id: &str) -> Result<BenchmarkDefinition> {
+        let mut draft = self.definition(id).await?.draft;
+        draft.name = format!("{} (copy)", draft.name);
+        self.save_draft(None, None, draft).await
+    }
+}
+
+/// Whether `next` differs from `previous` in its evaluator alone: another
+/// check, expected answer or scoring, with the same task, fixtures, limits
+/// and everything else a candidate sees or is held to.
+pub(in crate::services::benchmarks) fn evaluator_only(
+    previous: &BenchmarkDraft,
+    next: &BenchmarkDraft,
+) -> bool {
+    let parts = |draft: &BenchmarkDraft| {
+        let mut value = serde_json::to_value(draft).unwrap_or_default();
+        let evaluator = value
+            .as_object_mut()
+            .and_then(|object| object.remove("evaluator"));
+        (value, evaluator)
+    };
+    let (before, old) = parts(previous);
+    let (after, new) = parts(next);
+    old != new && before == after
+}
+
+/// What a version must be to keep the measured answers of `current`: the
+/// same task under another evaluator, with a revision of its own, that
+/// evaluates a saved answer without calling a model.
+pub(in crate::services::benchmarks) fn carried_evaluator(
+    current: Option<&BenchmarkDraft>,
+    next: &BenchmarkDraft,
+) -> Result<()> {
+    let refuse = |message: &str| Err(BenchmarkError::new("validation", message));
+    let Some(current) = current else {
+        return refuse("This test has no published version whose answers could be kept");
+    };
+    if !evaluator_only(current, next) {
+        return refuse(
+            "Measured answers are kept only when the evaluator alone changes; this draft changes the task or changes nothing",
+        );
+    }
+    if current.evaluator.revision == next.evaluator.revision {
+        return refuse("Give the changed evaluator a revision of its own");
+    }
+    if !matches!(
+        next.evaluator.kind.as_str(),
+        "exact" | "json" | "javascript" | "browser"
+    ) || current.evaluator.kind != next.evaluator.kind
+    {
+        return refuse(
+            "Measured answers are kept for text, JSON, JavaScript and web page checks of the same kind",
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_another_evaluator_of_the_same_task_keeps_measured_answers() {
+        let draft = crate::services::benchmarks::seeds::definitions()
+            .into_iter()
+            .find(|draft| draft.evaluator.kind == "exact")
+            .unwrap();
+        let mut fixed = draft.clone();
+        fixed.evaluator.expected.push_str(" corrected");
+        fixed.evaluator.revision = "corrected".into();
+        assert!(evaluator_only(&draft, &fixed));
+        assert!(carried_evaluator(Some(&draft), &fixed).is_ok());
+        // Nothing changed, nothing published before, or the same revision.
+        assert!(!evaluator_only(&draft, &draft));
+        assert!(carried_evaluator(Some(&draft), &draft).is_err());
+        assert!(carried_evaluator(None, &fixed).is_err());
+        let mut unnamed = fixed.clone();
+        unnamed
+            .evaluator
+            .revision
+            .clone_from(&draft.evaluator.revision);
+        assert!(carried_evaluator(Some(&draft), &unnamed).is_err());
+        // Another prompt or limit is another task.
+        let mut reworded = fixed.clone();
+        reworded.prompt.push_str(" Answer in one line.");
+        assert!(carried_evaluator(Some(&draft), &reworded).is_err());
+        let mut limited = fixed.clone();
+        limited.limits.timeout_seconds += 1;
+        assert!(carried_evaluator(Some(&draft), &limited).is_err());
+        // A judged check would need model calls; another kind is another check.
+        let mut judged = fixed.clone();
+        judged.evaluator.kind = "rubric".into();
+        assert!(carried_evaluator(Some(&draft), &judged).is_err());
+        let mut structured = fixed;
+        structured.evaluator.kind = "json".into();
+        assert!(carried_evaluator(Some(&draft), &structured).is_err());
+    }
+    #[tokio::test]
+    async fn manifests_and_drafts_are_parsed_once_and_read_again_when_they_change() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let mut published = Vec::new();
+        for name in ["Invented first case", "Invented second case"] {
+            let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+            draft.name = name.into();
+            draft.facets.difficulty = Some("medium".into());
+            let definition = store.save_draft(None, None, draft).await.unwrap();
+            published.push(store.publish(&definition.id, 1).await.unwrap());
+        }
+        let first = &published[0];
+        let a = store.version_shared(&first.id).await.unwrap();
+        let b = store.version_shared(&first.id).await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        // A changed column reads the version again.
+        sqlx::query("UPDATE benchmark_versions SET published_at=published_at+1 WHERE id=?")
+            .bind(&first.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let c = store.version_shared(&first.id).await.unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&a, &c));
+        assert_eq!(c.published_at, a.published_at + 1);
+        // A new draft revision is read with its own content.
+        let definition = store.definition(&first.definition_id).await.unwrap();
+        let mut draft = definition.draft.clone();
+        draft.name = "Invented first case, revised".into();
+        store
+            .save_draft(Some(&definition.id), Some(definition.draft_revision), draft)
+            .await
+            .unwrap();
+        let revised = store.definition(&first.definition_id).await.unwrap();
+        assert_eq!(revised.draft.name, "Invented first case, revised");
+        assert_eq!(revised.draft_revision, definition.draft_revision + 1);
+        // Published versions in the order the catalog lists them, and the
+        // definitions' archive state without their drafts.
+        let listed: Vec<String> = store
+            .all_definitions()
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|d| d.versions.iter().map(|v| v.id.clone()))
+            .collect();
+        let all: Vec<String> = store
+            .all_versions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(listed, all);
+        store
+            .archive(&published[1].definition_id, true)
+            .await
+            .unwrap();
+        let states = store.definition_states().await.unwrap();
+        assert_eq!(states.len(), 2);
+        assert!(!states[0].archived && states[1].archived);
+        assert_eq!(states[1].id, published[1].definition_id);
+        directory.close().await;
+    }
+    #[tokio::test]
+    async fn publication_and_new_work_require_explicit_difficulty() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        for difficulty in [None, Some("unspecified"), Some("unknown")] {
+            let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+            draft.facets.difficulty = difficulty.map(Into::into);
+            let definition = store.save_draft(None, None, draft).await.unwrap();
+            assert!(store
+                .publish(&definition.id, 1)
+                .await
+                .unwrap_err()
+                .message
+                .contains("Difficulty is required"));
+            assert!(store.versions_for(&definition.id).await.unwrap().is_empty());
+        }
+        let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        draft.facets.difficulty = Some("medium".into());
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let version = store.publish(&definition.id, 1).await.unwrap();
+        store
+            .require_current_versions(std::slice::from_ref(&version.id))
+            .await
+            .unwrap();
+        // Simulate a legacy publication made before difficulty was mandatory.
+        sqlx::query("UPDATE benchmark_versions SET manifest_json=json_remove(manifest_json,'$.facets.difficulty') WHERE id=?").bind(&version.id).execute(&store.pool).await.unwrap();
+        store.forget_parsed();
+        assert!(store
+            .version(&version.id)
+            .await
+            .unwrap()
+            .manifest
+            .facets
+            .difficulty
+            .is_none());
+        assert!(store
+            .require_current_versions(&[version.id])
+            .await
+            .unwrap_err()
+            .message
+            .contains("difficulty"));
+        directory.close().await;
+    }
+    #[tokio::test]
+    async fn malformed_javascript_checks_cannot_reach_reference_execution() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let mut draft = crate::services::benchmarks::seeds::definitions()
+            .into_iter()
+            .find(|draft| draft.evaluator.kind == "javascript")
+            .unwrap();
+        draft.evaluator.expected = serde_json::json!({
+            "functionName":"copy",
+            "immutableArgs":[1],
+            "argsCases":[{"args":[{"value":1}],"expected":{"value":1}}]
+        })
+        .to_string();
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let error = store
+            .publish(&definition.id, definition.draft_revision)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert!(error.message.contains("immutableArgs"));
+        assert!(store
+            .definition(&definition.id)
+            .await
+            .unwrap()
+            .versions
+            .is_empty());
+        directory.close().await;
+    }
+
+    #[tokio::test]
+    async fn unverified_provenance_stays_editable_but_cannot_be_published() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        draft.environment["authorshipStatus"] = serde_json::json!("unverified");
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        let error = store.publish(&definition.id, 1).await.unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert!(error.message.contains("provenance"));
+        assert!(store
+            .definition(&definition.id)
+            .await
+            .unwrap()
+            .versions
+            .is_empty());
+        let mut fixed = definition.draft;
+        fixed.environment["authorshipStatus"] = serde_json::json!("verified");
+        fixed.environment["authoredBy"] = serde_json::json!([{"providerId":"invented-provider","modelId":"source-model","effort":"high"},{"providerId":"invented-provider","modelId":"task-model","effort":"high"}]);
+        store
+            .save_draft(Some(&definition.id), Some(1), fixed)
+            .await
+            .unwrap();
+        assert!(store.publish(&definition.id, 2).await.is_ok());
+        directory.close().await;
+    }
+    #[tokio::test]
+    async fn archiving_records_the_first_archive_time() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft).await.unwrap();
+        assert_eq!(definition.archived_at, None);
+        let archived = store.archive(&definition.id, true).await.unwrap();
+        let at = archived.archived_at.expect("archive time recorded");
+        assert!(archived.archived);
+        // Archiving again keeps the first time; the listing reads it too.
+        sqlx::query("UPDATE benchmark_definitions SET archived_at=? WHERE id=?")
+            .bind(at - 100)
+            .bind(&definition.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let again = store.archive(&definition.id, true).await.unwrap();
+        assert_eq!(again.archived_at, Some(at - 100));
+        let listed = store.definition_summaries().await.unwrap();
+        assert_eq!(listed[0].archived_at, Some(at - 100));
+        let restored = store.archive(&definition.id, false).await.unwrap();
+        assert!(!restored.archived);
+        assert_eq!(restored.archived_at, None);
+        // The restore keeps the period it ended; a second archive opens another.
+        let [(from, until)] = restored.archive_history[..] else {
+            panic!("one closed period: {:?}", restored.archive_history);
+        };
+        assert_eq!(from, at - 100);
+        assert!(until >= at);
+        let again = store.archive(&definition.id, true).await.unwrap();
+        assert!(again.archived_at.is_some_and(|start| start >= until));
+        let twice = store.archive(&definition.id, false).await.unwrap();
+        assert_eq!(twice.archive_history.len(), 2);
+        assert_eq!(twice.archive_history[0], (from, until));
+        // Restoring a live definition records nothing.
+        let live = store.archive(&definition.id, false).await.unwrap();
+        assert_eq!(live.archive_history.len(), 2);
+        directory.close().await;
+    }
+    /// The catalog and runs as the evidence queries read them.
+    async fn query_data(store: &Store) -> QueryData {
+        QueryData {
+            releases: Vec::new(),
+            versions: store.all_versions().await.unwrap(),
+            definitions: store.definition_states().await.unwrap(),
+            runs: store.all_runs().await.unwrap(),
+            attempts: vec![],
+            required_repetitions: 1,
+        }
+    }
+    fn pooled(data: &QueryData, as_of: Option<i64>, version: &str) -> bool {
+        crate::services::benchmarks::analysis::pool(
+            data,
+            &ResultQuery {
+                as_of,
+                ..Default::default()
+            },
+        )
+        .iter()
+        .any(|v| v.id == version)
+    }
+    #[tokio::test]
+    async fn restoring_an_archive_older_than_its_recorded_time_keeps_its_period() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let mut versions = Vec::new();
+        for task_family in ["planned", "unplanned"] {
+            let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+            draft.task_family = task_family.into();
+            let definition = store.save_draft(None, None, draft).await.unwrap();
+            versions.push(store.publish(&definition.id, 1).await.unwrap());
+        }
+        let [planned, unplanned] = &versions[..] else {
+            unreachable!()
+        };
+        sqlx::query("UPDATE benchmark_versions SET published_at=10")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        // One run planned the first case and last changed at 1000; a preview
+        // run changed later and does not count.
+        for (id, updated_at, preview) in [("run", 1000, false), ("preview", 5000, true)] {
+            let request = serde_json::json!({"requestKey":id,"versionIds":[planned.id],"configurations":[],"repetitions":1,"timeoutSeconds":30,"maxExecutions":1,"preview":preview});
+            sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'completed',1,0,?,?)")
+                .bind(id)
+                .bind(id)
+                .bind(updated_at)
+                .bind(request.to_string())
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        // Both were archived before the archive time was recorded.
+        sqlx::query("UPDATE benchmark_definitions SET archived=1,archived_at=NULL")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let before = query_data(&store).await;
+        assert!(pooled(&before, Some(1000), &planned.id));
+        assert!(!pooled(&before, Some(2000), &planned.id));
+        assert!(!pooled(&before, Some(2000), &unplanned.id));
+        for version in &versions {
+            let restored = store.archive(&version.definition_id, false).await.unwrap();
+            let [(from, until)] = restored.archive_history[..] else {
+                panic!("one closed period: {:?}", restored.archive_history);
+            };
+            assert_eq!(from, if version.id == planned.id { 1001 } else { 0 });
+            assert!(until > 5000);
+        }
+        // The restore changes no earlier dated pool; the current one owes both.
+        let after = query_data(&store).await;
+        assert!(pooled(&after, Some(1000), &planned.id));
+        assert!(!pooled(&after, Some(2000), &planned.id));
+        assert!(!pooled(&after, Some(2000), &unplanned.id));
+        assert!(pooled(&after, None, &planned.id));
+        assert!(pooled(&after, None, &unplanned.id));
+        directory.close().await;
+    }
+    #[tokio::test]
+    async fn content_of_an_earlier_version_cannot_republish_as_current() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        let definition = store.save_draft(None, None, draft.clone()).await.unwrap();
+        let first = store.publish(&definition.id, 1).await.unwrap();
+        sqlx::query("UPDATE benchmark_versions SET published_at=1 WHERE id=?")
+            .bind(&first.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut changed = draft.clone();
+        changed.prompt.push_str(" Use compact JSON.");
+        store
+            .save_draft(Some(&definition.id), Some(1), changed)
+            .await
+            .unwrap();
+        let second = store.publish(&definition.id, 2).await.unwrap();
+        // Reverting the draft reports that the pool would keep the newer version.
+        store
+            .save_draft(Some(&definition.id), Some(2), draft)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.publish(&definition.id, 3).await.unwrap_err().code,
+            "validation"
+        );
+        let data = query_data(&store).await;
+        assert!(pooled(&data, None, &second.id));
+        assert!(!pooled(&data, None, &first.id));
+        // The current version still republishes as itself.
+        let current = store.definition(&definition.id).await.unwrap();
+        let mut again = current.draft.clone();
+        again.prompt.push_str(" Use compact JSON.");
+        store
+            .save_draft(Some(&definition.id), Some(current.draft_revision), again)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.publish(&definition.id, 4).await.unwrap().id,
+            second.id
+        );
+        directory.close().await;
+    }
+    #[tokio::test]
+    async fn entry_state_hash_tracks_actual_public_fixture_contents() {
+        let directory = crate::test_support::TempRoot::new();
+        let store = Store::open(directory.path()).await.unwrap();
+        directory.register(&store.pool);
+        let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        draft.fixtures = vec![Fixture {
+            path: "source.txt".into(),
+            content: "first public state".into(),
+        }];
+        draft.entry_state = Some(EntryState {
+            schema_version: 1,
+            root_task_id: "authored-task".into(),
+            step_id: "continuation".into(),
+            parent_step_id: None,
+            fixture_snapshot_hash: "untrusted authored hash".into(),
+            conversation_prefix: "Visible context".into(),
+            previous_reports: vec![],
+            remaining_budget_seconds: 30,
+            content_hash: "untrusted content hash".into(),
+        });
+        let first = store.save_draft(None, None, draft.clone()).await.unwrap();
+        let first_entry = first.draft.entry_state.as_ref().unwrap();
+        assert_eq!(
+            first_entry.fixture_snapshot_hash,
+            fixtures::hash(&serde_json::to_vec(&draft.fixtures).unwrap())
+        );
+        assert_eq!(
+            first_entry.content_hash,
+            crate::services::benchmarks::routing::entry_hash(first_entry)
+        );
+        draft.fixtures[0].content = "changed public state".into();
+        let changed = store
+            .save_draft(Some(&first.id), Some(first.draft_revision), draft)
+            .await
+            .unwrap();
+        let changed_entry = changed.draft.entry_state.unwrap();
+        assert_ne!(
+            first_entry.fixture_snapshot_hash,
+            changed_entry.fixture_snapshot_hash
+        );
+        assert_ne!(first_entry.content_hash, changed_entry.content_hash);
+        directory.close().await;
+    }
+    #[tokio::test]
+    async fn drafts_conflict_and_publication_is_immutable() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
+        let draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        let d = store.save_draft(None, None, draft.clone()).await.unwrap();
+        let original = store.publish(&d.id, 1).await.unwrap();
+        assert_eq!(original.id, store.publish(&d.id, 1).await.unwrap().id);
+        let mut changed = draft;
+        changed.prompt.push_str(" Use compact JSON.");
+        store
+            .save_draft(Some(&d.id), Some(1), changed.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .save_draft(Some(&d.id), Some(1), changed)
+                .await
+                .unwrap_err()
+                .code,
+            "revision_conflict"
+        );
+        let later = store.publish(&d.id, 2).await.unwrap();
+        assert_ne!(original.content_hash, later.content_hash);
+        assert_eq!(
+            store.version(&original.id).await.unwrap().manifest.prompt,
+            original.manifest.prompt
+        );
+        store.archive(&d.id, true).await.unwrap();
+        assert!(store.version(&original.id).await.is_ok());
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn interrupted_blob_has_no_published_row() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
+        let draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        let d = store.save_draft(None, None, draft.clone()).await.unwrap();
+        let hash = fixtures::publish_blob(&store.root, &draft).await.unwrap();
+        assert!(store.versions_for(&d.id).await.unwrap().is_empty());
+        let v = store.publish(&d.id, 1).await.unwrap();
+        assert_eq!(v.content_hash, hash);
+        tokio::fs::write(
+            store.root.join("versions").join(hash).join("manifest.json"),
+            "tampered",
+        )
+        .await
+        .unwrap();
+        assert!(
+            fixtures::verify_blob(&store.root, &v.content_hash, &v.manifest)
+                .await
+                .is_err()
+        );
+        dir.close().await;
+    }
+    #[tokio::test]
+    async fn split_leakage_and_traversal_are_rejected() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = Store::open(dir.path()).await.unwrap();
+        dir.register(&store.pool);
+        let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+        let d = store.save_draft(None, None, draft.clone()).await.unwrap();
+        store.publish(&d.id, 1).await.unwrap();
+        draft.split = "held_out".into();
+        let second = store.save_draft(None, None, draft.clone()).await.unwrap();
+        assert!(store.publish(&second.id, 1).await.is_err());
+        draft.fixtures.push(Fixture {
+            path: "../hidden".into(),
+            content: "x".into(),
+        });
+        assert!(store.save_draft(None, None, draft).await.is_err());
+        dir.close().await;
+    }
+}

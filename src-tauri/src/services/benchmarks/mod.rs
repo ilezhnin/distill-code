@@ -1,38 +1,25 @@
-mod activity;
-pub mod analysis;
-pub mod artifact_context;
 pub mod campaigns;
-pub mod catalog;
 pub mod credits;
 pub mod data_use;
-pub mod effort;
-pub mod evaluation;
-pub mod evidence;
-pub mod executor;
-pub mod export;
-pub mod fixtures;
-pub mod flights;
-pub mod generated;
-pub mod home_advantage;
-pub mod learned;
-pub mod model_catalog;
-pub mod mutation;
 mod owner;
-pub mod promotion;
-pub mod qualification;
-pub mod repository;
-pub mod routing;
 pub mod runner;
-pub mod seeds;
-pub mod selector;
 mod session_retention;
-pub mod store;
-pub mod task_execution;
 pub mod types;
-pub mod worker;
-pub mod workflow;
-pub mod workflow_campaign;
-pub mod workflow_policy;
+
+// The systems below the runner, and their modules under the names the rest
+// of the app knows them by.
+pub mod definitions;
+pub mod grading;
+pub mod ledger;
+pub mod research;
+pub use definitions::{catalog, fixtures, generated, model_catalog, seeds};
+pub use grading::{artifact_context, evaluation, mutation, repository, worker};
+use ledger::activity;
+pub use ledger::{analysis, effort, evidence, export, flights, home_advantage, routing, store};
+pub use research::{
+    executor, learned, promotion, qualification, selector, task_execution, workflow,
+    workflow_campaign, workflow_policy,
+};
 
 // The judging system's parts under the names the service knows them by.
 pub use runner::pool as judge_pool;
