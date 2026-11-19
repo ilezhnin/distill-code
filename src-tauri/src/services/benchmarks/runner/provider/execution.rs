@@ -851,116 +851,22 @@ impl ExecutionBackend for NativeBackend {
         mut cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, Result<Attempt>> {
         Box::pin(async move {
-            if *cancel.borrow()
-                || !matches!(
-                    store.run(&attempt.run_id).await?.state.as_str(),
-                    "running" | "pausing"
-                )
-            {
-                return Err(BenchmarkError::new(
-                    "cancelled",
-                    "Run stopped before preparation",
-                ));
-            }
-            let run_request = store.run(&attempt.run_id).await?.request;
-            run_request.require_dispatch_admission(now())?;
-            if requires_browser_runtime(&version.manifest) {
-                crate::services::benchmarks::worker::ready_for_attempt().await?;
-            }
-            let host = self
-                .app
-                .state::<AgentHost>()
-                .get_or_start(&self.app)
-                .await
-                .map_err(host_error)?;
-            let account = attempt.configuration.account_id.clone().ok_or_else(|| {
-                BenchmarkError::new(
-                    "capability_missing",
-                    account_refusal(&attempt.configuration.provider_id),
-                )
-            })?;
-            let provider = NativeProvider::for_harness(&attempt.configuration.provider_id)
-                .ok_or_else(|| {
-                    BenchmarkError::new(
-                        "capability_missing",
-                        "This provider has no verified native no-tool execution profile",
-                    )
-                })?;
-            // A test starts whatever else its account is doing, as a judge
-            // does: its turn is a session of its own in the sandbox, and the
-            // chats beside it change neither its answer nor its seat. What
-            // the provider lets the account fly at once is the pace's to find.
-            //
-            // A turn whose plan usage is spent waits here, before any setup,
-            // unless it may run on credits.
-            self.credit_turn(&store.root, &attempt.configuration, false)
+            let Admitted {
+                run_request,
+                host,
+                account,
+                provider,
+                version,
+                repository,
+                budget,
+                deadline,
+                artifact_input,
+                inventory,
+                runtime_revision,
+                credentials,
+            } = self
+                .admit(store, &mut attempt, version, timeout, &cancel)
                 .await?;
-            let version =
-                collection_context::prepare(store, &mut attempt, version, timeout).await?;
-            let repository =
-                crate::services::benchmarks::repository::is_repository_case(&version.manifest);
-            let budget = credited_budget(store, &version.manifest).await?;
-            let deadline = budget
-                .as_ref()
-                .map(|budget| budget.deadline_at_ms())
-                .transpose()?
-                .map(unsigned_deadline)
-                .transpose()?;
-            let artifact_input =
-                crate::services::benchmarks::artifact_context::input(&version.manifest)?;
-            if artifact_input.is_some() && (!repository || deadline.is_none()) {
-                return Err(BenchmarkError::new(
-                    "budget_clock_conflict",
-                    "Cumulative repository collection requires a native root lease",
-                ));
-            }
-            // A later step of a workflow already running finishes on the grant
-            // its workflow was admitted with; only new work waits for a
-            // renewal that drains the account.
-            let continues = version
-                .manifest
-                .entry_state
-                .as_ref()
-                .is_some_and(|entry| entry.parent_step_id.is_some());
-            let ((inventory, runtime_revision, status), grant) = with_app_sign_in(
-                &host,
-                &attempt.configuration,
-                Some(timeout),
-                !continues,
-                || {
-                    self.admitted_runtime(
-                        &host,
-                        &attempt.run_id,
-                        &attempt.configuration,
-                        &account,
-                        timeout,
-                        repository,
-                    )
-                },
-            )
-            .await?;
-            let credentials = CredentialWindow::new(grant, status);
-            // The pin guards the account the run was planned on. A test the
-            // run moved to another account (its usage limit ran out) runs on
-            // that account's runtime, which lists that account's models, and
-            // records it below.
-            let request = store.run(&attempt.run_id).await?.request;
-            // Research workflows have a synthetic root column. It must never
-            // masquerade as an account move and waive the selected runtime pin.
-            let moved = request.workflow_policy.is_none()
-                && !request
-                    .configurations
-                    .iter()
-                    .any(|c| c.account_id == attempt.configuration.account_id);
-            if !moved
-                && attempt
-                    .configuration
-                    .inventory_revision
-                    .as_ref()
-                    .is_some_and(|revision| revision != &runtime_revision)
-            {
-                return Err(BenchmarkError::new("selection_changed","Installed runtime or model capabilities changed since configuration selection; refresh inventory"));
-            }
             let timeout_seconds = effective_timeout_seconds(timeout, &version.manifest);
             // Until sign-in, runtime and account readiness succeed, nothing
             // of this try exists in Linux. Arming cleanup earlier starts an
@@ -1006,47 +912,13 @@ impl ExecutionBackend for NativeBackend {
                     return Err(error);
                 }
             }
-            let cwd = if let Some(id) = cleanup.0.as_deref().filter(|_| repository) {
-                let snapshot =
-                    crate::services::benchmarks::repository::snapshot(&version.manifest)?;
-                if let Some(input) = &artifact_input {
-                    let prepared = crate::services::benchmarks::repository::advance_until(
-                        &snapshot,
-                        &input.lineage,
-                        input.access_all,
-                        version.manifest.limits.max_artifact_bytes as usize,
-                        deadline.expect("validated artifact deadline"),
-                    )
-                    .await?;
-                    if prepared.artifact != input.before {
-                        return Err(BenchmarkError::new(
-                            "evidence_mismatch",
-                            "Collection predecessor differs from its native artifact input",
-                        ));
-                    }
-                    match deadline {
-                        Some(deadline) => {
-                            sandbox::copy_until(id, &prepared.archive, deadline).await
-                        }
-                        None => sandbox::copy(id, &prepared.archive).await,
-                    }
-                    .map_err(|error| sandbox_setup_error(error, deadline))?;
-                } else {
-                    match deadline {
-                        Some(deadline) => {
-                            crate::services::benchmarks::repository::verify_until(
-                                &snapshot, deadline,
-                            )
-                            .await?
-                        }
-                        None => crate::services::benchmarks::repository::verify(&snapshot).await?,
-                    }
-                    copy_snapshot(id, &snapshot, deadline).await?;
-                }
-                "/workspace".to_owned()
-            } else {
-                "/workspace".to_owned()
-            };
+            let cwd = prepare_workspace(
+                cleanup.0.as_deref().filter(|_| repository),
+                &version.manifest,
+                artifact_input.as_ref(),
+                deadline,
+            )
+            .await?;
             run_request.require_dispatch_admission(now())?;
             let session = host
                 .create_owned_session(
@@ -1158,29 +1030,14 @@ impl ExecutionBackend for NativeBackend {
                 // Legacy repository runs start a fresh turn clock after setup.
                 // Recheck here so archive/copy/session time cannot consume the
                 // credential window reserved before preparation.
-                let revision = if repository {
-                    let runtime = repository_runtime_for_budget(
-                        &attempt.configuration,
-                        Some(timeout_seconds),
-                    )
-                    .await?;
-                    repository_inventory_revision(
-                        &runtime,
-                        &inventory,
-                        &attempt.configuration.model_id,
-                    )
-                } else {
-                    let (runtime, _) =
-                        text_runtime_snapshot(&attempt.configuration, Some(timeout_seconds))
-                            .await?;
-                    text_inventory_revision(&runtime, &inventory, &attempt.configuration.model_id)
-                };
-                if observed.inventory_revision.as_deref() != Some(revision.as_str()) {
-                    return Err(BenchmarkError::new(
-                        "selection_changed",
-                        "Sandbox runtime changed during preparation",
-                    ));
-                }
+                require_unchanged_runtime(
+                    &attempt.configuration,
+                    repository,
+                    timeout_seconds,
+                    &inventory,
+                    observed.inventory_revision.as_deref(),
+                )
+                .await?;
                 // The session may already hold a private copy of this grant;
                 // a newer shared refresh cannot extend that copy's lifetime.
                 // Check after the final awaited probe so its own latency
@@ -1196,7 +1053,7 @@ impl ExecutionBackend for NativeBackend {
                     timeout_seconds,
                 )?;
             }
-            let mut credit = self
+            let credit = self
                 .credit_turn(&store.root, &attempt.configuration, true)
                 .await?;
             let started = Instant::now();
@@ -1250,60 +1107,21 @@ impl ExecutionBackend for NativeBackend {
             );
             attempt.finished_at = Some(now());
             attempt.phase = "collecting".into();
-            let mut artifact_error = None;
-            let mut session_limit = None;
-            if let Some(id) = cleanup.0.as_deref() {
-                let collected = async {
-                    host.stop_owned_sandbox(&session.session_id)
-                        .await
-                        .map_err(host_error)?;
-                    if repository {
-                        finalize_repository(
-                            &mut attempt,
-                            id,
-                            &version.manifest,
-                            artifact_input.as_ref(),
-                            deadline,
-                        )
-                        .await?;
-                    }
-                    Ok::<_, BenchmarkError>(())
-                }
-                .await;
-                if let Err(error) = collected {
-                    repository_collection_failure(&mut attempt, &error);
-                    artifact_error = Some(json!({"code":error.code,"message":error.message}));
-                }
-                session_limit = settle_session_limit(&mut attempt, id).await;
-            }
-            mark_auxiliary_profile(&mut attempt);
-            let receipt = self
-                .native_execution_receipt(&host, &attempt, &terminal)
-                .await;
-            let evidence = capture.evidence.close(terminal);
-            // Every event of the turn is read: store the session's log the
-            // way its replay reads it.
-            if let Err(error) = host.compact_owned_events(&session.session_id).await {
-                log::warn!(
-                    "[benchmarks] session {} keeps its raw event log: {error}",
-                    session.session_id
-                );
-            }
-            let mut evidence = native_receipt::sealed_events(evidence, receipt);
-            if let Some(error) = artifact_error {
-                evidence["repositoryArtifactError"] = error;
-            }
-            if let Some(verdict) = session_limit {
-                evidence["sessionLimit"] = verdict;
-            }
-            self.record_credit_use(&store.root, &mut attempt, &mut evidence, &mut credit)
-                .await;
-            drop(credit);
-            record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
-            mark_phase(&mut attempt, "collected");
-            attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
-            store.save_attempt(&attempt).await?;
-            clean_sealed(&mut cleanup, |id| async move { sandbox::clean(&id).await }).await;
+            self.seal_turn(
+                &host,
+                store,
+                &mut attempt,
+                &version.manifest,
+                &session.session_id,
+                repository,
+                artifact_input.as_ref(),
+                deadline,
+                capture,
+                terminal,
+                &mut cleanup,
+                credit,
+            )
+            .await?;
             Ok(attempt)
         })
     }
@@ -1531,4 +1349,295 @@ impl ExecutionBackend for NativeBackend {
             Ok(Some(attempt))
         })
     }
+}
+
+/// What a try is admitted with, before anything of it exists in the sandbox.
+struct Admitted {
+    run_request: RunRequest,
+    host: Arc<crate::services::agent_host::router::Inner>,
+    account: String,
+    provider: NativeProvider,
+    /// The version as this try collects it (see `collection_context`).
+    version: BenchmarkVersion,
+    repository: bool,
+    budget: Option<crate::services::benchmarks::artifact_context::BudgetLease>,
+    deadline: Option<u64>,
+    artifact_input: Option<crate::services::benchmarks::artifact_context::Input>,
+    inventory: Value,
+    runtime_revision: String,
+    credentials: CredentialWindow,
+}
+
+impl NativeBackend {
+    /// Admits a try: its run still goes on, its account and provider are
+    /// known, its turn may be paid for, its budget and sign-in are in hand,
+    /// and the runtime is the one its configuration was selected on.
+    async fn admit(
+        &self,
+        store: &Store,
+        attempt: &mut Attempt,
+        version: BenchmarkVersion,
+        timeout: u32,
+        cancel: &watch::Receiver<bool>,
+    ) -> Result<Admitted> {
+        if *cancel.borrow()
+            || !matches!(
+                store.run(&attempt.run_id).await?.state.as_str(),
+                "running" | "pausing"
+            )
+        {
+            return Err(BenchmarkError::new(
+                "cancelled",
+                "Run stopped before preparation",
+            ));
+        }
+        let run_request = store.run(&attempt.run_id).await?.request;
+        run_request.require_dispatch_admission(now())?;
+        if requires_browser_runtime(&version.manifest) {
+            crate::services::benchmarks::worker::ready_for_attempt().await?;
+        }
+        let host = self
+            .app
+            .state::<AgentHost>()
+            .get_or_start(&self.app)
+            .await
+            .map_err(host_error)?;
+        let account = attempt.configuration.account_id.clone().ok_or_else(|| {
+            BenchmarkError::new(
+                "capability_missing",
+                account_refusal(&attempt.configuration.provider_id),
+            )
+        })?;
+        let provider =
+            NativeProvider::for_harness(&attempt.configuration.provider_id).ok_or_else(|| {
+                BenchmarkError::new(
+                    "capability_missing",
+                    "This provider has no verified native no-tool execution profile",
+                )
+            })?;
+        // A test starts whatever else its account is doing, as a judge
+        // does: its turn is a session of its own in the sandbox, and the
+        // chats beside it change neither its answer nor its seat. What
+        // the provider lets the account fly at once is the pace's to find.
+        //
+        // A turn whose plan usage is spent waits here, before any setup,
+        // unless it may run on credits.
+        self.credit_turn(&store.root, &attempt.configuration, false)
+            .await?;
+        let version = collection_context::prepare(store, attempt, version, timeout).await?;
+        let repository =
+            crate::services::benchmarks::repository::is_repository_case(&version.manifest);
+        let budget = credited_budget(store, &version.manifest).await?;
+        let deadline = budget
+            .as_ref()
+            .map(|budget| budget.deadline_at_ms())
+            .transpose()?
+            .map(unsigned_deadline)
+            .transpose()?;
+        let artifact_input =
+            crate::services::benchmarks::artifact_context::input(&version.manifest)?;
+        if artifact_input.is_some() && (!repository || deadline.is_none()) {
+            return Err(BenchmarkError::new(
+                "budget_clock_conflict",
+                "Cumulative repository collection requires a native root lease",
+            ));
+        }
+        // A later step of a workflow already running finishes on the grant
+        // its workflow was admitted with; only new work waits for a
+        // renewal that drains the account.
+        let continues = version
+            .manifest
+            .entry_state
+            .as_ref()
+            .is_some_and(|entry| entry.parent_step_id.is_some());
+        let ((inventory, runtime_revision, status), grant) = with_app_sign_in(
+            &host,
+            &attempt.configuration,
+            Some(timeout),
+            !continues,
+            || {
+                self.admitted_runtime(
+                    &host,
+                    &attempt.run_id,
+                    &attempt.configuration,
+                    &account,
+                    timeout,
+                    repository,
+                )
+            },
+        )
+        .await?;
+        let credentials = CredentialWindow::new(grant, status);
+        // The pin guards the account the run was planned on. A test the
+        // run moved to another account (its usage limit ran out) runs on
+        // that account's runtime, which lists that account's models, and
+        // records it below.
+        let request = store.run(&attempt.run_id).await?.request;
+        // Research workflows have a synthetic root column. It must never
+        // masquerade as an account move and waive the selected runtime pin.
+        let moved = request.workflow_policy.is_none()
+            && !request
+                .configurations
+                .iter()
+                .any(|c| c.account_id == attempt.configuration.account_id);
+        if !moved
+            && attempt
+                .configuration
+                .inventory_revision
+                .as_ref()
+                .is_some_and(|revision| revision != &runtime_revision)
+        {
+            return Err(BenchmarkError::new("selection_changed","Installed runtime or model capabilities changed since configuration selection; refresh inventory"));
+        }
+        Ok(Admitted {
+            run_request,
+            host,
+            account,
+            provider,
+            version,
+            repository,
+            budget,
+            deadline,
+            artifact_input,
+            inventory,
+            runtime_revision,
+            credentials,
+        })
+    }
+
+    /// Collects and seals a finished turn: the sandbox stops, a repository
+    /// case's artifact is taken out, the events and the native receipt
+    /// become the attempt's evidence, and the sandbox job is cleaned.
+    #[allow(clippy::too_many_arguments)]
+    async fn seal_turn(
+        &self,
+        host: &Arc<crate::services::agent_host::router::Inner>,
+        store: &Store,
+        attempt: &mut Attempt,
+        draft: &BenchmarkDraft,
+        session_id: &str,
+        repository: bool,
+        artifact_input: Option<&crate::services::benchmarks::artifact_context::Input>,
+        deadline: Option<u64>,
+        capture: TurnCapture,
+        terminal: Value,
+        cleanup: &mut sandbox::Cleanup,
+        mut credit: CreditTurn,
+    ) -> Result<()> {
+        let mut artifact_error = None;
+        let mut session_limit = None;
+        if let Some(id) = cleanup.0.as_deref() {
+            let collected = async {
+                host.stop_owned_sandbox(session_id)
+                    .await
+                    .map_err(host_error)?;
+                if repository {
+                    finalize_repository(attempt, id, draft, artifact_input, deadline).await?;
+                }
+                Ok::<_, BenchmarkError>(())
+            }
+            .await;
+            if let Err(error) = collected {
+                repository_collection_failure(attempt, &error);
+                artifact_error = Some(json!({"code":error.code,"message":error.message}));
+            }
+            session_limit = settle_session_limit(attempt, id).await;
+        }
+        mark_auxiliary_profile(attempt);
+        let receipt = self
+            .native_execution_receipt(host, attempt, &terminal)
+            .await;
+        let evidence = capture.evidence.close(terminal);
+        // Every event of the turn is read: store the session's log the
+        // way its replay reads it.
+        if let Err(error) = host.compact_owned_events(session_id).await {
+            log::warn!("[benchmarks] session {session_id} keeps its raw event log: {error}");
+        }
+        let mut evidence = native_receipt::sealed_events(evidence, receipt);
+        if let Some(error) = artifact_error {
+            evidence["repositoryArtifactError"] = error;
+        }
+        if let Some(verdict) = session_limit {
+            evidence["sessionLimit"] = verdict;
+        }
+        self.record_credit_use(&store.root, attempt, &mut evidence, &mut credit)
+            .await;
+        drop(credit);
+        record_sandbox_admission(attempt, &mut evidence, cleanup.0.as_deref());
+        mark_phase(attempt, "collected");
+        attempt.evidence_hash = Some(fixtures::seal(&store.root, attempt, &evidence).await?);
+        store.save_attempt(attempt).await?;
+        clean_sealed(cleanup, |id| async move { sandbox::clean(&id).await }).await;
+        Ok(())
+    }
+}
+
+/// Puts a repository case's working copy into its sandbox job `id`: the
+/// snapshot as published, or the predecessor its artifact input names.
+/// Returns where the session starts. A text case has no job to fill.
+async fn prepare_workspace(
+    id: Option<&str>,
+    draft: &BenchmarkDraft,
+    artifact_input: Option<&crate::services::benchmarks::artifact_context::Input>,
+    deadline: Option<u64>,
+) -> Result<String> {
+    let Some(id) = id else {
+        return Ok("/workspace".to_owned());
+    };
+    let snapshot = crate::services::benchmarks::repository::snapshot(draft)?;
+    if let Some(input) = artifact_input {
+        let prepared = crate::services::benchmarks::repository::advance_until(
+            &snapshot,
+            &input.lineage,
+            input.access_all,
+            draft.limits.max_artifact_bytes as usize,
+            deadline.expect("validated artifact deadline"),
+        )
+        .await?;
+        if prepared.artifact != input.before {
+            return Err(BenchmarkError::new(
+                "evidence_mismatch",
+                "Collection predecessor differs from its native artifact input",
+            ));
+        }
+        match deadline {
+            Some(deadline) => sandbox::copy_until(id, &prepared.archive, deadline).await,
+            None => sandbox::copy(id, &prepared.archive).await,
+        }
+        .map_err(|error| sandbox_setup_error(error, deadline))?;
+    } else {
+        match deadline {
+            Some(deadline) => {
+                crate::services::benchmarks::repository::verify_until(&snapshot, deadline).await?
+            }
+            None => crate::services::benchmarks::repository::verify(&snapshot).await?,
+        }
+        copy_snapshot(id, &snapshot, deadline).await?;
+    }
+    Ok("/workspace".to_owned())
+}
+
+/// Refuses a turn whose sandbox runtime is no longer the one its session
+/// was opened on (`observed_revision`).
+async fn require_unchanged_runtime(
+    configuration: &Configuration,
+    repository: bool,
+    timeout_seconds: u32,
+    inventory: &Value,
+    observed_revision: Option<&str>,
+) -> Result<()> {
+    let revision = if repository {
+        let runtime = repository_runtime_for_budget(configuration, Some(timeout_seconds)).await?;
+        repository_inventory_revision(&runtime, inventory, &configuration.model_id)
+    } else {
+        let (runtime, _) = text_runtime_snapshot(configuration, Some(timeout_seconds)).await?;
+        text_inventory_revision(&runtime, inventory, &configuration.model_id)
+    };
+    if observed_revision != Some(revision.as_str()) {
+        return Err(BenchmarkError::new(
+            "selection_changed",
+            "Sandbox runtime changed during preparation",
+        ));
+    }
+    Ok(())
 }
