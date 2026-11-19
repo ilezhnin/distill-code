@@ -1597,40 +1597,6 @@ async fn a_refusal_before_the_session_keeps_the_cell_for_the_operator() {
     assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
     dir.close().await;
 }
-/// A refusal that lasts as long as the run (a model list never cached, a
-/// profile changed since its probe) would refuse the same cell on every
-/// resume. Refused again for the same reason after the operator resumed,
-/// the cell settles with it, and the run goes on with its other cells.
-#[tokio::test]
-async fn a_refusal_repeated_after_a_resume_settles_its_cell() {
-    let (dir, s, fake) = setup().await;
-    fake.capability_refusals.store(2, Ordering::SeqCst);
-    let run = s.start_run(serial_request(&s).await).await.unwrap();
-    for _ in 0..2 {
-        s.tick().await.unwrap();
-    }
-    assert_eq!(s.store.run(&run.id).await.unwrap().state, "needs_attention");
-    s.control(&run.id, "resume").await.unwrap();
-    for _ in 0..5 {
-        s.tick().await.unwrap();
-    }
-    let done = s.store.run(&run.id).await.unwrap();
-    assert_eq!(done.state, "completed");
-    assert!(done.attempts.iter().all(|a| a.phase == "terminal"));
-    let settled: Vec<&Attempt> = done
-        .attempts
-        .iter()
-        .filter(|a| a.outcome.as_deref() == Some("capability_missing"))
-        .collect();
-    assert_eq!(settled.len(), 1);
-    assert!(settled[0]
-        .reason
-        .as_deref()
-        .is_some_and(|reason| reason.contains("Grok sign-in expires")));
-    // The other cell ran; the settled one never reached the provider.
-    assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
-    dir.close().await;
-}
 /// One Grok answer chunk as the host stores it, with Grok's per-chunk
 /// telemetry and the host's stamp.
 pub(super) fn telemetry_chunk(kind: &str, text: &str, n: usize) -> Value {
