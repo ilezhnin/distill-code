@@ -1,6 +1,6 @@
 //! Quota waits retain evidence and queue position, never an account seat or
 //! shared preparation slot. All accounts and responses here are invented.
-use super::tests::serial_request;
+use super::super::tests::serial_request;
 use super::*;
 use std::sync::{atomic::AtomicU64, atomic::Ordering, Mutex};
 

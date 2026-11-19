@@ -3,7 +3,7 @@
 //! longer stand between its turns. Turns of one lane never overlap, a lane
 //! keeps at most as many checks waiting this way as it flies turns, and a
 //! planning lab's turn keeps its seat until its verdict.
-use super::tests::{serial_request, setup};
+use super::super::tests::{serial_request, setup};
 use super::*;
 use crate::services::benchmarks::{fixtures, repository};
 use std::sync::atomic::Ordering;

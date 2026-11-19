@@ -1,6 +1,6 @@
 //! Known quota before a judge starts parks the sealed answer, not a paid
 //! abstention. Every account, answer and clock change in this module is invented.
-use super::tests::{request, setup};
+use super::super::tests::{request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 
@@ -161,7 +161,7 @@ fn judge_quota_only_calibrated_allowed_accounts_and_efforts_can_defer() {
         available: true,
         reason: None,
     };
-    let entry = super::super::judge_pool::Entry {
+    let entry = super::super::super::judge_pool::Entry {
         provider_id: configuration.provider_id.clone(),
         model_id: configuration.model_id.clone(),
         effort: configuration.effort.clone(),
@@ -342,7 +342,7 @@ async fn judge_quota_keeps_partial_votes_and_does_not_hold_other_candidates() {
         "requestKey":"invented-judge-request", "usageComplete":true}),
     );
     waiting.evaluations.extend([marker, vote]);
-    assert_eq!(super::super::analysis::score(&waiting), None);
+    assert_eq!(super::super::super::analysis::score(&waiting), None);
     waiting.wait_until = Some(now() - 1);
     service.store.save_attempt(&waiting).await.unwrap();
     let sealed = seal(&waiting);
@@ -401,7 +401,7 @@ async fn judge_quota_sealed_answer_keeps_its_sitting_open_beyond_a_day() {
     let waiting = service.store.attempt(&run.attempts[0].id).await.unwrap();
     let sealed = seal(&waiting);
     sqlx::query("UPDATE run_plans SET created_at=? WHERE id=?")
-        .bind(now() - super::super::analysis::RUN_WINDOW_MS - 1_000)
+        .bind(now() - super::super::super::analysis::RUN_WINDOW_MS - 1_000)
         .bind(&run.id)
         .execute(&service.store.pool)
         .await

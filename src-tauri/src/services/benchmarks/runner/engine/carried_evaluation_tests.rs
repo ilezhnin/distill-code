@@ -1,7 +1,7 @@
 //! A republication the operator asked to keep its measured answers: the new
 //! version carries the old one's cells and evaluates their saved answers
 //! again, locally, beside the evaluations already on record.
-use super::tests::{request, setup};
+use super::super::tests::{request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 
@@ -20,8 +20,8 @@ async fn finished(s: &Arc<BenchmarkService>, run_id: &str) -> BenchmarkRun {
 async fn a_carrying_republication_evaluates_saved_answers_again_without_a_model() {
     let (dir, s, backend) = setup().await;
     let mut req = request(&s).await;
-    req.repetitions = super::super::analysis::REQUIRED_REPETITIONS;
-    req.max_executions = super::super::analysis::REQUIRED_REPETITIONS;
+    req.repetitions = super::super::super::analysis::REQUIRED_REPETITIONS;
+    req.max_executions = super::super::super::analysis::REQUIRED_REPETITIONS;
     let run = s.start_run(req).await.unwrap();
     let run = finished(&s, &run.id).await;
     let answers = run.attempts.len() as u32;
@@ -88,7 +88,7 @@ async fn a_carrying_republication_evaluates_saved_answers_again_without_a_model(
     }
     // The boards read them as the carrying version's cells.
     let data = s.query_data().await.unwrap();
-    let report = super::super::analysis::leaderboard(&data, &ResultQuery::default());
+    let report = super::super::super::analysis::leaderboard(&data, &ResultQuery::default());
     assert!(report
         .rows
         .iter()
@@ -136,8 +136,8 @@ async fn a_carrying_republication_evaluates_saved_answers_again_without_a_model(
 async fn a_run_resumes_on_a_version_a_republication_only_carries() {
     let (dir, s, _backend) = setup().await;
     let mut req = request(&s).await;
-    req.repetitions = super::super::analysis::REQUIRED_REPETITIONS;
-    req.max_executions = super::super::analysis::REQUIRED_REPETITIONS;
+    req.repetitions = super::super::super::analysis::REQUIRED_REPETITIONS;
+    req.max_executions = super::super::super::analysis::REQUIRED_REPETITIONS;
     let run = s.start_run(req).await.unwrap();
     s.store.set_run_state(&run.id, "paused").await.unwrap();
     let first = s.store.version(&run.request.version_ids[0]).await.unwrap();

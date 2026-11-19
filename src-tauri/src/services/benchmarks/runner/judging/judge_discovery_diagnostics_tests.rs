@@ -1,6 +1,6 @@
 //! Invented discovery failures must be actionable without exposing inventory
 //! output or changing which judges, waits, or paid answers the runner keeps.
-use super::tests::{request, setup};
+use super::super::tests::{request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 
@@ -21,8 +21,8 @@ fn judge(provider: &str) -> Configuration {
     }
 }
 
-fn pool(provider: &str) -> super::super::judge_pool::Entry {
-    super::super::judge_pool::Entry {
+fn pool(provider: &str) -> super::super::super::judge_pool::Entry {
+    super::super::super::judge_pool::Entry {
         provider_id: provider.into(),
         model_id: "invented-judge".into(),
         effort: Some("high".into()),
@@ -124,7 +124,7 @@ fn judge_diagnostics_only_describe_unavailable_native_rows_in_the_allowed_pool()
         reason: Some(format!("capability_missing: {PROOF}")),
     };
     let eligible = vec![pool("claude-acp")];
-    let diagnostic = |row: &InventoryModel, entries: &[super::super::judge_pool::Entry]| {
+    let diagnostic = |row: &InventoryModel, entries: &[super::super::super::judge_pool::Entry]| {
         DiscoveredJudgePanel::discovered(
             Vec::new(),
             JudgeDiscoveryIssue::from_model(row).into_iter().collect(),

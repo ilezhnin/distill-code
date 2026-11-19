@@ -116,7 +116,7 @@ async fn evaluation_admission_releases_preparing_before_the_slow_check_finishes(
         .unwrap();
     // This backend grades a repository patch against the invented reference;
     // no native worker or real repository is needed to exercise admission.
-    version.manifest.evaluator.kind = super::super::repository::EVALUATOR.into();
+    version.manifest.evaluator.kind = super::super::super::repository::EVALUATOR.into();
     let mut completed = run.attempts[0].clone();
     completed.phase = "collecting".into();
     completed.outcome = Some("completed".into());

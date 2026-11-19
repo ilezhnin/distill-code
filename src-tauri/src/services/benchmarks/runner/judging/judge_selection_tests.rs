@@ -14,7 +14,7 @@ fn fixture() -> (Attempt, Evaluation) {
         inventory_revision: Some("invented-runtime".into()),
         model_name: None,
     };
-    let mut attempt = super::super::pending_attempt("run", "version", &judge, 1);
+    let mut attempt = super::super::super::pending_attempt("run", "version", &judge, 1);
     attempt.output = Some("Sealed invented answer".into());
     attempt.evidence_hash = Some("invented-seal".into());
     let failure = Evaluation {

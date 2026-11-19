@@ -176,7 +176,7 @@ async fn judge_inventory_diagnostics_failed_journal_cannot_hide_behind_cached_su
 /// judges, and each of them was journalled on every pass.
 #[test]
 fn judge_inventory_diagnostics_concern_only_the_rows_the_pool_names() {
-    let pool: Vec<super::super::judge_pool::Entry> = serde_json::from_value(json!([
+    let pool: Vec<super::super::super::judge_pool::Entry> = serde_json::from_value(json!([
         {"providerId":"claude-acp","modelId":"opus[1m]","effort":"high"},
         {"providerId":"claude-acp","modelId":"sonnet","effort":"high",
             "accounts":["invented-account"]},

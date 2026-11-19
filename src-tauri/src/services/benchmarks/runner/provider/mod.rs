@@ -18,3 +18,6 @@ pub(in crate::services::benchmarks) mod reconnect;
 pub use self::{backend::*, fake::*, native::*};
 pub(super) use self::{capture::*, collection::*, credentials::*};
 pub(crate) use self::{outcome::*, owned_turns::*};
+
+#[cfg(test)]
+mod reconciliation_tests;

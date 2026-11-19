@@ -1,7 +1,7 @@
 //! A paid answer whose evaluation the local sandbox refused before any worker
 //! started waits for the sandbox and is evaluated then. The refusal is no
 //! verdict and never generates the answer again.
-use super::tests::{serial_request, setup};
+use super::super::tests::{serial_request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 

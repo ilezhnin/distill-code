@@ -2,7 +2,7 @@
 //! it waits in the queue under every retry policy, as an unstarted admission
 //! does: nothing paid is repeated, and the run goes on without the operator
 //! once the renewal is done.
-use super::tests::{serial_request, setup};
+use super::super::tests::{serial_request, setup};
 use super::unstarted_admission_tests::workflow_request;
 use super::*;
 use crate::services::provider_account_status::grok::BENCHMARK_BRIDGE_BUSY;

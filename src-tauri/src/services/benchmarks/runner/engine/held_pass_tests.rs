@@ -2,7 +2,7 @@
 //! measurement it hardly ends. What a tick does at its start (a waited-out
 //! cell starting again, recovery, baking, campaign admission) must also
 //! happen while it lasts. Each test keeps another run's turn open throughout.
-use super::tests::{serial_request, setup};
+use super::super::tests::{serial_request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 
@@ -197,7 +197,7 @@ async fn a_closed_window_is_baked_while_another_run_flies() {
         .await
         .unwrap();
     sqlx::query("UPDATE run_plans SET created_at=? WHERE id=?")
-        .bind(now() - super::super::analysis::RUN_WINDOW_MS - 60_000)
+        .bind(now() - super::super::super::analysis::RUN_WINDOW_MS - 60_000)
         .bind(&run.id)
         .execute(&service.store.pool)
         .await

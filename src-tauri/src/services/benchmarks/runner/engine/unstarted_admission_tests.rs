@@ -1,7 +1,7 @@
 //! A cell the local resource broker refused before any provider process
 //! started waits in the queue, at whatever stage it was refused, and counts
 //! neither as an attempt nor as a failure. Anything a provider saw settles.
-use super::tests::{serial_request, setup};
+use super::super::tests::{serial_request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 
@@ -22,7 +22,8 @@ pub(super) async fn workflow_request(
 ) -> RunRequest {
     let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
     draft.split = "train".into();
-    draft.environment["nativeBudgetRecipe"] = json!(super::super::artifact_context::CLOCK_RECIPE);
+    draft.environment["nativeBudgetRecipe"] =
+        json!(super::super::super::artifact_context::CLOCK_RECIPE);
     draft.limits.timeout_seconds = 600;
     draft.workflow = Some(WorkflowSpec {
         schema_version: 1,
@@ -239,7 +240,7 @@ async fn a_later_step_settles_its_refusal_after_a_quarter_of_its_allowance() {
     let root = &settled.attempts[0];
     assert_eq!(root.phase, "terminal");
     assert_eq!(root.outcome.as_deref(), Some("resource_busy"));
-    assert!(!super::super::analysis::is_measured(root));
+    assert!(!super::super::super::analysis::is_measured(root));
     assert_eq!(
         root.workflow_steps[1].outcome.as_deref(),
         Some("resource_busy")
@@ -259,17 +260,19 @@ async fn a_later_step_settles_its_refusal_after_a_quarter_of_its_allowance() {
 
 #[test]
 fn a_later_step_asks_again_only_inside_the_first_quarter_of_its_allowance() {
-    let retry = super::super::workflow::LATER_STEP_RETRY.as_millis() as i64;
-    assert!(super::super::workflow::later_step_may_wait(0, 600, 0));
-    assert!(super::super::workflow::later_step_may_wait(
+    let retry = super::super::super::workflow::LATER_STEP_RETRY.as_millis() as i64;
+    assert!(super::super::super::workflow::later_step_may_wait(
+        0, 600, 0
+    ));
+    assert!(super::super::super::workflow::later_step_may_wait(
         0,
         600,
         150_000 - retry
     ));
-    assert!(!super::super::workflow::later_step_may_wait(
+    assert!(!super::super::super::workflow::later_step_may_wait(
         0,
         600,
         150_001 - retry
     ));
-    assert!(!super::super::workflow::later_step_may_wait(0, 0, 0));
+    assert!(!super::super::super::workflow::later_step_may_wait(0, 0, 0));
 }

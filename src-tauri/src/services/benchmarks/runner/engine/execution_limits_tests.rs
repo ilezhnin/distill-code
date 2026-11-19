@@ -1,4 +1,4 @@
-use super::tests::{serial_request, setup};
+use super::super::tests::{serial_request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 

@@ -117,7 +117,7 @@ fn usage_event(cursor: i64) -> OwnedEvent {
 }
 
 fn attempt() -> Attempt {
-    let mut attempt = super::super::analysis::tests::dataset().attempts[0].clone();
+    let mut attempt = super::super::super::analysis::tests::dataset().attempts[0].clone();
     attempt.id = "invented-receipt-attempt".into();
     attempt.session_id = Some(SESSION.into());
     attempt.outcome = None;
@@ -600,7 +600,7 @@ async fn owned_turn_a_kimi_turn_that_completed_no_request_is_no_answer_of_the_mo
     assert_eq!(attempt.outcome.as_deref(), Some("infrastructure_failure"));
     assert_eq!(
         attempt.reason.as_deref(),
-        Some(super::super::analysis::KIMI_UNANSWERED)
+        Some(super::super::super::analysis::KIMI_UNANSWERED)
     );
     // A Kimi turn with counters answered, however little; another runtime
     // that reports no usage is graded as before.

@@ -2,7 +2,7 @@
 //! ended runs again on the sealed answer, a turn an infrastructure failure
 //! ended is measured again as a fresh try, and resuming a run checks an
 //! answer whose check never gave a verdict instead of paying for another.
-use super::tests::{serial_request, setup};
+use super::super::tests::{serial_request, setup};
 use super::*;
 use std::sync::atomic::Ordering;
 
@@ -31,14 +31,14 @@ async fn settle(service: &Arc<BenchmarkService>, run_id: &str) -> BenchmarkRun {
 fn counted(run: &BenchmarkRun) -> Vec<&Attempt> {
     run.attempts
         .iter()
-        .filter(|a| !super::super::analysis::is_superseded(a))
+        .filter(|a| !super::super::super::analysis::is_superseded(a))
         .collect()
 }
 
 fn set_aside(run: &BenchmarkRun) -> Vec<&Attempt> {
     run.attempts
         .iter()
-        .filter(|a| super::super::analysis::is_superseded(a))
+        .filter(|a| super::super::super::analysis::is_superseded(a))
         .collect()
 }
 
@@ -127,7 +127,7 @@ async fn resuming_scores_an_answer_whose_check_passes_the_candidates_own_ceiling
     assert_eq!(checked.id, unscored.id);
     // The answer past its budget: a measurement, scored 0, nothing to resume.
     assert_eq!(checked.outcome.as_deref(), Some("budget_reached"));
-    assert_eq!(super::super::analysis::score(checked), Some(0.0));
+    assert_eq!(super::super::super::analysis::score(checked), Some(0.0));
     assert_eq!(
         backend.evaluation_candidate_limits.load(Ordering::SeqCst),
         0,

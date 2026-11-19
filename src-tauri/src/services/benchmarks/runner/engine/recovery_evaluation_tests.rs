@@ -129,7 +129,7 @@ async fn setup() -> (
     let mut version = service.store.publish(&definition.id, 1).await.unwrap();
     // Only this isolated fake backend grades the invented repository fixture;
     // its blob still matches the manifest verified by the ordinary runner.
-    version.manifest.evaluator.kind = super::super::repository::EVALUATOR.into();
+    version.manifest.evaluator.kind = super::super::super::repository::EVALUATOR.into();
     version.manifest.execution_profile = "protected_repository".into();
     version.content_hash = fixtures::publish_blob(&service.store.root, &version.manifest)
         .await

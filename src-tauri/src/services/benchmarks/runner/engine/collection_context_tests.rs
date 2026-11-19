@@ -1,4 +1,4 @@
-use super::collection_context::{self, Context};
+use super::super::collection_context::{self, Context};
 use super::*;
 use crate::services::benchmarks::{artifact_context, repository};
 
@@ -347,9 +347,10 @@ async fn real_repository_initial_input_is_persisted_and_recovered_without_provid
         .await
         .unwrap();
     let saved = service.store.attempt(&attempt.id).await.unwrap();
-    let recovered = super::super::workflow::effective_version_for_attempt(&service.store, &saved)
-        .await
-        .unwrap();
+    let recovered =
+        super::super::super::workflow::effective_version_for_attempt(&service.store, &saved)
+            .await
+            .unwrap();
     assert_eq!(
         serde_json::to_value(&prepared).unwrap(),
         serde_json::to_value(recovered).unwrap()
