@@ -19,7 +19,7 @@
 //! its answer as its last message whether or not a failure was reported
 //! (owner, 11-16): of 4351 Codex text turns on record, the 8 of several
 //! messages were all streams a reconnect broke, three with no marker.
-use crate::services::benchmarks::runner::*;
+use super::*;
 
 /// What the lost connections of a turn leave of its answer, as its events
 /// are read in order.

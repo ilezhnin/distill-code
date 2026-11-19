@@ -3,6 +3,7 @@
 //! verdict and never generates the answer again.
 use super::super::tests::{serial_request, setup};
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::atomic::Ordering;
 
 /// One cell, one turn, and no replacement attempt, like a measurement run.

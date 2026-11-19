@@ -147,11 +147,7 @@ pub(in super::super) async fn reserve(
     let key = format!("collection:{}", attempt.id);
     let saved = store.native_budget(&key).await?;
     let origin = saved.as_ref().map_or_else(
-        || {
-            attempt
-                .started_at
-                .unwrap_or_else(crate::services::benchmarks::runner::now)
-        },
+        || attempt.started_at.unwrap_or_else(super::now),
         |budget| budget.root_started_at_ms,
     );
     let root = artifact_context::BudgetLease {
@@ -214,8 +210,7 @@ pub(in super::super) async fn prepare(
             "Standalone collection requires a declared native repository contract",
         ));
     }
-    let timeout =
-        crate::services::benchmarks::runner::effective_timeout_seconds(timeout, &version.manifest);
+    let timeout = super::effective_timeout_seconds(timeout, &version.manifest);
     if let Some(context) = &attempt.collection_context {
         context.verify(store, attempt, &version).await?;
         if context.timeout_seconds != timeout {
@@ -238,7 +233,7 @@ pub(in super::super) async fn prepare(
         &[],
         false,
         version.manifest.limits.max_artifact_bytes as usize,
-        crate::services::benchmarks::runner::unsigned_deadline(budget.deadline_at_ms()?)?,
+        super::unsigned_deadline(budget.deadline_at_ms()?)?,
     )
     .await?;
     let context = Context::new(

@@ -681,6 +681,7 @@ impl BenchmarkService {
 mod tests {
     use super::*;
     use crate::services::benchmarks::runner::tests::*;
+    use crate::services::benchmarks::runner::*;
     use std::sync::atomic::Ordering;
 
     /// A refusal before the prompt, under automatic retries, with everything

@@ -1,5 +1,5 @@
 //! Optional immutable judge seats for repeatable rubric measurement.
-use crate::services::benchmarks::{fixtures, runner, types::*};
+use crate::services::benchmarks::{fixtures, types::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -100,14 +100,14 @@ pub(in crate::services::benchmarks) fn frozen(
                 effort.is_empty() || effort.trim() != effort || effort.len() > 64
             })
             || judge.fast_mode.is_none()
-            || runner::profile_refusal(judge).is_some()
-            || (!runner::text_judged(draft) && !runner::judge_provider_allowed(&judge.provider_id))
+            || super::profile_refusal(judge).is_some()
+            || (!super::text_judged(draft) && !super::judge_provider_allowed(&judge.provider_id))
         {
             return Err(invalid("Judge seats need distinct models, supported input, explicit settings, account, billing and runtime pins"));
         }
     }
     // A candidate's own model keeps its seat, marked: see `frozen_seats`.
-    if runner::frozen_seats(candidates, draft, panel.judges.clone()).len() != panel.judges.len() {
+    if super::frozen_seats(candidates, draft, panel.judges.clone()).len() != panel.judges.len() {
         return Err(invalid(
             "A frozen judge is an author of the case, or a candidate model is unresolved",
         ));
@@ -207,7 +207,7 @@ pub(in crate::services::benchmarks) fn validate_evidence(
             Err(invalid("Frozen rubric label lacks its native panel"))
         };
     }
-    let expected = runner::frozen_judge_binding(draft)?;
+    let expected = super::frozen_judge_binding(draft)?;
     let mut complete = false;
     for (position, start) in markers.iter().copied().enumerate() {
         let marker = evaluations[start];
@@ -530,7 +530,8 @@ mod tests {
         draft.evaluator.revision = "invented-v1".into();
         let panel = frozen(&draft, &[]).unwrap().unwrap();
         let (mut marker, answers) = evidence();
-        marker.details.as_mut().unwrap()["protocol"] = runner::judge_protocol(&draft, &panel);
+        marker.details.as_mut().unwrap()["protocol"] =
+            crate::services::benchmarks::runner::judge_protocol(&draft, &panel);
         let mut attempt = crate::services::benchmarks::pending_attempt(
             "run",
             "version",

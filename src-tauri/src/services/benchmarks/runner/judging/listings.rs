@@ -412,6 +412,7 @@ impl NativeBackend {
 mod tests {
     use super::*;
     use crate::services::benchmarks::runner::tests::*;
+    use crate::services::benchmarks::runner::*;
     use std::sync::atomic::Ordering;
 
     /// A test added to a run inside its window joins that run: the sitting

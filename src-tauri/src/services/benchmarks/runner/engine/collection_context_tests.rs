@@ -1,5 +1,6 @@
 use super::super::collection_context::{self, Context};
 use super::*;
+use crate::services::benchmarks::runner::*;
 use crate::services::benchmarks::{artifact_context, repository};
 
 fn opted_in(mut version: BenchmarkVersion) -> BenchmarkVersion {

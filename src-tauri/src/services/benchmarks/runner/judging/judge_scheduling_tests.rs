@@ -1,5 +1,6 @@
 //! Invented saved answers exercise scheduling without provider calls.
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,

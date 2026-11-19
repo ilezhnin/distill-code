@@ -378,6 +378,7 @@ pub(in super::super) fn left_for_operator(attempt: &Attempt) -> bool {
 mod tests {
     use super::*;
     use crate::services::benchmarks::runner::tests::*;
+    use crate::services::benchmarks::runner::*;
     use std::sync::atomic::Ordering;
 
     /// The pace learns speeds from text turns only (a repository turn's

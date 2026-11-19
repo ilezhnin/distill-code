@@ -1,7 +1,24 @@
 //! The provider side of a run: the backend port, its native implementation
 //! (sessions, owned turns, what a turn captured and how it ended) and the test
 //! double.
-use super::*;
+use super::shared::*;
+// What this system takes from the other two.
+use super::engine::{
+    admission_window, collection_context, dispatch_key, evaluate, hold_provider_until,
+    is_quota_wait, mark_phase, refused_for_quota, stopped_for_quota, turn_owner, ACCOUNT_BUSY,
+    NO_PROVIDER_START, QUOTA_WAIT, SESSION_LOST, SESSION_LOST_BEFORE_ANSWER, SIGN_IN_WAIT,
+    SIGN_IN_WAIT_REASON,
+};
+use super::judging::{
+    by_headroom, in_flight, judge_watchdog, ordinary_judging, qualification_carrier,
+    requires_browser_runtime, settle_interrupted_judge, JudgeEvidence, JudgeStop, RunInventories,
+    JUDGES_BUSY, JUDGE_POLICY_RENEWAL, JUDGING_STOPPED, RENDERER_BUSY,
+};
+// The faults of the test double speak in the words of judging.
+#[cfg(test)]
+use super::judging::judge_quota_wait;
+#[cfg(test)]
+use super::judging::JUDGE_ADMISSION_WAIT;
 
 mod backend;
 mod capture;

@@ -1,6 +1,6 @@
 //! Corrections to the interpretation of retained sheets. The original reply,
 //! usage and verdict stay intact; a dated correction belongs to its batch.
-use crate::services::benchmarks::runner::*;
+use super::*;
 
 const REVISION: &str = "critical-failure-precedence-v1";
 const ABSTAINED: &str = "Critical checks unresolved; judge abstained. ";

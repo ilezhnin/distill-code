@@ -1,5 +1,5 @@
 //! How many turns one provider account takes at once. An account with no
-//! history starts at [`ACCOUNT_SLOTS`](crate::services::benchmarks::runner::ACCOUNT_SLOTS) in slow start:
+//! history starts at [`ACCOUNT_SLOTS`](super::ACCOUNT_SLOTS) in slow start:
 //! the level doubles after each clean round, as many clean turns as the
 //! level that were admitted with every slot taken (an account its demand
 //! keeps below its level never grows). The first sign the provider limits
@@ -417,12 +417,12 @@ fn with_pace<T>(key: &str, apply: impl FnOnce(&mut Pace) -> T) -> T {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let pace = paces.entry(key.to_owned()).or_insert_with(|| {
-        let now = crate::services::benchmarks::runner::now();
+        let now = super::now();
         let saved = split_key(key)
             .and_then(|(root, account)| read_saved(Path::new(root)).remove(account));
         match saved {
             Some(saved) => {
-                let pace = Pace::resume(&saved, now, crate::services::benchmarks::runner::ACCOUNT_SLOTS);
+                let pace = Pace::resume(&saved, now, super::ACCOUNT_SLOTS);
                 let idle = (now - saved.active_at.unwrap_or(saved.at)).max(0) / 1000;
                 log::info!(
                     "[benchmarks] account pace {} resumed at {} turns at once: it last flew turns {idle} s ago ({}), stable level {}, slow start {}",
@@ -438,7 +438,7 @@ fn with_pace<T>(key: &str, apply: impl FnOnce(&mut Pace) -> T) -> T {
                 );
                 pace
             }
-            None => Pace::new(crate::services::benchmarks::runner::ACCOUNT_SLOTS, now),
+            None => Pace::new(super::ACCOUNT_SLOTS, now),
         }
     });
     let before = pace.saved();
@@ -485,9 +485,7 @@ pub(in super::super) fn limit(account: &str) -> usize {
 
 /// Turns of `model` `account` takes at once (see [`Pace::limit_for`]).
 pub(in super::super) fn limit_for(account: &str, model: &str) -> usize {
-    with_pace(account, |pace| {
-        pace.limit_for(model, crate::services::benchmarks::runner::now())
-    })
+    with_pace(account, |pace| pace.limit_for(model, super::now()))
 }
 
 pub(in super::super) fn record_throttle(

@@ -41,10 +41,7 @@ pub(in crate::services::benchmarks) fn enabled(draft: &BenchmarkDraft) -> bool {
 }
 
 pub(in crate::services::benchmarks) fn validate(draft: &BenchmarkDraft) -> Vec<String> {
-    if enabled(draft)
-        && (!crate::services::benchmarks::runner::text_judged(draft)
-            || requirements(draft).is_none())
-    {
+    if enabled(draft) && (!super::text_judged(draft) || requirements(draft).is_none()) {
         vec!["Critical checks require a text rubric and 1–16 unique IDs (letters, digits, _ or -; at most 64 bytes) with nonempty requirements up to 4096 bytes".into()]
     } else {
         Vec::new()

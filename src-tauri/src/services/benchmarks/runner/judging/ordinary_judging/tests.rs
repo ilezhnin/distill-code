@@ -1,4 +1,5 @@
 use super::*;
+use crate::services::benchmarks::runner::*;
 
 fn judge(model: &str) -> Configuration {
     Configuration {

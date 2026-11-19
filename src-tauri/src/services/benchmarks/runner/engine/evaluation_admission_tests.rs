@@ -1,5 +1,6 @@
 //! Invented evaluator leases exercise the real runner's preparation lifecycle.
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]

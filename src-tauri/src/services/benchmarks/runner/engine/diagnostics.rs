@@ -1,5 +1,5 @@
 //! Preserve operational failures before retry/stop replaces the current reason.
-use crate::services::benchmarks::runner::*;
+use super::*;
 
 /// Metadata only: retaining a diagnostic never clones a candidate's answer,
 /// screenshots, rubric, or the panel's growing evaluation payload.
@@ -72,6 +72,7 @@ impl JudgeTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::benchmarks::runner::*;
 
     #[test]
     fn diagnostic_storage_failure_is_visible_even_for_named_wait_reasons() {

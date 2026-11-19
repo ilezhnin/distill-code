@@ -1,5 +1,6 @@
 //! Invented interrupted receipts exercise recovery without provider replays.
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Default)]

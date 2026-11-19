@@ -386,6 +386,7 @@ fn consume_usage(data: &Value, usage: &mut TokenUsage) {
 mod tests {
     use super::*;
     use crate::services::benchmarks::runner::tests::*;
+    use crate::services::benchmarks::runner::*;
 
     /// Run 607f8612: a Grok answer of 3,844 bytes and its reasoning came in
     /// some 1,450 chunks that, with their telemetry, passed the 1 MiB cap;

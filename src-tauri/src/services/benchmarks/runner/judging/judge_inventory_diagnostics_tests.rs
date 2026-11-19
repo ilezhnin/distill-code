@@ -1,5 +1,6 @@
 //! Inventory fallback/partial discovery must not erase refused setup attempts.
 use super::*;
+use crate::services::benchmarks::runner::*;
 
 async fn fixture() -> (
     crate::test_support::TempRoot,

@@ -1,6 +1,12 @@
 //! The engine of a run: seats and pace, the scheduler, one attempt from start
 //! to settle, what a failed try means, waits, and recovery.
-use super::*;
+use super::shared::*;
+// What this system takes from the other two.
+use super::judging::{
+    judge_discovery_waiting, judge_document, judge_policy_waiting, judge_quota_waiting,
+    judge_watchdog, judging_deferred, rubric_criteria, text_judged, JudgeStop, JUDGING_STOPPED,
+};
+use super::provider::{collection_budget, unsigned_deadline, unstarted_refusal, TurnCapture};
 
 pub(super) mod account_pace;
 pub(super) mod admission_window;

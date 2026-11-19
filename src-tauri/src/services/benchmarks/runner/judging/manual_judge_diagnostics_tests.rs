@@ -1,6 +1,7 @@
 //! Offline manual judging failures: a new error must not leave an older
 //! cancellation reason on a retained answer or discard newly saved votes.
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct InterruptedPanel {

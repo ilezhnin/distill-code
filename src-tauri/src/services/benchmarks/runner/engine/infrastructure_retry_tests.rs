@@ -4,6 +4,7 @@
 //! answer whose check never gave a verdict instead of paying for another.
 use super::super::tests::{serial_request, setup};
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::atomic::Ordering;
 
 /// One cell of an ordinary run, which allows retries.

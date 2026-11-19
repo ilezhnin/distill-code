@@ -2,6 +2,7 @@
 //! shared preparation slot. All accounts and responses here are invented.
 use super::super::tests::serial_request;
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::{atomic::AtomicU64, atomic::Ordering, Mutex};
 
 struct QuotaBackend {

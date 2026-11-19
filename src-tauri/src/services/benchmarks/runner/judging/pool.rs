@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::services::agent_host::execution::NativeProvider;
 use crate::services::benchmarks::{
-    data_use::DataUse, qualification, runner, store::now, store::Store, types::*, BenchmarkService,
+    data_use::DataUse, qualification, store::now, store::Store, types::*, BenchmarkService,
 };
 use crate::services::provider_account_status::Headroom;
 
@@ -21,7 +21,7 @@ use crate::services::provider_account_status::Headroom;
 pub(crate) const RECIPE: &str = "strong-pool-v1";
 /// How an ordinary panel seats the pool's calibrated judges (owner, 10-18):
 /// one per lab, a candidate's own lab and model included (see
-/// `runner::ordinary_judges`). It enters the judge protocol and its hash.
+/// `super::ordinary_judges`). It enters the judge protocol and its hash.
 pub(crate) const PANEL_RECIPE: &str = "three-lab-v1";
 /// The benchmark settings document the renderer writes.
 const SETTINGS: &str = "settings.json";
@@ -235,7 +235,7 @@ pub struct VisualCalibration {
 /// Whether the entry's provider is checked to see images, or its newest
 /// calibration passed the visual controls.
 fn sees_images(entry: &Entry, calibration: Option<&Calibration>) -> bool {
-    runner::judge_provider_allowed(&entry.provider_id)
+    super::judge_provider_allowed(&entry.provider_id)
         || calibration
             .and_then(|calibration| calibration.visual.as_ref())
             .is_some_and(|visual| visual.status == "passed")
@@ -401,7 +401,7 @@ pub(crate) fn seat_rows(
                 }
                 let mut judge = row.configuration.clone();
                 judge.effort = entry.effort.clone();
-                runner::profile_refusal(&judge)
+                super::profile_refusal(&judge)
                     .is_none()
                     .then_some((headroom, judge))
             })
@@ -473,7 +473,7 @@ async fn control_sets(store: &Store, entry: &Entry) -> Result<(ControlSets, Cont
     )
     .fetch_all(&store.pool)
     .await?;
-    let checked = runner::judge_provider_allowed(&entry.provider_id);
+    let checked = super::judge_provider_allowed(&entry.provider_id);
     let (mut sets, mut visual) = (Vec::new(), Vec::new());
     for id in ids {
         let record = store.qualification(&id).await?;
@@ -484,7 +484,7 @@ async fn control_sets(store: &Store, entry: &Entry) -> Result<(ControlSets, Cont
         if version.manifest.evaluator.kind != "rubric" {
             continue;
         }
-        if runner::text_judged(&version.manifest) || (entry.judges(false) && checked) {
+        if super::text_judged(&version.manifest) || (entry.judges(false) && checked) {
             sets.push((record, version));
         } else if entry.judges(false) {
             visual.push((record, version));
@@ -511,7 +511,7 @@ fn judged_itself(evaluation: &Evaluation) -> bool {
 /// images judges `visual`, whose verdict only decides its visual seats.
 async fn run(
     store: &Store,
-    backend: &dyn runner::ExecutionBackend,
+    backend: &dyn super::ExecutionBackend,
     calibration: &mut Calibration,
     sets: &[(qualification::Record, BenchmarkVersion)],
     visual: &[(qualification::Record, BenchmarkVersion)],
@@ -563,7 +563,7 @@ async fn run(
 /// returns the first control out of its band as the failure.
 async fn judge_controls(
     store: &Store,
-    backend: &dyn runner::ExecutionBackend,
+    backend: &dyn super::ExecutionBackend,
     calibration: &mut Calibration,
     judge: &Configuration,
     sets: &[(qualification::Record, BenchmarkVersion)],
@@ -586,12 +586,12 @@ async fn judge_controls(
                     .await?;
                 let busy = matches!(
                     judged.reason.as_deref(),
-                    Some(runner::JUDGES_BUSY | runner::RENDERER_BUSY)
+                    Some(super::JUDGES_BUSY | super::RENDERER_BUSY)
                 );
                 if !busy || now() - asked >= BUSY_WAIT_MS {
                     break judged;
                 }
-                tokio::time::sleep(runner::EVALUATION_RETRY).await;
+                tokio::time::sleep(super::EVALUATION_RETRY).await;
             };
             let vote = judged.evaluations.iter().rev().find(|evaluation| {
                 matches!(evaluation.provenance.as_str(), "judge" | "judge_failure")
@@ -1029,7 +1029,9 @@ mod tests {
         root.register(&store.pool);
         let service = BenchmarkService {
             store,
-            backend: std::sync::Arc::new(runner::FakeBackend::default()),
+            backend: std::sync::Arc::new(
+                crate::services::benchmarks::runner::FakeBackend::default(),
+            ),
             wake: Default::default(),
             active: Default::default(),
             queries: Default::default(),

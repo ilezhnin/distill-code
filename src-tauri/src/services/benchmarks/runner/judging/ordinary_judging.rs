@@ -1,7 +1,7 @@
 //! Ordinary scores belong to the retained artifact, not a calibration's runtime.
 //! Reseating appends a new batch referencing the same artifact and paid votes;
 //! it never rewrites the original receipts or charges their usage twice.
-use crate::services::benchmarks::runner::*;
+use super::*;
 
 const POLICY: &str = "retained-artifact-panel-v1";
 /// The error code of a saved panel nobody can complete, now or after a reset.

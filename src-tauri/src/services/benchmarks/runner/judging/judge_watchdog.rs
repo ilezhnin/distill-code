@@ -1,5 +1,5 @@
 //! Bound preparation and stalled judge queues without discarding paid evidence.
-use crate::services::benchmarks::runner::*;
+use super::*;
 use std::future::Future;
 
 pub(in super::super) const PREPARATION_LIMIT: Duration = Duration::from_secs(5 * 60);

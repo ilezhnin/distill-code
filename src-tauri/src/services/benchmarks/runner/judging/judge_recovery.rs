@@ -3,7 +3,7 @@
 //! same answer and scoring instructions: another calibrated judge takes its
 //! seat, or the panel settles with the judges it has, marked. Preregistered
 //! panels and calibrations never substitute.
-use crate::services::benchmarks::runner::*;
+use super::*;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

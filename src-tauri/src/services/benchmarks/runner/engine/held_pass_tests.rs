@@ -4,6 +4,7 @@
 //! happen while it lasts. Each test keeps another run's turn open throughout.
 use super::super::tests::{serial_request, setup};
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::atomic::Ordering;
 
 /// The first attempt of `run_id` once `ready` holds for it, within a bound

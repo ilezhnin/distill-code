@@ -3,6 +3,7 @@
 //! neither as an attempt nor as a failure. Anything a provider saw settles.
 use super::super::tests::{serial_request, setup};
 use super::*;
+use crate::services::benchmarks::runner::*;
 use std::sync::atomic::Ordering;
 
 /// The refusals the trusted pre-spawn path reported on 2026-10-16, and the

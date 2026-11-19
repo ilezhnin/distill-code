@@ -686,6 +686,7 @@ fn weighted_share(shares: &serde_json::Map<String, Value>, criteria: &[RubricCri
 mod tests {
     use super::*;
     use crate::services::benchmarks::runner::tests::*;
+    use crate::services::benchmarks::runner::*;
 
     #[test]
     fn judge_replies_become_weighted_shares_and_unfenced_markup_renders() {
