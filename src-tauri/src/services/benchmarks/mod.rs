@@ -11,12 +11,12 @@ pub mod types;
 pub mod definitions;
 pub mod grading;
 pub mod ledger;
-pub mod research;
+pub mod pipelines;
 pub use definitions::{catalog, fixtures, generated, model_catalog, seeds};
 pub use grading::{artifact_context, evaluation, mutation, repository, worker};
 use ledger::activity;
 pub use ledger::{analysis, effort, evidence, export, flights, home_advantage, routing, store};
-pub use research::{
+pub use pipelines::{
     executor, learned, promotion, qualification, selector, task_execution, workflow,
     workflow_campaign, workflow_policy,
 };
