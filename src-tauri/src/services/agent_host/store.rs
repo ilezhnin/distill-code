@@ -480,6 +480,13 @@ pub struct BenchmarkSessionEntry {
     pub last_activity: String,
 }
 
+/// Events one transaction of a purge removes. The chat of a long turn holds
+/// over a hundred thousand: removed in one transaction (11-18: 131 489
+/// events, 92 MB), they kept the one writer longer than the others wait for
+/// it, and the turns that settled meanwhile lost their records to "database
+/// is locked".
+const PURGE_EVENTS: i64 = if cfg!(test) { 2 } else { 2_000 };
+
 /// What a purge of benchmark sessions removed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1655,78 +1662,100 @@ impl SessionStore {
     }
 
     /// Delete benchmark sessions with everything the host keeps for them:
-    /// their turn records, owner, events and the session itself, in the
-    /// order the foreign keys allow, in one transaction. Each one is checked
-    /// again inside it, so a session that is no longer settled, or that is not
-    /// a benchmark's, is left as it is: an ordinary chat never matches.
+    /// their events, turn records, owner and the session itself. Each one is
+    /// checked again in every transaction that removes something of it, so a
+    /// session that is no longer settled, or that is not a benchmark's, is
+    /// left as it is: an ordinary chat never matches.
+    ///
+    /// A session's events go [`PURGE_EVENTS`] to a transaction, and its
+    /// records with the last of them, so the store's one writer is never
+    /// kept for a whole chat: other sessions write between the parts. A
+    /// purge the app stops in the middle leaves a settled benchmark chat
+    /// with fewer events, which nothing reads any more, and the next pass
+    /// removes the rest.
     pub async fn delete_benchmark_sessions(&self, ids: &[String]) -> Result<PurgeStats, String> {
         let mut stats = PurgeStats::default();
-        if ids.is_empty() {
-            return Ok(stats);
+        for id in ids {
+            stats.add(&self.delete_benchmark_session(id).await?);
         }
-        // Immediate: the checks read and the deletes write in one snapshot.
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(|error| db_error("failed to start benchmark session purge", error))?;
+        Ok(stats)
+    }
+
+    async fn delete_benchmark_session(&self, id: &str) -> Result<PurgeStats, String> {
+        let mut stats = PurgeStats::default();
         let check = format!(
             "SELECT EXISTS(SELECT 1 FROM session_execution_owners o WHERE o.session_id = ? AND {SETTLED_BENCHMARK_OWNER})"
         );
-        for id in ids {
+        loop {
+            // Immediate: the check reads and the deletes write in one
+            // snapshot.
+            let mut tx = self
+                .pool
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(|error| db_error("failed to start benchmark session purge", error))?;
             let settled: bool = sqlx::query_scalar(&check)
                 .bind(id)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|error| db_error("failed to check a benchmark session", error))?;
             if !settled {
-                continue;
+                return Ok(stats);
             }
-            let (events, bytes): (i64, i64) = sqlx::query_as(
-                "SELECT COUNT(*), COALESCE(SUM(LENGTH(payload_json)), 0) FROM session_events WHERE session_id = ?",
+            let removed: Vec<i64> = sqlx::query_scalar(
+                "DELETE FROM session_events WHERE id IN \
+                 (SELECT id FROM session_events WHERE session_id = ? ORDER BY id LIMIT ?) \
+                 RETURNING LENGTH(payload_json)",
             )
             .bind(id)
-            .fetch_one(&mut *tx)
+            .bind(PURGE_EVENTS)
+            .fetch_all(&mut *tx)
             .await
-            .map_err(|error| db_error("failed to measure a benchmark session", error))?;
-            let snapshot: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(LENGTH(snapshot_json), 0) FROM sessions WHERE id = ?",
-            )
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|error| db_error("failed to measure a benchmark session", error))?;
-            for (statement, what) in [
-                (
-                    "DELETE FROM execution_dispatches WHERE session_id = ?",
-                    "turn records",
-                ),
-                (
-                    "DELETE FROM session_execution_owners WHERE session_id = ?",
-                    "owner",
-                ),
-                ("DELETE FROM session_events WHERE session_id = ?", "events"),
-                ("DELETE FROM sessions WHERE id = ?", "session"),
-            ] {
-                sqlx::query(statement)
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|error| {
-                        db_error(
-                            &format!("failed to delete a benchmark session's {what}"),
-                            error,
-                        )
-                    })?;
+            .map_err(|error| db_error("failed to delete a benchmark session's events", error))?;
+            stats.events += removed.len();
+            stats.bytes += removed.iter().sum::<i64>() as usize;
+            let last = (removed.len() as i64) < PURGE_EVENTS;
+            if last {
+                let snapshot: i64 = sqlx::query_scalar(
+                    "SELECT COALESCE(LENGTH(snapshot_json), 0) FROM sessions WHERE id = ?",
+                )
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|error| db_error("failed to measure a benchmark session", error))?;
+                // In the order the foreign keys allow.
+                for (statement, what) in [
+                    (
+                        "DELETE FROM execution_dispatches WHERE session_id = ?",
+                        "turn records",
+                    ),
+                    (
+                        "DELETE FROM session_execution_owners WHERE session_id = ?",
+                        "owner",
+                    ),
+                    ("DELETE FROM sessions WHERE id = ?", "session"),
+                ] {
+                    sqlx::query(statement)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|error| {
+                            db_error(
+                                &format!("failed to delete a benchmark session's {what}"),
+                                error,
+                            )
+                        })?;
+                }
+                stats.sessions = 1;
+                stats.bytes += snapshot as usize;
             }
-            stats.sessions += 1;
-            stats.events += events as usize;
-            stats.bytes += (bytes + snapshot) as usize;
+            tx.commit()
+                .await
+                .map_err(|error| db_error("failed to commit the benchmark session purge", error))?;
+            if last {
+                return Ok(stats);
+            }
         }
-        tx.commit()
-            .await
-            .map_err(|error| db_error("failed to commit the benchmark session purge", error))?;
-        Ok(stats)
     }
 
     /// Append several events of one session in one transaction, in the order
@@ -2896,8 +2925,14 @@ mod tests {
         let asked: Vec<String> = ["finished", "running", "unsent", "task", "ordinary"]
             .map(String::from)
             .to_vec();
+        // One of them holds more events than one transaction removes.
+        let more: Vec<Value> = ["m2", "m3", "m4", "m5"]
+            .map(|message| streamed("finished", message, "hello", "t1"))
+            .to_vec();
+        store.append_events("finished", &more).await.unwrap();
+        assert!(more.len() as i64 > PURGE_EVENTS);
         let purged = store.delete_benchmark_sessions(&asked).await.unwrap();
-        assert_eq!((purged.sessions, purged.events), (2, 2));
+        assert_eq!((purged.sessions, purged.events), (2, 6));
         assert!(purged.bytes > 0);
         for id in ["finished", "unsent"] {
             assert!(store.get_session(id).await.unwrap().is_none(), "{id}");
