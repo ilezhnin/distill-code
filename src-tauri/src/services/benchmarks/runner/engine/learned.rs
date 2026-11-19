@@ -27,7 +27,11 @@ static RUNS: LazyLock<Mutex<HashMap<String, Learned>>> = LazyLock::new(Default::
 /// Reads or changes what `run_id` learned, as one step.
 pub(super) fn of<R>(run_id: &str, with: impl FnOnce(&mut Learned) -> R) -> R {
     let mut runs = RUNS.lock().unwrap_or_else(PoisonError::into_inner);
-    with(runs.entry(run_id.to_owned()).or_default())
+    // Read on every dispatch: a run already known costs no allocation.
+    if !runs.contains_key(run_id) {
+        runs.insert(run_id.to_owned(), Learned::default());
+    }
+    with(runs.get_mut(run_id).expect("the run's entry"))
 }
 
 /// Drops everything `run_id` learned.
