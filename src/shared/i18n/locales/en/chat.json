@@ -608,6 +608,7 @@
       "plan": {
         "title_one": "Plan · {{count}} step",
         "title_other": "Plan · {{count}} steps",
+        "conductorRequired": "This plan won’t run here. Use New conductor in project to run a wave.",
         "writing": "Writing the plan…",
         "unreadable": "Plan could not be read"
       },

@@ -24,6 +24,7 @@ import type {
 
 import {
   findDelegateRequestForTask,
+  getCodexSubagentActivity,
   getSubagentToolCallInfo,
   type SubagentToolCallInfo,
 } from "./subagentToolCalls";
@@ -31,11 +32,8 @@ import {
 /** One in-harness subagent, as far as this turn's tool calls reveal it. */
 export interface HarnessBrigadeEntry {
   /**
-   * Stable identity across re-renders: the tool-call id of the request that
-   * spawned this subagent. Follow-up calls (a Goose `load <task-id>`, a Codex
-   * `wait_agent`) resolve back to that same id instead of minting a new one,
-   * so a name collision between two subagents never merges them and a status
-   * change never re-keys a chip.
+   * Stable identity across re-renders: the original tool-call id or the
+   * Codex thread id. Follow-up events retain the same identity.
    */
   key: string;
   /**
@@ -263,6 +261,38 @@ export function selectHarnessBrigade(
 
   for (const block of content) {
     if (block.type !== "toolRequest") continue;
+    const activity = getCodexSubagentActivity(block.toolName, block.arguments);
+    if (activity) {
+      // A successful ACP tool response acknowledges the event. The event's
+      // kind tells us what happened to the subagent itself.
+      const key = `codex:${activity.threadId}`;
+      if (activity.kind === "interacted") continue;
+      const previous = drafts.get(key);
+      const status = {
+        started: "running",
+        completed: "completed",
+        interrupted: "cancelled",
+      } as const;
+      if (
+        previous &&
+        activity.kind === "started" &&
+        previous.status !== "running"
+      ) {
+        previous.startedAt = block.startedAt;
+      }
+      upsert(
+        drafts,
+        key,
+        {
+          agentName: activity.agentName,
+          label: block.subagentTaskLabel ?? activity.label,
+          startedAt: activity.kind === "started" ? block.startedAt : undefined,
+        },
+        status[activity.kind],
+        block.id,
+      );
+      continue;
+    }
     const info = getSubagentToolCallInfo({
       toolName: block.toolName,
       arguments: block.arguments,

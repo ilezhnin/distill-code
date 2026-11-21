@@ -608,6 +608,7 @@
       "plan": {
         "title_one": "Plan · {{count}} paso",
         "title_other": "Plan · {{count}} pasos",
+        "conductorRequired": "Este plan no se ejecutará aquí. Para iniciar una ola, usa Nuevo conductor en el proyecto.",
         "writing": "Escribiendo el plan…",
         "unreadable": "No se pudo leer el plan"
       },

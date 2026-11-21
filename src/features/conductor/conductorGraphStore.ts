@@ -402,16 +402,16 @@ export function markConductorGraphHydrationFailed(): void {
   releaseGraphHydrationWaiters();
 }
 
-/**
- * Calls `callback` once the folder read has settled — hydrated, or given up
- * on — and immediately when it already has. Never parks a caller forever.
- */
-export function whenConductorGraphHydrated(callback: () => void): void {
+/** Calls `callback` once the folder read settles. Returns a way to unsubscribe. */
+export function whenConductorGraphHydrated(callback: () => void): () => void {
   if (isConductorGraphHydrated() || hasConductorGraphHydrationFailed()) {
     callback();
-    return;
+  } else {
+    graphHydrationWaiters.add(callback);
   }
-  graphHydrationWaiters.add(callback);
+  return () => {
+    graphHydrationWaiters.delete(callback);
+  };
 }
 
 /**

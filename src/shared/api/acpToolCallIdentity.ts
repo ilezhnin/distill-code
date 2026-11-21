@@ -1,6 +1,8 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { isRecord } from "@/shared/lib/isRecord";
 
+export const CODEX_SUBAGENT_ACTIVITY = "codex_subagent_activity";
+
 export interface ToolCallIdentity {
   toolName?: string;
   extensionName?: string;
@@ -41,6 +43,18 @@ export function getToolCallIdentity(update: SessionUpdate): ToolCallIdentity {
     if (isRecord(collaboration) && typeof collaboration.tool === "string") {
       return { toolName: collaboration.tool };
     }
+  }
+
+  const jetbrains = update._meta.jetbrains;
+  if (
+    isRecord(jetbrains) &&
+    isRecord(jetbrains.air) &&
+    jetbrains.air.subagent === true &&
+    "rawInput" in update &&
+    isRecord(update.rawInput) &&
+    typeof update.rawInput.activityKind === "string"
+  ) {
+    return { toolName: CODEX_SUBAGENT_ACTIVITY };
   }
 
   return {};

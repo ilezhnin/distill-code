@@ -11,12 +11,17 @@
  * chips, which is what lets a failure be blamed on the right step.
  */
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { IconListCheck } from "@tabler/icons-react";
 import type { CustomRenderer, CustomRendererProps } from "streamdown";
 
 import { DisclosureLine } from "@/shared/ui/ai-elements/disclosure-line";
+import {
+  isConductorGraphHydrated,
+  useConductorGraphStore,
+  whenConductorGraphHydrated,
+} from "../conductorGraphStore";
 
 import { waveStepAccessKey } from "../flockConductorTranscript";
 import { WAVE_FENCE_TAG, parseWavePlanBody, type WaveStep } from "../flockWave";
@@ -62,9 +67,22 @@ function PlanStep({ step, number }: { step: WaveStep; number: number }) {
   );
 }
 
-function WavePlanRecord({ code, isIncomplete }: CustomRendererProps) {
+function WavePlanRecord({
+  code,
+  isIncomplete,
+  sessionId,
+}: CustomRendererProps & {
+  sessionId?: string;
+}) {
   const { t } = useTranslation("chat");
   const [rawOpen, setRawOpen] = useState(false);
+  const role = useConductorGraphStore((state) =>
+    sessionId ? state.nodesById[sessionId]?.role : undefined,
+  );
+  const graphHydrated = useSyncExternalStore(
+    whenConductorGraphHydrated,
+    isConductorGraphHydrated,
+  );
   if (isIncomplete) {
     return (
       <p className="my-2 flex items-center gap-1.5 text-sm text-muted-foreground">
@@ -96,6 +114,11 @@ function WavePlanRecord({ code, isIncomplete }: CustomRendererProps) {
         <IconListCheck aria-hidden className="size-3.5 shrink-0" />
         {t("conductor.wave.plan.title", { count: plan.steps.length })}
       </p>
+      {sessionId && graphHydrated && role !== "conductor" ? (
+        <p className="text-xs text-muted-foreground">
+          {t("conductor.wave.plan.conductorRequired")}
+        </p>
+      ) : null}
       <ol className="space-y-0.5">
         {numberSteps(plan.steps).map(({ step, number }) => (
           <PlanStep key={number} step={step} number={number} />
@@ -106,7 +129,9 @@ function WavePlanRecord({ code, isIncomplete }: CustomRendererProps) {
 }
 
 /** The fence renderer that draws a `distill-wave` block as its steps. */
-export const wavePlanRenderer: CustomRenderer = {
-  language: WAVE_FENCE_TAG,
-  component: WavePlanRecord,
-};
+export function wavePlanRenderer(sessionId?: string): CustomRenderer {
+  return {
+    language: WAVE_FENCE_TAG,
+    component: (props) => <WavePlanRecord {...props} sessionId={sessionId} />,
+  };
+}

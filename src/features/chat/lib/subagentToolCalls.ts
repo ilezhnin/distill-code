@@ -16,6 +16,7 @@
  * sometimes LLM-rewritten, so classification never keys off the title.
  */
 
+import { CODEX_SUBAGENT_ACTIVITY } from "@/shared/api/acpToolCallIdentity";
 import type { MessageContent } from "@/shared/types/messages";
 
 export type SubagentActivity =
@@ -190,6 +191,30 @@ function soleStringArrayArg(
   return value?.length === 1 ? value[0] : undefined;
 }
 
+export function getCodexSubagentActivity(
+  toolName: string | undefined,
+  args: Record<string, unknown>,
+) {
+  if (toolName !== CODEX_SUBAGENT_ACTIVITY) return undefined;
+  const threadId = stringArg(args, "agentThreadId");
+  const kind = args.activityKind;
+  if (
+    !threadId ||
+    (kind !== "started" &&
+      kind !== "interacted" &&
+      kind !== "completed" &&
+      kind !== "interrupted")
+  )
+    return undefined;
+  const prompt = stringArg(args, "prompt");
+  return {
+    kind,
+    threadId,
+    agentName: stringArg(args, "agentPath")?.split("/").filter(Boolean).at(-1),
+    label: prompt && truncateLabel(prompt),
+  } as const;
+}
+
 export function getSubagentToolCallContext(
   toolName: string | undefined,
   args: Record<string, unknown>,
@@ -210,6 +235,15 @@ export function getSubagentToolCallInfo(input: {
 }): SubagentToolCallInfo | undefined {
   const { toolName, arguments: args } = input;
   if (!toolName) return undefined;
+
+  const activity = getCodexSubagentActivity(toolName, args);
+  if (activity?.kind === "started") {
+    return {
+      activity: "delegating",
+      agentName: activity.agentName,
+      label: activity.label,
+    };
+  }
 
   // Goose: delegate spawns a subagent. Keep the agent (source) and the task
   // (instructions) separate so titles can show both: "Delegating to Rivet ·

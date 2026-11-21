@@ -287,12 +287,12 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
     () =>
       sessionId && sourceMessageId
         ? [
-            wavePlanRenderer,
+            wavePlanRenderer(sessionId),
             roadmapRenderer,
             waveReportRenderer,
             memoryFenceRenderer(sessionId, sourceMessageId),
           ]
-        : [wavePlanRenderer, roadmapRenderer, waveReportRenderer],
+        : [wavePlanRenderer(sessionId), roadmapRenderer, waveReportRenderer],
     [sessionId, sourceMessageId],
   );
   let rowContent: ReactElement;

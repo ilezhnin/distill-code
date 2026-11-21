@@ -4,6 +4,7 @@ import {
   getReplayBuffer,
 } from "@/features/chat/hooks/replayBuffer";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { selectHarnessBrigade } from "@/features/chat/lib/harnessBrigade";
 import { replaceMessagesFromSessionReplay } from "@/features/chat/lib/sessionReplayReplacement";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
@@ -527,6 +528,79 @@ describe("acpNotificationHandler", () => {
       { id: "assistant-replay-1", role: "assistant" },
     ]);
     expect(replayMessages[1].metadata?.delivery).toBeUndefined();
+  });
+
+  it.each([
+    "live",
+    "replay",
+  ] as const)("projects Codex subagent lifecycle events in %s", async (mode) => {
+    const sessionId = "acp-session";
+    registerPreparedSession(sessionId, "codex-acp", "/Users/test");
+    setActiveMessageId(sessionId, "assistant-1");
+    if (mode === "replay") markSessionReplayLoading();
+
+    async function publish(activityKind: string, agentThreadId: string) {
+      const toolCallId = `${activityKind}-${agentThreadId}`;
+      const distill = { assistantMessageId: "assistant-1" };
+      await handleSessionNotification({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId,
+          kind: "other",
+          title: `Subagent ${activityKind}`,
+          status: "in_progress",
+          rawInput: { activityKind, agentThreadId, agentPath: "/root/review" },
+          _meta: {
+            distill,
+            jetbrains: { air: { version: 1, subagent: true } },
+          },
+        },
+      });
+      await handleSessionNotification({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId,
+          status: "completed",
+          _meta: { distill },
+        },
+      });
+    }
+
+    const brigade = () => {
+      const messages =
+        mode === "replay"
+          ? getReplayBuffer(sessionId)
+          : useChatStore.getState().messagesBySession[sessionId];
+      return selectHarnessBrigade({
+        content: messages?.flatMap((message) => message.content) ?? [],
+        turnFinished: false,
+      });
+    };
+
+    await publish("started", "thread-a");
+    await publish("started", "thread-b");
+    expect(brigade()).toMatchObject([
+      { key: "codex:thread-a", name: "review", status: "running" },
+      { key: "codex:thread-b", name: "review", status: "running" },
+    ]);
+
+    await publish("interacted", "thread-a");
+    await publish("completed", "thread-a");
+    await publish("interrupted", "thread-b");
+    expect(brigade()).toMatchObject([
+      {
+        key: "codex:thread-a",
+        status: "completed",
+        latestToolCallId: "completed-thread-a",
+      },
+      {
+        key: "codex:thread-b",
+        status: "cancelled",
+        latestToolCallId: "interrupted-thread-b",
+      },
+    ]);
   });
 
   it("attributes a completed live tool response to the matching request when a sibling is still executing", async () => {
