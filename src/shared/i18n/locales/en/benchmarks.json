@@ -239,7 +239,7 @@
       "advanced": "Advanced"
     },
     "authoredBy": "Authored by",
-    "authoredByHint": "Only an exact provider, model and reasoning-effort match is an author. Its own test still runs, tagged; boards count its speed and cost but not its quality. Leave effort empty only for a model without reasoning.",
+    "authoredByHint": "Only an exact provider, model and reasoning-effort match is an author. Authorship is kept for statistics: the author's own test runs and counts like any other. Leave effort empty only for a model without reasoning.",
     "authorProvider": "Provider ID",
     "authorModel": "Model ID",
     "authorEffort": "Reasoning effort",
@@ -371,7 +371,7 @@
     "selected": "{{selected}} of {{total}} selected",
     "finished": "{{settled}} of {{total}} finished",
     "authored": "Own task",
-    "authoredHint": "This model wrote this test. It runs like any other; the board counts its speed and cost but leaves it out of quality and rank.",
+    "authoredHint": "This model wrote this test. It runs and counts like any other; the tag is kept for statistics.",
     "queued": "Queued",
     "waiting": "Waiting",
     "waitingQuota": "Usage limit, waiting",
@@ -583,7 +583,7 @@
     "repeat": "Repeat {{number}}",
     "title": "Evidence",
     "anonymousReview": "Anonymous review {{id}}",
-    "ownTask": "This model wrote this test. It ran like any other test; boards count its speed and cost but leave it out of quality and rank.",
+    "ownTask": "This model wrote this test. It ran and counts like any other test; the tag is kept for statistics.",
     "anonymousArtifact": "Artifact {{number}}",
     "blindReview": "Model identity, measurements and transcript stay hidden until the rubric review is recorded.",
     "rubric": "Published review rubric",
@@ -948,9 +948,8 @@
     "effortBadge": "Effort: {{level}}",
     "noEffortHint": "Measured without an effort setting. Models that offer no reasoning effort levels run this way.",
     "statusHint": {
-      "preliminary": "Not ranked: the model is not fully tested yet (every measurement-suite case with every repetition), a run shortened a task's time limit, or its suite differs from the ranked models'.",
+      "preliminary": "Not ranked: the model is not fully tested yet (every measurement-suite case with every repetition), or a run shortened a task's time limit.",
       "retrospective": "A retrospective estimate on today's case pool. It has no rank.",
-      "excluded": "This model helped author every current case, so it is not measured.",
       "untested": "No case has run for this model yet."
     }
   },
@@ -967,8 +966,8 @@
     "backfilled_other": "{{count}} cases first measured later",
     "revised_one": "{{count}} case reviewed later",
     "revised_other": "{{count}} cases reviewed later",
-    "ownTests_one": "Includes {{count}} test this model wrote, so these points can differ from its board row, which leaves own tests out of quality.",
-    "ownTests_other": "Includes {{count}} tests this model wrote, so these points can differ from its board row, which leaves own tests out of quality.",
+    "ownTests_one": "{{count}} of these tests was written by this model. It counts like any other.",
+    "ownTests_other": "{{count}} of these tests were written by this model. They count like any other.",
     "chartLabel": "Overall points per measurement",
     "pointLabel": "{{date}}: {{points}} points · {{scored}}/{{planned}} cases",
     "zoom": "Zoom",
@@ -1240,7 +1239,7 @@
       "sameVendor": "A judge from the model's own lab",
       "ownModel": "The model itself on the panel",
       "authorModel": "The case author's model on the panel",
-      "reducedPanel": "Two judges after one failed"
+      "reducedPanel": "Two judges instead of three"
     }
   },
   "runIssues": {

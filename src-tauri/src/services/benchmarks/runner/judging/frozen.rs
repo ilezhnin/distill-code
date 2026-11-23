@@ -17,10 +17,14 @@ fn invalid(message: impl Into<String>) -> BenchmarkError {
     BenchmarkError::new("invalid_judge_panel", message)
 }
 
-/// A frozen panel cannot silently lose a seat, substitute an account or admit
-/// an author of the case. A candidate's own model keeps its seat, its score
-/// diluted by the others and the evaluation marked `ownModel`, as on an
-/// ordinary panel. Absence retains the ordinary discovery behavior.
+/// A frozen panel cannot silently lose a seat or substitute an account. A
+/// candidate's own model keeps its seat, its score diluted by the others and
+/// the evaluation marked `ownModel`, as on an ordinary panel; so does a model
+/// of the case's authors, marked `authorModel`. Whether the seats can give a
+/// balanced score is a separate question ([`unbalanced`]): this reads the
+/// panel a published case declares, and a case published under the earlier
+/// rule keeps the panel its evidence was judged by. Absence retains the
+/// ordinary discovery behavior.
 pub(in crate::services::benchmarks) fn frozen(
     draft: &BenchmarkDraft,
     candidates: &[&Configuration],
@@ -107,12 +111,25 @@ pub(in crate::services::benchmarks) fn frozen(
         }
     }
     // A candidate's own model keeps its seat, marked: see `frozen_seats`.
-    if super::frozen_seats(candidates, draft, panel.judges.clone()).len() != panel.judges.len() {
-        return Err(invalid(
-            "A frozen judge is an author of the case, or a candidate model is unresolved",
-        ));
+    if super::frozen_seats(candidates, panel.judges.clone()).len() != panel.judges.len() {
+        return Err(invalid("A frozen judge or a candidate model is unresolved"));
     }
     Ok(Some(panel.judges))
+}
+
+/// Why the frozen panel a case declares cannot give a balanced score: fewer
+/// than two of its seats are judges that are no model of the case's authors
+/// (see `balanced`). Asked where such a panel is about to judge, and of a
+/// draft before it is published; never of the ordinary panels, which keep
+/// the balance as they are seated. `None` for a case with no frozen panel,
+/// or one this module refuses for another reason.
+pub(in crate::services::benchmarks) fn unbalanced(draft: &BenchmarkDraft) -> Option<String> {
+    let panel = frozen(draft, &[]).ok().flatten()?;
+    (!super::balanced(draft, &panel)).then(|| {
+        "A frozen judge panel needs two judges that are no model of the test's authors; \
+         an author's model may be the third"
+            .into()
+    })
 }
 
 fn identity(judge: &Configuration) -> Value {
@@ -314,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_seats_keep_a_candidates_own_model_and_refuse_authors_unresolved_candidates_duplicates_and_missing_pins(
+    fn frozen_seats_keep_a_candidates_own_model_and_refuse_unbalanced_panels_unresolved_candidates_duplicates_and_missing_pins(
     ) {
         let base = draft();
         assert_eq!(frozen(&base, &[]).unwrap().unwrap().len(), 2);
@@ -335,9 +352,18 @@ mod tests {
         let mut moving = judge("current");
         moving.provider_id = "other-provider".into();
         assert!(frozen(&base, &[&moving]).is_err());
+        // An author's model keeps its frozen seat: the panel is read as
+        // published. Beside one other judge it is unbalanced, which its
+        // judging and a new publication refuse; beside two it is not.
+        assert_eq!(unbalanced(&base), None);
         let mut authored = base.clone();
         authored.environment["authoredBy"] = json!([judge("sonnet")]);
-        assert!(frozen(&authored, &[]).is_err());
+        assert_eq!(frozen(&authored, &[]).unwrap().unwrap().len(), 2);
+        assert!(unbalanced(&authored).is_some());
+        authored.environment["judgePanel"]["judges"] =
+            json!([judge("sonnet"), judge("haiku"), judge("opus[1m]")]);
+        assert_eq!(frozen(&authored, &[]).unwrap().unwrap().len(), 3);
+        assert_eq!(unbalanced(&authored), None);
         let mut duplicate = base.clone();
         duplicate.environment["judgePanel"]["judges"][0] = json!(judge(&concrete));
         assert!(frozen(&duplicate, &[]).is_err());

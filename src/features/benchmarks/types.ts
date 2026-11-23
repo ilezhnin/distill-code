@@ -678,11 +678,9 @@ export interface LeaderboardRow {
   attemptIds: string[];
   /** The attempts whose cases have a score; absent on older snapshots. */
   resultAttemptIds?: string[];
-  /** Attempts on the candidate's own cases, counted for speed and cost only. */
-  ownAttemptIds?: string[];
   /**
-   * Pool cases this candidate helped write. A board leaves them out of
-   * quality, points and rank; a history counts them.
+   * Pool cases this candidate helped write, named for the statistics alone:
+   * their cells count for quality, points and rank like any other.
    */
   ownVersionIds?: string[];
   /** Success per work class of the suite, in the cohort's class order. */

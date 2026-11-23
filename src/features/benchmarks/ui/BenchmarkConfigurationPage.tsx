@@ -172,8 +172,8 @@ export function BenchmarkConfigurationPage({
       }),
     [measurements],
   );
-  // A history compares the model with itself, so it counts the tests the
-  // model wrote, which its board row leaves out of quality.
+  // How many of the tests the model wrote itself: a statistic, shown beside
+  // the points it changes nothing in.
   const ownTests = Math.max(
     0,
     ...measurements.map((entry) => entry.row.ownVersionIds?.length ?? 0),

@@ -702,6 +702,42 @@ fn masks_never_supply_common_coverage_or_false_zero_targets() {
     let mut extra = data.runs[0].request.configurations[0].clone();
     extra.id = "third".into();
     extra.model_id = "third".into();
+    // A third candidate no run planned on the first case: it ran every
+    // other case outside the run's own plan.
+    let first = data.versions[0].id.clone();
+    let existing = data.attempts.clone();
+    for a in existing
+        .into_iter()
+        .filter(|a| a.configuration.model_id == "parser" && a.version_id != first)
+    {
+        let mut a = a;
+        a.id.push_str("-third");
+        a.configuration = extra.clone();
+        a.observed = Some(extra.clone());
+        data.attempts.push(a);
+    }
+    let mut query = request(&data);
+    query.configurations.push(extra.clone());
+    let artifact = fit(&data, query).unwrap();
+    assert_eq!(artifact.model.common_cases, 15);
+    let masked = artifact.snapshot.examples[0]
+        .targets
+        .iter()
+        .find(|t| t.status == "not_planned")
+        .unwrap();
+    assert_eq!(masked.reward, None);
+    assert_eq!(masked.utility, None);
+}
+
+#[test]
+fn an_authors_own_cells_train_a_fit_like_any_other() {
+    // Owner, 11-23: authorship is a statistic. A candidate's cells on the
+    // cases it wrote are training evidence, and a candidate that wrote
+    // every case is fitted on all of them.
+    let mut data = data();
+    let mut extra = data.runs[0].request.configurations[0].clone();
+    extra.id = "third".into();
+    extra.model_id = "third".into();
     data.runs[0].request.configurations.push(extra.clone());
     let existing = data.attempts.clone();
     for a in existing
@@ -714,23 +750,33 @@ fn masks_never_supply_common_coverage_or_false_zero_targets() {
         a.observed = Some(extra.clone());
         data.attempts.push(a);
     }
-    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([extra]);
-    let artifact = fit(&data, request(&data)).unwrap();
-    assert_eq!(artifact.model.common_cases, 15);
-    let excluded = artifact.snapshot.examples[0]
-        .targets
+    let rewards = |data: &QueryData| -> Vec<Vec<(String, Option<f64>)>> {
+        let artifact = fit(data, request(data)).unwrap();
+        assert_eq!(artifact.model.common_cases, 16);
+        artifact
+            .snapshot
+            .examples
+            .iter()
+            .map(|example| {
+                example
+                    .targets
+                    .iter()
+                    .map(|t| (t.status.clone(), t.reward))
+                    .collect()
+            })
+            .collect()
+    };
+    let unsigned = rewards(&data);
+    assert!(unsigned
         .iter()
-        .find(|t| t.status == "authored_by_candidate")
-        .unwrap();
-    assert_eq!(excluded.reward, None);
-    assert_eq!(excluded.utility, None);
+        .flatten()
+        .all(|(status, reward)| status == "observed" && reward.is_some()));
+    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([extra]);
+    assert_eq!(rewards(&data), unsigned);
     for v in &mut data.versions {
         v.manifest.environment["authoredBy"] = serde_json::json!([extra]);
     }
-    assert_eq!(
-        fit(&data, request(&data)).unwrap_err().code,
-        "insufficient_training_evidence"
-    );
+    assert_eq!(rewards(&data), unsigned);
 }
 
 #[test]

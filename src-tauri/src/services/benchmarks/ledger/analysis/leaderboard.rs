@@ -5,15 +5,12 @@ use super::*;
 /// configuration stands on its newest run, whole, so a run is one session of
 /// measurement and no older run fills its gaps; coverage is counted against
 /// the pool, and a rank needs every case complete.
+///
+/// Who wrote a case changes nothing here. A candidate's cells on the cases it
+/// helped author count for quality, points and rank like every other cell;
+/// the row only names those cases (`own_version_ids`), for the statistics
+/// that compare an author with the others (see `home_advantage`).
 pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
-    leaderboard_counting(data, query, OwnCases::QualityExcluded)
-}
-
-pub(super) fn leaderboard_counting(
-    data: &QueryData,
-    query: &ResultQuery,
-    own: OwnCases,
-) -> LeaderboardReport {
     let hidden = query.exclude_judge_flags.as_deref().unwrap_or_default();
     leaderboard_from_attempts(
         data,
@@ -24,7 +21,6 @@ pub(super) fn leaderboard_counting(
             .filter(|attempt| !judge_flagged(attempt, hidden))
             .collect::<Vec<_>>(),
         ranked_pool(data, query),
-        own,
     )
 }
 
@@ -48,10 +44,9 @@ pub(super) fn leaderboard_from_attempts(
     query: &ResultQuery,
     source: &[&Attempt],
     pool: Vec<&BenchmarkVersion>,
-    own: OwnCases,
 ) -> LeaderboardReport {
     let prepared = PreparedMeasurements::new(data, query, &pool);
-    leaderboard_prepared(data, query, source, pool, own, &prepared)
+    leaderboard_prepared(data, query, source, pool, &prepared)
 }
 
 pub(super) fn leaderboard_prepared(
@@ -59,11 +54,10 @@ pub(super) fn leaderboard_prepared(
     query: &ResultQuery,
     source: &[&Attempt],
     pool: Vec<&BenchmarkVersion>,
-    own: OwnCases,
     prepared: &PreparedMeasurements<'_>,
 ) -> LeaderboardReport {
-    let mut report = measurement_report(data, query, source, pool.clone(), false, own, prepared);
-    let models = measurement_report(data, query, source, pool, true, own, prepared);
+    let mut report = measurement_report(data, query, source, pool.clone(), false, prepared);
+    let models = measurement_report(data, query, source, pool, true, prepared);
     report.models = models
         .rows
         .into_iter()
@@ -261,7 +255,6 @@ pub(super) fn measurement_report(
     source: &[&Attempt],
     pool: Vec<&BenchmarkVersion>,
     by_model: bool,
-    own: OwnCases,
     prepared: &PreparedMeasurements<'_>,
 ) -> LeaderboardReport {
     let pool_ids: BTreeSet<&str> = pool.iter().map(|v| v.id.as_str()).collect();
@@ -360,7 +353,7 @@ pub(super) fn measurement_report(
             // Each case stands on its newest scored cell, one run's
             // repetitions, whichever run measured it: runs taken in chunks
             // fill a row together, while a cell never mixes runs.
-            let mut attempts: Vec<&Attempt> =
+            let attempts: Vec<&Attempt> =
                 model_cell_attempts(&by_run, runs, &score, by_model);
             // Keep the newest concrete configuration for the next run;
             // each attempt retains its original runtime and account evidence.
@@ -376,53 +369,30 @@ pub(super) fn measurement_report(
             // As recorded: 0 for as many as admitted, one for a run admitted
             // before it was recorded.
             let parallelism = standing_request.map(|request| request.parallelism.unwrap_or(1));
-            // The candidate's own cases: on a board their cells count for
-            // speed and cost but never for quality, points or a rank.
+            // The candidate's own cases, named for the statistics alone:
+            // their cells count for quality, points and rank like any other.
             let own_version_ids: Vec<String> = pool
                 .iter()
                 .filter(|v| crate::services::benchmarks::routing::authored_by_candidate(&v.manifest, &configuration))
                 .map(|v| v.id.clone())
                 .collect();
-            let counts_own = own == OwnCases::Counted;
-            let eligible: Vec<&BenchmarkVersion> = pool
-                .iter()
-                .copied()
-                .filter(|v| counts_own || !own_version_ids.contains(&v.id))
-                .collect();
-            let excluded = pool.len() as u32 - eligible.len() as u32;
-            // An attempt is an own cell when its requested candidate wrote
-            // the case, the rule its run planned it under.
-            let own_cell = |a: &Attempt| {
-                !counts_own
-                    && (own_version_ids.contains(&a.version_id)
-                        || pool_versions.get(a.version_id.as_str()).is_some_and(|v| {
-                            crate::services::benchmarks::routing::authored_by_candidate(&v.manifest, &a.configuration)
-                        }))
-            };
-            let every_cell = attempts.clone();
-            let own_attempt_ids: Vec<String> = every_cell
-                .iter()
-                .filter(|a| own_cell(a))
-                .map(|a| a.id.clone())
-                .collect();
-            attempts.retain(|a| !own_cell(a));
-            for attempt in &every_cell {
+            for attempt in &attempts {
                 contributing.insert(attempt.run_id.as_str());
             }
-            // Speed and cost read every cell of the sitting, own cases included.
-            let every_cells = case_cells_scored(&every_cell, protocol, &score);
-            let every_scored: Vec<&Attempt> = every_cell
+            let cells = case_cells_scored(&attempts, protocol, &score);
+            // The repetitions the cells are made of: scored ones alone, so a
+            // repetition of a measured case that never ran dates or costs nothing.
+            let scored_attempts: Vec<&Attempt> = attempts
                 .iter()
                 .copied()
                 .filter(|a| score(a).is_some())
                 .collect();
-            let every_scored_versions: BTreeSet<&str> = every_cells.keys().copied().collect();
-            let spent = spent_attempts(&every_cell, &every_scored_versions, &score);
+            let scored_versions: BTreeSet<&str> = cells.keys().copied().collect();
+            let spent = spent_attempts(&attempts, &scored_versions, &score);
             let cost = mean_case_cost(&spent, query.as_of);
             let priced = spent.iter().any(|a| a.usage.cost.is_some());
-            let resources = board_stats(&every_cells, records);
             // Work that never began measured nothing, so it never dates the row.
-            let measured_at = every_scored
+            let measured_at = scored_attempts
                 .iter()
                 .chain(&spent)
                 .flat_map(|a| {
@@ -435,7 +405,7 @@ pub(super) fn measurement_report(
                 })
                 .max();
             let median_duration_ms = median(
-                every_scored
+                scored_attempts
                     .iter()
                     .filter_map(|a| a.duration_ms.map(|v| v as f64))
                     .collect(),
@@ -443,7 +413,7 @@ pub(super) fn measurement_report(
             // Auxiliary model calls inflate the counters and a last request's
             // usage understates its turn; keep the figure pure.
             let median_output_tokens = median(
-                every_scored
+                scored_attempts
                     .iter()
                     .filter(|a| {
                         !has_auxiliary_usage(a)
@@ -452,54 +422,18 @@ pub(super) fn measurement_report(
                     .filter_map(|a| a.usage.output.map(|v| v as f64))
                     .collect(),
             );
-            if eligible.is_empty() {
-                return Some(LeaderboardRow {
-                    comparison_key: String::new(),
-                    configuration, passed: 0, scored: 0, attempted: 0, planned: 0, complete: 0, quality: None,
-                    median_duration_ms, median_output_tokens, cost, priced, measured_at,
-                    points: None, speed_share: resources.speed_share, cost_share: resources.cost_share,
-                    status: "excluded".into(),
-                    reason: format!("{excluded} cases left out of quality: this candidate helped author every case in the pool; their speed and cost still count"),
-                    attempt_ids: Vec::new(),
-                    result_attempt_ids: Vec::new(),
-                    own_attempt_ids,
-                    own_version_ids,
-                    axes: Vec::new(),
-                    missing_version_ids: Vec::new(),
-                    unsupported_version_ids: Vec::new(),
-                    scored_version_ids: Vec::new(),
-                    resolved_models: Vec::new(),
-                    parallelism,
-                    suite_planned: 0,
-                    suite_complete: 0,
-                    complete_version_ids: Vec::new(),
-                    fully_tested_at: None,
-                });
-            }
-            let planned = eligible.len() as u32;
+            let planned = pool.len() as u32;
             let attempted = attempts
                 .iter()
                 .filter(|a| a.started_at.is_some())
                 .map(|a| a.version_id.as_str())
                 .collect::<BTreeSet<_>>()
                 .len() as u32;
-            let cells = case_cells_scored(&attempts, protocol, &score);
-            // The repetitions the cells are made of: scored ones alone, so a
-            // repetition of a measured case that never ran dates or costs nothing.
-            let scored_attempts: Vec<&Attempt> = attempts.iter().copied()
-                .filter(|a| score(a).is_some()).collect();
             let standard_budgets = attempts.iter().all(|a| {
                 pool_versions.get(a.version_id.as_str()).is_some_and(|v|
                     runs[a.run_id.as_str()].request.timeout_seconds >= v.manifest.limits.timeout_seconds)
             });
-            let axes = class_axes(
-                &work_classes,
-                &pool_versions,
-                &eligible,
-                &cells,
-                &every_cells,
-                records,
-            );
+            let axes = class_axes(&work_classes, &pool_versions, &pool, &cells, records);
             let overall = board_stats(&cells, records);
             let measured_axes: Vec<&LeaderboardAxis> =
                 axes.iter().filter(|axis| axis.scored > 0).collect();
@@ -510,10 +444,10 @@ pub(super) fn measurement_report(
             });
             let (passed, scored, quality) = (overall.passed, overall.scored, overall.quality);
             let complete = overall.complete;
-            // The measurement suite: every eligible case. A row is fully
+            // The measurement suite: every case of the pool. A row is fully
             // tested when each has a complete cell; the cell completed when
             // its last scored repetition settled.
-            let suite: Vec<&BenchmarkVersion> = eligible.clone();
+            let suite: &[&BenchmarkVersion] = &pool;
             let suite_planned = suite.len() as u32;
             let complete_version_ids: Vec<String> = suite
                 .iter()
@@ -521,7 +455,7 @@ pub(super) fn measurement_report(
                 .map(|v| v.id.clone())
                 .collect();
             let suite_complete = complete_version_ids.len() as u32;
-            let completions = cell_completions(&by_run, &own_cell, protocol, &score);
+            let completions = cell_completions(&by_run, protocol, &score);
             let suite_cases: Vec<(i64, Vec<i64>)> = suite
                 .iter()
                 .map(|v| {
@@ -537,7 +471,7 @@ pub(super) fn measurement_report(
             // leaves out) is no gap a catch-up fills: asking again would
             // only pay for the same refusal. It is listed apart, for a run
             // the operator asks for.
-            let unscored: Vec<&BenchmarkVersion> = eligible
+            let unscored: Vec<&BenchmarkVersion> = pool
                 .iter()
                 .copied()
                 .filter(|v| !cells.contains_key(v.id.as_str()))
@@ -563,8 +497,8 @@ pub(super) fn measurement_report(
                 priced,
                 measured_at,
                 points,
-                speed_share: resources.speed_share,
-                cost_share: resources.cost_share,
+                speed_share: overall.speed_share,
+                cost_share: overall.cost_share,
                 status: if attempted == 0 {
                     "untested"
                 } else if fully_tested && standard_budgets {
@@ -578,12 +512,10 @@ pub(super) fn measurement_report(
                 reason: format!(
                     "{scored}/{planned} cases measured on the current pool, {complete} with every repetition; {suite_complete}/{suite_planned} measurement-suite cases complete; {}; every repetition must pass{}{}{}",
                     if by_model { "each test uses its newest scored cell across the model's runs" } else { "each test uses its newest scored cell across this configuration's runs" },
-                    if excluded > 0 {
-                        format!("; {excluded} cases authored by this candidate left out of quality, their speed and cost counted")
-                    } else if counts_own && !own_version_ids.is_empty() {
-                        format!("; includes {} cases authored by this candidate", own_version_ids.len())
-                    } else {
+                    if own_version_ids.is_empty() {
                         String::new()
+                    } else {
+                        format!("; includes {} cases authored by this candidate", own_version_ids.len())
                     },
                     if standard_budgets { "" } else { "; a run shortened the published task budget, so no shared rank is assigned" },
                     if set_aside > 0 {
@@ -594,7 +526,6 @@ pub(super) fn measurement_report(
                 ),
                 attempt_ids: attempts.iter().map(|a| a.id.clone()).collect(),
                 result_attempt_ids: scored_attempts.iter().map(|a| a.id.clone()).collect(),
-                own_attempt_ids,
                 own_version_ids,
                 axes,
                 missing_version_ids,
@@ -612,7 +543,7 @@ pub(super) fn measurement_report(
         })
         .collect();
     let cohort = report_cohort(&pool, &contributing, runs, &work_classes);
-    let rows = ranked_page(rows, &pool, own, query);
+    let rows = ranked_page(rows, query);
     LeaderboardReport {
         cohort,
         rows,
@@ -622,14 +553,12 @@ pub(super) fn measurement_report(
 
 /// The boards of a row by class of work. A class board is the mean over its
 /// cases; the row is the mean over its measured class boards, so a class
-/// with many cases does not outweigh a class with few. Speed and cost read
-/// every cell of the sitting (`every_cells`), the candidate's own cases too.
+/// with many cases does not outweigh a class with few.
 fn class_axes(
     work_classes: &[String],
     pool_versions: &BTreeMap<&str, &BenchmarkVersion>,
-    eligible: &[&BenchmarkVersion],
+    suite: &[&BenchmarkVersion],
     cells: &BTreeMap<&str, CaseCell>,
-    every_cells: &BTreeMap<&str, CaseCell>,
     records: &CaseRecords,
 ) -> Vec<LeaderboardAxis> {
     let work_class = |version_id: &str| {
@@ -646,23 +575,17 @@ fn class_axes(
                 .filter(|(version, _)| work_class(version) == class)
                 .map(|(version, cell)| (*version, *cell))
                 .collect();
-            let cases = eligible
+            let cases = suite
                 .iter()
                 .filter(|v| v.manifest.work_class_id == *class)
                 .count() as u32;
             let stats = board_stats(&subset, records);
-            let class_cells: BTreeMap<&str, CaseCell> = every_cells
-                .iter()
-                .filter(|(version, _)| work_class(version) == class)
-                .map(|(version, cell)| (*version, *cell))
-                .collect();
-            let resources = board_stats(&class_cells, records);
             LeaderboardAxis {
                 id: class.clone(),
                 quality: stats.quality,
                 points: stats.points,
-                speed_share: resources.speed_share,
-                cost_share: resources.cost_share,
+                speed_share: stats.speed_share,
+                cost_share: stats.cost_share,
                 passed: stats.passed,
                 scored: stats.scored,
                 planned: cases,
@@ -673,17 +596,16 @@ fn class_axes(
 
 /// Every complete cell a row ever held, by case: one run's repetitions under
 /// one requested configuration, each dated by when its last scored
-/// repetition settled. The candidate's own cells are left out.
+/// repetition settled.
 fn cell_completions<'a>(
     by_run: &BTreeMap<&str, Vec<&'a Attempt>>,
-    own_cell: &dyn Fn(&Attempt) -> bool,
     protocol: CaseProtocol<'_>,
     score: &dyn Fn(&Attempt) -> Option<f64>,
 ) -> BTreeMap<&'a str, Vec<i64>> {
     let mut completions: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
     for list in by_run.values() {
         let mut by_request: BTreeMap<&str, Vec<&Attempt>> = BTreeMap::new();
-        for &attempt in list.iter().filter(|a| !own_cell(a)) {
+        for &attempt in list {
             by_request
                 .entry(attempt.configuration.id.as_str())
                 .or_default()
@@ -747,53 +669,9 @@ fn report_cohort(
     })
 }
 
-/// The rows in rank order, one page of them, with the shared rank kept for
-/// one measurement suite only.
-fn ranked_page(
-    mut rows: Vec<LeaderboardRow>,
-    pool: &[&BenchmarkVersion],
-    own: OwnCases,
-    query: &ResultQuery,
-) -> Vec<LeaderboardRow> {
-    // Author exclusions can produce different measurement suites. One
-    // reference suite keeps the shared rank: the whole suite when a comparable
-    // row covers it, else the suite most comparable rows share (then the
-    // larger, then the first by id). Only the rows whose suite differs lose
-    // the rank.
-    let suite_of = |row: &LeaderboardRow| -> Vec<String> {
-        pool.iter()
-            .filter(|v| own == OwnCases::Counted || !row.own_version_ids.contains(&v.id))
-            .map(|v| v.id.clone())
-            .collect()
-    };
-    let suites: Vec<Vec<String>> = rows.iter().map(suite_of).collect();
-    let mut ranked_sets: BTreeMap<&Vec<String>, usize> = BTreeMap::new();
-    for (row, suite) in rows.iter().zip(&suites) {
-        if row.status == "comparable" {
-            *ranked_sets.entry(suite).or_default() += 1;
-        }
-    }
-    let full_suite: Vec<String> = pool.iter().map(|v| v.id.clone()).collect();
-    let reference = if ranked_sets.contains_key(&full_suite) {
-        Some(full_suite)
-    } else {
-        ranked_sets
-            .iter()
-            .max_by(|(a, x), (b, y)| x.cmp(y).then(a.len().cmp(&b.len())).then(b.cmp(a)))
-            .map(|(set, _)| (*set).clone())
-    };
-    if let Some(reference) = reference {
-        for (row, _) in rows
-            .iter_mut()
-            .zip(&suites)
-            .filter(|(r, suite)| r.status == "comparable" && **suite != reference)
-        {
-            row.status = "preliminary".into();
-            row.reason.push_str(
-                "; this candidate's eligible case set differs from the ranked pool, so no shared rank is assigned",
-            );
-        }
-    }
+/// The rows in rank order, one page of them. Every row is measured on the
+/// same suite, the whole pool, so every fully tested row shares one rank.
+fn ranked_page(mut rows: Vec<LeaderboardRow>, query: &ResultQuery) -> Vec<LeaderboardRow> {
     rows.sort_by(|a, b| {
         (b.status == "comparable")
             .cmp(&(a.status == "comparable"))

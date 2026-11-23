@@ -800,8 +800,8 @@ workflow campaigns; the fitting service normalizes evidence keys separately.
 For objective single-step tasks, the planned candidate count is
 `eligible versions x selected models x repetitions`. Each model's internal runtime
 configurations cover their matching tests without multiplying the cases. A
-candidate's own tests are planned too; a run admitted before that rule (no `authorPolicy`) leaves
-them out. Workflow steps and rubric judges add calls; use
+candidate's own tests are planned and count like any other; a run admitted
+before they were planned (no `authorPolicy`) leaves them out. Workflow steps and rubric judges add calls; use
 `benchmark_preview_run` and its `executionCount` instead of relying on the simple
 formula. Qualification-control counts, candidate calls and judge calls are
 different quantities and should be reported separately.
@@ -852,6 +852,8 @@ and any completed votes and the sealed candidate answer stay in the same batch.
 Paid or uncertain requests and invalid score sheets are not retried by this
 setup recovery: an ordinary panel moves that seat to another calibrated judge,
 or goes on with two judges, marked `reducedPanel`, when nobody can take it.
+A panel that starts with two judges, no third being eligible, carries the same
+mark. Either way two judges must be no model of the case's authors.
 Frozen runtime mismatches stop qualification and preregistered
 workflow panels, with a specific refusal instead of only missing scores.
 

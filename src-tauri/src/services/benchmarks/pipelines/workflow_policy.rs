@@ -184,10 +184,10 @@ impl WorkflowPolicy {
                     || step_classes(&v.manifest)
                         .iter()
                         .any(|class| !models.contains_key(class))
-                    || self.candidates.iter().any(|c| {
-                        c.execution_profile != v.manifest.execution_profile
-                            || routing::authored_by_candidate(&v.manifest, c)
-                    })
+                    || self
+                        .candidates
+                        .iter()
+                        .any(|c| c.execution_profile != v.manifest.execution_profile)
             })
         {
             return Err(invalid("Workflow research requires a stored fit, its exact candidate runtimes, complete preference order, bounded workflow roots and one serial policy column"));

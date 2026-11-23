@@ -825,59 +825,65 @@ fn the_tracker_tells_discriminating_flaky_and_smoke_cases_apart() {
     assert!(!of("v3").smoke);
 }
 #[test]
-fn authored_cases_leave_quality_but_count_for_speed_and_cost() {
+fn who_wrote_a_case_changes_nothing_a_board_counts() {
+    // Owner, 11-23: authorship is a statistic. A candidate's cells on the
+    // cases it wrote count for quality, points and rank like any other, and
+    // the row only names those cases.
     let mut data = dataset();
     let query = ResultQuery::default();
-    assert_eq!(leaderboard(&data, &query).rows[0].status, "comparable");
-    data.versions[0].manifest.environment["authoredBy"] =
-        serde_json::json!([data.runs[0].request.configurations[0]]);
-    // The own case is the only one the standing run solved, and it ran
-    // with known spend.
+    // The case the candidate will have written is the only one its standing
+    // run solved, and it ran with known spend.
     for attempt in &mut data.attempts {
         attempt.usage.cost = Some(if attempt.version_id == "v0" { 3.0 } else { 1.0 });
         if attempt.id == "after-v0" {
             attempt.outcome = Some("pass".into());
         }
     }
-    let row = &leaderboard(&data, &query).rows[0];
-    assert_eq!(row.planned, 5);
+    let author = data.runs[0].request.configurations[0].clone();
+    // What a row counts: everything but the names of its candidate's own
+    // cases and the sentence that mentions them.
+    let counted = |row: &LeaderboardRow| {
+        let mut value = serde_json::to_value(row).unwrap();
+        value["ownVersionIds"] = serde_json::json!([]);
+        value["reason"] = serde_json::json!("");
+        value
+    };
+    let unsigned = leaderboard(&data, &query).rows.remove(0);
+    assert_eq!(unsigned.status, "comparable");
+    assert_eq!((unsigned.planned, unsigned.passed), (6, 1));
+    assert!(unsigned.own_version_ids.is_empty());
+
+    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([author]);
+    let row = leaderboard(&data, &query).rows.remove(0);
+    assert_eq!(row.own_version_ids, vec!["v0"]);
     assert!(row
         .reason
-        .contains("1 cases authored by this candidate left out of quality"));
-    assert!(!row.attempt_ids.contains(&"after-v0".to_string()));
-    assert_eq!(row.own_attempt_ids, vec!["after-v0"]);
-    assert_eq!(row.own_version_ids, vec!["v0"]);
-    assert_eq!(row.scored_version_ids, vec!["v1", "v2", "v3", "v4", "v5"]);
-    assert_eq!((row.passed, row.quality), (0, Some(0.0)));
-    // Speed and cost read the own cell too.
-    assert_eq!(row.speed_share, Some(1.0));
-    assert_eq!(row.cost, Some(8.0 / 6.0));
-    assert_eq!(row.axes[0].speed_share, Some(1.0));
-    // A history compares the model with itself and counts the own case.
-    let configuration = data.runs[0].request.configurations[0].clone();
-    let points = history(&data, &configuration);
+        .contains("includes 1 cases authored by this candidate"));
+    assert!(row.attempt_ids.contains(&"after-v0".to_string()));
+    assert!(row.scored_version_ids.contains(&"v0".to_string()));
+    assert_eq!(row.status, "comparable");
+    assert_eq!(counted(&row), counted(&unsigned));
+    // A history reads the same board.
+    let points = history(&data, &author);
     let newest = points.last().unwrap();
-    let counted = newest
+    let dated = newest
         .report
         .rows
         .iter()
-        .find(|r| leaderboard_key(&r.configuration) == leaderboard_key(&configuration))
+        .find(|r| leaderboard_key(&r.configuration) == leaderboard_key(&author))
         .unwrap();
-    assert_eq!(counted.planned, 6);
-    assert!(counted.scored_version_ids.contains(&"v0".to_string()));
-    assert_eq!(counted.own_version_ids, vec!["v0"]);
-    assert!(counted.own_attempt_ids.is_empty());
-    assert_eq!(counted.passed, 1);
+    assert_eq!((dated.planned, dated.passed), (6, 1));
+    assert_eq!(dated.own_version_ids, vec!["v0"]);
+
+    // A candidate that wrote every case of the pool is measured on all of
+    // them, and ranks.
     for version in &mut data.versions {
-        version.manifest.environment["authoredBy"] =
-            serde_json::json!([data.runs[0].request.configurations[0]]);
+        version.manifest.environment["authoredBy"] = serde_json::json!([author]);
     }
     let report = leaderboard(&data, &query);
-    assert_eq!(report.rows[0].status, "excluded");
-    assert_eq!(report.rows[0].quality, None);
-    assert!(report.rows[0].scored_version_ids.is_empty());
-    assert_eq!(report.rows[0].median_duration_ms, Some(100.0));
-    assert_eq!(report.rows[0].own_attempt_ids.len(), 6);
+    assert_eq!(report.rows[0].status, "comparable");
+    assert_eq!(report.rows[0].own_version_ids.len(), 6);
+    assert_eq!(counted(&report.rows[0]), counted(&unsigned));
     assert!(report.cohort.is_some());
 }
 /// A cell is one sitting: each case stands on its newest scored cell,

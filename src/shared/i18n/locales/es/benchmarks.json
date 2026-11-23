@@ -239,7 +239,7 @@
       "advanced": "Avanzado"
     },
     "authoredBy": "Autoría",
-    "authoredByHint": "Solo una coincidencia exacta de proveedor, modelo y esfuerzo de razonamiento es autora. Su propia prueba se ejecuta igualmente, marcada; las tablas cuentan su velocidad y su coste, pero no su calidad. Dejar el esfuerzo vacío solo para modelos sin razonamiento.",
+    "authoredByHint": "Solo una coincidencia exacta de proveedor, modelo y esfuerzo de razonamiento es autora. La autoría se guarda para las estadísticas: la prueba propia se ejecuta y cuenta como cualquier otra. Dejar el esfuerzo vacío solo para modelos sin razonamiento.",
     "authorProvider": "ID del proveedor",
     "authorModel": "ID del modelo",
     "authorEffort": "Esfuerzo de razonamiento",
@@ -371,7 +371,7 @@
     "selected": "{{selected}} de {{total}} seleccionadas",
     "finished": "{{settled}} de {{total}} terminadas",
     "authored": "Tarea propia",
-    "authoredHint": "Este modelo escribió esta prueba. Se ejecuta como cualquier otra; la tabla cuenta su velocidad y su coste, pero la excluye de la calidad y del puesto.",
+    "authoredHint": "Este modelo escribió esta prueba. Se ejecuta y cuenta como cualquier otra; la marca se guarda para las estadísticas.",
     "queued": "En cola",
     "waiting": "En espera",
     "waitingQuota": "Límite de uso, en espera",
@@ -583,7 +583,7 @@
     "repeat": "Repetición {{number}}",
     "title": "Evidencia",
     "anonymousReview": "Revisión anónima {{id}}",
-    "ownTask": "Este modelo escribió esta prueba. Se ejecutó como cualquier otra; las tablas cuentan su velocidad y su coste, pero la excluyen de la calidad y del puesto.",
+    "ownTask": "Este modelo escribió esta prueba. Se ejecutó y cuenta como cualquier otra; la marca se guarda para las estadísticas.",
     "anonymousArtifact": "Artefacto {{number}}",
     "blindReview": "La identidad del modelo, las mediciones y la transcripción permanecen ocultas hasta registrar la revisión con rúbrica.",
     "rubric": "Rúbrica de revisión publicada",
@@ -948,9 +948,8 @@
     "effortBadge": "Esfuerzo: {{level}}",
     "noEffortHint": "Medido sin ajuste de esfuerzo. Los modelos que no ofrecen niveles de esfuerzo de razonamiento se ejecutan así.",
     "statusHint": {
-      "preliminary": "Sin posición: el modelo aún no está probado por completo (cada caso del conjunto de medición con todas las repeticiones), una ejecución acortó el límite de tiempo de una tarea o su conjunto difiere del de los modelos clasificados.",
+      "preliminary": "Sin posición: el modelo aún no está probado por completo (cada caso del conjunto de medición con todas las repeticiones), o una ejecución acortó el límite de tiempo de una tarea.",
       "retrospective": "Una estimación retrospectiva sobre el conjunto actual de casos. No tiene posición.",
-      "excluded": "Este modelo ayudó a crear todos los casos actuales, así que no se mide.",
       "untested": "Aún no se ha ejecutado ningún caso con este modelo."
     }
   },
@@ -967,8 +966,8 @@
     "backfilled_other": "{{count}} casos medidos por primera vez después",
     "revised_one": "{{count}} caso revisado después",
     "revised_other": "{{count}} casos revisados después",
-    "ownTests_one": "Incluye {{count}} prueba escrita por este modelo, así que estos puntos pueden diferir de su fila en la tabla, que excluye sus propias pruebas de la calidad.",
-    "ownTests_other": "Incluye {{count}} pruebas escritas por este modelo, así que estos puntos pueden diferir de su fila en la tabla, que excluye sus propias pruebas de la calidad.",
+    "ownTests_one": "{{count}} de estas pruebas la escribió este modelo. Cuenta como cualquier otra.",
+    "ownTests_other": "{{count}} de estas pruebas las escribió este modelo. Cuentan como cualquier otra.",
     "chartLabel": "Puntos globales por medición",
     "pointLabel": "{{date}}: {{points}} puntos · {{scored}}/{{planned}} casos",
     "zoom": "Zoom",
@@ -1240,7 +1239,7 @@
       "sameVendor": "Un juez del propio laboratorio del modelo",
       "ownModel": "El propio modelo en el panel",
       "authorModel": "El modelo autor del caso en el panel",
-      "reducedPanel": "Dos jueces tras fallar uno"
+      "reducedPanel": "Dos jueces en lugar de tres"
     }
   },
   "runIssues": {

@@ -945,8 +945,9 @@ pub struct ResultQuery {
     pub offset: Option<u32>,
     pub limit: Option<u32>,
     /// Judge panel marks (`sameVendor`, `ownModel`, `authorModel`,
-    /// `reducedPanel`) whose scores a board leaves out: an attempt judged by
-    /// a panel carrying one of them counts as unmeasured there.
+    /// `reducedPanel`) whose scores a board leaves out when its reader asks:
+    /// an attempt judged by a panel carrying one of them counts as
+    /// unmeasured there. No mark is left out unasked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_judge_flags: Option<Vec<String>>,
 }
@@ -994,12 +995,8 @@ pub struct LeaderboardRow {
     /// measured, without the cells kept only for their spend.
     #[serde(default)]
     pub result_attempt_ids: Vec<String>,
-    /// Attempts on the candidate's own cases that the row counts for speed
-    /// and cost only, apart from `attempt_ids`.
-    #[serde(default)]
-    pub own_attempt_ids: Vec<String>,
-    /// Pool cases this candidate helped author. A board leaves them out of
-    /// quality, points and rank; a history counts them.
+    /// Pool cases this candidate helped author, named for the statistics
+    /// alone: their cells count like any other.
     #[serde(default)]
     pub own_version_ids: Vec<String>,
     /// Success per work class of the suite, in the cohort's class order.
@@ -1022,8 +1019,8 @@ pub struct LeaderboardRow {
     /// before that was recorded).
     #[serde(default)]
     pub parallelism: Option<u32>,
-    /// Cases of the measurement suite this row is measured on: its eligible
-    /// pool cases without the ones an evaluation holds back.
+    /// Cases of the measurement suite this row is measured on: the pool's
+    /// cases without the ones an evaluation holds back.
     #[serde(default)]
     pub suite_planned: u32,
     /// Suite cases whose cell holds every repetition it requires. A row is
@@ -1386,6 +1383,10 @@ pub(crate) const MIN_JUDGES: usize = 2;
 
 /// Most judges on one panel; plan admission reserves this many calls.
 pub(crate) const MAX_JUDGES: usize = 3;
+/// How many seats of a panel must be judges that are no model of the case's
+/// authors, so the author's own reading never carries a verdict: an author's
+/// model may take a seat, the third, beside two others (owner, 11-23).
+pub(crate) const MIN_OTHER_JUDGES: usize = 2;
 
 /// A rendering whose panel a pause or busy judges held back: its generation
 /// is sealed and the run asks the panel before any new generation.

@@ -1019,14 +1019,16 @@ pub(super) fn history_preparation_fixtures() -> Vec<(&'static str, QueryData)> {
 
 /// Full serialized references captured before sharing peer preparation. These
 /// cover both series, every peer row, ranking, cost, protocol and evidence ID.
+/// Taken again when a row stopped carrying `ownAttemptIds` (11-23): with the
+/// field put back, empty, each output hashed to its earlier reference.
 #[test]
 fn history_peer_preparation_preserves_complete_reference_outputs() {
     let expected = [
-        "d4ab045398bf372d7043f22d8e1101fae2c50b9ff68240d460cc632ce3f60ca2",
-        "d42bbab91dd0b48562df5c47ea7e8b06ce19f56d3330a09510529fccee60c7e8",
-        "72ab62f6bb4ac7b499518d5c771d258258e6dd1123eeff740bf97fe635253b55",
-        "77c39918263fd7c5f2dc4c15823c6a52140ab42d6f06e999e668af5fe782b5b7",
-        "70480e9152b91d8832a475372734d48c79c257a5e79249d6f923d1b5ddc175dc",
+        "ac293cb752d5abdac8aa705ddb95cf5ce574bcb7872fbff0b330265b4b65ce30",
+        "31661f20d762698b1b60d53638743b7944ff27c4ed12de06d308c19e41480320",
+        "8835c877f4b585564ea73144429c986e09d30eeb74547daa2dbdaf65c93c7e52",
+        "6851a9de14770eca5d0e3b77379874a2ca7c612cce5da8ec22d8dfad3e4e2eb1",
+        "844b3f42fa5d67eac92d5537ae9c80fe1117782c5d4b4c6168e62d16f4f8ba3a",
     ];
     for ((name, data), expected) in history_preparation_fixtures().into_iter().zip(expected) {
         let configurations: BTreeMap<_, _> = data
@@ -1271,63 +1273,42 @@ fn a_shortened_task_budget_withholds_the_rank() {
 }
 
 #[test]
-fn only_a_candidate_with_a_different_eligible_set_loses_its_rank() {
+fn candidates_that_wrote_cases_rank_on_the_whole_pool_like_the_others() {
+    // 11-23: two fully tested models sat at the foot of the board with a
+    // dash for a rank, their points counted on a smaller suite than
+    // everybody else's, because they had written some of the pool's cases.
+    // Authorship is a statistic: every row is measured on the whole pool.
     let mut data = before_only();
+    add_candidate(&mut data, "model-b");
     add_candidate(&mut data, "other");
     for a in &mut data.attempts {
         a.usage.output = Some(100);
         a.usage.cost = Some(1.0);
     }
-    let rows = leaderboard(&data, &ResultQuery::default()).rows;
-    assert!(rows.iter().all(|r| r.status == "comparable"));
-    // The first candidate helped author v0, so it answers five cases.
-    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([{"providerId":"claude","modelId":"model","effort":"medium"},{"providerId":"claude","modelId":"model-b","effort":"medium"}]);
-    let rows = leaderboard(&data, &ResultQuery::default()).rows;
-    let row = |model: &str| {
-        rows.iter()
-            .find(|r| r.configuration.model_id == model)
-            .unwrap()
-    };
-    let (author, other) = (row("model"), row("other"));
-    assert_eq!((other.scored, other.planned), (6, 6));
-    assert_eq!(other.status, "comparable");
-    assert_eq!(
-        (other.speed_share, other.cost_share),
-        (Some(1.0), Some(1.0))
-    );
-    assert_eq!((author.scored, author.planned), (5, 5));
-    assert_eq!(author.status, "preliminary");
-    assert!(author
-        .reason
-        .contains("eligible case set differs from the ranked pool"));
-    // The unranked row is still scored against the record.
-    assert_eq!(author.speed_share, Some(1.0));
-}
-
-#[test]
-fn without_a_full_pool_row_the_most_shared_eligible_set_keeps_the_rank() {
-    let mut data = before_only();
-    add_candidate(&mut data, "model-b");
-    add_candidate(&mut data, "other");
-    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([{"providerId":"claude","modelId":"model","effort":"medium"},{"providerId":"claude","modelId":"model-b","effort":"medium"}]);
-    data.versions[1].manifest.environment["authoredBy"] =
-        serde_json::json!([{"providerId":"claude","modelId":"other","effort":"medium"}]);
-    let status = |data: &QueryData| {
+    let board = |data: &QueryData| {
         leaderboard(data, &ResultQuery::default())
             .rows
             .into_iter()
-            .map(|r| (r.configuration.model_id, r.status))
+            .map(|r| {
+                (
+                    r.configuration.model_id.clone(),
+                    (r.status, r.scored, r.planned, r.suite_planned, r.points),
+                )
+            })
             .collect::<BTreeMap<_, _>>()
     };
-    let ranked = status(&data);
-    assert_eq!(ranked["model"], "comparable");
-    assert_eq!(ranked["model-b"], "comparable");
-    assert_eq!(ranked["other"], "preliminary");
-    // A tie goes to the larger set, then to the first set by case id.
-    data.attempts.retain(|a| !a.id.starts_with("model-b-"));
-    let ranked = status(&data);
-    assert_eq!(ranked["other"], "comparable");
-    assert_eq!(ranked["model"], "preliminary");
+    let unsigned = board(&data);
+    assert_eq!(unsigned.len(), 3);
+    assert!(unsigned
+        .values()
+        .all(|(status, scored, planned, suite, _)| status == "comparable"
+            && (*scored, *planned, *suite) == (6, 6, 6)));
+    data.versions[0].manifest.environment["authoredBy"] = serde_json::json!([{"providerId":"claude","modelId":"model","effort":"medium"},{"providerId":"claude","modelId":"model-b","effort":"medium"}]);
+    data.versions[1].manifest.environment["authoredBy"] =
+        serde_json::json!([{"providerId":"claude","modelId":"other","effort":"medium"}]);
+    assert_eq!(board(&data), unsigned);
+    let rows = leaderboard(&data, &ResultQuery::default()).rows;
+    assert!(rows.iter().all(|r| r.own_version_ids.len() == 1));
 }
 
 #[test]

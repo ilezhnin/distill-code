@@ -131,18 +131,18 @@ Legacy string tags are provenance, not wildcard matches; convert them using
 the original authoring evidence before publishing. Preserve unresolved tags
 in `environment.legacyAuthoredBy` rather than guessing a model or effort.
 
-An author's own test is planned, run, evaluated and stored like any other
-cell and labeled as its own. Each analysis decides what the cell counts for:
+Authorship is a statistic. An author's own test is planned, run, evaluated
+and stored like any other cell, and counts like any other cell: for quality,
+points and rank on the boards, in the design gallery, as routing evidence, in
+the training ledger and learned fits, in held-out reports and certificates,
+and in workflow policies. The cell is labeled as its author's own
+(`authoredByCandidate` in exports, the Own task tag in the app), and the label
+changes no number.
 
-- Quality, points and ranks on the boards, the design gallery, routing
-  evidence, learned fits, held-out reports and workflow policies leave own
-  cells out. An author cannot write a test that probes its own blind spots,
-  and a rubric can favor the author's style.
-- Speed and cost shares, each test's speed and cost record, and a row's
-  duration and spend count own cells.
-- A model's history compares the model with itself, so its points count the
-  tests it wrote; the model page says so under the chart.
-- An author never takes a judge seat on its own test.
+One condition concerns the judges of a rubric test, not its candidates: a
+panel needs at least two judges that are no model of the test's authors, so
+the score is balanced. The author's model may take a seat beside them, the
+third; see the judge panel rules below.
 
 `benchmark_get_home_advantage` reports, for each author identity, its quality,
 speed and cost relative to the non-author candidates on the tests it wrote,
@@ -150,8 +150,8 @@ against the same relative measure on other authors' tests (recipe
 `author-home-advantage-v1`). Only complete cells count, related tests are
 resampled together as one group, and fewer than two independent groups on
 either side give an estimate without an interval. Speed and cost compare as
-logarithms of ratios, across admission bands. Use the report before deciding whether own cells may
-enter quality or training; the defaults above do not change on their own.
+logarithms of ratios, across admission bands. The report is where authorship
+is read: it describes a home advantage and takes nothing off a board.
 
 The editor offers Training and Held-out evaluation. Development remains a
 legacy data value for historical diagnostics, not a choice for new tests.
@@ -356,15 +356,17 @@ the model draws on, the last good read when the current one fails), up to three
 candidate's own lab, or the candidate's own model, may sit, its score diluted
 by the other labs', and the rendering evaluation is marked `sameVendor` or
 `ownModel` (aliases and context window variants resolved, so `opus[1m]` is
-`opus`) so boards can show or leave out those scores. The exact configuration
-that authored the case never judges it (provider, model and effort, as for
-candidates): an author's lab with no other calibrated judge leaves the panel to
-the other labs, and a panel with the model of an exact author at another effort
-is marked `authorModel`. With fewer than three labs offered, other distinct
+`opus`) so boards can show or leave out those scores. Who wrote the case keeps
+nobody from judging it, on one condition: at least two judges of the panel are
+no model of the case's authors (provider and concrete model, whatever the
+effort), so the score is balanced. The author's model takes one seat at most,
+and only beside two such judges; its panel is marked `authorModel`. With one
+other judge offered the author's model takes no seat, and the rendering waits
+for a second. With fewer than three labs offered, other distinct
 calibrated models of the seated labs fill the panel to three when available.
-Two eligible models can still judge when no third model is eligible; with fewer
-than two judges a rendering stays unjudged (pending review, with the panel's
-reason). Each seat
+Two eligible models can still judge when no third model is eligible, and the
+evaluation is marked `reducedPanel`; with fewer than two judges a rendering
+stays unjudged (pending review, with the panel's reason). Each seat
 runs at its entry's effort, which its account must offer, and a judge turn has
 ten minutes for its sheet (Grok 4.7 high takes two to three). The ordinary panel's
 recipe (`three-lab-v1`) and the labs it seated enter its protocol and its hash,
@@ -387,8 +389,8 @@ ordinary panel that fails on its own (no score sheet that can be read, a
 request its provider refused, a selection its runtime would not take) gives its
 seat to another calibrated judge, and its run asks again by itself. When
 nobody can take the seat, the panel settles with the judges it has while two
-remain, and its evaluation is marked `reducedPanel` so boards can show or
-leave out those scores. A usage limit still waits for its reset, an abstention
+remain that are no model of the case's authors, and its evaluation is marked
+`reducedPanel` so boards can show or leave out those scores. A usage limit still waits for its reset, an abstention
 on unresolved critical checks is still a verdict, and a turn an interruption
 cut off asks the same judge again. Waiting answers take
 turns by their last scheduling opportunity, and a selected panel reserves preparation
@@ -480,11 +482,15 @@ in `environment.judgePanel`, with `recipe: "frozen-native-panel-v1"` and a
 `judges` array of two or three complete
 configurations. Each seat pins its account, model, effort, fast mode, billing
 mode, native text profile and inventory revision. The rubric needs 1-32 distinct
-criteria with finite positive weights. An exact author of the case cannot
-occupy a seat. A candidate's own model keeps its seat, since the panel never
-changes: the other seats dilute its score and the evaluation is marked
-`ownModel` (and `sameVendor` or `authorModel`), as on an ordinary panel, so
-boards can show or leave those scores out. A null effort is allowed only when the model offers no effort
+criteria with finite positive weights. A model of the case's authors may
+occupy a seat while two seats are no author's model. A draft whose panel does
+not keep those two is not published, and such a panel of a case published
+earlier judges nothing (no qualification, no preregistered research); the
+case's ordinary runs are judged by the ordinary panels as before. A
+candidate's own model keeps its seat, since the
+panel never changes: the other seats dilute its score and the evaluation is
+marked `ownModel` (and `sameVendor` or `authorModel`), as on an ordinary
+panel, so boards can show or leave those scores out. A null effort is allowed only when the model offers no effort
 selection; it never means a moving default. Fast mode is always pinned off:
 no benchmark candidate, judge or campaign lane may ask for it, and a session
 that acknowledges no fast mode (a model without one, such as Sonnet) counts
@@ -647,8 +653,8 @@ cells are required for supported comparisons; absent usage remains unknown.
 
 Exports contain public decision features, pseudonymous candidate/account
 identities and separately labeled outcomes. An author's own cell carries
-`authoredByCandidate`, keeps `reward` empty and reports its measured score as
-`authoredReward`; the training ledger keeps it masked and unowed. Protected
+`authoredByCandidate` and is otherwise a cell like any other: owed, observed
+and rewarded with its measured score. Protected
 evaluator contents are not inference features. Held-out data requires explicit
 export scope. Export files remain private local artifacts even when their schema
 is documented publicly.

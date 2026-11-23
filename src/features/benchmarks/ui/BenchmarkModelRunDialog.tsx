@@ -234,8 +234,8 @@ export function BenchmarkModelRunDialog({
   const name = modelDisplayName(configuration);
   const effort = explicitEffort(configuration.effort);
   // Frozen leaderboard releases remain readable; new runs use current tests.
-  // A test this model wrote runs too, tagged: the board counts only its
-  // speed and cost.
+  // A test this model wrote is one of them, tagged for the statistics: the
+  // board owes and counts it like any other.
   const { eligible, own } = useMemo(() => {
     const current = currentVersions(definitions)
       .filter((version) => isRankedSplit(version.manifest.split))
@@ -393,12 +393,9 @@ export function BenchmarkModelRunDialog({
     placeholderData: keepPreviousData,
     enabled: attemptIds.length > 0,
   });
-  // The result each test stands at on the leaderboard, own tests included,
-  // shown until a run reports a newer one.
-  const standingIds = useMemo(
-    () => [...row.attemptIds, ...(row.ownAttemptIds ?? [])],
-    [row.attemptIds, row.ownAttemptIds],
-  );
+  // The result each test stands at on the leaderboard, shown until a run
+  // reports a newer one.
+  const standingIds = row.attemptIds;
   const standingAttempts = useQuery({
     queryKey: [
       ...benchmarkKeys,
@@ -531,10 +528,10 @@ export function BenchmarkModelRunDialog({
       ),
     [row.completeVersionIds, standing],
   );
-  // A test the model wrote is no case of its board: listed and runnable for
-  // its speed and cost, never owed.
+  // Every current test the board has no complete cell for, the ones the
+  // model wrote among them: a row ranks on the whole pool.
   const owedOnBoard = eligible.filter(
-    (version) => !measuredOnBoard.has(version.id) && !own.has(version.id),
+    (version) => !measuredOnBoard.has(version.id),
   );
   // The run was planned on a runtime the inventory no longer lists (an
   // older sandbox or CLI): the runner refuses every further test of it.
@@ -598,8 +595,7 @@ export function BenchmarkModelRunDialog({
   // What a test the run does not hold yet starts as: checked only while the
   // board owes it.
   const chosenByDefault = (versionId: string) =>
-    overrides.get(versionId) ??
-    (!measuredOnBoard.has(versionId) && !own.has(versionId));
+    overrides.get(versionId) ?? !measuredOnBoard.has(versionId);
   const locked = runActive && !over;
   const isChecked = (versionId: string) => {
     if (!following) return chosenByDefault(versionId);

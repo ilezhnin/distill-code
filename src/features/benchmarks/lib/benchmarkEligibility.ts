@@ -6,8 +6,8 @@ import type { Configuration, Evaluation } from "../types";
 
 /**
  * Whether a candidate helped write a case. Authors in `environment.authoredBy`
- * name a provider, model and effort; all three must match. The case still runs
- * for its author, tagged: boards count its speed and cost, never its quality.
+ * name a provider, model and effort; all three must match. The case runs and
+ * counts for its author like any other, tagged for the statistics alone.
  * Legacy string needles cannot identify an author.
  */
 // Declared harness aliases (`alias_of` in agent_host/harness.rs): an alias is

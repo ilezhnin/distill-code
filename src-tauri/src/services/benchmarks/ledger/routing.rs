@@ -126,9 +126,7 @@ pub fn validate_authored_by(draft: &BenchmarkDraft) -> Vec<String> {
         return Vec::new();
     };
     let Some(authors) = authors.as_array() else {
-        return vec![
-            "Author exclusions must be an array of provider, model and effort identities".into(),
-        ];
+        return vec!["Authors must be an array of provider, model and effort identities".into()];
     };
     authors.iter().enumerate().filter_map(|(index, value)| {
         let valid = value.get("effort").is_some()
@@ -544,9 +542,6 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             if candidate_key(&config) != key {
                 continue;
             }
-            if authored_by_candidate(d, &candidate.configuration) {
-                continue;
-            }
             if candidate
                 .configuration
                 .inventory_revision
@@ -561,21 +556,13 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             samples.push((a, *v));
         }
         let covered_cases: BTreeSet<_> = samples.iter().map(|(_, v)| v.id.as_str()).collect();
-        // Cases this candidate helped author are neither owed nor counted.
-        let owed_cases: BTreeSet<_> = expected_cases
-            .iter()
-            .copied()
-            .filter(|id| {
-                versions
-                    .get(id)
-                    .is_none_or(|v| !authored_by_candidate(&v.manifest, &candidate.configuration))
-            })
-            .collect();
+        // Every compatible case is owed, whoever wrote it: authorship is a
+        // statistic and never keeps a candidate from its evidence.
         let missing_count = samples
             .iter()
             .filter(|(a, _)| score_at(a, q.cutoff_at).is_none())
             .count() as u32
-            + owed_cases.difference(&covered_cases).count() as u32;
+            + expected_cases.difference(&covered_cases).count() as u32;
         samples.retain(|(a, _)| score_at(a, q.cutoff_at).is_some());
         let mut cases: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
         let mut families = BTreeSet::new();
@@ -647,14 +634,6 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
             Some((
                 "excluded",
                 "Candidate violates a hard identity or provider constraint".into(),
-            ))
-        } else if quality.is_none() && !expected_cases.is_empty() && owed_cases.is_empty() {
-            // Authored cells are never planned, so the case sets decide this,
-            // not attempts on them.
-            Some((
-                "excluded",
-                "Candidate helped author every compatible case; its own answers cannot count"
-                    .into(),
             ))
         } else if quality.is_none() {
             Some((
@@ -1116,34 +1095,43 @@ mod tests {
         );
     }
     #[test]
-    fn a_candidate_that_authored_the_cases_is_excluded_not_scored() {
+    fn a_candidate_that_authored_the_cases_is_scored_like_any_other() {
+        // Who wrote a case is a statistic. A candidate's evidence on the
+        // cases it helped author counts, and decides its place, exactly as
+        // it would had somebody else written them.
         let (mut data, mut q) = matrix();
-        for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] =
-                serde_json::json!([config("low"), config("high")]);
-        }
-        let evidence = get_evidence(&data, &q).unwrap();
-        assert!(evidence
-            .candidates
-            .iter()
-            .all(|c| c.status == "excluded" && !c.eligible && c.sample_count == 0));
-        for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] = serde_json::json!([config("low")]);
-        }
-        assert_eq!(
-            get_evidence(&data, &q).unwrap().candidates[0].status,
-            "excluded"
-        );
-        for version in &mut data.versions {
-            version.manifest.environment["authoredBy"] = serde_json::json!([{
+        let rows = |data: &QueryData, q: &RoutingEvidenceQuery| -> Vec<_> {
+            get_evidence(data, q)
+                .unwrap()
+                .candidates
+                .into_iter()
+                .map(|c| (c.status, c.eligible, c.sample_count, c.quality))
+                .collect()
+        };
+        let unsigned = rows(&data, &q);
+        assert!(unsigned.iter().all(|(_, _, samples, _)| *samples > 0));
+        for authors in [
+            serde_json::json!([config("low"), config("high")]),
+            serde_json::json!([config("low")]),
+            serde_json::json!([{
                 "providerId":"provider-native", "modelId":"someone-else", "effort":"low"
-            }]);
+            }]),
+        ] {
+            for version in &mut data.versions {
+                version.manifest.environment["authoredBy"] = authors.clone();
+            }
+            assert_eq!(rows(&data, &q), unsigned, "{authors}");
         }
         q.facets.difficulty = Some("easy".into());
         assert_eq!(
             get_evidence(&data, &q).unwrap().candidates[0].status,
             "preliminary"
         );
+        for version in &mut data.versions {
+            version.manifest.environment["authoredBy"] = serde_json::json!([{
+                "providerId":"provider-native", "modelId":"someone-else", "effort":"low"
+            }]);
+        }
         let mut other = config("low");
         other.model_id = "Model-Native".into();
         assert!(!authored_by_candidate(
@@ -1235,14 +1223,16 @@ mod tests {
         assert_eq!(e.candidates[0].quality, Some(0.5));
     }
     #[test]
-    fn a_candidate_that_wrote_every_compatible_case_is_excluded_without_attempts() {
+    fn a_candidate_that_wrote_every_compatible_case_and_never_ran_one_is_untested() {
         let (mut data, mut q) = matrix();
         for version in &mut data.versions {
             version.manifest.environment["authoredBy"] =
                 serde_json::json!([config("low"), config("high")]);
         }
-        // Authored cells are no longer planned, and an older plan's authored
-        // cells settle as excluded without starting.
+        // A plan from before authors ran their own cases settled those cells
+        // `excluded` without starting them: nothing measured, so the
+        // candidate is untested and owes the cases, never set apart for
+        // having written them.
         for a in &mut data.attempts {
             a.started_at = None;
             a.outcome = Some("excluded".into());
@@ -1255,7 +1245,7 @@ mod tests {
             assert!(evidence
                 .candidates
                 .iter()
-                .all(|c| c.status == "excluded" && !c.eligible && c.sample_count == 0));
+                .all(|c| c.status == "untested" && !c.eligible && c.sample_count == 0));
         }
         // No compatible case at all stays untested.
         q.role_context_hash = "unseen-role-context".into();

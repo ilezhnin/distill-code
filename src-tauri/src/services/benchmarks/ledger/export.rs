@@ -65,8 +65,8 @@ fn validate_splits(data: &QueryData, cutoff: Option<i64>) -> Result<()> {
 /// One portable observation; cutoff applies to its score and judge evidence.
 /// The raw archive has no historical query. Ledger calls supply only terminal
 /// attempts known at their frozen cutoff, never later outputs or measurements.
-/// An author's own cell keeps `reward` empty, so quality and training leave it
-/// out by default, and carries its measured score as `authoredReward`.
+/// A cell whose candidate wrote the case is an observation like any other:
+/// `authoredByCandidate` names it for the statistics and changes no reward.
 fn observation(
     attempt: Option<&Attempt>,
     repetition: u32,
@@ -74,24 +74,19 @@ fn observation(
     salt: &str,
     cutoff: Option<i64>,
 ) -> Value {
-    let score = attempt.and_then(|a| crate::services::benchmarks::analysis::score_as_of(a, cutoff));
-    let reward = if authored { None } else { score };
-    // Why a cell carries no reward on purpose: its candidate wrote the case,
-    // or the retired train-only rule (until 2026-10-19) kept the candidate
-    // from it (settled `excluded` unsent).
-    let excluded = if authored {
-        Some("authored_by_candidate")
-    } else if attempt.is_some_and(|a| {
-        a.outcome.as_deref() == Some("excluded")
-            && crate::services::benchmarks::data_use::refused_for_data_use(a.reason.as_deref())
-    }) {
-        Some("data_use")
-    } else {
-        None
-    };
+    let reward =
+        attempt.and_then(|a| crate::services::benchmarks::analysis::score_as_of(a, cutoff));
+    // Why a cell carries no reward on purpose: the retired train-only rule
+    // (until 2026-10-19) kept the candidate from it (settled `excluded`
+    // unsent).
+    let excluded = attempt
+        .is_some_and(|a| {
+            a.outcome.as_deref() == Some("excluded")
+                && crate::services::benchmarks::data_use::refused_for_data_use(a.reason.as_deref())
+        })
+        .then_some("data_use");
     json!({"repetition":repetition,"attemptId":attempt.map(|a|&a.id),"reward":reward,"observed":reward.is_some(),
         "excluded":excluded,"authoredByCandidate":authored,
-        "authoredReward":if authored { score } else { None },
         "outcome":attempt.and_then(|a|crate::services::benchmarks::analysis::outcome_as_of(a.outcome.as_deref(),a.finished_at,&a.evaluations,cutoff)),
         "phase":attempt.map(|a|&a.phase),"startedAt":attempt.and_then(|a|a.started_at),"finishedAt":attempt.and_then(|a|a.finished_at),"durationMs":attempt.and_then(|a|a.duration_ms),"nativeExecutionMs":attempt.and_then(|a|a.native_execution_ms),"workerOverheadMs":attempt.and_then(|a|a.duration_ms.zip(a.native_execution_ms).map(|(wall,native)|wall.saturating_sub(native))),
         "usage":attempt.map(|a|&a.usage),"resolvedModel":attempt.and_then(|a|a.resolved_model.as_ref()),"evidenceHash":attempt.and_then(|a|a.evidence_hash.as_ref()),
@@ -230,7 +225,7 @@ pub fn ledger_rows_matching(
     let versions: BTreeMap<_, _> = data.versions.iter().map(|v| (v.id.as_str(), v)).collect();
     // A column needs one countable score on an exported case. Identities seen
     // only through unscored attempts (a changed model selection, failed
-    // infrastructure) or only on withheld or self-authored cases are no candidates.
+    // infrastructure) or only on withheld cases are no candidates.
     let order = |a: &Attempt| {
         let direct = runtime == RuntimeMatch::Exact
             || !crate::services::benchmarks::analysis::has_auxiliary_usage(a);
@@ -238,12 +233,9 @@ pub fn ledger_rows_matching(
     };
     let mut newest: BTreeMap<String, &Attempt> = BTreeMap::new();
     for a in data.attempts.iter().filter(|a| {
-        let c = crate::services::benchmarks::analysis::execution_configuration(a);
         runs.contains_key(a.run_id.as_str())
             && versions.get(a.version_id.as_str()).is_some_and(|v| {
-                exported_split(&v.manifest.split, include_held_out)
-                    && v.published_at <= cutoff
-                    && !crate::services::benchmarks::routing::authored_by_candidate(&v.manifest, &c)
+                exported_split(&v.manifest.split, include_held_out) && v.published_at <= cutoff
             })
             && a.phase == "terminal"
             && a.finished_at.is_some_and(|at| at <= cutoff)
@@ -372,7 +364,9 @@ pub fn ledger_rows_matching(
                 Some(cutoff),
             );
             selected.sort_by_key(|a| (a.repetition, &a.id));
-            let excluded = crate::services::benchmarks::routing::authored_by_candidate(
+            // A statistic alone: the cell is owed, observed and rewarded
+            // like any other.
+            let authored = crate::services::benchmarks::routing::authored_by_candidate(
                 &version.manifest,
                 configuration,
             );
@@ -385,10 +379,9 @@ pub fn ledger_rows_matching(
             let repetitions: BTreeSet<_> = selected.iter().map(|a| a.repetition).collect();
             let outcomes: Vec<_> = selected
                 .iter()
-                .map(|a| observation(Some(a), a.repetition, excluded, salt, Some(cutoff)))
+                .map(|a| observation(Some(a), a.repetition, authored, salt, Some(cutoff)))
                 .collect();
-            let complete = !excluded
-                && selected.len() == required_repetitions as usize
+            let complete = selected.len() == required_repetitions as usize
                 && repetitions.len() == selected.len()
                 && repetitions.iter().copied().eq(0..required_repetitions)
                 && selected.iter().all(|a| {
@@ -403,13 +396,11 @@ pub fn ledger_rows_matching(
                     .sum::<f64>()
                     / selected.len() as f64
             });
-            // An author never owes its own case, and nobody owes a case no run
-            // planned for it: those cells are masked, not missing.
+            // Nobody owes a case no run planned for it: that cell is masked,
+            // not missing.
             let not_planned = !planned.contains(&(key.clone(), version.definition_id.as_str()));
-            let owed = !excluded && !not_planned;
-            let observation_status = if excluded {
-                "authored_by_candidate"
-            } else if not_planned {
+            let owed = !not_planned;
+            let observation_status = if not_planned {
                 "not_planned"
             } else if !known_runtime {
                 "unknown_runtime"
@@ -422,7 +413,7 @@ pub fn ledger_rows_matching(
             };
             let mut cell = json!({"configuration":public_configuration(configuration,salt), "owed":owed, "observed":complete,
                 "notPlanned":not_planned,"observationStatus":observation_status,"requiredRepetitions":required_repetitions,
-                "reward":reward,"excluded":excluded.then_some("authored_by_candidate"),"authoredByCandidate":excluded,"outcomes":outcomes,
+                "reward":reward,"authoredByCandidate":authored,"outcomes":outcomes,
                 "meanCost":super::analysis::mean_case_cost(&selected,Some(cutoff)),
                 "runId":selected.first().map(|a|&a.run_id),
                 "effectiveTimeoutSeconds":selected.first().map(|a|crate::services::benchmarks::types::effective_timeout_seconds(runs[a.run_id.as_str()].request.timeout_seconds,&version.manifest)),
@@ -959,7 +950,10 @@ mod tests {
     }
 
     #[test]
-    fn an_author_excluded_cell_is_masked_not_missing() {
+    fn an_authors_own_cell_is_owed_and_rewarded_and_only_labeled() {
+        // Who wrote a case is a statistic: the author's cell on it is owed,
+        // observed and rewarded like its cell on any other case, and the
+        // ledger only says whose it is.
         let mut data = dataset();
         let mut author = data.runs[0].request.configurations[0].clone();
         author.id = "author".into();
@@ -967,26 +961,38 @@ mod tests {
         let all: Vec<String> = data.versions.iter().map(|v| v.id.clone()).collect();
         let all: Vec<&str> = all.iter().map(String::as_str).collect();
         add_run(&mut data, "author-run", &author, "pass", &all);
+        let unsigned = ledger_rows(&data, false, "t").unwrap();
         data.versions[0].manifest.environment["authoredBy"] = json!([author]);
         let rows = ledger_rows(&data, false, "t").unwrap();
         let authored = rows.iter().find(|r| r["taskVersion"] == "v0").unwrap();
         assert_eq!(columns(authored), 2);
-        assert_eq!(authored["owedCandidates"], 1);
+        assert_eq!(authored["owedCandidates"], 2);
         let cell = authored["matrix"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|c| c["excluded"] == "authored_by_candidate")
+            .find(|c| c["authoredByCandidate"] == true)
             .unwrap();
-        assert_eq!(cell["owed"], false);
-        assert_eq!(cell["observed"], false);
-        assert!(cell["reward"].is_null());
-        // The measured own cell stays labeled, with its score apart.
-        assert_eq!(cell["authoredByCandidate"], true);
+        assert_eq!(cell["owed"], true);
+        assert_eq!(cell["observed"], true);
+        assert_eq!(cell["observationStatus"], "observed");
+        assert_eq!(cell["reward"], 1.0);
         assert_eq!(cell["outcomes"][0]["authoredByCandidate"], true);
-        assert!(cell["outcomes"][0]["reward"].is_null());
-        assert_eq!(cell["outcomes"][0]["authoredReward"], 1.0);
-        // Every owed cell is measured, so every row is a complete matrix.
+        assert_eq!(cell["outcomes"][0]["reward"], 1.0);
+        assert!(cell["outcomes"][0]["excluded"].is_null());
+        // Naming the author changes the label and nothing else.
+        let plain = unsigned.iter().find(|r| r["taskVersion"] == "v0").unwrap();
+        let strip = |row: &Value| {
+            let mut row = row.clone();
+            for cell in row["matrix"].as_array_mut().unwrap() {
+                cell["authoredByCandidate"] = json!(false);
+                for outcome in cell["outcomes"].as_array_mut().unwrap() {
+                    outcome["authoredByCandidate"] = json!(false);
+                }
+            }
+            row["matrix"].clone()
+        };
+        assert_eq!(strip(authored), strip(plain));
         assert!(rows.iter().all(|r| r["completeMatrix"] == true));
     }
 

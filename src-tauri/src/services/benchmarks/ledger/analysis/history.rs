@@ -57,7 +57,6 @@ pub(super) fn recalculated_history_report(
             &ResultQuery::default(),
             &selected,
             current.versions.clone(),
-            OwnCases::Counted,
             &current.prepared,
         )
     };
@@ -152,16 +151,14 @@ pub(super) fn history_for(
         configuration,
         by_model,
         |key, own, current, at, run_id| {
-            // As the board stood at the run's end, with the model's own cases
-            // counted: a history compares the model with itself.
-            let report = leaderboard_counting(
+            // As the board stood at the run's end.
+            let report = leaderboard(
                 data,
                 &ResultQuery {
                     as_of: Some(at),
                     limit: Some(500),
                     ..Default::default()
                 },
-                OwnCases::Counted,
             );
             let (recalculated_report, backfilled_version_ids, revised_version_ids) =
                 recalculated_history_report(data, own, current, run_id, at, by_model);
@@ -259,7 +256,7 @@ pub(super) fn dated_model_history_signature(
         all = data.attempts.iter().collect::<Vec<_>>();
         &all
     };
-    let report = leaderboard_prepared(data, &query, source, pool, OwnCases::Counted, &prepared);
+    let report = leaderboard_prepared(data, &query, source, pool, &prepared);
     history_row_signature(&report, key, true)
 }
 

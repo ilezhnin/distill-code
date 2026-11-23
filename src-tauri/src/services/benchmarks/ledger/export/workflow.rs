@@ -40,7 +40,8 @@ pub(super) async fn rows(
             // Unknown legacy preparation time cannot establish historical inputs.
             // Its existing observations remain inspectable without a reconstructed
             // decision or an input suitable for fitting a selector.
-            let excluded = crate::services::benchmarks::routing::authored_by_candidate(
+            // Named for the statistics; it changes nothing the step records.
+            let authored = crate::services::benchmarks::routing::authored_by_candidate(
                 &version.manifest,
                 &step.attempt.configuration,
             ) || step.attempt.observed.as_ref().is_some_and(|c| {
@@ -51,7 +52,7 @@ pub(super) async fn rows(
             let mut outcome = observation(
                 terminal.then_some(&step.attempt),
                 root.repetition,
-                excluded,
+                authored,
                 salt,
                 Some(cutoff),
             );

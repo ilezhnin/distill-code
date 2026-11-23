@@ -474,6 +474,11 @@ impl NativeBackend {
                 {
                     details["authorModel"] = json!(true);
                 }
+                // Two judges where no third was to be had still settle the
+                // rendering; its scores say so (owner, 11-23).
+                if ordinary && panel.len() < MAX_JUDGES {
+                    details["reducedPanel"] = json!(true);
+                }
                 details
             }),
             judge: None,

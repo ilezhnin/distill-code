@@ -21,7 +21,7 @@ describe("judge flag filter", () => {
     // A panel that settled a judge short is a mark of its own.
     await userEvent.click(
       screen.getByRole("menuitemcheckbox", {
-        name: "Two judges after one failed",
+        name: "Two judges instead of three",
       }),
     );
     expect(onChange).toHaveBeenLastCalledWith(["reducedPanel"]);

@@ -139,7 +139,7 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
                 )));
             }
             let status = cell["observationStatus"].as_str().unwrap_or("unknown");
-            if !matches!(status, "observed" | "not_planned" | "authored_by_candidate") {
+            if !matches!(status, "observed" | "not_planned") {
                 targets.push(absent(&configuration.id));
                 continue;
             }
@@ -181,11 +181,11 @@ pub fn fit(data: &QueryData, request: FitRequest) -> Result<FitArtifact> {
                 evidence: cell.clone(),
             });
         }
-        // Sparse authored/not-planned cells are masked, never converted to zero.
+        // Sparse not-planned cells are masked, never converted to zero.
         let observed = targets.iter().filter(|t| t.reward.is_some()).count();
         if observed < 2 {
             return Err(coverage(format!(
-                "Version {id} needs at least two observed, non-author candidates"
+                "Version {id} needs at least two observed candidates"
             )));
         }
         let split_group = row["splitGroup"]

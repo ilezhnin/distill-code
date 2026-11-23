@@ -65,12 +65,17 @@ pub(crate) fn by_headroom(mut offered: Vec<(Option<f64>, Configuration)>) -> Vec
 /// the roomiest first, up to three (owner, 10-18, after BuseyBench's fixed
 /// three-lab ensemble). A judge of a candidate's own lab or model may sit:
 /// the other labs dilute its score, and [`same_vendor`] and [`own_model`]
-/// mark the panel. An exact author of the case never sits (see
-/// [`frozen_seats`]); an author's lab with no other calibrated judge leaves
-/// the panel to the other labs. With fewer than three labs offered, distinct
-/// calibrated models of the seated labs fill it to three when available.
-/// A rubric with only two eligible models can still use both. A candidate of no
-/// known vendor admits no judge.
+/// mark the panel. With fewer than three labs offered, distinct calibrated
+/// models of the seated labs fill it to three when available. A rubric with
+/// only two eligible models can still use both. A candidate of no known
+/// vendor admits no judge.
+///
+/// Who wrote the case keeps nobody from judging it, with one condition: at
+/// least [`MIN_OTHER_JUDGES`] seats go to judges that are no model of the
+/// case's authors (see [`balanced`]). So an author's model takes one seat at
+/// most, and only when two others are offered; with fewer, it takes none and
+/// the panel is short, which the caller reports. [`author_model_judges`]
+/// marks a panel an author's model sits on.
 pub(crate) fn ordinary_judges(
     candidates: &[&Configuration],
     draft: &BenchmarkDraft,
@@ -79,22 +84,34 @@ pub(crate) fn ordinary_judges(
     if candidate_vendors(candidates).is_none() {
         return Vec::new();
     }
-    let admitted: Vec<(Configuration, &'static str)> = seatable(draft, by_headroom(offered), &[])
+    let admitted: Vec<(Configuration, &'static str)> = seatable(by_headroom(offered), &[])
         .into_iter()
         .filter_map(|(judge, _)| {
             let vendor = crate::services::benchmarks::judge_pool::vendor(&judge.provider_id)?;
             Some((judge, vendor))
         })
         .collect();
+    let others = admitted
+        .iter()
+        .filter(|(judge, _)| !authors_model(draft, judge))
+        .count();
+    let may_sit = |panel: &[Configuration], judge: &Configuration| {
+        !authors_model(draft, judge)
+            || (others >= MIN_OTHER_JUDGES
+                && !panel.iter().any(|seated| authors_model(draft, seated)))
+    };
     let mut labs = std::collections::BTreeSet::new();
     let mut panel: Vec<Configuration> = Vec::new();
     for (judge, vendor) in &admitted {
-        if panel.len() < MAX_JUDGES && labs.insert(*vendor) {
+        if panel.len() < MAX_JUDGES && may_sit(&panel, judge) && labs.insert(*vendor) {
             panel.push(judge.clone());
         }
     }
     for (judge, _) in &admitted {
-        if panel.len() < MAX_JUDGES && !panel.iter().any(|seated| seated.id == judge.id) {
+        if panel.len() < MAX_JUDGES
+            && may_sit(&panel, judge)
+            && !panel.iter().any(|seated| seated.id == judge.id)
+        {
             panel.push(judge.clone());
         }
     }
@@ -111,13 +128,12 @@ pub(in super::super) fn candidate_vendors(
         .collect()
 }
 
-/// Whether a judge is the concrete model of one of the case's exact authors
-/// at another effort. The exact author never judges (the 10-14 rule), but
-/// the same model at another effort may, and its panel is marked.
-pub(crate) fn author_model_judges(draft: &BenchmarkDraft, panel: &[Configuration]) -> bool {
-    let authors = crate::services::benchmarks::routing::exact_authors(draft);
-    panel.iter().any(|judge| {
-        authors.iter().any(|author| {
+/// Whether a judge is the concrete model of one of the case's exact authors,
+/// at the author's effort or another: the judge the case's author would be.
+pub(crate) fn authors_model(draft: &BenchmarkDraft, judge: &Configuration) -> bool {
+    crate::services::benchmarks::routing::exact_authors(draft)
+        .iter()
+        .any(|author| {
             let at_its_effort = BenchmarkAuthor {
                 provider_id: author.provider_id.clone(),
                 model_id: author.model_id.clone(),
@@ -125,7 +141,23 @@ pub(crate) fn author_model_judges(draft: &BenchmarkDraft, panel: &[Configuration
             };
             crate::services::benchmarks::routing::is_author(&at_its_effort, judge)
         })
-    })
+}
+
+/// Whether a panel seats a model of one of the case's authors, which it may
+/// (see [`balanced`]); its scores are marked, for the statistics.
+pub(crate) fn author_model_judges(draft: &BenchmarkDraft, panel: &[Configuration]) -> bool {
+    panel.iter().any(|judge| authors_model(draft, judge))
+}
+
+/// Whether a panel can give a balanced score of the case: at least
+/// [`MIN_OTHER_JUDGES`] of its judges are no model of the case's authors.
+/// A case nobody signed asks nothing more than a panel of that size.
+pub(crate) fn balanced(draft: &BenchmarkDraft, panel: &[Configuration]) -> bool {
+    panel
+        .iter()
+        .filter(|judge| !authors_model(draft, judge))
+        .count()
+        >= MIN_OTHER_JUDGES
 }
 
 /// Whether a panel seats a candidate's own model on the same provider
@@ -154,14 +186,14 @@ pub(crate) fn same_vendor(candidates: &[&Configuration], panel: &[Configuration]
 }
 
 /// The seats of a frozen panel that judge the candidates' rendering, the
-/// check of its seats: never an exact author of the case (the 10-14 rule),
-/// one seat per model of a provider. A candidate's own model keeps its seat,
-/// since a frozen panel never changes its seats: the other seats dilute its
-/// score and the evaluation is marked (see [`own_model`]), as on an ordinary
-/// panel (owner, 10-18). An unresolved candidate alias admits no judge.
+/// check of its seats: one seat per model of a provider. A candidate's own
+/// model keeps its seat, since a frozen panel never changes its seats: the
+/// other seats dilute its score and the evaluation is marked (see
+/// [`own_model`]), as on an ordinary panel (owner, 10-18). So does a model
+/// of the case's authors, while the panel stays [`balanced`], which its
+/// caller checks. An unresolved candidate alias admits no judge.
 pub(crate) fn frozen_seats(
     candidates: &[&Configuration],
-    draft: &BenchmarkDraft,
     seats: Vec<Configuration>,
 ) -> Vec<Configuration> {
     if candidates
@@ -170,16 +202,16 @@ pub(crate) fn frozen_seats(
     {
         return Vec::new();
     }
-    seatable(draft, seats, &[])
+    seatable(seats, &[])
         .into_iter()
         .map(|(judge, _)| judge)
         .collect()
 }
 
 /// The offered judges, in order, with their models: none of the `excluded`
-/// models, no author of the case, one row per model of a provider.
+/// models, one row per model of a provider. Who wrote the case is not asked
+/// here: the panels built from these rows keep themselves [`balanced`].
 pub(in super::super) fn seatable(
-    draft: &BenchmarkDraft,
     mut offered: Vec<Configuration>,
     excluded: &[String],
 ) -> Vec<(Configuration, String)> {
@@ -189,17 +221,13 @@ pub(in super::super) fn seatable(
     });
     let mut panel: Vec<(Configuration, String)> = Vec::new();
     for configuration in offered {
-        let (Some(concrete), Some(model)) = (
+        let (Some(_), Some(model)) = (
             concrete_model(&configuration.provider_id, &configuration.model_id),
             model_identity(&configuration.provider_id, &configuration.model_id),
         ) else {
             continue;
         };
-        let mut resolved = configuration.clone();
-        resolved.model_id = concrete;
         if excluded.contains(&model)
-            || crate::services::benchmarks::routing::authored_by_candidate(draft, &configuration)
-            || crate::services::benchmarks::routing::authored_by_candidate(draft, &resolved)
             || panel.iter().any(|(judge, seated)| {
                 judge.provider_id == configuration.provider_id && seated == &model
             })
@@ -224,7 +252,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
-    fn frozen_seats_keep_the_candidates_own_model_and_skip_the_cases_authors() {
+    fn frozen_seats_keep_the_candidates_own_model_and_the_models_of_the_cases_authors() {
         let offered = || {
             [
                 "default",
@@ -246,29 +274,35 @@ mod tests {
         // with Claude Code's own setting (Opus until 10-31, Fable 5.1 since),
         // so it is no seat, and a candidate on it has no frozen panel.
         let seated = ["opus[1m]", "claude-fable-5-1[1m]", "sonnet", "haiku"];
-        let frozen = frozen_seats(&[&judge_row("sonnet")], &draft, offered());
+        let frozen = frozen_seats(&[&judge_row("sonnet")], offered());
         assert_eq!(ids(&frozen), seated);
-        let frozen = frozen_seats(&[&judge_row("opus")], &draft, offered());
+        let frozen = frozen_seats(&[&judge_row("opus")], offered());
         assert_eq!(ids(&frozen), seated);
-        assert!(frozen_seats(&[&judge_row("default")], &draft, offered()).is_empty());
-        // An author of the case never judges it, nor through its alias.
-        draft.environment["authoredBy"] = json!([judge_row("sonnet")]);
-        let panel = frozen_seats(&[&judge_row("haiku")], &draft, offered());
-        assert_eq!(ids(&panel), ["opus[1m]", "claude-fable-5-1[1m]", "haiku"]);
-        draft.environment["authoredBy"] = json!([judge_row("opus[1m]")]);
-        let panel = frozen_seats(&[&judge_row("haiku")], &draft, offered());
-        assert_eq!(ids(&panel), ["claude-fable-5-1[1m]", "sonnet", "haiku"]);
+        assert!(frozen_seats(&[&judge_row("default")], offered()).is_empty());
+        // Who wrote the case costs nobody a seat: an author's model sits,
+        // through its alias too, while two seats are no author's model.
+        for author in ["sonnet", "opus[1m]", "opus"] {
+            draft.environment["authoredBy"] = json!([judge_row(author)]);
+            let panel = frozen_seats(&[&judge_row("haiku")], offered());
+            assert_eq!(ids(&panel), seated, "{author}");
+            assert!(author_model_judges(&draft, &panel), "{author}");
+            assert!(balanced(&draft, &panel), "{author}");
+            // Beside one other judge alone the author's reading would carry
+            // the verdict.
+            let pair = [judge_row(author), judge_row("haiku")];
+            assert!(!balanced(&draft, &pair), "{author}");
+        }
+        draft.environment["authoredBy"] = json!([]);
         // A candidate alias with an unknown target admits no judge.
         let mut moving = judge_row("current");
         moving.provider_id = "other-provider".into();
-        assert!(frozen_seats(&[&moving], &draft, offered()).is_empty());
+        assert!(frozen_seats(&[&moving], offered()).is_empty());
         let rows = offered().into_iter().map(|judge| (None, judge)).collect();
         assert!(ordinary_judges(&[&moving], &draft, rows).is_empty());
         // Generic examples without an exact author seat their candidate's
         // model too; the evaluation is marked `ownModel`.
-        let seeded = creative();
         for candidate in ["opus[1m]", "sonnet", "haiku", "claude-fable-5-1[1m]"] {
-            let panel = frozen_seats(&[&judge_row(candidate)], &seeded, offered());
+            let panel = frozen_seats(&[&judge_row(candidate)], offered());
             assert!(own_model(&[&judge_row(candidate)], &panel));
         }
     }
@@ -311,7 +345,7 @@ mod tests {
         let opus = judge_row("opus");
         // A frozen panel seats the candidate's own model, and marks it by
         // the same identity.
-        let frozen = frozen_seats(&[&opus], &draft, offered());
+        let frozen = frozen_seats(&[&opus], offered());
         assert_eq!(ids(&frozen), ["opus[1m]", "sonnet", "haiku"]);
         assert!(own_model(&[&opus], &frozen));
         assert!(!own_model(&[&opus], &frozen[1..]));
@@ -325,15 +359,11 @@ mod tests {
         // the lane's, since `opus` is declared as its alias (10-31).
         let both = ["opus", "opus[1m]", "sonnet"].map(judge_row).to_vec();
         assert_eq!(
-            ids(&frozen_seats(
-                &[&judge_row("opus[1m]")],
-                &draft,
-                both.clone()
-            )),
+            ids(&frozen_seats(&[&judge_row("opus[1m]")], both.clone())),
             ["opus[1m]", "sonnet"]
         );
         assert_eq!(
-            ids(&frozen_seats(&[&judge_row("haiku")], &draft, both)),
+            ids(&frozen_seats(&[&judge_row("haiku")], both)),
             ["opus[1m]", "sonnet"]
         );
         // An author is matched by the same identity, and its model at another
@@ -346,7 +376,7 @@ mod tests {
             &draft, &author
         ));
         assert_eq!(
-            ids(&frozen_seats(&[&judge_row("haiku")], &draft, offered())),
+            ids(&frozen_seats(&[&judge_row("haiku")], offered())),
             ["opus[1m]", "sonnet", "haiku"]
         );
         assert!(author_model_judges(&draft, &[judge_row("opus")]));
@@ -524,18 +554,18 @@ mod tests {
         let panel = ordinary_judges(&[&both[0], &both[1]], &text, offered());
         assert_eq!(ids(&panel), labs);
         assert!(own_model(&[&both[0], &both[1]], &panel));
-        // An author never judges; its lab without another calibrated judge
-        // leaves the panel to the other labs, and with one it sits instead.
-        text.environment["authoredBy"] = json!([row("codex-acp", "invented-sol")]);
-        assert_eq!(
-            ids(&seat(haiku.clone(), &text)),
-            ["opus[1m]", "invented-grok", "sonnet"]
-        );
-        text.environment["authoredBy"] = json!([row("claude-acp", "opus[1m]")]);
-        assert_eq!(
-            ids(&seat(haiku.clone(), &text)),
-            ["sonnet", "invented-sol", "invented-grok"]
-        );
+        // Who wrote the case changes no seat while two judges are not its
+        // author's model: the author's model sits with them, marked.
+        for author in [
+            row("codex-acp", "invented-sol"),
+            row("claude-acp", "opus[1m]"),
+        ] {
+            text.environment["authoredBy"] = json!([author]);
+            let panel = seat(haiku.clone(), &text);
+            assert_eq!(ids(&panel), labs);
+            assert!(author_model_judges(&text, &panel));
+            assert!(balanced(&text, &panel));
+        }
         // A candidate of no known vendor admits no judge.
         text.environment["authoredBy"] = json!([]);
         assert!(seat(row("invented-provider", "model"), &text).is_empty());
@@ -562,6 +592,71 @@ mod tests {
     }
 
     #[test]
+    fn an_authors_model_judges_only_beside_two_judges_that_are_not() {
+        // Owner, 11-23: authorship is a statistic and keeps nobody from a
+        // seat, on one condition. Two judges of a panel must be other
+        // models than the case's authors, so the score is balanced; the
+        // author's model may be the third.
+        let row = |provider: &str, model: &str| {
+            let mut judge = judge_row(model);
+            judge.provider_id = provider.into();
+            judge.id = format!("{provider}:account:{model}");
+            judge
+        };
+        let ids =
+            |panel: &[Configuration]| panel.iter().map(|c| c.model_id.clone()).collect::<Vec<_>>();
+        let opus = || (Some(90.0), row("claude-acp", "opus[1m]"));
+        let sonnet = || (Some(80.0), row("claude-acp", "sonnet"));
+        let sol = || (Some(70.0), row("codex-acp", "invented-sol"));
+        let grok = || (Some(60.0), row("grok-acp", "invented-grok"));
+        let candidate = row("codex-acp", "invented-luna");
+        let mut text = creative();
+        text.environment["judgeInput"] = json!("text");
+        // Written by Opus at another effort than the judge's: still its model.
+        text.environment["authoredBy"] =
+            json!([{"providerId": "claude-acp", "modelId": "opus[1m]", "effort": "xhigh"}]);
+        let seat = |offered: Vec<(Option<f64>, Configuration)>, draft: &BenchmarkDraft| {
+            ordinary_judges(&[&candidate], draft, offered)
+        };
+        // Two others offered: the author's model takes the third seat.
+        let panel = seat(vec![opus(), sol(), grok()], &text);
+        assert_eq!(ids(&panel), ["opus[1m]", "invented-sol", "invented-grok"]);
+        assert!(balanced(&text, &panel));
+        assert!(author_model_judges(&text, &panel));
+        // Another model of the author's lab is another judge.
+        let panel = seat(vec![opus(), sonnet(), sol()], &text);
+        assert_eq!(ids(&panel), ["opus[1m]", "invented-sol", "sonnet"]);
+        assert!(balanced(&text, &panel));
+        // One other offered: the author's model takes no seat, and the one
+        // judge left is no panel (see `panel_issue`).
+        let panel = seat(vec![opus(), sol()], &text);
+        assert_eq!(ids(&panel), ["invented-sol"]);
+        assert!(panel_issue(&panel).is_some());
+        assert!(seat(vec![opus()], &text).is_empty());
+        // Two others and no third: a panel of two, without the author.
+        let panel = seat(vec![sol(), grok()], &text);
+        assert_eq!(ids(&panel), ["invented-sol", "invented-grok"]);
+        assert!(balanced(&text, &panel));
+        assert!(!author_model_judges(&text, &panel));
+        // Two authors: one of their models sits at most.
+        text.environment["authoredBy"] = json!([
+            {"providerId": "claude-acp", "modelId": "opus[1m]", "effort": "xhigh"},
+            {"providerId": "codex-acp", "modelId": "invented-sol", "effort": "xhigh"},
+        ]);
+        let panel = seat(vec![opus(), sol(), grok(), sonnet()], &text);
+        assert_eq!(ids(&panel), ["opus[1m]", "invented-grok", "sonnet"]);
+        assert!(balanced(&text, &panel));
+        let panel = seat(vec![opus(), sol(), grok()], &text);
+        assert_eq!(ids(&panel), ["invented-grok"]);
+        // A case nobody signed asks for two judges and nothing more.
+        text.environment["authoredBy"] = json!([]);
+        let panel = seat(vec![opus(), sol()], &text);
+        assert_eq!(ids(&panel), ["opus[1m]", "invented-sol"]);
+        assert!(balanced(&text, &panel));
+        assert!(!balanced(&text, &panel[..1]));
+    }
+
+    #[test]
     fn a_judge_seat_goes_to_the_account_with_the_most_headroom() {
         let on = |account: &str| {
             let mut judge = judge_row("opus[1m]");
@@ -582,7 +677,7 @@ mod tests {
         assert_eq!(accounts, ["spare", "first-listed", "spent", "unknown"]);
         let mut draft = creative();
         draft.environment["authoredBy"] = json!([]);
-        let panel = frozen_seats(&[&judge_row("haiku")], &draft, ordered);
+        let panel = frozen_seats(&[&judge_row("haiku")], ordered);
         assert_eq!(panel.len(), 1);
         assert_eq!(panel[0].account_id.as_deref(), Some("spare"));
         // The ordinary panel orders its rows so, and seats the roomier

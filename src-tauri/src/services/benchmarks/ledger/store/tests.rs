@@ -435,7 +435,7 @@ async fn an_excluded_authored_cell_is_no_gallery_entry() {
     directory.close().await;
 }
 #[tokio::test]
-async fn a_measured_rendering_of_its_own_brief_is_no_gallery_entry() {
+async fn a_measured_rendering_of_its_own_brief_is_a_gallery_entry_like_any_other() {
     let directory = crate::test_support::TempRoot::new();
     let store = Store::open(directory.path()).await.unwrap();
     directory.register(&store.pool);
@@ -462,13 +462,9 @@ async fn a_measured_rendering_of_its_own_brief_is_no_gallery_entry() {
     tx.commit().await.unwrap();
     add_gallery_repetitions(&store).await;
     let entries = store.list_designs(&ResultQuery::default()).await.unwrap();
-    assert_eq!(
-        entries
-            .iter()
-            .map(|e| e.attempt_id.as_str())
-            .collect::<Vec<_>>(),
-        ["reader"]
-    );
+    let mut shown: Vec<_> = entries.iter().map(|e| e.attempt_id.as_str()).collect();
+    shown.sort_unstable();
+    assert_eq!(shown, ["reader", "writer"]);
     directory.close().await;
 }
 #[tokio::test]

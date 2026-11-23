@@ -416,6 +416,11 @@ impl NativeBackend {
             if let Some(panel) =
                 crate::services::benchmarks::judge_panel::frozen(draft, &candidates)?
             {
+                // A frozen panel never changes its seats, so one that cannot
+                // give a balanced score judges nothing.
+                if let Some(issue) = crate::services::benchmarks::judge_panel::unbalanced(draft) {
+                    return Err(BenchmarkError::new("invalid_judge_panel", issue));
+                }
                 return Ok(DiscoveredJudgePanel::fixed(panel));
             }
         }

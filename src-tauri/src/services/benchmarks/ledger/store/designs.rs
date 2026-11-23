@@ -54,7 +54,7 @@ impl Store {
             std::collections::BTreeMap::new();
         for row in rows {
             let mut attempt: Attempt = serde_json::from_str(&row.get::<String, _>(0))?;
-            // A candidate that authored the brief is not an entry of it.
+            // A cell a retired rule settled unsent rendered nothing.
             if attempt.outcome.as_deref() == Some("excluded")
                 || crate::services::benchmarks::analysis::is_superseded(&attempt)
                 || crate::services::benchmarks::effort::effort_unknown(&attempt, &defaulted)
@@ -62,14 +62,6 @@ impl Store {
                 continue;
             }
             let manifest: BenchmarkDraft = serde_json::from_str(&row.get::<String, _>(1))?;
-            // The gallery compares quality, so a rendering of a brief its
-            // candidate wrote stays out of it, as on every quality board.
-            if crate::services::benchmarks::routing::authored_by_candidate(
-                &manifest,
-                &attempt.configuration,
-            ) {
-                continue;
-            }
             // A rendering its event record stopped is unscored, as on every
             // board (see `evidence`).
             crate::services::benchmarks::evidence::rendering_with_answer_cap(

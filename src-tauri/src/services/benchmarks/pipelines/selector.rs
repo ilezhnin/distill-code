@@ -472,8 +472,8 @@ pub fn harness(data: &QueryData, query: &HarnessQuery) -> Result<HarnessReport> 
             && v.manifest.entry_state.is_none()
     }) {
         // Evaluation and inference use the same eligibility, inventory,
-        // authorship, time-budget and newest-cell rules. Held-out labels are
-        // read only here, never by select.
+        // time-budget and newest-cell rules. Held-out labels are read only
+        // here, never by select.
         let evidence = routing::get_evidence(
             data,
             &RoutingEvidenceQuery {
@@ -901,10 +901,13 @@ mod tests {
             attempt.observed.as_mut().unwrap().inventory_revision = Some("old-runtime".into());
         }
         assert_eq!(harness(&stale, &harness_query()).unwrap().cases, 0);
+        // Who wrote a case takes no case from the harness.
+        let cases = harness(&original, &harness_query()).unwrap().cases;
         let mut authored = original.clone();
         authored.versions[10].manifest.environment["authoredBy"] =
             serde_json::json!([configuration("strong")]);
-        assert_eq!(harness(&authored, &harness_query()).unwrap().cases, 3);
+        assert_eq!(harness(&authored, &harness_query()).unwrap().cases, cases);
+        assert_eq!(cases, 4);
         let mut role = original.clone();
         role.versions[10].manifest.role_context_hash = "different-persona".into();
         assert_eq!(harness(&role, &harness_query()).unwrap().cases, 3);

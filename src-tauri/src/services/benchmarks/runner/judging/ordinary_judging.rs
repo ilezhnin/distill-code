@@ -69,7 +69,6 @@ fn same_model(left: &Configuration, right: &Configuration) -> bool {
 /// replacement panel below still has to keep every original seat and sample.
 pub(in super::super) fn available_replacements(
     candidates: &[&Configuration],
-    draft: &BenchmarkDraft,
     offered: Vec<(Option<f64>, Configuration)>,
 ) -> Vec<Configuration> {
     if candidate_vendors(candidates).is_none() {
@@ -77,7 +76,7 @@ pub(in super::super) fn available_replacements(
     }
     // A new panel's one-per-lab shortlist hides same-lab replacements needed
     // to finish a saved three-seat panel after one provider runs out of quota.
-    seatable(draft, by_headroom(offered), &[])
+    seatable(by_headroom(offered), &[])
         .into_iter()
         .map(|(judge, _)| judge)
         .filter(|judge| {
@@ -96,16 +95,29 @@ pub(in super::super) fn available_panel(
     mut quota: Vec<(i64, Configuration)>,
     deferred: Option<BenchmarkError>,
 ) -> Result<Vec<Configuration>> {
-    let ready = available_replacements(candidates, draft, offered.clone());
-    if let Some(panel) = replacement_panel(open, ready.clone()) {
+    // The completed panel keeps two judges that are no model of the case's
+    // authors: a seat an author's model would unbalance goes to another.
+    let complete = |offered: Vec<Configuration>| {
+        replacement_panel(open, offered.clone())
+            .filter(|panel| balanced(draft, panel))
+            .or_else(|| {
+                let others = offered
+                    .into_iter()
+                    .filter(|judge| !authors_model(draft, judge))
+                    .collect();
+                replacement_panel(open, others).filter(|panel| balanced(draft, panel))
+            })
+    };
+    let ready = available_replacements(candidates, offered.clone());
+    if let Some(panel) = complete(ready.clone()) {
         return Ok(panel);
     }
     quota.sort_by_key(|(until, _)| *until);
     let mut potential = offered;
     for (until, judge) in quota {
         potential.push((None, judge));
-        let eligible = available_replacements(candidates, draft, potential.clone());
-        if replacement_panel(open, eligible).is_some() {
+        let eligible = available_replacements(candidates, potential.clone());
+        if complete(eligible).is_some() {
             return Err(judge_quota_wait(Some(until)));
         }
     }
@@ -113,20 +125,23 @@ pub(in super::super) fn available_panel(
         return Err(deferred);
     }
     // Nobody can take the missing seat, now or after a reset: the panel
-    // goes on with the judges it has, marked, while two remain.
-    reduced_panel(open, &ready).ok_or_else(|| {
-        BenchmarkError::new(
+    // goes on with the judges it has, marked, while two remain that are no
+    // model of the case's authors.
+    reduced_panel(open, &ready)
+        .filter(|panel| balanced(draft, panel))
+        .ok_or_else(|| {
+            BenchmarkError::new(
             PANEL_UNAVAILABLE,
             "The saved panel needs another eligible calibrated judge; add one to the judge pool",
         )
-    })
+        })
 }
 
 /// The saved panel without the seats nobody can take: its paid seats and
 /// those still offered, while at least [`MIN_JUDGES`] remain. Its scores
-/// are marked `reducedPanel` (see [`reseat`]), so boards can show or leave
-/// them out (owner, 11-14: a failed judge gives way to another, or the
-/// panel goes on with two).
+/// are marked `reducedPanel` (see [`reseat`]), as a new panel of two is, so
+/// boards can show or leave them out (owner, 11-14: a failed judge gives
+/// way to another, or the panel goes on with two).
 pub(in super::super) fn reduced_panel(
     open: &OpenBatch,
     offered: &[Configuration],

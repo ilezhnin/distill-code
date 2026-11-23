@@ -442,13 +442,11 @@ pub fn case_tracker(data: &QueryData) -> Vec<CaseStats> {
     let pool = pool(data, &query);
     // The development library still shows diagnostic outcomes. These internal
     // statistics are never returned as official leaderboard rows.
-    // Own cases leave the rows' attempt lists, as they leave every quality view.
     let rows = leaderboard_from_attempts(
         data,
         &query,
         &data.attempts.iter().collect::<Vec<_>>(),
         pool.clone(),
-        OwnCases::QualityExcluded,
     )
     .rows;
     let attempts: BTreeMap<&str, &Attempt> =
@@ -771,15 +769,4 @@ pub(in crate::services::benchmarks) fn mean_case_cost(
             .sum::<f64>()
             / cases.len() as f64
     })
-}
-
-/// How a board counts a candidate's own cases, the ones it helped author.
-/// Their speed and cost always count; their quality counts only where a
-/// model is compared with itself over time.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::services::benchmarks) enum OwnCases {
-    /// Quality, points and ranks leave own cases out.
-    QualityExcluded,
-    /// Every cell counts: a model's history follows the model itself.
-    Counted,
 }

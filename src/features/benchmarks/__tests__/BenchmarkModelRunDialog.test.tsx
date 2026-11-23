@@ -881,17 +881,24 @@ it("checks every current test, tags the model's own, and runs them on today's ru
   expect(within(dialog).getByRole("heading")).toHaveTextContent("high");
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
-  // Seven current tests, all owed but the one the model wrote: its board
-  // leaves it out, so it is listed and runnable, never owed.
-  expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
-  for (const name of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Hotel"])
+  // Seven current tests, all owed, the one the model wrote among them: the
+  // board counts it like any other, and only tags it.
+  expect(screen.getByText("7 of 7 tests, 21 attempts")).toBeInTheDocument();
+  for (const name of [
+    "Alpha",
+    "Bravo",
+    "Charlie",
+    "Delta",
+    "Echo",
+    "Foxtrot",
+    "Hotel",
+  ])
     expect(
       within(screen.getByText(name).closest("label") as HTMLElement).getByRole(
         "checkbox",
       ),
     ).toBeChecked();
   const written = screen.getByText("Foxtrot").closest("label") as HTMLElement;
-  expect(within(written).getByRole("checkbox")).not.toBeChecked();
   expect(within(written).getByRole("checkbox")).toBeEnabled();
   expect(within(written).getByText("Own task")).toBeInTheDocument();
   expect(
@@ -906,9 +913,6 @@ it("checks every current test, tags the model's own, and runs them on today's ru
       "checkbox",
     ),
   );
-  expect(screen.getByText("5 of 7 tests, 15 attempts")).toBeInTheDocument();
-  // The own test runs when asked for, for its speed and cost.
-  await user.click(within(written).getByRole("checkbox"));
   expect(screen.getByText("6 of 7 tests, 18 attempts")).toBeInTheDocument();
   const start = screen.getByRole("button", { name: "Start" });
   await waitFor(() => expect(start).toBeEnabled());

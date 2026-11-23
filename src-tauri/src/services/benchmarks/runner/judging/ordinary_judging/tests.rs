@@ -118,11 +118,11 @@ fn rotation_preserves_panel_size_and_does_not_duplicate_models() {
 
 #[test]
 fn paid_seats_do_not_need_to_be_offered_again() {
-    let (draft, attempt, open) = fixture();
+    let (_, attempt, open) = fixture();
     let replacement = judge("sonnet");
     // The paid judge's account lists nothing now; its vote stands.
     let offered = vec![(Some(80.0), replacement.clone())];
-    let available = available_replacements(&[&attempt.configuration], &draft, offered);
+    let available = available_replacements(&[&attempt.configuration], offered);
     assert_eq!(available, vec![replacement.clone()]);
     assert_eq!(
         replacement_panel(&open, available).unwrap(),
@@ -181,12 +181,29 @@ fn a_third_seat_can_move_to_another_calibrated_model_of_a_remaining_lab() {
         vec![(2, judge("sonnet"))]
     );
 
-    // The fallback remains subject to author exclusion, not just model
-    // count: with the author's model out, nobody can take the third seat,
-    // and the panel goes on with its two paid seats.
-    let mut authored = draft;
+    // Who wrote the case keeps nobody from the seat: the author's model
+    // takes the third beside the two paid judges that are not.
+    let mut authored = draft.clone();
     authored.environment["authoredBy"] = json!([judge("sonnet")]);
     let panel = available_panel(
+        &open,
+        &[&attempt.configuration],
+        &authored,
+        offered.clone(),
+        vec![],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        panel,
+        vec![judge("opus[1m]"), codex.clone(), judge("sonnet")]
+    );
+    assert!(balanced(&authored, &panel));
+    // Beside a paid seat that is itself the author's model it would leave
+    // one other judge: the seat stays empty, and the two that remain are
+    // no balanced panel either, so the rendering waits for another judge.
+    authored.environment["authoredBy"] = json!([judge("sonnet"), judge("opus[1m]")]);
+    let refused = available_panel(
         &open,
         &[&attempt.configuration],
         &authored,
@@ -194,8 +211,8 @@ fn a_third_seat_can_move_to_another_calibrated_model_of_a_remaining_lab() {
         vec![],
         None,
     )
-    .unwrap();
-    assert_eq!(panel, vec![judge("opus[1m]"), codex]);
+    .unwrap_err();
+    assert_eq!(refused.code, PANEL_UNAVAILABLE);
 }
 
 #[test]

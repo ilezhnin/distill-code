@@ -14,6 +14,10 @@ pub fn validate(d: &BenchmarkDraft) -> ValidationReport {
     issues.extend(evaluation::validate(&d.evaluator));
     issues.extend(crate::services::benchmarks::repository::validate(d));
     issues.extend(crate::services::benchmarks::runner::validate_judge_input(d));
+    // Asked of a draft, not of what a published case's judging reads
+    // (`validate_judge_input`): a case published before the rule is judged
+    // by the ordinary panels as it was.
+    issues.extend(crate::services::benchmarks::judge_panel::unbalanced(d));
     if d.schema_version != 1 {
         issues.push("Unsupported schema version".into());
     }
