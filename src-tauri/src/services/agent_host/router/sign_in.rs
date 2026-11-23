@@ -24,7 +24,7 @@ impl Inner {
                         provider,
                         account,
                     )
-                    && (runtime.loading || runtime.run.is_some())
+                    && runtime.has_pending_chat_work()
             })
             .map(|(id, _)| id.clone())
             .collect();

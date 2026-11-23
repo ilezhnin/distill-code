@@ -3164,17 +3164,367 @@ fn ordinary_claude_continues_after_prompt_without_accepting_stale_or_cancelled_r
     assert!(!Inner::accept_turn_update(&mut live, None, &mut chunk()));
 }
 
-#[test]
-fn unsolicited_events_do_not_open_the_owned_or_other_provider_lanes() {
-    for (provider, owned) in [("claude-acp", true), ("codex-acp", false)] {
-        let mut live = runtime(provider, "example", 7);
-        if owned {
-            live.execution_profile = Some("text-only".into());
-        }
-        Inner::claim_turn(&mut live, &TurnIds::new()).unwrap();
+mod self_started {
+    use super::super::events::UpdateDelivery;
+    use super::*;
+
+    fn active_chat(provider: &str) -> (SessionRuntime, TurnIds) {
+        let mut live = runtime(provider, "bridge", 7);
+        let turn = TurnIds::new();
+        Inner::claim_turn(&mut live, &turn).unwrap();
         live.run = None;
-        let mut chunk = json!({"update":{"sessionUpdate":"agent_message_chunk"}});
-        assert!(!Inner::accept_turn_update(&mut live, None, &mut chunk));
+        (live, turn)
+    }
+
+    fn text(value: &str) -> Value {
+        json!({"sessionUpdate":"agent_message_chunk","messageId":format!("msg_{value}"),
+            "content":{"type":"text","text":value},"_meta":{"jetbrains":{"air":{"version":1,"phase":"final_answer"}}}})
+    }
+
+    fn status(state: &str) -> Value {
+        let mut status = json!({"type":state});
+        if state == "active" {
+            status["activeFlags"] = json!([]);
+        }
+        json!({"sessionUpdate":"session_info_update","_meta":{"codex":{"threadStatus":status}}})
+    }
+
+    // The managed ACP v1 capture. Split and cached counts are the bridge's
+    // own per-turn totals. The third turn performed two model calls.
+    fn usage(used: u64, total: u64, input: u64, cached: u64, output: u64) -> Value {
+        json!({"sessionUpdate":"usage_update","used":used,"size":475000,"_meta":{"codexTurnUsage":{
+            "totalTokens":total,"inputTokens":input,"cachedReadTokens":cached,"cachedWriteTokens":0,
+            "outputTokens":output,"thoughtTokens":0}}})
+    }
+
+    fn route(
+        live: &mut SessionRuntime,
+        run: Option<&str>,
+        update: Value,
+        pending: &mut Vec<(String, Value)>,
+    ) {
+        let mut params = json!({"sessionId":"s1","update":update});
+        if Inner::route_update(live, run, &mut params, false, false) == UpdateDelivery::Store {
+            Inner::stage_background_result(pending, ("s1".into(), params));
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_goal_stores_and_delivers_all_three_replies() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("host.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        store
+            .insert_session(&record_on(None, None, None))
+            .await
+            .unwrap();
+        let mut live = runtime("codex-acp", "bridge", 7);
+        let turn = TurnIds::new();
+        Inner::claim_turn(&mut live, &turn).unwrap();
+        let mut pending = Vec::new();
+        for prompt in Inner::user_prompt_events(
+            "s1",
+            &json!([{"type":"text","text":"count to three"}]),
+            &json!({}),
+            &turn,
+            "now",
+            false,
+        ) {
+            pending.push(("s1".into(), prompt));
+        }
+        for update in [
+            status("active"),
+            text("1"),
+            usage(17805, 17805, 3848, 13952, 5),
+            status("idle"),
+        ] {
+            route(&mut live, Some(&turn.run_id), update, &mut pending);
+        }
+        // The reader has resolved session/prompt. Even if its host future is
+        // still draining the store, the next wire events have no prompt tag.
+        for update in [
+            status("active"),
+            text("2"),
+            usage(20527, 20527, 2986, 17536, 5),
+            status("idle"),
+            status("active"),
+            usage(21771, 21771, 1398, 20352, 21),
+            text("3"),
+            usage(21990, 43761, 9431, 34304, 26),
+            status("idle"),
+        ] {
+            route(&mut live, None, update, &mut pending);
+        }
+        live.run = None;
+        let mut visible = Vec::new();
+        Inner::persist_pending_events(&store, &mut pending, |payload, id| {
+            visible.extend(Inner::frontend_event(payload, id));
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            store.latest_prompt_id("s1").await.unwrap().as_deref(),
+            Some(turn.message_id.as_str())
+        );
+        let stored = store.list_events("s1").await.unwrap();
+        let page = store.history_page("s1", None).await.unwrap();
+        let snapshot: Vec<String> = page.events.iter().map(|row| row.get().to_owned()).collect();
+        let (legacy, _) = store.replay_payloads("s1").await.unwrap();
+        for history in [snapshot, legacy] {
+            let mut bubbles: Vec<String> = Vec::new();
+            let mut new_reply = true;
+            for row in history {
+                let event: Value = row.parse().unwrap();
+                let update = &event["update"];
+                if update["_meta"].get("activeRunId") == Some(&Value::Null) {
+                    new_reply = true;
+                } else if update["sessionUpdate"] == "agent_message_chunk" {
+                    if new_reply {
+                        bubbles.push(String::new());
+                        new_reply = false;
+                    }
+                    bubbles
+                        .last_mut()
+                        .unwrap()
+                        .push_str(update["content"]["text"].as_str().unwrap());
+                }
+            }
+            assert_eq!(bubbles, ["1", "2", "3"]);
+        }
+        let mut cursor = Some(page.high_water_event_id + 1);
+        for number in ["3", "2", "1"] {
+            let page = store.history_page("s1", cursor).await.unwrap();
+            let answers: Vec<Value> = page
+                .events
+                .iter()
+                .map(|row| row.get().parse::<Value>().unwrap())
+                .filter(|row| row["update"]["sessionUpdate"] == "agent_message_chunk")
+                .map(|row| row["update"]["content"]["text"].clone())
+                .collect();
+            assert_eq!(answers, [json!(number)]);
+            cursor = page.older_cursor;
+        }
+        assert!(cursor.is_none());
+        for events in [stored, visible] {
+            let replies: Vec<_> = events
+                .iter()
+                .map(|p| &p["update"])
+                .filter(|u| u["sessionUpdate"] == "agent_message_chunk")
+                .collect();
+            assert_eq!(
+                replies
+                    .iter()
+                    .map(|u| u["content"]["text"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["1", "2", "3"]
+            );
+            let stamps: Vec<_> = replies.iter().map(|u| &u["_meta"]["distill"]).collect();
+            assert_eq!(stamps[0]["assistantMessageId"], turn.assistant_message_id);
+            for i in 1..3 {
+                assert_eq!(stamps[i]["messageId"], turn.message_id);
+                assert_eq!(replies[i]["messageId"], stamps[i]["assistantMessageId"]);
+                assert_eq!(stamps[i]["autonomous"], true);
+                assert_ne!(
+                    stamps[i]["assistantMessageId"],
+                    stamps[i - 1]["assistantMessageId"]
+                );
+                assert_ne!(stamps[i]["runId"], stamps[i - 1]["runId"]);
+                assert!(events.iter().any(|p| p["update"]["_meta"]["distill"]
+                    ["autonomousFinished"]
+                    == true
+                    && p["update"]["_meta"]["codex"]["threadStatus"]["type"] == "idle"
+                    && p["update"]["_meta"]["distill"]["runId"] == stamps[i]["runId"]));
+            }
+        }
+        assert!(live.background.active_run_id().is_none());
+        Inner::claim_turn(&mut live, &TurnIds::new()).unwrap();
+        dir.close().await;
+    }
+
+    #[test]
+    fn codex_bills_the_final_turn_total_once() {
+        let (mut live, _) = active_chat("codex-acp");
+        let mut pending = Vec::new();
+        for update in [
+            status("active"),
+            usage(21771, 21771, 1398, 20352, 21),
+            text("3"),
+            usage(21990, 43761, 9431, 34304, 26),
+            status("idle"),
+            status("idle"),
+        ] {
+            route(&mut live, None, update, &mut pending);
+        }
+        let deltas: Vec<_> = pending
+            .iter()
+            .map(|(_, p)| &p["update"])
+            .filter(|u| u["sessionUpdate"] == "message_usage")
+            .collect();
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(
+            deltas[0]["usage"],
+            json!({"inputTokens":9431,"outputTokens":26,"cacheReadTokens":34304,"cacheWriteTokens":0})
+        );
+    }
+
+    #[test]
+    fn grok_completion_bills_and_settles_even_when_the_ledger_uses_a_separate_channel() {
+        let (mut live, _) = active_chat("grok-acp");
+        let mut pending = Vec::new();
+        route(&mut live, None, text("2"), &mut pending);
+        // Grok 1.0.40, after the foreground response: a background command
+        // finished, the model sent "2", then this billed terminal arrived.
+        let mut end = json!({"sessionId":"bridge","update":{"sessionUpdate":"turn_completed",
+            "prompt_id":"task-completed-cdea056d-c3e2-4154-9299-3da48cc2137a",
+            "stop_reason":"end_turn","elapsed_ms":1176,"usage":{
+                "inputTokens":19709,"outputTokens":45,"totalTokens":19754,"cachedReadTokens":19456,
+                "cacheCreationTokens":0,"reasoningTokens":44,"modelCalls":1,"apiDurationMs":1082,
+                "costUsdTicks":105040000,"numTurns":1}}});
+        assert!(Inner::normalize_xai_turn_usage(
+            "_x.ai/session_notification",
+            &mut end
+        ));
+        route(&mut live, None, end["update"].take(), &mut pending);
+        assert_eq!(pending.len(), 3);
+        assert_eq!(
+            pending[1].1["update"]["usage"],
+            json!({
+                "inputTokens":253,"outputTokens":45,"cacheReadTokens":19456,"cacheWriteTokens":0,"elapsedMs":1082
+            })
+        );
+        assert_eq!(
+            pending[2].1["update"]["sessionUpdate"],
+            "session_info_update"
+        );
+        assert_eq!(
+            pending[2].1["update"]["_meta"]["distill"]["autonomousFinished"],
+            true
+        );
+        assert!(!live.background.is_busy());
+    }
+
+    #[test]
+    fn grok_error_completion_without_usage_settles_without_a_ledger_entry() {
+        let (mut live, _) = active_chat("grok-acp");
+        let mut pending = Vec::new();
+        route(&mut live, None, text("2"), &mut pending);
+        let mut end = json!({"sessionId":"bridge","update":{"sessionUpdate":"turn_completed",
+            "prompt_id":"p","stop_reason":"error","agent_result":"API error (status 402 Payment Required): Grok Build usage balance exhausted",
+            "elapsed_ms":342}});
+        assert!(!Inner::normalize_xai_turn_usage(
+            "_x.ai/session_notification",
+            &mut end
+        ));
+        assert!(
+            Inner::unbilled_xai_completion("_x.ai/session_notification", Some("old"), &end)
+                .is_none()
+        );
+        let closing =
+            Inner::unbilled_xai_completion("_x.ai/session_notification", None, &end).unwrap();
+        route(&mut live, None, closing, &mut pending);
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            pending[1].1["update"]["_meta"]["distill"]["autonomousFinished"],
+            true
+        );
+        assert!(!live.background.is_busy());
+    }
+
+    #[test]
+    fn ordinary_background_turn_holds_the_chat_and_its_dispatch_slot() {
+        let (mut live, _) = active_chat("example");
+        let mut pending = Vec::new();
+        route(&mut live, None, text("2"), &mut pending);
+        assert!(live.has_pending_chat_work());
+        assert!(!Inner::session_is_evictable(
+            &live,
+            true,
+            live.last_active + SESSION_IDLE_TIMEOUT
+        ));
+        assert_eq!(
+            Inner::claim_turn(&mut live, &TurnIds::new()).unwrap_err(),
+            live.background.active_run_id().unwrap()
+        );
+        route(
+            &mut live,
+            None,
+            json!({"sessionUpdate":"message_usage",
+            "usage":{"inputTokens":8,"outputTokens":5,"cacheReadTokens":2}}),
+            &mut pending,
+        );
+        assert!(!live.has_pending_chat_work());
+        assert_eq!(
+            pending.last().unwrap().1["update"]["_meta"]["distill"]["autonomousFinished"],
+            true
+        );
+        Inner::claim_turn(&mut live, &TurnIds::new()).unwrap();
+    }
+
+    #[test]
+    fn stop_closes_the_reply_and_rejects_its_tail() {
+        for provider in ["codex-acp", "grok-acp", "example"] {
+            let (mut live, _) = active_chat(provider);
+            let mut pending = Vec::new();
+            route(&mut live, None, text("2"), &mut pending);
+            let id = live.background.active_run_id().unwrap().to_owned();
+            let (_, stopped) = live.stop("s1");
+            assert_eq!(stopped.unwrap()["update"]["_meta"]["distill"]["runId"], id);
+            route(&mut live, None, text("late"), &mut pending);
+            assert_eq!(pending.len(), 1);
+            assert!(!live.has_pending_chat_work());
+        }
+    }
+
+    #[test]
+    fn silent_turn_releases_the_composer_only_after_its_last_update_expires() {
+        let (mut live, _) = active_chat("example");
+        let mut pending = Vec::new();
+        route(&mut live, None, text("2"), &mut pending);
+        let now = std::time::Instant::now();
+        assert!(live.background.expire(now, "s1").is_none());
+        let end = live
+            .background
+            .expire(
+                now + crate::services::agent_host::background::CONTINUATION_SILENCE,
+                "s1",
+            )
+            .unwrap();
+        assert_eq!(
+            end["update"]["_meta"]["distill"]["autonomousFinished"],
+            true
+        );
+        assert!(live.background.active_run_id().is_none());
+        Inner::claim_turn(&mut live, &TurnIds::new()).unwrap();
+    }
+
+    #[test]
+    fn a_finished_prompts_tag_cannot_open_or_join_a_background_reply() {
+        let (mut live, turn) = active_chat("codex-acp");
+        let mut pending = Vec::new();
+        route(&mut live, Some(&turn.run_id), text("stale"), &mut pending);
+        assert!(pending.is_empty());
+        route(&mut live, None, text("2"), &mut pending);
+        route(&mut live, Some(&turn.run_id), text("stale"), &mut pending);
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn owned_and_kimi_routes_reject_unsolicited_bridge_replies() {
+        for provider in ["claude-acp", "codex-acp", "grok-acp", "kimi-acp", "example"] {
+            let (mut live, _) = active_chat(provider);
+            let mut pending = Vec::new();
+            for profile in ["text-only", "repository"] {
+                live.execution_profile = Some(profile.into());
+                route(&mut live, None, text("owned"), &mut pending);
+            }
+            if provider == "kimi-acp" {
+                live.execution_profile = None;
+                route(&mut live, None, text("relay only"), &mut pending);
+            }
+            assert!(pending.is_empty(), "{provider}");
+        }
     }
 }
 
@@ -3495,7 +3845,7 @@ fn a_turn_that_failed_after_producing_output_records_the_reason_with_its_end() {
 
 #[test]
 fn a_turn_nobody_awaits_reports_its_end_as_a_cleared_active_run() {
-    let update = Inner::run_settled_update("s1");
+    let update = protocol::run_settled_update("s1");
     assert_eq!(update["sessionId"], "s1");
     assert_eq!(update["update"]["sessionUpdate"], "session_info_update");
     // `acpSessionInfoUpdate.ts` keys off `"activeRunId" in meta` and treats
@@ -3512,20 +3862,23 @@ fn stopping_a_background_reply_ends_the_run_the_chat_waits_on() {
     let mut live = runtime("claude-acp", "a", 1);
     live.background.allow("user-message");
     let mut wake_up = json!({"update":{"sessionUpdate":"tool_call","toolCallId":"date"}});
-    assert!(live.background.stamp_continuation(&mut wake_up, "now"));
-    assert_eq!(live.stop(), (0, true));
+    assert!(live
+        .background
+        .stamp_continuation(&mut wake_up, "now", "claude-acp"));
+    assert!(live.stop("a").1.is_some());
     assert!(live.background.active_run_id().is_none());
     assert!(!live.background.stamp_continuation(
         &mut json!({"update":{"sessionUpdate":"agent_message_chunk"}}),
-        "later"
+        "later",
+        "claude-acp"
     ));
 
     // A prompt the renderer sent settles through its own answer instead.
     live.background.allow("next-message");
     live.run = Some(RunState::start(&ids()));
-    assert_eq!(live.stop(), (0, false));
+    assert_eq!(live.stop("a"), (0, None));
     live.run = None;
-    assert_eq!(live.stop(), (0, false));
+    assert_eq!(live.stop("a"), (0, None));
 }
 
 #[test]

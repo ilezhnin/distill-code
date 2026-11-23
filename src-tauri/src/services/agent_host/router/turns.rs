@@ -135,13 +135,6 @@ impl Inner {
             if self.shutdown_prepared.load(Ordering::SeqCst) {
                 return Err(invalid_params("Flock is closing"));
             }
-            if let Some(active) = runtime.background.active_run_id() {
-                return Err(protocol::error_with_data(
-                    protocol::INVALID_PARAMS,
-                    "The agent is processing a background result",
-                    json!({"actualRunId": active}),
-                ));
-            }
             match Self::claim_turn(runtime, &ids) {
                 Ok(bridge_session_id) => {
                     self.activity_generations
@@ -149,6 +142,13 @@ impl Inner {
                         .unwrap_or_else(|e| e.into_inner())
                         .record(&runtime.harness, runtime.account_id.as_deref());
                     bridge_session_id
+                }
+                Err(active) if runtime.background.active_run_id().is_some() => {
+                    return Err(protocol::error_with_data(
+                        protocol::INVALID_PARAMS,
+                        "The agent is processing a background result",
+                        json!({"actualRunId": active}),
+                    ));
                 }
                 Err(active_run_id) => {
                     if steer {
@@ -177,6 +177,7 @@ impl Inner {
             Err(error) => {
                 if let Some(runtime) = self.sessions.lock().await.get_mut(&session_id) {
                     runtime.run = None;
+                    runtime.background.cancel();
                 }
                 return Err(error);
             }
@@ -388,11 +389,18 @@ impl Inner {
                     }
                     break;
                 }
+                // A provider continuation can beat the cleanup of its parent
+                // prompt. Keep the earlier queue claim until the reply ends.
+                if !runtime.steer_queue.is_empty() && runtime.background.active_run_id().is_some() {
+                    drop(sessions);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                }
                 let Some(queued) = runtime.steer_queue.pop_front() else {
                     runtime.run = None;
                     break;
                 };
-                if runtime.harness == "claude-acp" && runtime.execution_profile.is_none() {
+                if runtime.accepts_continuations() {
                     runtime.background.allow(&queued.ids.message_id);
                 }
                 runtime.run = Some(RunState::start(&queued.ids));
@@ -498,10 +506,10 @@ impl Inner {
         runtime: &mut SessionRuntime,
         ids: &TurnIds,
     ) -> Result<String, String> {
-        if let Some(active) = runtime.run.as_ref() {
-            return Err(active.run_id.clone());
+        if let Some(active) = runtime.active_run_id() {
+            return Err(active.to_owned());
         }
-        if runtime.harness == "claude-acp" && runtime.execution_profile.is_none() {
+        if runtime.accepts_continuations() {
             runtime.background.allow(&ids.message_id);
         }
         runtime.run = Some(RunState::start(ids));

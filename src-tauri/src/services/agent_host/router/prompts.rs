@@ -812,19 +812,6 @@ impl Inner {
         )
     }
 
-    /// The update that tells the renderer a turn has ended when no request of
-    /// its own will carry the answer. `_meta.activeRunId == null` is what
-    /// `acpSessionInfoUpdate.ts` settles a chat's active run on.
-    pub(super) fn run_settled_update(session_id: &str) -> Value {
-        json!({
-            "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "session_info_update",
-                "_meta": { "activeRunId": Value::Null },
-            }
-        })
-    }
-
     /// The transcript's own record that a turn failed after it produced
     /// something: the reply above it is what the agent managed, and `reason`
     /// is why it stops there. Persisted like any other update, so a reload

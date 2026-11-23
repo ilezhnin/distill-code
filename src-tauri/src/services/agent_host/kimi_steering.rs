@@ -12,34 +12,9 @@
 
 use std::path::Path;
 
-use base64::Engine as _;
-
 use super::bridge::SpawnEnv;
-use crate::services::env_key;
 
 const PRELOAD: &str = include_str!("../../../resources/kimi-acp-steering.mjs");
-
-/// The `NODE_OPTIONS` entry that loads the preload. The preload takes it out
-/// of its own process's environment again, so nothing Kimi starts loads it.
-fn import_option() -> String {
-    format!(
-        "--import=data:text/javascript;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(PRELOAD)
-    )
-}
-
-/// `NODE_OPTIONS` for a Kimi Code bridge: the user's own options, then the
-/// preload.
-fn node_options(existing: Option<&str>) -> String {
-    let import = import_option();
-    match existing
-        .map(str::trim)
-        .filter(|options| !options.is_empty())
-    {
-        Some(existing) => format!("{existing} {import}"),
-        None => import,
-    }
-}
 
 /// Whether `executable`, what `kimi` resolves to, starts Kimi Code's Node
 /// CLI: npm's Windows launcher of `@moonshot-ai/kimi-code`, or a link to its
@@ -68,15 +43,7 @@ pub(super) fn bridge_node_options(executable: &Path, env: &SpawnEnv) -> Option<S
     if !launches_kimi_code(executable) {
         return None;
     }
-    let inherited = env
-        .extra_env
-        .iter()
-        .rev()
-        .find(|(key, _)| env_key::matches(key, "NODE_OPTIONS"))
-        .map(|(_, value)| value.clone())
-        .or_else(|| env_key::get(&env.shell_env, "NODE_OPTIONS").map(str::to_string))
-        .or_else(|| crate::services::shell_env::user_env_var("NODE_OPTIONS"));
-    Some(node_options(inherited.as_deref()))
+    Some(super::harness_env::bridge_node_options(env, PRELOAD))
 }
 
 #[cfg(test)]
@@ -128,7 +95,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let kimi = dir.path().join("kimi.cmd");
         std::fs::write(&kimi, NPM_LAUNCHER).unwrap();
-        let import = import_option();
+        let import = super::super::harness_env::node_import(PRELOAD);
         assert_eq!(
             bridge_node_options(
                 &kimi,

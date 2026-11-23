@@ -46,7 +46,7 @@ impl Inner {
             let mut sessions = self.sessions.lock().await;
             if sessions
                 .get(session_id)
-                .is_some_and(|runtime| runtime.run.is_some())
+                .is_some_and(SessionRuntime::has_pending_chat_work)
             {
                 None
             } else {

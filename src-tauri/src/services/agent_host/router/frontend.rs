@@ -289,7 +289,7 @@ impl Inner {
         log::info!(
             "[agent-host] turn of {session_id} ended after its renderer left; settling it for the current one"
         );
-        self.notify_frontend("session/update", Self::run_settled_update(session_id));
+        self.notify_frontend("session/update", protocol::run_settled_update(session_id));
     }
 
     pub(super) async fn handle_frontend_line(self: Arc<Self>, line: String, reply_to: ReplyTo) {
@@ -328,20 +328,29 @@ impl Inner {
         }
         if method == "session/cancel" {
             if let Some(session_id) = protocol::session_id(&params) {
-                let ((dropped, ended_background), cancelled_run) = self
+                // Do not let the next prompt claim the released chat before
+                // its predecessor's cancel has gone to the bridge.
+                let lock = self.attach_lock(&session_id).await;
+                let mut admission = Some(lock.lock().await);
+                let (dropped, cancelled_run, kimi) = self
                     .sessions
                     .lock()
                     .await
                     .get_mut(&session_id)
                     .map(|runtime| {
                         let run = runtime.run.as_ref().map(|run| run.run_id.clone());
-                        (runtime.stop(), run)
+                        let (dropped, closing) = runtime.stop(&session_id);
+                        if let Some(params) = closing {
+                            let _ = self.events_tx.send(BridgeEvent::BackgroundFinished {
+                                session_id: session_id.clone(),
+                                params,
+                            });
+                        }
+                        (dropped, run, runtime.harness == "kimi-acp")
                     })
-                    .unwrap_or(((0, false), None));
-                if ended_background {
-                    self.notify_frontend("session/update", Self::run_settled_update(&session_id));
-                }
-                if cancelled_run.is_none() {
+                    .unwrap_or((0, None, false));
+                if kimi && cancelled_run.is_none() {
+                    drop(admission.take()); // The Kimi relay takes the attach lock to close its session.
                     self.stop_kimi_own_turn(&session_id).await;
                 }
                 if dropped > 0 {
@@ -375,8 +384,7 @@ impl Inner {
             .await
             .iter()
             .filter(|(_, runtime)| {
-                runtime.execution_profile.is_none()
-                    && (runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty())
+                runtime.execution_profile.is_none() && runtime.has_pending_chat_work()
             })
             .map(|(id, _)| id.clone())
             .collect();

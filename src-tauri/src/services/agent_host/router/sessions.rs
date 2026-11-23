@@ -662,10 +662,21 @@ impl Inner {
         // Everything the bridge replayed for this session is already in the
         // event queue; let the loop swallow it all before the session is live,
         // or its tail would be appended to the transcript a second time.
+        let parent = if resumed && record.harness != "kimi-acp" {
+            self.store
+                .latest_prompt_id(&record.id)
+                .await
+                .map_err(protocol::internal)?
+        } else {
+            None
+        };
         self.drain_bridge_events().await?;
         {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.rebind(&record.id, bridge_session_id.clone()) {
+                if let Some(parent) = parent {
+                    runtime.background.allow(&parent);
+                }
                 runtime.loading = false;
                 runtime.snapshot = snapshot;
                 runtime.has_model_option = has_model_option;
@@ -867,13 +878,7 @@ impl Inner {
             .lock()
             .await
             .get(session_id)
-            .and_then(|runtime| {
-                runtime
-                    .run
-                    .as_ref()
-                    .map(|run| run.run_id.clone())
-                    .or_else(|| runtime.background.active_run_id().map(str::to_string))
-            })
+            .and_then(|runtime| runtime.active_run_id().map(str::to_string))
     }
 
     /// The run a chat is busy with as the renderer is to see it: a prompt's or

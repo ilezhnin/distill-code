@@ -474,6 +474,7 @@ impl Inner {
             };
             // Chats first: a bridge whose last chat is let go of here is one
             // the reaper may shut down once its own idle window has passed.
+            let _ = host.events_tx.send(BridgeEvent::ExpireContinuations);
             host.evict_idle_sessions().await;
             host.reap_idle_bridges().await;
         }

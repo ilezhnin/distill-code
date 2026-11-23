@@ -1078,6 +1078,21 @@ impl SessionStore {
             .bind(session_id).fetch_one(&self.pool).await.map_err(|e|db_error("read execution policy violations",e))
     }
 
+    pub async fn latest_prompt_id(&self, session_id: &str) -> Result<Option<String>, String> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(json_extract(payload_json,'$.update._meta.distill.messageId'),
+                             json_extract(payload_json,'$.update.messageId'))
+             FROM session_events WHERE session_id=? AND json_valid(payload_json)
+             AND json_extract(payload_json,'$.update.sessionUpdate')='user_message_chunk'
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(Option::flatten)
+        .map_err(|e| db_error("read parent prompt", e))
+    }
+
     /// How full a session's context window was when it last said: the `used`
     /// and `size` of its latest `usage_update`s.
     ///
@@ -1809,6 +1824,24 @@ impl SessionStore {
             .collect())
     }
 
+    /// History readers use the same settlement as a live prompt's end to
+    /// close the preceding bubble. Sending this during live delivery would
+    /// tell the composer it was idle while the next reply was running.
+    fn push_history(
+        compactor: &mut super::replay::Compactor,
+        session_id: &str,
+        payload: String,
+    ) -> bool {
+        if payload.contains(r#""autonomousStarted":true"#)
+            && payload.parse::<Value>().ok().is_some_and(|event| {
+                event.pointer("/update/_meta/distill/autonomousStarted") == Some(&Value::Bool(true))
+            })
+        {
+            compactor.push(super::protocol::run_settled_update(session_id).to_string());
+        }
+        compactor.push(payload)
+    }
+
     /// Compact one consistent SQLite read while streaming rows. Only the
     /// compacted output is retained until it can be sent without interleaving
     /// live notifications. The raw transcript is never materialized as a Vec.
@@ -1831,7 +1864,7 @@ impl SessionStore {
             if payload.contains("\"evidenceOnly\":true") {
                 continue;
             }
-            if compactor.push(payload) {
+            if Self::push_history(&mut compactor, session_id, payload) {
                 count += 1;
             }
         }
@@ -2145,15 +2178,33 @@ impl SessionStore {
         let mut start = 0;
         let mut older = false;
         {
-            let mut rows = sqlx::query("SELECT id, json_extract(payload_json, '$.update.messageId') AS message_id, json_extract(payload_json, '$.update._meta.distill.messageId') AS host_message_id, json_extract(payload_json, '$.update._meta.distill.runId') AS run_id FROM session_events WHERE session_id = ? AND id < ? AND json_valid(payload_json) AND json_extract(payload_json, '$.update.sessionUpdate') = 'user_message_chunk' ORDER BY id DESC")
+            let mut rows = sqlx::query(
+                "SELECT id, json_extract(payload_json, '$.update.messageId') AS message_id,
+                     json_extract(payload_json, '$.update._meta.distill.messageId') AS host_message_id,
+                     json_extract(payload_json, '$.update._meta.distill.runId') AS run_id,
+                     json_extract(payload_json, '$.update._meta.distill.autonomousStarted') AS autonomous_start
+                 FROM session_events WHERE session_id = ? AND id < ? AND json_valid(payload_json)
+                     AND (json_extract(payload_json, '$.update.sessionUpdate') = 'user_message_chunk'
+                          OR autonomous_start = 1) ORDER BY id DESC",
+            )
                 .bind(session_id).bind(end).fetch(&mut *tx);
             let mut last = None;
             let mut turns = 0;
+            let mut starts_with_autonomous = false;
             while let Some(row) = rows
                 .try_next()
                 .await
                 .map_err(|e| db_error("failed to read prompt boundaries", e))?
             {
+                // Older pages are parsed in isolation and skip session state.
+                // Keep an autonomous reply at the head so no preceding answer
+                // can be merged into it when those pages are prepended.
+                if before.is_some() && starts_with_autonomous {
+                    older = true;
+                    break;
+                }
+                starts_with_autonomous =
+                    row.get::<Option<bool>, _>("autonomous_start") == Some(true);
                 let identity = row
                     .get::<Option<String>, _>("run_id")
                     .or_else(|| row.get("message_id"))
@@ -2185,10 +2236,11 @@ impl SessionStore {
                 .await
                 .map_err(|e| db_error("failed to read history page", e))?
             {
-                compactor.push(super::replay::defer_tool_result(
-                    row.get("payload_json"),
-                    row.get("id"),
-                ));
+                Self::push_history(
+                    &mut compactor,
+                    session_id,
+                    super::replay::defer_tool_result(row.get("payload_json"), row.get("id")),
+                );
             }
         }
         tx.commit()

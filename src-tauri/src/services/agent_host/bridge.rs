@@ -240,6 +240,11 @@ pub enum BridgeEvent {
         /// rather than the process dying on its own.
         stopped: bool,
     },
+    ExpireContinuations,
+    BackgroundFinished {
+        session_id: String,
+        params: Value,
+    },
     /// Not a bridge event at all: a marker the host puts in the same queue to
     /// learn when everything queued before it has been handled. Answering
     /// `ack` is the event loop's only work for it.
@@ -719,6 +724,12 @@ impl Bridge {
                 // paths must keep being launched the way `cmd.exe` reads it,
                 // arguments and all.
                 let fingerprint = fingerprint_of(spec.id, &executable);
+                if spec.id == "codex-acp" && managed_acp_tools::is_managed(spec.id) {
+                    node_options = Some(super::harness_env::bridge_node_options(
+                        env,
+                        include_str!("codex_usage.mjs"),
+                    ));
+                }
                 if spec.id == "kimi-acp" {
                     node_options = super::kimi_steering::bridge_node_options(&executable, env);
                     if node_options.is_some() {

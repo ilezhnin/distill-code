@@ -10,6 +10,35 @@ use tauri::Manager;
 use super::bridge::SpawnEnv;
 use crate::services::{env_key, managed_acp_tools};
 
+pub(super) fn node_import(preload: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "--import=data:text/javascript;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(preload)
+    )
+}
+
+/// Append a bridge-only preload after any Node options the user supplied.
+pub(super) fn bridge_node_options(env: &SpawnEnv, preload: &str) -> String {
+    let inherited = env
+        .extra_env
+        .iter()
+        .rev()
+        .find(|(key, _)| env_key::matches(key, "NODE_OPTIONS"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| env_key::get(&env.shell_env, "NODE_OPTIONS").map(str::to_string))
+        .or_else(|| crate::services::shell_env::user_env_var("NODE_OPTIONS"));
+    let import = node_import(preload);
+    match inherited
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(existing) => format!("{existing} {import}"),
+        None => import,
+    }
+}
+
 pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
     let shell_env = managed_acp_tools::provider_env(app).await;
     let mut prepend_dirs: Vec<PathBuf> = Vec::new();

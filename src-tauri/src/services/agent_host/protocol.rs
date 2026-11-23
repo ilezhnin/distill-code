@@ -8,6 +8,19 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 
+/// The update that tells the renderer a turn has ended when no request of
+/// its own will carry the answer. `_meta.activeRunId == null` is what
+/// `acpSessionInfoUpdate.ts` settles a chat's active run on.
+pub(super) fn run_settled_update(session_id: &str) -> Value {
+    json!({
+        "sessionId": session_id,
+        "update": {
+            "sessionUpdate": "session_info_update",
+            "_meta": { "activeRunId": Value::Null },
+        }
+    })
+}
+
 /// One parsed JSON-RPC message.
 #[derive(Debug, Clone)]
 pub enum Message {

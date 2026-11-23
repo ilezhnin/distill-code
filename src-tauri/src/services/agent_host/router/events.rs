@@ -1,6 +1,13 @@
 //! What a bridge sends: the event loop, notifications and requests, and how an update is accepted and stamped.
 use super::*;
 
+#[derive(PartialEq, Eq)]
+pub(super) enum UpdateDelivery {
+    Drop,
+    Live,
+    Store,
+}
+
 impl Inner {
     /// The one loop that handles every bridge's events, in the order they
     /// arrived. Writing each streamed chunk to SQLite from here is what used to
@@ -53,7 +60,7 @@ impl Inner {
                         )
                         .await
                     {
-                        pending.push(event);
+                        Self::stage_background_result(&mut pending, event);
                         if pending.len() >= APPEND_BATCH_LIMIT {
                             let _ = self.flush_pending_events(&mut pending).await;
                         }
@@ -98,6 +105,19 @@ impl Inner {
                     let result = self.flush_pending_events(&mut pending).await;
                     let _ = ack.send(result);
                 }
+                BridgeEvent::ExpireContinuations => {
+                    let mut sessions = self.sessions.lock().await;
+                    let now = std::time::Instant::now();
+                    for (id, runtime) in &mut sessions.runtimes {
+                        if let Some(closing) = runtime.background.expire(now, id) {
+                            Self::stage_background_result(&mut pending, (id.clone(), closing));
+                            runtime.touch();
+                        }
+                    }
+                }
+                BridgeEvent::BackgroundFinished { session_id, params } => {
+                    Self::stage_background_result(&mut pending, (session_id, params));
+                }
                 BridgeEvent::Exited {
                     harness,
                     generation,
@@ -128,6 +148,12 @@ impl Inner {
                     let mut sessions = self.sessions.lock().await;
                     for (session_id, runtime) in sessions.runtimes.iter_mut() {
                         if runtime.served_by(&harness, generation) && runtime.background.is_busy() {
+                            if let Some(closing) = runtime.background.finish(session_id) {
+                                Self::stage_background_result(
+                                    &mut pending,
+                                    (session_id.clone(), closing),
+                                );
+                            }
                             let tasks = runtime.background.disconnected(&now_iso());
                             pending.push((session_id.clone(), json!({"sessionId": session_id, "update": {
                                 "sessionUpdate": "session_info_update",
@@ -140,6 +166,34 @@ impl Inner {
             }
         }
         let _ = self.flush_pending_events(&mut pending).await;
+    }
+
+    /// The renderer handles a per-turn usage delta on a dedicated ledger
+    /// channel. A separate ACP update settles its stream owner.
+    pub(super) fn stage_background_result(
+        pending: &mut Vec<(String, Value)>,
+        event: (String, Value),
+    ) {
+        let (id, params) = &event;
+        let update = &params["update"];
+        let stamp = &update["_meta"]["distill"];
+        if stamp["autonomousFinished"] == true && stamp["autonomous"] == true {
+            if update["sessionUpdate"] == "message_usage" {
+                let closing = json!({"sessionId": id, "update": {"sessionUpdate": "session_info_update",
+                    "_meta": {"distill": stamp}}});
+                let id = id.clone();
+                pending.push(event);
+                pending.push((id, closing));
+                return;
+            }
+            if let Some(usage) = update["_meta"].get("codexTurnUsage") {
+                pending.push((id.clone(), json!({"sessionId":id, "update":{"sessionUpdate":"message_usage",
+                    "usage":{"inputTokens":usage["inputTokens"],"outputTokens":usage["outputTokens"],
+                        "cacheReadTokens":usage["cachedReadTokens"],"cacheWriteTokens":usage["cachedWriteTokens"]},
+                    "_meta":{"distill":stamp}}})));
+            }
+        }
+        pending.push(event);
     }
 
     /// Commit the session updates a burst of events produced. Consecutive
@@ -305,8 +359,14 @@ impl Inner {
             if benchmark {
                 return None;
             }
-            self.notify_frontend(method, params);
-            return None;
+            let Some(end) = Self::unbilled_xai_completion(method, received_run, &params) else {
+                self.notify_frontend(method, params);
+                return None;
+            };
+            // Grok may finish with no billable usage (including an error).
+            // Preserve the raw extension, and settle only an existing reply.
+            self.notify_frontend(method, params.clone());
+            params["update"] = end;
         }
         let bridge_session_id = protocol::session_id(&params)?;
         let Some(session_id) = self
@@ -357,39 +417,30 @@ impl Inner {
                 if runtime.loading || runtime.generation != generation {
                     return None;
                 }
-                if !Self::accept_update(runtime, received_run, &mut params, relayed) {
+                if method != "session/update"
+                    && (runtime.harness != "grok-acp"
+                        || runtime.background.active_run_id().is_none())
+                {
                     return None;
                 }
-                if runtime.execution_profile.is_none()
-                    && (Self::is_command_list_update(&params)
-                        || Self::is_failure_state_update(&params)
-                        || Self::is_thread_status_update(&params)
-                        || Self::is_zero_usage_update(&params)
-                        || params
-                            .pointer("/update/sessionUpdate")
-                            .and_then(Value::as_str)
-                            == Some("notice"))
+                let background_was_active = runtime.background.active_run_id().is_some();
+                match Self::route_update(runtime, received_run, &mut params, relayed, evidence_only)
                 {
-                    // Passed on, but neither a part of the turn nor of the
-                    // transcript. Notices are explicitly live-only in ACP.
-                    drop(sessions);
-                    params["sessionId"] = json!(session_id);
-                    self.notify_frontend("session/update", params);
-                    return None;
+                    UpdateDelivery::Drop => return None,
+                    UpdateDelivery::Live => {
+                        drop(sessions);
+                        params["sessionId"] = json!(session_id);
+                        self.notify_frontend("session/update", params);
+                        return None;
+                    }
+                    UpdateDelivery::Store => persist = true,
                 }
-                // Only what the conversation is made of counts as use: a
-                // bridge restating its command list to every session it has
-                // would otherwise keep every chat of it attached for good.
-                runtime.touch();
-                persist = true;
-                if let Some(run) = runtime
-                    .run
-                    .as_mut()
-                    .filter(|run| Some(run.run_id.as_str()) == received_run)
-                {
-                    Self::stamp_staged_update(&mut params, run, &now_iso(), evidence_only);
+                if !background_was_active && runtime.background.active_run_id().is_some() {
+                    self.activity_generations
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .record(&runtime.harness, runtime.account_id.as_deref());
                 }
-                runtime.context.observe(&mut params);
                 if let Some(options) = Self::config_option_update(&params) {
                     // A bridge moves these without being asked: claude drops
                     // an effort a model does not offer, and the SDK flips fast
@@ -501,6 +552,47 @@ impl Inner {
     /// Whether a chat keeps an update: one the bridge sent (see
     /// [`Self::accept_turn_update`]), or one the host read from an ordinary
     /// Kimi chat's own session record (`relayed`), which only the host queues.
+    pub(super) fn route_update(
+        runtime: &mut SessionRuntime,
+        received_run: Option<&str>,
+        params: &mut Value,
+        relayed: bool,
+        evidence_only: bool,
+    ) -> UpdateDelivery {
+        if !Self::accept_update(runtime, received_run, params, relayed) {
+            return UpdateDelivery::Drop;
+        }
+        if runtime.execution_profile.is_none()
+            && (Self::is_command_list_update(params)
+                || Self::is_failure_state_update(params)
+                || Self::is_thread_status_update(params)
+                || (Self::is_zero_usage_update(params)
+                    && params.pointer("/update/_meta/distill/autonomous")
+                        != Some(&Value::Bool(true)))
+                || params
+                    .pointer("/update/sessionUpdate")
+                    .and_then(Value::as_str)
+                    == Some("notice"))
+        {
+            // Passed on, but neither a part of the turn nor of the
+            // transcript. Notices are explicitly live-only in ACP.
+            return UpdateDelivery::Live;
+        }
+        // Only what the conversation is made of counts as use: a
+        // bridge restating its command list to every session it has
+        // would otherwise keep every chat of it attached for good.
+        runtime.touch();
+        if let Some(run) = runtime
+            .run
+            .as_mut()
+            .filter(|run| Some(run.run_id.as_str()) == received_run)
+        {
+            Self::stamp_staged_update(params, run, &now_iso(), evidence_only);
+        }
+        runtime.context.observe(params);
+        UpdateDelivery::Store
+    }
+
     pub(super) fn accept_update(
         runtime: &mut SessionRuntime,
         received_run: Option<&str>,
@@ -509,6 +601,15 @@ impl Inner {
     ) -> bool {
         if relayed {
             return runtime.harness == "kimi-acp" && runtime.execution_profile.is_none();
+        }
+        // Only the host can identify a background reply or end one.
+        if let Some(stamp) = params
+            .pointer_mut("/update/_meta/distill")
+            .and_then(Value::as_object_mut)
+        {
+            stamp.remove("autonomous");
+            stamp.remove("autonomousFinished");
+            stamp.remove("autonomousStarted");
         }
         steering::acknowledge_echo(&mut runtime.native_steers, received_run, params);
         Self::accept_turn_update(runtime, received_run, params)
@@ -524,11 +625,16 @@ impl Inner {
         if ordinary_claude {
             runtime.background.task_update(params, &now_iso());
         }
-        if !Self::is_turn_update(params) {
+        if received_run.is_none()
+            && runtime.accepts_continuations()
+            && runtime
+                .background
+                .stamp_continuation(params, &now_iso(), &runtime.harness)
+        {
             return true;
         }
-        if ordinary_claude && received_run.is_none() {
-            return runtime.background.stamp_continuation(params, &now_iso());
+        if !Self::is_turn_update(params) {
+            return true;
         }
         received_run.is_some()
             && runtime.run.as_ref().map(|run| run.run_id.as_str()) == received_run
@@ -564,6 +670,26 @@ impl Inner {
         )
     }
 
+    fn is_xai_turn_completed(method: &str, params: &Value) -> bool {
+        Self::is_xai_session_extension(method)
+            && params
+                .pointer("/update/sessionUpdate")
+                .and_then(Value::as_str)
+                == Some("turn_completed")
+    }
+
+    pub(super) fn unbilled_xai_completion(
+        method: &str,
+        run: Option<&str>,
+        params: &Value,
+    ) -> Option<Value> {
+        (run.is_none() && Self::is_xai_turn_completed(method, params)).then(|| {
+            json!({
+                "sessionUpdate":"session_info_update", "_meta":{"xaiTurnCompleted":true}
+            })
+        })
+    }
+
     /// Rewrites grok's `turn_completed` session extension update into the
     /// standard `message_usage` update, so grok turns reach the usage ledger
     /// the way claude's and codex's do; every other `_x.ai` extension keeps
@@ -573,16 +699,10 @@ impl Inner {
     /// (1 USD = 1e10 ticks) is complete only when grok says so, which
     /// benchmarks check before counting it; chats show no cost from it.
     pub(super) fn normalize_xai_turn_usage(method: &str, params: &mut Value) -> bool {
-        if !Self::is_xai_session_extension(method) {
+        if !Self::is_xai_turn_completed(method, params) {
             return false;
         }
-        let Some(update) = params.get("update") else {
-            return false;
-        };
-        if update.get("sessionUpdate").and_then(Value::as_str) != Some("turn_completed") {
-            return false;
-        }
-        let Some(usage) = update.get("usage") else {
+        let Some(usage) = params.pointer("/update/usage") else {
             return false;
         };
         let read = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);

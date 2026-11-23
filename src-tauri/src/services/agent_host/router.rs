@@ -547,9 +547,7 @@ pub const CHATS_ACTIVE: &str = "Wait for active chats to finish or stop them bef
 /// or with prompts queued, and owned (benchmark) sessions likewise.
 fn active_turns<'a>(sessions: impl Iterator<Item = &'a SessionRuntime>) -> (usize, usize) {
     sessions
-        .filter(|runtime| {
-            runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
-        })
+        .filter(|runtime| runtime.has_pending_chat_work())
         .fold((0, 0), |(chats, tests), runtime| {
             if runtime.execution_profile.is_some() {
                 (chats, tests + 1)
@@ -630,6 +628,20 @@ impl SessionRuntime {
         self.route_key() == harness && self.generation == generation
     }
 
+    fn active_run_id(&self) -> Option<&str> {
+        self.background
+            .active_run_id()
+            .or_else(|| self.run.as_ref().map(|run| run.run_id.as_str()))
+    }
+
+    fn has_pending_chat_work(&self) -> bool {
+        self.loading || self.active_run_id().is_some() || !self.steer_queue.is_empty()
+    }
+
+    fn accepts_continuations(&self) -> bool {
+        self.execution_profile.is_none() && self.harness != "kimi-acp"
+    }
+
     /// Forget the messages steered into the running turn, and report how many
     /// there were. A queued steer is only persisted and echoed when it is
     /// actually sent, so a sequence the user stopped — or one the bridge cut
@@ -644,10 +656,9 @@ impl SessionRuntime {
     /// Stop means stop: the messages steered into the turn being cancelled
     /// are not started as turns of their own once it returns, and a reply the
     /// agent continued on its own ends here. Reports the steers dropped and
-    /// whether that background reply was the chat's only run: no prompt of the
-    /// renderer settles such a reply, so the host has to say it is over.
-    fn stop(&mut self) -> (usize, bool) {
-        let ended_background = self.run.is_none() && self.background.active_run_id().is_some();
+    /// the closing update for the reply the host has to settle itself.
+    fn stop(&mut self, session_id: &str) -> (usize, Option<Value>) {
+        let ended_background = self.background.finish(session_id);
         self.background.cancel();
         (self.drop_queued_steers(), ended_background)
     }
@@ -1025,8 +1036,7 @@ impl AgentHost {
         }
         let mut sessions = inner.sessions.lock().await;
         if sessions.values().any(|runtime| {
-            runtime.account_id.as_deref() == Some(account_id)
-                && (runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty())
+            runtime.account_id.as_deref() == Some(account_id) && runtime.has_pending_chat_work()
         }) {
             return Err("Finish or stop this account's active chats before changing its credentials or removing it".into());
         }
