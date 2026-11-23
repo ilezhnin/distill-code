@@ -655,6 +655,131 @@ describe("command safety metadata", () => {
 });
 
 describe("sessions.create", () => {
+  it("drains a first-message loop, then delivers a due tick to the existing session through ordinary ACP preparation", async () => {
+    vi.useFakeTimers();
+    const { renderHook } = await import("@testing-library/react");
+    const { useFlockctlQueuedMessageDrain } = await import(
+      "@/features/flockctl/bridge/useFlockctlQueuedMessageDrain"
+    );
+    const { useChatLoopStore, getChatLoops } = await import(
+      "@/features/chat-automation/loopStore"
+    );
+    const { startChatAutomation } = await import(
+      "@/features/chat-automation/goalRuntime"
+    );
+    const id = "session-new";
+    seedModelCache("claude-acp", ["model-9"]);
+    await dispatchCommand(
+      "sessions",
+      {
+        action: "create",
+        prompt: "/loop 1m Inspect",
+        harness_id: "claude-acp",
+        model_id: "model-9",
+      },
+      ctx,
+    );
+    useChatSessionStore.setState({ hasHydratedSessions: true });
+    useChatStore.setState({ hasHydratedMessageQueues: true });
+    const drain = renderHook(() => useFlockctlQueuedMessageDrain());
+    let stop: (() => void) | undefined;
+    try {
+      await vi.waitFor(() => expect(getChatLoops(id)).toHaveLength(1));
+      expect(mocks.acpSendMessage).not.toHaveBeenCalled();
+      stop = startChatAutomation();
+      await vi.waitFor(() => expect(getChatLoops(id)[0].runs).toBe(1));
+      mocks.loadSessionMessages.mockClear();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() =>
+        expect(mocks.acpSendMessage).toHaveBeenCalledTimes(2),
+      );
+      expect(mocks.loadSessionMessages).toHaveBeenCalledWith(id);
+      expect(mocks.acpCreateSession).toHaveBeenCalledTimes(1);
+      for (const [sessionId, text, options] of mocks.acpSendMessage.mock
+        .calls) {
+        expect(sessionId).toBe(id);
+        expect(text).toContain("Inspect");
+        expect(text).not.toMatch(/^\//);
+        expect(options.promptMeta).toMatchObject({
+          distillSenderLabel: "Flock loop",
+          executorSelection: expect.anything(),
+        });
+      }
+    } finally {
+      stop?.();
+      drain.unmount();
+      useChatLoopStore.getState().clear(id);
+      vi.useRealTimers();
+    }
+  });
+  it("processes a first-message goal locally when the cross-session queue drains", async () => {
+    const { renderHook, waitFor } = await import("@testing-library/react");
+    const { useFlockctlQueuedMessageDrain } = await import(
+      "@/features/flockctl/bridge/useFlockctlQueuedMessageDrain"
+    );
+    const { getChatGoal, useChatGoalStore } = await import(
+      "@/features/chat-automation/goalStore"
+    );
+    seedModelCache("claude-acp", ["model-9"]);
+    await dispatchCommand(
+      "sessions",
+      {
+        action: "create",
+        prompt: "/goal Review fixtures",
+        harness_id: "claude-acp",
+        model_id: "model-9",
+      },
+      ctx,
+    );
+    expect(getChatGoal("session-new")).toBeUndefined();
+    useChatSessionStore.setState({ hasHydratedSessions: true });
+    useChatStore.setState({ hasHydratedMessageQueues: true });
+    const drain = renderHook(() => useFlockctlQueuedMessageDrain());
+    let stopAutomation: (() => void) | undefined;
+    try {
+      await waitFor(() =>
+        expect(getChatGoal("session-new")?.objective).toBe("Review fixtures"),
+      );
+      expect(mocks.acpSendMessage).not.toHaveBeenCalled();
+      expect(
+        useChatStore.getState().queuedMessageBySession["session-new"] ?? [],
+      ).toEqual([]);
+      mocks.acpSendMessage.mockImplementation(async () => {
+        await Promise.resolve(); // The host has acknowledged the user message.
+        const text =
+          mocks.acpSendMessage.mock.calls.length === 1
+            ? "More work"
+            : '```flock-goal-state\n{"status":"reached","note":"Reviewed"}\n```';
+        useChatStore.getState().addMessage("session-new", {
+          ...createUserMessage(text),
+          role: "assistant",
+        });
+      });
+      const { startChatAutomation } = await import(
+        "@/features/chat-automation/goalRuntime"
+      );
+      stopAutomation = startChatAutomation();
+      await waitFor(() =>
+        expect(getChatGoal("session-new")?.status).toBe("reached"),
+      );
+      expect(mocks.acpSendMessage).toHaveBeenCalledTimes(2);
+      for (const [id, text, options] of mocks.acpSendMessage.mock.calls) {
+        expect(id).toBe("session-new");
+        expect(text).toContain("Review fixtures");
+        expect(text).not.toMatch(/^\//);
+        expect(options.promptMeta).toMatchObject({
+          origin: "distillctl_cross_session",
+          distillSenderLabel: "Flock goal",
+          executorSelection: expect.anything(),
+        });
+      }
+    } finally {
+      stopAutomation?.();
+      drain.unmount();
+      useChatGoalStore.getState().clear("session-new");
+    }
+  });
+
   it("refuses a harness whose every account has spent its allowance before any session exists", async () => {
     mocks.getNewChatAccountSelection.mockResolvedValue({
       state: "wait",
@@ -1198,6 +1323,65 @@ describe("sessions.create", () => {
 });
 
 describe("sessions.send", () => {
+  it.each([
+    "goal",
+    "loop",
+  ])("queues /%s sent with --if-running steer until its place comes", async (name) => {
+    mockSessionFound({ providerId: "codex-acp" });
+    useChatStore.getState().setChatState("session-1", "streaming");
+    const result = await dispatchCommand(
+      "sessions",
+      {
+        action: "send",
+        session_id: "session-1",
+        if_running: "steer",
+        prompt: `/${name} Check sample`,
+      },
+      ctx,
+    );
+    expect(result).toMatchObject({ send_status: "queued" });
+    expect(
+      useChatStore
+        .getState()
+        .queuedMessageBySession["session-1"].map((r) => r.payload.text),
+    ).toEqual([`/${name} Check sample`]);
+    expect(mocks.acpSteerMessage).not.toHaveBeenCalled();
+    expect(mocks.acpSendMessage).not.toHaveBeenCalled();
+  });
+  it("acknowledges a local command and sends ordinary embedded mentions to ACP", async () => {
+    const { getChatGoal, useChatGoalStore } = await import(
+      "@/features/chat-automation/goalStore"
+    );
+    mockSessionFound({ providerId: "codex-acp" });
+    const send = (prompt: string) =>
+      dispatchCommand(
+        "sessions",
+        { action: "send", session_id: "session-1", prompt },
+        ctx,
+      );
+    expect(await send("/goal Check the sample")).toMatchObject({
+      send_status: "dispatched",
+    });
+    expect(getChatGoal("session-1")?.objective).toBe("Check the sample");
+    expect(mocks.acpSendMessage).not.toHaveBeenCalled();
+    const { getChatLoops, useChatLoopStore } = await import(
+      "@/features/chat-automation/loopStore"
+    );
+    expect(await send("/loop 2m Check")).toMatchObject({
+      send_status: "dispatched",
+    });
+    expect(getChatLoops("session-1")).toHaveLength(1);
+    expect(mocks.acpSendMessage).not.toHaveBeenCalled();
+    useChatLoopStore.getState().clear("session-1");
+    await send("Explain /loop list");
+    await send("Explain /goal status");
+    expect(mocks.acpSendMessage.mock.calls.map((call) => call[1])).toEqual([
+      "Explain /loop list",
+      "Explain /goal status",
+    ]);
+    useChatGoalStore.getState().clear("session-1");
+  });
+
   it("queues an idle direct send when account preflight proves that all quotas are exhausted", async () => {
     mockSessionFound({ providerId: "codex-acp" });
     const error = {

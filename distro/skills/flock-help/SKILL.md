@@ -99,6 +99,7 @@ be a provider problem needs both):
 - `references/projects.md` — projects and workspaces
 - `references/sessions.md` — sessions ("chat"), computer use, the right
   rail, files, worktrees, terminal
+- [Goals and loops](references/goals-and-loops.md) — keep a chat working toward an objective or repeat a task on a schedule
 - `references/ai-providers.md` — provider connections and error causes
 - `references/settings.md` — settings structure and gotchas
 

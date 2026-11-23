@@ -23,6 +23,8 @@ const RESERVED_SLASH_COMMANDS = new Set([
   "clear",
   "compact",
   "doctor",
+  "goal",
+  "loop",
   "prompt",
   "prompts",
   "skills",

@@ -1,3 +1,4 @@
+import { automationCommand } from "@/features/chat-automation/commands";
 import { isRecord } from "@/shared/lib/isRecord";
 import { admitSystemInheritedQueuedMessage } from "./admittedSend";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -44,6 +45,23 @@ export async function steerPromptInSession(
     ) => void;
   } = {},
 ): Promise<boolean> {
+  // Local commands wait for their queue position even if the harness can steer.
+  if (
+    sendOptions?.acpPromptMetadata?.flockGoalId ||
+    sendOptions?.acpPromptMetadata?.flockLoopId
+  )
+    return false;
+  if (automationCommand(text)) {
+    if (!options.queueIfUnavailable) return false;
+    const accepted = useChatStore
+      .getState()
+      .enqueueTransportReadyMessage(
+        sessionId,
+        admitSystemInheritedQueuedMessage({ text, attachments, sendOptions }),
+      );
+    if (accepted) options.onDelivery?.("queued");
+    return accepted;
+  }
   const images = buildAcpImages(attachments);
   const hasAttachments = (attachments?.length ?? 0) > 0;
   const activeRunId = useChatStore

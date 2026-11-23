@@ -1,4 +1,7 @@
+import { automationCopy } from "@/features/chat-automation/automationCopy";
 import { create } from "zustand";
+import { useChatGoalStore } from "@/features/chat-automation/goalStore";
+import { useChatLoopStore } from "@/features/chat-automation/loopStore";
 import type { ExecutionOwner } from "@/features/chat/lib/executionOwnership";
 import { noteSessionWorkState } from "@/features/stats/lib/usageLedger";
 import { acpCreateSession, acpListSessionsPage } from "@/shared/api/acp";
@@ -212,11 +215,13 @@ export function getVisibleSessions<
 >(
   sessions: T[],
   messagesBySession: Record<string, ArrayLike<unknown> | number | undefined>,
+  activeAutomationIds?: ReadonlySet<string>,
 ): T[] {
   return sessions.filter(
     (session) =>
       session.executionOwner?.kind !== "benchmark" &&
-      hasSessionStarted(session, messagesBySession[session.id]),
+      (activeAutomationIds?.has(session.id) ||
+        hasSessionStarted(session, messagesBySession[session.id])),
   );
 }
 
@@ -1158,6 +1163,8 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         archiveMutationBySessionId,
       };
     });
+    useChatGoalStore.getState().clear(id);
+    useChatLoopStore.getState().clear(id, automationCopy("chatDeleted"));
     removePersistedChatWorkspaceMetadata(id);
   },
 
@@ -1194,6 +1201,10 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     }));
     try {
       await acpArchiveSession(session.id);
+      if (get().archiveMutationBySessionId[id]?.operationId === operationId) {
+        useChatGoalStore.getState().clear(id);
+        useChatLoopStore.getState().clear(id, automationCopy("chatArchived"));
+      }
       set((state) => recordArchiveMutationSuccess(state, id, mutation));
     } catch (error) {
       // Roll back only the archive flag; navigation/window cleanup is owned by

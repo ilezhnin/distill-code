@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { ChatInput } from "./chatInputTestUtils";
+import { fetchSkillsList } from "@/features/skills/api/skillsQuery";
 import type { Persona } from "@/shared/types/agents";
 import type { ChatInputComposerActions } from "../../types";
 import { STREAMING_SHORTCUT_MODE_STORAGE_KEY } from "../../lib/streamingShortcutPreference";
@@ -137,6 +138,58 @@ describe("ChatInput", () => {
       base64: "abc",
       mimeType: "image/png",
     });
+  });
+
+  it.each([
+    "codex-acp",
+    "claude-acp",
+  ])("inserts Flock commands without sending or selecting a skill on %s", async (selectedProvider) => {
+    const user = userEvent.setup();
+    const send = vi.fn();
+    const selectSkills = vi.fn();
+    vi.mocked(fetchSkillsList).mockResolvedValueOnce([
+      {
+        id: "fixture-check",
+        name: "fixture-check",
+        description: "Loop through fixtures to review project goals",
+        sourceKind: "global",
+        sourceLabel: "Global",
+        path: "fixture-check",
+        fileLocation: "fixture-check/SKILL.md",
+        readonly: false,
+        projectLinks: [],
+        color: null,
+        instructions: "Check the sample",
+      },
+    ]);
+    render(
+      <ChatInput
+        selectedProvider={selectedProvider}
+        onSend={send}
+        onSkillsChange={selectSkills}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/");
+    expect(
+      screen.getByRole("option", { name: /\/goal Flock.*objective/ }),
+    ).toBeVisible();
+    await user.keyboard("loo");
+    const loopOption = screen.getByRole("option", {
+      name: /\/loop Flock.*interval/,
+    });
+    expect(screen.getByRole("option", { name: /fixture-check/ })).toBeVisible();
+    expect(screen.getAllByRole("option")[0]).toBe(loopOption);
+    await user.click(loopOption);
+    expect(input).toHaveValue("/loop ");
+    await user.clear(input);
+    await user.type(input, "/go{Enter}");
+    expect(input).toHaveValue("/goal ");
+    expect(send).not.toHaveBeenCalled();
+    expect(selectSkills).not.toHaveBeenCalled();
+    await user.clear(input);
+    await user.type(input, "Discuss /go");
+    expect(screen.queryByRole("option", { name: /\/goal/ })).toBeNull();
   });
 
   // ---------------------------------------------------------------------------

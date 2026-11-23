@@ -10,6 +10,8 @@ vi.mock("@/features/chat/hooks/useMentionHandlers", () => ({
     mentionSelectedIndex: 0,
     filteredPersonas: [],
     filteredSkills: [],
+    filteredCommands: [],
+    handleCommandSelect: vi.fn(),
     filteredFiles: [],
     fileMentionsLoading: false,
     fileMentionsError: null,

@@ -8,6 +8,7 @@
  * runs keep their outcome when late cleanup reaches them.
  */
 
+import { pauseStoppedAutomationTurn } from "@/features/chat-automation/pauseStoppedAutomationTurn";
 import { acpCancelSession } from "@/shared/api/acp";
 import { clearAccountQuotaWait } from "@/features/chat/lib/accountQuotaWait";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -116,6 +117,7 @@ export async function stopOrchestratorSession(
         throw new Error("The child run changed during native cancellation");
       if (settleNativeTerminal(status)) return;
     }
+    pauseStoppedAutomationTurn(sessionId);
     chat.setChatState(sessionId, "idle");
     await acpCancelSession(sessionId);
     if (bindingId) {

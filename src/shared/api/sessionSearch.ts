@@ -1,3 +1,4 @@
+import { messagePreviewText } from "@/features/chat/lib/messagePreviewText";
 import type { QueryClient } from "@tanstack/react-query";
 import { readSessionTranscript } from "./acpApi";
 
@@ -236,7 +237,11 @@ function fetchCorpus(
 
 async function exportCorpus(sessionId: string): Promise<ParsedMessage[]> {
   const transcript = await readSessionTranscript(sessionId);
-  return flattenMessages(transcript.messages, false);
+  return flattenMessages(transcript.messages, false).map((message) => {
+    const raw = message.texts.join("\n");
+    const visible = messagePreviewText(raw);
+    return visible === raw ? message : { ...message, texts: [visible] };
+  });
 }
 
 function searchSession(

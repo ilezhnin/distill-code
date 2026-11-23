@@ -26,7 +26,7 @@ export interface AccountQuotaWait {
 
 /** The host's wait kinds (`agent_host/router/prompts.rs`). */
 const ACCOUNT_QUOTA_WAIT = "account_quota_wait";
-const PROVIDER_RATE_LIMIT_WAIT = "provider_rate_limit_wait";
+export const PROVIDER_RATE_LIMIT_WAIT = "provider_rate_limit_wait";
 
 interface QuotaWaitData {
   kind: typeof ACCOUNT_QUOTA_WAIT | typeof PROVIDER_RATE_LIMIT_WAIT;

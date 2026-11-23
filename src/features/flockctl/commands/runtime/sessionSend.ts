@@ -17,13 +17,15 @@ export {
   SessionDispatchUnresolvedError,
 } from "@/features/chat/lib/queuedSessionSend";
 import { formatIncludedWorkspacesPrompt } from "@/features/chat/lib/workspaceAttachments";
-import type { MessageMetadata } from "@/shared/types/messages";
+import { flockctlCrossSessionSendOptions } from "@/features/chat/lib/queuedMessageOrigin";
 import type { ChatSendOptions } from "@/features/chat/types";
 import { accountQuotaWaitData } from "@/features/chat/lib/accountQuotaWait";
 export { isFlockctlCrossSessionQueuedMessage } from "@/features/chat/lib/queuedMessageOrigin";
 
-export const FLOCKCTL_CROSS_SESSION_ORIGIN =
-  "distillctl_cross_session" satisfies NonNullable<MessageMetadata["origin"]>;
+export {
+  FLOCKCTL_CROSS_SESSION_ORIGIN,
+  flockctlCrossSessionSendOptions,
+} from "@/features/chat/lib/queuedMessageOrigin";
 
 const reservedDeliveryIds = new Set<string>();
 
@@ -32,29 +34,6 @@ export class FlockctlDeliveryAlreadyAcceptedError extends Error {
     super("The Flock delivery was already accepted.");
     this.name = "FlockctlDeliveryAlreadyAcceptedError";
   }
-}
-
-export function flockctlCrossSessionSendOptions(
-  options: { senderLabel?: string; deliveryId?: string } = {},
-): ChatSendOptions {
-  const senderMetadata = options.senderLabel
-    ? { distillSenderLabel: options.senderLabel }
-    : {};
-  const deliveryMetadata = options.deliveryId
-    ? { distillDeliveryId: options.deliveryId }
-    : {};
-  return {
-    userMessageMetadata: {
-      origin: FLOCKCTL_CROSS_SESSION_ORIGIN,
-      ...senderMetadata,
-      ...deliveryMetadata,
-    },
-    acpPromptMetadata: {
-      origin: FLOCKCTL_CROSS_SESSION_ORIGIN,
-      ...senderMetadata,
-      ...deliveryMetadata,
-    },
-  };
 }
 
 export function hasAcceptedFlockctlDelivery(

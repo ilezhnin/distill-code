@@ -68,6 +68,7 @@ export interface AcpSendMessageOptions {
   images?: [string, string][];
   /** Fires after ACP setup/client acquisition, immediately before transport. */
   onPromptDispatching?: () => void;
+  onPromptSettled?: (stopReason: string) => void;
   /** Fires after ACP setup completes and the external prompt invocation starts. */
   onPromptDispatched?: () => void;
 }
@@ -270,6 +271,8 @@ async function acpSendMessageNow(
     } catch {
       // Usage tracking must never fail a prompt.
     }
+    if (promptResponse?.stopReason)
+      options.onPromptSettled?.(promptResponse.stopReason);
     const tDone = performance.now();
     perfLog(
       `[perf:send] ${sid} prompt() resolved in ${(tDone - tPrompt).toFixed(1)}ms (total acpSendMessage ${(tDone - tStart).toFixed(1)}ms)`,

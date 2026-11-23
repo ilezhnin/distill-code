@@ -36,7 +36,10 @@ export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
     executionOwner: session.executionOwner,
     // An untitled chat is a default-titled one, so its first message still
     // names it (sendCore) instead of leaving a literal "Untitled" behind.
-    title: normalizeAcpTitle(session.title) ?? DEFAULT_CHAT_TITLE,
+    title:
+      (session.userSetName
+        ? session.title
+        : normalizeAcpTitle(session.title)) ?? DEFAULT_CHAT_TITLE,
     projectId: session.projectId ?? undefined,
     ...(session.accountId !== undefined
       ? { accountId: session.accountId }

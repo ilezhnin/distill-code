@@ -1,4 +1,97 @@
 {
+  "automation": {
+    "hint": {
+      "goal": "Flock · <objetivo> [--max-turns N] [--budget tokens]",
+      "loop": "Flock · [intervalo] <instrucción>"
+    },
+    "turn": {
+      "goal": "Enviado por Flock para el objetivo",
+      "loop": "Enviado por Flock para el bucle"
+    },
+    "instructions": {
+      "goal": "Flock pide al chat que indique su progreso, si ha terminado o qué necesita para continuar.",
+      "loop": "Flock pregunta al chat si debe volver a ejecutar el bucle."
+    },
+    "goalTitle": "Objetivo · {{objective}}",
+    "loopTitle": "Bucle {{number}} · {{prompt}}",
+    "working": "En curso",
+    "waiting": "Esperando al chat",
+    "paused": "En pausa · {{reason}}",
+    "reached": "Objetivo alcanzado",
+    "goalCounts": "{{turns}} de {{cap}} turnos · {{tokens}} tokens · {{elapsed}} transcurridos",
+    "pause": "Pausar",
+    "resume": "Reanudar",
+    "nextRun": "Próxima ejecución en {{delay}}",
+    "interval": "Cada {{interval}}",
+    "selfPaced": "El chat elige el intervalo",
+    "schedule": "{{interval}} · Vence el {{expiry}}",
+    "activeGoal": "Objetivo activo",
+    "activeLoop": "Bucle activo",
+    "notice": {
+      "sender": {
+        "goal": "Objetivo de Flock",
+        "loop": "Bucle de Flock"
+      },
+      "providerRefusal": "El proveedor rechazó este turno.",
+      "providerStopped": "El proveedor finalizó el turno ({{reason}}).",
+      "allowanceSpent": "Se agotó el cupo de la cuenta. {{detail}}",
+      "chatDeleted": "Chat eliminado.",
+      "chatArchived": "Chat archivado.",
+      "missingObjective": "Escribe el objetivo antes de las opciones.",
+      "goalOptions": "Usa --max-turns con un valor de 1 a {{max}} y, si quieres, --budget con una cantidad positiva de tokens.",
+      "loopUsage": "Usa /loop list, /loop pause [n], /loop resume [n] o /loop stop <n | all>.",
+      "missingPrompt": "Escribe la tarea que debe repetir el bucle.",
+      "intervalTooLarge": "Elige un intervalo más corto para este bucle.",
+      "finished": "Finalizado.",
+      "operatorPaused": "A petición tuya.",
+      "operatorStopped": "Detenido por indicación del usuario.",
+      "goalStatus": {
+        "active": "Objetivo activo: {{objective}}",
+        "paused": "Objetivo en pausa: {{objective}}",
+        "reached": "Objetivo alcanzado: {{objective}}"
+      },
+      "usage": "{{turns}} turnos automáticos · {{tokens}} tokens · {{elapsed}} s transcurridos",
+      "loading": "Flock está cargando este chat. Vuelve a intentar el comando en un momento.",
+      "workerGoal": "Los chats de una oleada siguen el paso asignado. Define el objetivo en otro chat.",
+      "workerLoop": "Los chats de una oleada siguen el paso asignado. Inicia el bucle en otro chat.",
+      "roadmap": "Este director está siguiendo su hoja de ruta. Define el objetivo cuando termine.",
+      "goalReplaced": "El objetivo ahora es {{objective}}",
+      "goalSet": "Objetivo establecido: {{objective}}",
+      "noGoal": "Este chat no tiene un objetivo.",
+      "cleared": "Objetivo eliminado.",
+      "turnCap": "Se alcanzó el límite de {{cap}} turnos automáticos. Reanuda el objetivo para renovar el límite.",
+      "tokenCap": "Se alcanzó el presupuesto de {{budget}} tokens. Reanuda el objetivo para renovar el presupuesto.",
+      "providerFailed": "El proveedor no pudo terminar este turno.",
+      "goalFailed": "Flock no pudo enviar el siguiente turno del objetivo.",
+      "goalEnded": "Objetivo finalizado: {{objective}}",
+      "loopCreated": "Bucle {{number}} iniciado: {{prompt}}",
+      "intervalRaised": "El intervalo se ha ampliado a {{seconds}} segundos.",
+      "loopCap": "Este chat ya tiene {{cap}} bucles. Detén uno antes de iniciar otro.",
+      "noLoops": "Este chat no tiene bucles.",
+      "loopStatus": {
+        "active": "Bucle {{number}} activo: {{prompt}}",
+        "paused": "Bucle {{number}} en pausa: {{prompt}}"
+      },
+      "loopUsageStats": "Ejecuciones: {{runs}} · Tokens: {{tokens}}",
+      "deadline": "Próxima ejecución: {{next}}. Vence el {{expiry}}.",
+      "afterExpiry": "No habrá otra ejecución antes del vencimiento",
+      "unscheduled": "Sin programar",
+      "loopControl": {
+        "pause": "Bucles en pausa: {{numbers}}.",
+        "resume": "Bucles reanudados: {{numbers}}.",
+        "stop": "Bucles detenidos: {{numbers}}."
+      },
+      "noNumber": "Este chat no tiene un bucle con el número {{number}}.",
+      "loopTransition": {
+        "paused": "Bucle {{number}} en pausa. {{reason}}",
+        "ended": "Bucle {{number}} finalizado. {{reason}}"
+      },
+      "expired": "Venció siete días después de su creación.",
+      "loopFailed": "Flock no pudo enviar el siguiente turno del bucle.",
+      "threeFailures": "Han fallado tres ejecuciones seguidas. {{reason}}",
+      "restoreFailed": "Flock no pudo volver a abrir este chat. {{reason}}"
+    }
+  },
   "backgroundTasks": {
     "interrupted": "Conexión perdida; finalización sin confirmar",
     "count": {
@@ -374,7 +467,7 @@
   },
   "input": {
     "ariaLabel": "Entrada de mensaje del chat",
-    "placeholder": "Chatea con {{agent}}, @ para agentes/archivos o / para habilidades"
+    "placeholder": "Chatea con {{agent}}, @ para agentes/archivos o / para habilidades y comandos"
   },
   "loading": {
     "compacting": "Compactando conversación...",

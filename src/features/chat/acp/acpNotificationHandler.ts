@@ -101,6 +101,7 @@ import {
 } from "./liveStreamingUpdates";
 import { addSessionWorkedMs } from "@/features/stats/lib/usageLedger";
 import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
+import { finishGoalReply } from "@/features/chat-automation/goalRuntime";
 import { isRecord } from "@/shared/lib/isRecord";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 import {
@@ -537,6 +538,13 @@ export async function handleSessionNotification(
             priorMessage,
             completeAssistantMessage,
           );
+        if (priorMessage)
+          finishGoalReply(
+            sessionId,
+            store.messagesBySession[sessionId]?.find(
+              (message) => message.id === priorMessage,
+            ),
+          );
         store.setStreamingMessageId(sessionId, null);
         clearActiveMessageId(sessionId);
         autonomousOwners.set(sessionId, {
@@ -580,6 +588,12 @@ export async function handleSessionNotification(
           completeAssistantMessage,
         );
       }
+      finishGoalReply(
+        sessionId,
+        store.messagesBySession[sessionId]?.find(
+          (message) => message.id === hostMeta.assistantMessageId,
+        ),
+      );
       forgetAutonomousOwner(sessionId);
       store.setChatState(sessionId, "idle");
       store.settleActiveRun(sessionId);

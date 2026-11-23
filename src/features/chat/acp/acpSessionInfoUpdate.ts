@@ -1,3 +1,4 @@
+import { normalizeAcpTitle } from "../lib/sessionTitle";
 import { useBackgroundTasksStore } from "../stores/backgroundTasksStore";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -7,6 +8,7 @@ import { isPersonaHandoffText } from "@/shared/api/acpPersonaHandoff";
 import { completeReplayAssistantMessage } from "./acpReplayAssistant";
 import { flushBufferedStreamingUpdatesForSession } from "./liveStreamingUpdates";
 import { isRecord } from "@/shared/lib/isRecord";
+import { finishGoalReply } from "@/features/chat-automation/goalRuntime";
 import {
   observeExecutionOwner,
   taskBindingId,
@@ -102,6 +104,13 @@ export function handleSessionInfoUpdate(
             messageId,
             completeAssistantMessage,
           );
+        finishGoalReply(
+          sessionId,
+          chatStore.messagesBySession[sessionId]?.find(
+            (m) => m.id === messageId,
+          ),
+          turnFailure ?? undefined,
+        );
         forgetAdoptedSessionRun(sessionId);
         chatStore.setChatState(sessionId, "idle");
       }
@@ -138,7 +147,9 @@ export function handleSessionInfoUpdate(
     !session.userSetName &&
     !isPersonaHandoffText(info.title)
   ) {
-    patch.title = info.title;
+    patch.title = meta.userSetName
+      ? info.title
+      : (normalizeAcpTitle(info.title) ?? session.title);
   }
   if (typeof info.updatedAt === "string" && info.updatedAt) {
     patch.updatedAt = info.updatedAt;

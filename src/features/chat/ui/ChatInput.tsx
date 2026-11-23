@@ -1,3 +1,4 @@
+import { messagePreviewText } from "../lib/messagePreviewText";
 import {
   useState,
   useRef,
@@ -610,6 +611,8 @@ export function ChatInput({
     mentionSelectedIndex,
     filteredPersonas,
     filteredSkills,
+    filteredCommands,
+    handleCommandSelect,
     filteredFiles,
     fileMentionsLoading,
     fileMentionsError,
@@ -644,7 +647,10 @@ export function ChatInput({
   const mentionListboxId = useId();
   const mentionStatusId = useId();
   const mentionOptionCount =
-    filteredFiles.length + filteredPersonas.length + filteredSkills.length;
+    filteredFiles.length +
+    filteredPersonas.length +
+    filteredSkills.length +
+    filteredCommands.length;
   const mentionStatusText = mentionOpen
     ? fileMentionsLoading
       ? t("mention.status.loadingPaths")
@@ -1394,6 +1400,8 @@ export function ChatInput({
 
               <MentionAutocomplete
                 filteredPersonas={filteredPersonas}
+                filteredCommands={filteredCommands}
+                onSelectCommand={handleCommandSelect}
                 filteredSkills={filteredSkills}
                 filteredFiles={filteredFiles}
                 isOpen={mentionOpen}
@@ -1512,7 +1520,7 @@ export function ChatInput({
                                   ?.delivery === "steer_unconfirmed"
                                   ? `${t("message.steerUnconfirmedLabel")} `
                                   : ""}
-                                {payload.text}
+                                {messagePreviewText(payload.text)}
                               </span>
                               {index === 0 &&
                               isStreaming &&

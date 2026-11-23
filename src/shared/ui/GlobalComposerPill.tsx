@@ -801,6 +801,8 @@ export function GlobalComposerPill({
     mentionSelectedIndex,
     filteredPersonas,
     filteredSkills,
+    filteredCommands,
+    handleCommandSelect,
     filteredFiles,
     fileMentionsLoading,
     fileMentionsError,
@@ -832,7 +834,10 @@ export function GlobalComposerPill({
   const mentionListboxId = useId();
   const mentionStatusId = useId();
   const mentionOptionCount =
-    filteredFiles.length + filteredPersonas.length + filteredSkills.length;
+    filteredFiles.length +
+    filteredPersonas.length +
+    filteredSkills.length +
+    filteredCommands.length;
   const mentionStatusText = mentionOpen
     ? fileMentionsLoading
       ? t("mention.status.loadingPaths")
@@ -1324,6 +1329,8 @@ export function GlobalComposerPill({
               isOpen={mentionOpen}
               filteredPersonas={filteredPersonas}
               filteredSkills={filteredSkills}
+              filteredCommands={filteredCommands}
+              onSelectCommand={handleCommandSelect}
               filteredFiles={filteredFiles}
               atCategory={atMentionCategory}
               onAtCategoryChange={setAtMentionCategory}

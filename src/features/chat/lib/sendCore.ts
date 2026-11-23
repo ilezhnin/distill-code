@@ -1,3 +1,29 @@
+import { automationTurn } from "@/features/chat-automation/automationProtocol";
+import { automationCopy } from "@/features/chat-automation/automationCopy";
+import {
+  automationCommand,
+  loadAutomationHandler,
+} from "@/features/chat-automation/commands";
+import {
+  getChatGoal,
+  useChatGoalStore,
+} from "@/features/chat-automation/goalStore";
+import {
+  assertGoalDispatch,
+  beginGoalTurn,
+  prepareGoalDispatch,
+  rollbackGoalTurn,
+  settleGoalTurn,
+} from "@/features/chat-automation/goalRuntime";
+import {
+  assertLoopDispatch,
+  beginLoopTurn,
+  prepareLoopDispatch,
+  resolveLoopSkill,
+  rollbackLoopTurn,
+  settleLoopTurn,
+} from "@/features/chat-automation/loopRuntime";
+import { getChatLoop } from "@/features/chat-automation/loopStore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
 import { chatWorkClass } from "./chatExecutorSuggestion";
@@ -62,6 +88,7 @@ import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import {
   accountQuotaWaitData,
   deferForAccountQuota,
+  PROVIDER_RATE_LIMIT_WAIT,
 } from "@/features/chat/lib/accountQuotaWait";
 
 /** Persona recorded on the user message and forwarded to the ACP send. */
@@ -225,6 +252,52 @@ export async function dispatchPrompt(
   text: string,
   opts: SendCoreOptions,
 ): Promise<void> {
+  const command = automationCommand(text);
+  if (command) {
+    throwIfAborted(opts.signal);
+    const handle = await loadAutomationHandler(command.name);
+    await opts.prepare?.();
+    throwIfAborted(opts.signal);
+    opts.beforeUserMessageCommitted?.();
+    handle(sessionId, command.args, opts.userMessageMetadata);
+    opts.onUserMessageCommitted?.();
+    opts.onPromptDispatched?.();
+    return;
+  }
+  const loopId = opts.acpPromptMetadata?.flockLoopId;
+  const turn =
+    loopId || opts.acpPromptMetadata?.flockGoalId
+      ? automationTurn(text, opts.userMessageMetadata)
+      : undefined;
+  if (typeof loopId === "string") {
+    await prepareLoopDispatch();
+    assertLoopDispatch(
+      sessionId,
+      loopId,
+      opts.userMessageMetadata?.distillDeliveryId,
+    );
+    const skill = await resolveLoopSkill(sessionId, loopId, opts.providerId);
+    if (skill) {
+      opts = {
+        ...opts,
+        ...skill.sendOptions,
+        assistantPrompt: [skill.sendOptions?.assistantPrompt, skill.text]
+          .filter(Boolean)
+          .join("\n\n"),
+      };
+    }
+  }
+  if (opts.acpPromptMetadata?.flockGoalId) await prepareGoalDispatch();
+  if (turn?.instructions) {
+    // The host names and indexes the user-visible ACP block. Keep the state
+    // contract in the assistant-audience block alongside any skill instructions.
+    opts = {
+      ...opts,
+      assistantPrompt: [opts.assistantPrompt, turn.instructions]
+        .filter(Boolean)
+        .join("\n\n"),
+    };
+  }
   if (opts.ownedTaskBindingId)
     return dispatchOwnedTaskInChat(sessionId, text, opts);
   const sid = logSessionId(sessionId);
@@ -246,6 +319,8 @@ export async function dispatchPrompt(
     systemPrompt,
     userMessageMetadata,
   } = opts;
+  const automated = acpPromptMetadata?.flockGoalId !== undefined;
+  let stopReason: string | undefined;
   const images = buildAcpImages(attachments);
 
   const promptOwner = claimSessionPrompt(sessionId);
@@ -283,6 +358,13 @@ export async function dispatchPrompt(
     const commitUserMessage = () => {
       throwIfAborted(signal);
       beforeUserMessageCommitted?.();
+      if (typeof loopId === "string")
+        assertLoopDispatch(
+          sessionId,
+          loopId,
+          userMessageMetadata?.distillDeliveryId,
+        );
+      assertGoalDispatch(sessionId, acpPromptMetadata?.flockGoalId);
       preparedExecutor?.assertCurrent();
       const userMessage = createUserMessage(
         displayText ?? text,
@@ -324,6 +406,9 @@ export async function dispatchPrompt(
           });
         }
       }
+      const loop = getChatLoop(sessionId, loopId);
+      if (loop) beginLoopTurn(sessionId, loop, userMessageId);
+      else beginGoalTurn(sessionId, userMessageId, automated);
       addMessage(sessionId, userMessage);
       userMessageCommitted = true;
       setChatState(sessionId, "thinking");
@@ -333,7 +418,7 @@ export async function dispatchPrompt(
       const session = sessionStore.getSession(sessionId);
       messageCountBeforePrompt = session?.messageCount;
       if (session && isDefaultChatTitle(session.title)) {
-        const title = getSessionTitleFromDraft(text, attachments);
+        const title = getSessionTitleFromDraft(turn?.task ?? text, attachments);
         sessionStore.patchSession(sessionId, {
           title,
           updatedAt: new Date().toISOString(),
@@ -344,7 +429,7 @@ export async function dispatchPrompt(
           updatedAt: new Date().toISOString(),
         });
       }
-      sessionStore.updateSessionSubtitleFromText(sessionId, text);
+      sessionStore.updateSessionSubtitleFromText(sessionId, turn?.task ?? text);
       onUserMessageCommitted?.();
       sessionStore.markWorkspaceUsedByAgent(sessionId);
       setChatState(sessionId, "streaming");
@@ -356,6 +441,14 @@ export async function dispatchPrompt(
     // whose answer may carry the wave plan the engine executes.
     if (isLegacyOrchestratorShellSession(sessionId)) {
       commitUserMessage();
+      if (loopId) {
+        onPromptDispatched?.();
+        settleLoopTurn(
+          sessionId,
+          userMessageId,
+          "This legacy orchestrator shell has no model to run the tick.",
+        );
+      }
       if (isCurrent()) {
         setChatState(sessionId, "idle");
         setPendingAssistantProvider(sessionId, null);
@@ -370,8 +463,9 @@ export async function dispatchPrompt(
       ? composeConductorSystemPrompt(systemPrompt)
       : systemPrompt;
 
+    const publicText = turn?.task ?? text;
     const promptWithPaths = appendAttachmentPaths(
-      background ? text : text.trim(),
+      background ? publicText : publicText.trim(),
       attachments,
     );
     // Armed Ultracode sessions opt every turn in through the SDK's per-turn
@@ -444,6 +538,9 @@ export async function dispatchPrompt(
       images: images?.map(
         (img) => [img.base64, img.mimeType] as [string, string],
       ),
+      onPromptSettled: (reason) => {
+        stopReason = reason;
+      },
       onPromptDispatching: commitUserMessage,
       onPromptDispatched,
     });
@@ -474,6 +571,16 @@ export async function dispatchPrompt(
         setChatState(sessionId, "idle");
       }
     }
+    if (isCurrent() || cancellationRace) {
+      const failure =
+        stopReason && stopReason !== "end_turn"
+          ? stopReason === "refusal"
+            ? automationCopy("providerRefusal")
+            : automationCopy("providerStopped", { reason: stopReason })
+          : undefined;
+      if (loopId) settleLoopTurn(sessionId, userMessageId, failure);
+      else settleGoalTurn(sessionId, userMessageId, failure);
+    }
   } catch (err) {
     preCommitRejected = err instanceof PreCommitSendRejectedError;
     const quotaWait = accountQuotaWaitData(err);
@@ -485,6 +592,30 @@ export async function dispatchPrompt(
       userMessageCommitted &&
       opts.onPromptWithdrawn !== undefined &&
       isPromptWithdrawnError(err);
+    const loop = getChatLoop(sessionId, loopId);
+    if (loop?.pending?.messageId === userMessageId) {
+      if (quotaDeferred) rollbackLoopTurn(sessionId, loop);
+      else settleLoopTurn(sessionId, userMessageId, formatAcpErrorMessage(err));
+    }
+    const goalAtFailure = loopId ? undefined : getChatGoal(sessionId);
+    if (
+      goalAtFailure?.status === "active" &&
+      !preCommitRejected &&
+      isCurrent()
+    ) {
+      if (quotaDeferred) rollbackGoalTurn(sessionId, userMessageId, automated);
+      if (!(quotaDeferred && quotaWait.kind === PROVIDER_RATE_LIMIT_WAIT)) {
+        const detail = formatAcpErrorMessage(err);
+        useChatGoalStore
+          .getState()
+          .pause(
+            sessionId,
+            quotaDeferred
+              ? automationCopy("allowanceSpent", { detail })
+              : detail,
+          );
+      }
+    }
     if (!preCommitRejected && !quotaDeferred) {
       const cancellationRace = assistantCancellationRaces.get(promptOwner);
       if (cancellationRace) {
@@ -623,7 +754,12 @@ export async function dispatchPrompt(
         setChatState(sessionId, "idle");
       }
       // An ordinary chat goes on under the spare account the host found.
-      if (userMessageCommitted && !waveStep) {
+      if (
+        userMessageCommitted &&
+        !waveStep &&
+        !loopId &&
+        goalAtFailure?.status !== "active"
+      ) {
         queueSpareAccountContinuation(sessionId, err);
       }
     }

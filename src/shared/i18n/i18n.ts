@@ -87,7 +87,7 @@ void i18n
     supportedLngs: SUPPORTED_LOCALES,
     defaultNS: DEFAULT_NAMESPACE,
     fallbackNS: DEFAULT_NAMESPACE,
-    ns: [DEFAULT_NAMESPACE],
+    ns: [DEFAULT_NAMESPACE, "chat"],
     interpolation: {
       escapeValue: false,
     },

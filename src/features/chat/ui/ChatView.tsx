@@ -19,6 +19,7 @@ import {
 import { ChatSearchBar } from "./ChatSearchBar";
 import { WorkspaceSetupChoice } from "./WorkspaceSetupChoice";
 import { summarizeProjectWorkspaceStartup } from "@/features/projects/lib/projectChatWorkspaces";
+import { ChatAutomationIndicator } from "./ChatAutomationIndicator";
 import { ChatInput } from "./ChatInput";
 import { BackgroundTasksPanel } from "./BackgroundTasksPanel";
 import { OwnedTaskLauncher } from "./OwnedTaskLauncher";
@@ -1209,6 +1210,7 @@ export function ChatView({
           sessionId={sessionId}
         />
         <BackgroundTasksPanel sessionId={sessionId} />
+        <ChatAutomationIndicator sessionId={sessionId} />
         <ChatInput
           surface="bare"
           innerBareSurface

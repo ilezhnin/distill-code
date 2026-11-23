@@ -56,7 +56,7 @@ async function startChatRuntime(
   // store stays empty and refuses to write until its own read lands (the
   // conductor's three merge instead, so a node created in that window is never
   // dropped), so a slow disk delays those panels rather than the chat.
-  void hydrateFlockStores();
+  const flockStoresReady = hydrateFlockStores();
   // The run journal (P27) watches the wave and graph stores from here on, so
   // every wave from this point has a trace in the folder. Installed after the
   // hydration call and not before it: the merge that hydration performs is
@@ -223,6 +223,16 @@ async function startChatRuntime(
   });
 
   await Promise.allSettled([loadPersonas(), loadSessionState()]);
+  void flockStoresReady
+    .then(async () => {
+      const { restoreChatAutomation } = await import(
+        "@/features/chat-automation/goalRecovery"
+      );
+      await restoreChatAutomation();
+    })
+    .catch((error) =>
+      console.error("Could not restore chat automation:", error),
+    );
   void providerModelsReady.then((authoritativeProviderIds) =>
     migratePersonaTargets(authoritativeProviderIds).catch((err) => {
       console.error("Failed to migrate custom agent targets:", err);

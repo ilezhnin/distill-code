@@ -1,3 +1,5 @@
+import { messagePreviewText } from "./messagePreviewText";
+
 /**
  * Builds the bounded, single-line snippet shown as a session's sidebar
  * subtitle, from the session's latest real text message.
@@ -479,7 +481,7 @@ export function messageSnippet(
   // full (bounded) text; on ingest (acpApi.ts) it runs on the backend's
   // already-collapsed-and-capped value — the live-vs-reload difference
   // documented on stripMarkdown.
-  const stripped = stripMarkdown(scanned);
+  const stripped = stripMarkdown(messagePreviewText(scanned));
 
   // Collapse every White_Space run to a single ASCII space and trim the ends,
   // exactly like the backend's `text.split_whitespace().collect().join(" ")`.

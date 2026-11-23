@@ -1,3 +1,5 @@
+import { messageSnippet } from "../lib/messageSnippet";
+import { DEFAULT_CHAT_TITLE, normalizeAcpTitle } from "../lib/sessionTitle";
 import { useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
@@ -54,8 +56,17 @@ export function useLoadChatTranscript({
       const current = sessions.getSession(session.id);
       sessions.patchSession(session.id, {
         messageCount: (current?.messageCount ?? 0) + loaded.messageCount,
-        ...(loaded.lastSnippet ? { lastSnippet: loaded.lastSnippet } : {}),
-        ...(loaded.title ? { title: loaded.title } : {}),
+        ...(loaded.lastSnippet !== undefined
+          ? { subtitle: messageSnippet(loaded.lastSnippet ?? "") }
+          : {}),
+        ...(loaded.title && !current?.userSetName
+          ? {
+              title:
+                normalizeAcpTitle(loaded.title) ??
+                current?.title ??
+                DEFAULT_CHAT_TITLE,
+            }
+          : {}),
       });
       // Use the regular replay path so cached existing messages are replaced
       // with the complete saved history, including the newly imported events.

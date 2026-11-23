@@ -15,6 +15,20 @@ export const startup = initializeRootSettings()
       "@/features/stats/lib/usageLedger"
     );
     await initializeUsageLedger();
+    // A restored queue or child publisher can wake as soon as React mounts.
+    // Both need to know which chats already have a goal at that boundary.
+    const { hydrateChatGoals } = await import(
+      "@/features/chat-automation/goalStore"
+    );
+    await hydrateChatGoals().catch((error) =>
+      console.error("Could not read chat goals:", error),
+    );
+    const { hydrateChatLoops } = await import(
+      "@/features/chat-automation/loopStore"
+    );
+    await hydrateChatLoops().catch((error) =>
+      console.error("Could not read chat loops:", error),
+    );
     const { installCloseGuard } = await import("@/app/lib/closeGuard");
     await installCloseGuard();
     const { renderApp } = await import("@/app/renderRoot");

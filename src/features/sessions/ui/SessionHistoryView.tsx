@@ -1,3 +1,4 @@
+import { useActiveAutomationSessionIds } from "@/features/sessions/hooks/useActiveAutomationSessionIds";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useShallow } from "zustand/react/shallow";
@@ -109,9 +110,10 @@ function selectHistorySessions(
   localMessageCounts: Record<string, number>,
   scope: SessionScope,
   selectedProjectIds: ReadonlySet<string>,
+  activeAutomationIds: ReadonlySet<string>,
 ): ChatSession[] {
   return selectSessionsForScope(
-    getVisibleSessions(sessions, localMessageCounts),
+    getVisibleSessions(sessions, localMessageCounts, activeAutomationIds),
     scope,
     selectedProjectIds,
   );
@@ -165,6 +167,7 @@ export function SessionHistoryView({
     () => new Set(),
   );
   const sessions = useChatSessionStore(selectSessions);
+  const activeAutomationIds = useActiveAutomationSessionIds();
   const localMessageCountsBySession = useChatStore(
     useShallow(selectLocalMessageCountsBySession),
   );
@@ -197,8 +200,14 @@ export function SessionHistoryView({
         localMessageCountsBySession,
         "archived",
         selectedProjectIds,
+        activeAutomationIds,
       ).length,
-    [localMessageCountsBySession, selectedProjectIds, sessions],
+    [
+      activeAutomationIds,
+      localMessageCountsBySession,
+      selectedProjectIds,
+      sessions,
+    ],
   );
   const activeSessions = useMemo(
     () =>
@@ -207,8 +216,15 @@ export function SessionHistoryView({
         localMessageCountsBySession,
         scope,
         selectedProjectIds,
+        activeAutomationIds,
       ),
-    [localMessageCountsBySession, scope, selectedProjectIds, sessions],
+    [
+      activeAutomationIds,
+      localMessageCountsBySession,
+      scope,
+      selectedProjectIds,
+      sessions,
+    ],
   );
   const selectedCount = selectedSessionIds.size;
   const clearSelection = useCallback(() => {
@@ -395,8 +411,9 @@ export function SessionHistoryView({
       localMessageCounts,
       scope,
       selectedProjectIds,
+      activeAutomationIds,
     );
-  }, [scope, selectedProjectIds]);
+  }, [scope, selectedProjectIds, activeAutomationIds]);
 
   // The post-pagination sweep, reached through a ref (like
   // `loadNextPageIfNeededRef` below) so it is resolved when the page lands

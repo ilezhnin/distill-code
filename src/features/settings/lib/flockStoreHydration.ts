@@ -52,7 +52,7 @@ import {
   hydrateReviewSeenStore,
 } from "@/features/review/stores/reviewSeenStore";
 
-let started = false;
+let hydration: Promise<void> | undefined;
 
 /**
  * How many times a conductor document read is attempted before the store is
@@ -175,9 +175,12 @@ export async function retryConductorDocumentHydration(): Promise<boolean> {
   return settled.every(Boolean);
 }
 
-export async function hydrateFlockStores(): Promise<void> {
-  if (started) return;
-  started = true;
+export function hydrateFlockStores(): Promise<void> {
+  hydration ??= readFlockStores();
+  return hydration;
+}
+
+async function readFlockStores(): Promise<void> {
   installFlockStoreCloseFlush();
   const results = await Promise.allSettled([
     hydrateMemoryStore(),
@@ -210,7 +213,7 @@ export async function hydrateFlockStores(): Promise<void> {
 
 /** Test seam: lets a case run the hydration again. */
 export function resetFlockHydrationForTests(): void {
-  started = false;
+  hydration = undefined;
 }
 
 /** Test seam: replaces the retry pause, or (`null`) restores the timer. */

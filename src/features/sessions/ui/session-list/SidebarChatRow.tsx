@@ -1,9 +1,11 @@
+import { SessionAutomationBadges } from "@/features/sessions/ui/SessionAutomationBadges";
 import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
   useEffect,
+  useId,
   useRef,
   useState,
   type PointerEvent,
@@ -242,6 +244,7 @@ export function SidebarChatRow({
   onMarkSelectedRead,
   onMarkSelectedUnread,
 }: SidebarChatRowProps) {
+  const automationDescriptionId = useId();
   const { t } = useTranslation(["sidebar", "common"]);
   const workingIndicatorAnimationPreference =
     useWorkingIndicatorAnimationPreference();
@@ -509,6 +512,7 @@ export function SidebarChatRow({
       onDoubleClick={handleRowDoubleClick}
       onKeyDown={handleRowKeyDown}
       aria-label={displayTitle}
+      aria-describedby={automationDescriptionId}
       aria-expanded={hasChildChats ? treeExpanded : undefined}
       style={{ paddingLeft: nameInsetPx }}
       className={cn(
@@ -523,6 +527,10 @@ export function SidebarChatRow({
       aria-pressed={selectionEnabled ? selected : undefined}
     >
       {rowTitleContent}
+      <SessionAutomationBadges
+        descriptionId={automationDescriptionId}
+        sessionId={id}
+      />
     </Button>
   );
 

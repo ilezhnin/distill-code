@@ -1,3 +1,4 @@
+import { messageSnippet } from "./messageSnippet";
 import type { QueryClient } from "@tanstack/react-query";
 import {
   removeSessionMessage,
@@ -297,7 +298,7 @@ export async function removeTranscriptMessage(
     chat.removeMessage(sessionId, message.id);
   }
   useChatSessionStore.getState().patchSession(sessionId, {
-    subtitle: response.snippet ?? undefined,
+    subtitle: messageSnippet(response.snippet ?? "") ?? undefined,
     messageCount: response.messageCount,
   });
   if (options.queryClient) {

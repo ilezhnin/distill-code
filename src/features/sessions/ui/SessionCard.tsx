@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { SessionAutomationBadges } from "@/features/sessions/ui/SessionAutomationBadges";
+import { useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { MoreHorizontal, Package } from "lucide-react";
 import { ProjectIcon } from "@/features/projects/ui/ProjectIcon";
@@ -84,6 +85,7 @@ export function SessionCard(props: SessionCardProps) {
     onSelectionChange,
     onRename,
   } = props;
+  const automationDescriptionId = useId();
   const { t } = useTranslation(["sessions", "common"]);
   const { formatRelativeTimeToNow } = useLocaleFormatting();
   // Only the dropdown participates in the exclusive-menu latch. The context
@@ -180,6 +182,7 @@ export function SessionCard(props: SessionCardProps) {
             }}
             className="absolute inset-0 z-0 rounded-md"
             aria-label={t("card.open", { title: displayTitle })}
+            aria-describedby={automationDescriptionId}
             aria-pressed={selectionEnabled ? selected : undefined}
           />
 
@@ -198,6 +201,10 @@ export function SessionCard(props: SessionCardProps) {
             >
               {displayTitle}
             </span>
+            <SessionAutomationBadges
+              descriptionId={automationDescriptionId}
+              sessionId={id}
+            />
 
             {hasSubtitle && (
               <span className="mt-2 flex min-w-0 items-center gap-1.5 text-xs leading-normal text-muted-foreground">

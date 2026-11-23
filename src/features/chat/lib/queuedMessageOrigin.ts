@@ -1,8 +1,33 @@
 import type { QueuedMessageRecord } from "../stores/chatStore";
 import type { MessageMetadata } from "@/shared/types/messages";
 
-const FLOCKCTL_CROSS_SESSION_ORIGIN =
+import type { ChatSendOptions } from "../types";
+
+export const FLOCKCTL_CROSS_SESSION_ORIGIN =
   "distillctl_cross_session" satisfies NonNullable<MessageMetadata["origin"]>;
+
+export function flockctlCrossSessionSendOptions(
+  options: { senderLabel?: string; deliveryId?: string } = {},
+): ChatSendOptions {
+  const senderMetadata = options.senderLabel
+    ? { distillSenderLabel: options.senderLabel }
+    : {};
+  const deliveryMetadata = options.deliveryId
+    ? { distillDeliveryId: options.deliveryId }
+    : {};
+  return {
+    userMessageMetadata: {
+      origin: FLOCKCTL_CROSS_SESSION_ORIGIN,
+      ...senderMetadata,
+      ...deliveryMetadata,
+    },
+    acpPromptMetadata: {
+      origin: FLOCKCTL_CROSS_SESSION_ORIGIN,
+      ...senderMetadata,
+      ...deliveryMetadata,
+    },
+  };
+}
 
 /**
  * flockctl cross-session sends have their own dedicated drain

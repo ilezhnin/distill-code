@@ -20,6 +20,8 @@
  */
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { getChatLoops } from "@/features/chat-automation/loopStore";
+import { getChatGoal } from "@/features/chat-automation/goalStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -53,7 +55,16 @@ export function publishTerminalGroupDigests(
   );
 
   for (const { parentSessionId, key, leaves } of groups) {
-    if (leaves.length === 0) continue;
+    // A child pursuing a chat goal reports at the goal transition instead.
+    if (
+      leaves.length === 0 ||
+      leaves.some(
+        (node) =>
+          getChatGoal(node.sessionId)?.status === "active" ||
+          getChatLoops(node.sessionId).some((loop) => loop.status === "active"),
+      )
+    )
+      continue;
     if (inFlightGroups.has(key)) continue;
     if (leaves.some((node) => isWorkingStatus(node.status))) continue;
 

@@ -42,6 +42,12 @@ import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyC
 import { useArtifactLinkHandler } from "@/features/chat/hooks/useArtifactLinkHandler";
 import { LocalMarkdownLinkProvider } from "@/shared/ui/ai-elements/local-link-context";
 import { detectProviderErrorNotice } from "@/features/chat/lib/providerErrorNotice";
+import {
+  automationTurn,
+  automationSenderKind,
+} from "@/features/chat-automation/automationProtocol";
+import { GOAL_STATE_FENCE } from "@/features/chat-automation/commands";
+import { LOOP_STATE_FENCE } from "@/features/chat-automation/loopCommands";
 import type { CustomRenderer } from "streamdown";
 import { RUNNABLE_SHELL_LANGUAGES } from "@/shared/lib/runnableShellCommand";
 import type {
@@ -83,6 +89,11 @@ import { ConductorDigestCard } from "@/features/conductor/ui/ConductorDigestCard
 import { useConductorTranscript } from "@/features/conductor/ConductorTranscriptContext";
 import { TurnAgentFooter } from "@/features/conductor/ui/TurnAgentFooter";
 import { WorkerBriefHeader } from "@/features/conductor/ui/WorkerBriefHeader";
+
+const automationStateRenderer: CustomRenderer = {
+  language: [GOAL_STATE_FENCE, LOOP_STATE_FENCE],
+  component: () => null,
+};
 
 interface MessageAttachmentPreviewItem {
   key: string;
@@ -588,8 +599,7 @@ function renderContentBlock(
      * same way inline Markdown images are.
      */
     isLocalImagePathAllowed: (path: string) => boolean;
-    onRunShellCommand?: (command: string, options?: RunCommandOptions) => void;
-    runItCodeRenderers?: CustomRenderer[];
+    codeRenderers?: CustomRenderer[];
     onEditProject?: (projectId: string) => void;
     onChangeFolder?: () => void;
     onOpenContextPanel?: () => void;
@@ -643,9 +653,7 @@ function renderContentBlock(
           <MessageResponse
             isAnimating={isStreamingMsg}
             mode={isStreamingMsg ? "streaming" : "static"}
-            codeRenderers={
-              options.onRunShellCommand ? options.runItCodeRenderers : undefined
-            }
+            codeRenderers={options.codeRenderers}
             imageRenderer={MarkdownImage}
           >
             {displayText}
@@ -782,10 +790,11 @@ export const MessageBubble = memo(function MessageBubble({
   const { isCopied: isCopyConfirmed, copyToClipboard } = useCopyToClipboard();
   const hasPersonaAvatar = Boolean(persona?.avatar);
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
-  const runItCodeRenderers = useMemo<CustomRenderer[]>(
+  const codeRenderers = useMemo<CustomRenderer[]>(
     () =>
       onRunShellCommand
         ? [
+            automationStateRenderer,
             {
               language: [...RUNNABLE_SHELL_LANGUAGES],
               component: (props) => (
@@ -793,7 +802,7 @@ export const MessageBubble = memo(function MessageBubble({
               ),
             },
           ]
-        : [],
+        : [automationStateRenderer],
     [onRunShellCommand],
   );
   const resolveProviderErrorNotice = useMemo(() => {
@@ -879,6 +888,9 @@ export const MessageBubble = memo(function MessageBubble({
     .filter((c): c is TextContent => c.type === "text")
     .map((c) => c.text)
     .join("\n");
+  const automatedTurn = isUser
+    ? automationTurn(textContent, message.metadata)
+    : undefined;
   const renderedContent = visibleContent;
   const actionTextContent = fragmentRole
     ? rawContent
@@ -1009,9 +1021,13 @@ export const MessageBubble = memo(function MessageBubble({
     isUser && isDigestMessage(message)
       ? parseDigestEnvelope(getTextContent(message))
       : null;
-  const distillSenderLabel = isFlockctlCrossSessionMessage
-    ? message.metadata?.distillSenderLabel
-    : undefined;
+  const senderKind = automationSenderKind(message.metadata?.distillDeliveryId);
+  const distillSenderLabel =
+    senderKind && isFlockctlCrossSessionMessage
+      ? t(`automation.notice.sender.${senderKind}`)
+      : isFlockctlCrossSessionMessage
+        ? message.metadata?.distillSenderLabel
+        : undefined;
   // The brief a worker was started with wears a header that says who the
   // worker is and who sent it, in place of the generic cross-session label.
   const workerBrief =
@@ -1137,7 +1153,9 @@ export const MessageBubble = memo(function MessageBubble({
                       // A message another agent sent (a brief, a monitor
                       // line) stays a quiet tint: it can run long, and it is
                       // not the operator speaking.
-                      isFlockctlCrossSessionMessage || workerBrief
+                      isFlockctlCrossSessionMessage ||
+                        automatedTurn ||
+                        workerBrief
                         ? "[--message-user-bg:var(--muted)]"
                         : "dark",
                     )
@@ -1145,23 +1163,27 @@ export const MessageBubble = memo(function MessageBubble({
               )}
             >
               {workerBrief ? <WorkerBriefHeader {...workerBrief} /> : null}
-              {(isFlockctlCrossSessionMessage && !workerBrief) ||
+              {((automatedTurn || isFlockctlCrossSessionMessage) &&
+                !workerBrief) ||
               isPendingSteerMessage ||
               isUnconfirmedSteerMessage ||
               isFailedSteerMessage ? (
                 <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
-                  {isFlockctlCrossSessionMessage && !workerBrief ? (
+                  {(automatedTurn || isFlockctlCrossSessionMessage) &&
+                  !workerBrief ? (
                     <span
                       data-role="flockctl-cross-session-message-label"
                       className="leading-4"
                     >
-                      {isMonitorMessage
-                        ? t("message.monitorLabel")
-                        : distillSenderLabel
-                          ? t("message.flockctlCrossSessionNamedLabel", {
-                              sender: distillSenderLabel,
-                            })
-                          : t("message.flockctlCrossSessionLabel")}
+                      {automatedTurn
+                        ? t(`automation.turn.${automatedTurn.kind}`)
+                        : isMonitorMessage
+                          ? t("message.monitorLabel")
+                          : distillSenderLabel
+                            ? t("message.flockctlCrossSessionNamedLabel", {
+                                sender: distillSenderLabel,
+                              })
+                            : t("message.flockctlCrossSessionLabel")}
                     </span>
                   ) : null}
                   {isUnconfirmedSteerMessage || isFailedSteerMessage ? (
@@ -1214,7 +1236,24 @@ export const MessageBubble = memo(function MessageBubble({
               {!digestEnvelope && attachmentPreviewItems.length > 0 && (
                 <MessageAttachmentGrid items={attachmentPreviewItems} />
               )}
-              {(digestEnvelope
+              {automatedTurn && (
+                <details className="text-sm">
+                  <summary
+                    className="cursor-pointer truncate"
+                    title={automatedTurn.task}
+                  >
+                    {automatedTurn.task ||
+                      t(`automation.turn.${automatedTurn.kind}`)}
+                  </summary>
+                  <p className="whitespace-pre-wrap break-words">
+                    {automatedTurn.task}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {t(`automation.instructions.${automatedTurn.kind}`)}
+                  </p>
+                </details>
+              )}
+              {(digestEnvelope || automatedTurn
                 ? []
                 : groupContentSections(renderedContent)
               ).map((section, sectionIdx) => {
@@ -1271,8 +1310,7 @@ export const MessageBubble = memo(function MessageBubble({
                         ),
                         contentBlocks: renderingContext,
                         isLocalImagePathAllowed,
-                        onRunShellCommand,
-                        runItCodeRenderers,
+                        codeRenderers,
                         stateKey: section.key,
                         resolveProviderErrorNotice,
                       },

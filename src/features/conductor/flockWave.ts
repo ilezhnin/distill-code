@@ -25,6 +25,15 @@ import {
 
 import { resolveRoleInLayer, workerLayerRoleIds } from "./roleLayers";
 
+import {
+  openingFencePattern,
+  closingFencePattern,
+} from "@/shared/lib/protocolFences";
+export {
+  openingFencePattern,
+  closingFencePattern,
+} from "@/shared/lib/protocolFences";
+
 /** Fence info-string that carries a wave plan. */
 export const WAVE_FENCE_TAG = "distill-wave";
 
@@ -208,28 +217,6 @@ export type FencedBlockScan =
   | { kind: "one"; body: string; prose: string }
   | { kind: "multiple"; count: number }
   | { kind: "unterminated" };
-
-/**
- * The opening fence of a protocol block: up to three leading spaces, the
- * backticks, optional whitespace, the tag, and nothing else on the line.
- *
- * Exported because anything that *removes* protocol blocks has to agree with
- * the parser about what one is, exactly. It did not: the digest's strip
- * required the tag to follow the backticks immediately, so "``` distill-wave"
- * on its own line survived the strip and was still a plan to the scanner — a
- * worker-authored plan the conductor could echo back into a real wave. A
- * shared pattern cannot drift.
- *
- * Fresh each call: the regex is global and carries `lastIndex`.
- */
-export function openingFencePattern(tag: string): RegExp {
-  return new RegExp(`^[ \\t]{0,3}\`\`\`[ \\t]*${tag}[ \\t]*\\r?$`, "gim");
-}
-
-/** The closing fence, on the same terms. Fresh each call. */
-export function closingFencePattern(): RegExp {
-  return /^[ \t]{0,3}```[ \t]*\r?$/m;
-}
 
 /**
  * Finds the single fenced block tagged `tag` in `text`.

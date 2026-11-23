@@ -1,3 +1,4 @@
+import { messagePreviewText } from "./messagePreviewText";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 
 export const DEFAULT_CHAT_TITLE = "New chat";
@@ -26,7 +27,9 @@ export function normalizeAcpTitle(
   title: string | null | undefined,
 ): string | undefined {
   if (!title) return undefined;
-  return title === ACP_DEFAULT_CHAT_TITLE ? DEFAULT_CHAT_TITLE : title;
+  return title === ACP_DEFAULT_CHAT_TITLE
+    ? DEFAULT_CHAT_TITLE
+    : messagePreviewText(title).trim() || undefined;
 }
 
 /**
@@ -36,6 +39,7 @@ export function normalizeAcpTitle(
  * preamble; never treat the first 100 characters of a pasted brief as the name.
  */
 export function titleFromUserText(text: string): string {
+  text = messagePreviewText(text);
   const collapsed = text.replace(/\s+/g, " ").trim();
   if (!collapsed) {
     return "";

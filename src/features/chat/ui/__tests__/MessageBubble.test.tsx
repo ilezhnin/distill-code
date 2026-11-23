@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import { i18n } from "@/shared/i18n/i18n";
+import { goalPrompt } from "@/features/chat-automation/commands";
+import { loopPrompt } from "@/features/chat-automation/loopCommands";
 import { MessageBubble } from "../MessageBubble";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
@@ -547,5 +550,68 @@ describe("MessageBubble in an ordinary chat that started agents", () => {
     expect(
       screen.queryByTestId("conductor-agent-chip"),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("automated turns", () => {
+  afterEach(cleanup);
+  it.each([
+    ["goal", "Objetivo de Flock"],
+    ["loop", "Bucle de Flock"],
+  ])("renders a saved %s report sender in the current locale", async (kind, label) => {
+    await i18n.changeLanguage("es");
+    const { container } = render(
+      <MessageBubble
+        message={userMessage("Checked the draft", {
+          metadata: {
+            origin: "distillctl_cross_session",
+            distillDeliveryId: `${kind}-report:sample`,
+            distillSenderLabel: `Flock ${kind}`,
+          },
+        })}
+      />,
+    );
+    expect(
+      container.querySelector(
+        '[data-role="flockctl-cross-session-message-label"]',
+      ),
+    ).toHaveTextContent(label);
+  });
+  it.each([
+    ["goal", goalPrompt("Check fixtures")],
+    ["loop", loopPrompt("Check fixtures", true)],
+  ])("folds a %s turn even after history loses its metadata", (kind, prompt) => {
+    const view = render(<MessageBubble message={userMessage(prompt)} />);
+    expect(screen.getByText(`Sent by Flock for the ${kind}`)).toBeVisible();
+    expect(view.container.querySelector("summary")).toHaveTextContent(
+      "Check fixtures",
+    );
+    expect(screen.queryByText(/End your reply/)).toBeNull();
+    view.rerender(
+      <MessageBubble
+        message={userMessage(`Explain this example: ${prompt}`)}
+      />,
+    );
+    expect(screen.queryByText(`Sent by Flock for the ${kind}`)).toBeNull();
+    view.rerender(
+      <MessageBubble
+        message={userMessage(prompt, {
+          metadata: { origin: "operator_direct" },
+        })}
+      />,
+    );
+    expect(screen.queryByText(`Sent by Flock for the ${kind}`)).toBeNull();
+  });
+  it.each([
+    "goal",
+    "loop",
+  ])("hides %s state but keeps the answer and ordinary code visible", (kind) => {
+    const text = `Summary\n\n\`\`\`flock-${kind}-state\n{"privateState":true}\n\`\`\`\n\n\`\`\`text\nVisible sample\n\`\`\``;
+    const { container } = render(
+      <MessageBubble message={assistantMessage([{ type: "text", text }])} />,
+    );
+    expect(container).toHaveTextContent("Summary");
+    expect(container).toHaveTextContent("Visible sample");
+    expect(container).not.toHaveTextContent("privateState");
   });
 });

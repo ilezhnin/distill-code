@@ -543,6 +543,7 @@ export function useMentionHandlers({
     mentionStartIndex,
     mentionSelectedIndex,
     filteredPersonas,
+    filteredCommands,
     filteredSkills,
     filteredFiles,
     detectMention,
@@ -798,32 +799,34 @@ export function useMentionHandlers({
     [text, mentionStartIndex, mentionQuery, detectMention, setText],
   );
 
-  const handleSkillMentionSelect = useCallback(
-    (skill: SkillMentionItem) => {
+  const insertSlashName = useCallback(
+    (name: string) => {
       const { newText, cursorPosition } = replaceMentionQuery(
         text,
         mentionStartIndex,
         mentionQuery,
-        `/${skill.name}`,
+        `/${name}`,
       );
       pendingCursorRef.current = cursorPosition;
       setText(newText);
       closeMention();
+    },
+    [text, mentionStartIndex, mentionQuery, closeMention, setText],
+  );
+
+  const handleSkillMentionSelect = useCallback(
+    (skill: SkillMentionItem) => {
+      insertSlashName(skill.name);
       onSkillMentionSelect?.(skill);
     },
-    [
-      text,
-      mentionStartIndex,
-      mentionQuery,
-      closeMention,
-      onSkillMentionSelect,
-      setText,
-    ],
+    [insertSlashName, onSkillMentionSelect],
   );
 
   const handleMentionConfirm = useCallback(
     (item: MentionItem, options?: { completeDirectories?: boolean }) => {
-      if (item.type === "persona") {
+      if (item.type === "command") {
+        insertSlashName(item.name);
+      } else if (item.type === "persona") {
         handlePersonaMentionSelect(item.persona);
       } else if (item.type === "skill") {
         handleSkillMentionSelect(item.skill);
@@ -837,6 +840,7 @@ export function useMentionHandlers({
       }
     },
     [
+      insertSlashName,
       handlePersonaMentionSelect,
       handleSkillMentionSelect,
       handleFileMentionComplete,
@@ -845,6 +849,7 @@ export function useMentionHandlers({
   );
 
   return {
+    handleCommandSelect: insertSlashName,
     fileMentionItems,
     skillMentionItems,
     mentionOpen,
@@ -854,6 +859,7 @@ export function useMentionHandlers({
     mentionStartIndex,
     mentionSelectedIndex,
     filteredPersonas,
+    filteredCommands,
     filteredSkills,
     filteredFiles,
     fileMentionsLoading,

@@ -6,6 +6,11 @@ import type { AtMentionDefaultCategory } from "@/features/chat/lib/mentionPrefer
 import type { FileMentionMatchHighlight } from "@/shared/api/system";
 import type { Persona } from "@/shared/types/agents";
 
+import {
+  automationCommandNames,
+  type CommandName,
+} from "@/features/chat-automation/commands";
+
 const MAX_TEXT_MENTION_QUERY_LENGTH = 50;
 const MAX_PATH_MENTION_QUERY_LENGTH = 256;
 
@@ -59,6 +64,7 @@ type IndexedSkillMention = {
 };
 
 export type MentionItem =
+  | { type: "command"; name: CommandName }
   | { type: "persona"; persona: Persona }
   | { type: "skill"; skill: SkillMentionItem }
   | { type: "file"; file: FileMentionItem };
@@ -487,7 +493,17 @@ export function useMentionDetection(
     }
 
     if (mentionState.category === "skills") {
-      const matchingSkills = rankSkillMentions(skills, mentionState.query);
+      const matchingSkills = rankSkillMentions(
+        mentionState.trigger === "/"
+          ? skills.filter(
+              (skill) =>
+                !automationCommandNames.some(
+                  (name) => name === skill.name.toLowerCase(),
+                ),
+            )
+          : skills,
+        mentionState.query,
+      );
 
       return {
         filteredPersonas: [],
@@ -508,15 +524,34 @@ export function useMentionDetection(
     skills,
     files,
     mentionState.isOpen,
+    mentionState.trigger,
     mentionState.query,
     mentionState.category,
   ]);
 
+  const filteredCommands = useMemo(
+    () =>
+      mentionState.isOpen &&
+      mentionState.trigger === "/" &&
+      mentionState.category === "skills" &&
+      isPromptStart(currentText ?? "", mentionState.startIndex)
+        ? automationCommandNames.filter((name) =>
+            name.startsWith(mentionState.query.toLowerCase()),
+          )
+        : [],
+    [mentionState, currentText],
+  );
   const totalCount =
-    filteredFiles.length + filteredPersonas.length + filteredSkills.length;
+    filteredFiles.length +
+    filteredPersonas.length +
+    filteredSkills.length +
+    filteredCommands.length;
   const filteredItemKeys = useMemo(
-    () => mentionItemKeys(filteredFiles, filteredPersonas, filteredSkills),
-    [filteredFiles, filteredPersonas, filteredSkills],
+    () => [
+      ...filteredCommands.map((name) => `command:${name}`),
+      ...mentionItemKeys(filteredFiles, filteredPersonas, filteredSkills),
+    ],
+    [filteredFiles, filteredPersonas, filteredSkills, filteredCommands],
   );
   const previousItemKeysRef = useRef<string[]>(filteredItemKeys);
 
@@ -749,7 +784,9 @@ export function useMentionDetection(
 
   const confirmMention = useCallback((): MentionItem | null => {
     if (!mentionState.isOpen || totalCount === 0) return null;
-    const idx = mentionState.selectedIndex;
+    const command = filteredCommands[mentionState.selectedIndex];
+    if (command) return { type: "command", name: command };
+    const idx = mentionState.selectedIndex - filteredCommands.length;
     if (idx < filteredFiles.length) {
       return { type: "file", file: filteredFiles[idx] };
     }
@@ -763,6 +800,7 @@ export function useMentionDetection(
     }
     return null;
   }, [
+    filteredCommands,
     mentionState.isOpen,
     mentionState.selectedIndex,
     totalCount,
@@ -772,6 +810,7 @@ export function useMentionDetection(
   ]);
 
   return {
+    filteredCommands,
     mentionOpen: mentionState.isOpen,
     mentionTrigger: mentionState.trigger,
     atMentionCategory: mentionState.category,

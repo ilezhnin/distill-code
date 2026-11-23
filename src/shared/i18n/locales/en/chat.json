@@ -1,4 +1,97 @@
 {
+  "automation": {
+    "hint": {
+      "goal": "Flock · <objective> [--max-turns N] [--budget tokens]",
+      "loop": "Flock · [interval] <prompt>"
+    },
+    "turn": {
+      "goal": "Sent by Flock for the goal",
+      "loop": "Sent by Flock for the loop"
+    },
+    "instructions": {
+      "goal": "Flock asks the chat to report progress, completion, or what it needs to continue.",
+      "loop": "Flock asks the chat whether the loop should run again."
+    },
+    "goalTitle": "Goal · {{objective}}",
+    "loopTitle": "Loop {{number}} · {{prompt}}",
+    "working": "Working",
+    "waiting": "Waiting for the chat",
+    "paused": "Paused · {{reason}}",
+    "reached": "Goal reached",
+    "goalCounts": "{{turns}} of {{cap}} turns · {{tokens}} tokens · {{elapsed}} elapsed",
+    "pause": "Pause",
+    "resume": "Resume",
+    "nextRun": "Next run in {{delay}}",
+    "interval": "Every {{interval}}",
+    "selfPaced": "Chat chooses the interval",
+    "schedule": "{{interval}} · Expires {{expiry}}",
+    "activeGoal": "Goal active",
+    "activeLoop": "Loop active",
+    "notice": {
+      "sender": {
+        "goal": "Flock goal",
+        "loop": "Flock loop"
+      },
+      "providerRefusal": "The provider returned a refusal for this turn.",
+      "providerStopped": "The provider ended the turn ({{reason}}).",
+      "allowanceSpent": "Account allowance spent. {{detail}}",
+      "chatDeleted": "Chat deleted.",
+      "chatArchived": "Chat archived.",
+      "missingObjective": "Enter the objective before the goal options.",
+      "goalOptions": "Use --max-turns 1–{{max}} and an optional positive --budget in tokens.",
+      "loopUsage": "Use /loop list, /loop pause [n], /loop resume [n], or /loop stop <n | all>.",
+      "missingPrompt": "Enter the task you want the loop to repeat.",
+      "intervalTooLarge": "Choose a shorter interval for this loop.",
+      "finished": "Finished.",
+      "operatorPaused": "At the operator’s request.",
+      "operatorStopped": "Stopped by the operator.",
+      "goalStatus": {
+        "active": "Goal active: {{objective}}",
+        "paused": "Goal paused: {{objective}}",
+        "reached": "Goal reached: {{objective}}"
+      },
+      "usage": "{{turns}} automated turns · {{tokens}} tokens · {{elapsed}} s elapsed",
+      "loading": "Flock is still loading this chat. Try the command again in a moment.",
+      "workerGoal": "Wave executors follow their assigned step. Set the goal in a separate chat.",
+      "workerLoop": "Wave executors follow their assigned step. Start the loop in a separate chat.",
+      "roadmap": "This conductor is following its roadmap. Set the goal after it finishes.",
+      "goalReplaced": "Replaced the previous goal with {{objective}}",
+      "goalSet": "Goal set: {{objective}}",
+      "noGoal": "This chat has no goal.",
+      "cleared": "Goal cleared.",
+      "turnCap": "Reached the cap of {{cap}} automated turns. Resume for another allowance.",
+      "tokenCap": "Reached the budget of {{budget}} tokens. Resume for another allowance.",
+      "providerFailed": "The provider could not finish this turn.",
+      "goalFailed": "Flock could not send the next goal turn.",
+      "goalEnded": "Goal ended: {{objective}}",
+      "loopCreated": "Loop {{number}} started: {{prompt}}",
+      "intervalRaised": "Interval raised to {{seconds}} seconds.",
+      "loopCap": "This chat already has {{cap}} loops. Stop one before starting another.",
+      "noLoops": "This chat has no loops.",
+      "loopStatus": {
+        "active": "Loop {{number}} active: {{prompt}}",
+        "paused": "Loop {{number}} paused: {{prompt}}"
+      },
+      "loopUsageStats": "Runs: {{runs}} · Tokens: {{tokens}}",
+      "deadline": "Next run: {{next}}. Expires {{expiry}}.",
+      "afterExpiry": "No further run before expiry",
+      "unscheduled": "Unscheduled",
+      "loopControl": {
+        "pause": "Paused loops: {{numbers}}.",
+        "resume": "Resumed loops: {{numbers}}.",
+        "stop": "Stopped loops: {{numbers}}."
+      },
+      "noNumber": "This chat has no loop numbered {{number}}.",
+      "loopTransition": {
+        "paused": "Loop {{number}} paused. {{reason}}",
+        "ended": "Loop {{number}} ended. {{reason}}"
+      },
+      "expired": "Expired seven days after creation.",
+      "loopFailed": "Flock could not send the next loop turn.",
+      "threeFailures": "Three runs in a row failed. {{reason}}",
+      "restoreFailed": "Flock could not reopen this chat. {{reason}}"
+    }
+  },
   "backgroundTasks": {
     "interrupted": "Connection lost; completion not confirmed",
     "count": {
@@ -374,7 +467,7 @@
   },
   "input": {
     "ariaLabel": "Chat message input",
-    "placeholder": "Chat with {{agent}}, @ for agents/files, or / for skills"
+    "placeholder": "Chat with {{agent}}, @ for agents/files, or / for skills and commands"
   },
   "loading": {
     "compacting": "Compacting conversation...",

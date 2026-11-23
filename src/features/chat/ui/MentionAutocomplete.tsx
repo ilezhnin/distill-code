@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Sparkles, User } from "lucide-react";
+import type { CommandName } from "@/features/chat-automation/commands";
+import { Terminal, Sparkles, User } from "lucide-react";
 import { IconBook, IconFile, IconFolder } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
 import { AvatarVisual } from "@/shared/ui/avatar-visual";
@@ -22,6 +23,8 @@ export type {
 } from "./mentionDetection";
 
 interface MentionAutocompleteProps {
+  filteredCommands?: CommandName[];
+  onSelectCommand?: (name: CommandName) => void;
   /** Pre-filtered personas from the hook. */
   filteredPersonas: Persona[];
   /** Pre-filtered skills from the hook. */
@@ -44,6 +47,8 @@ interface MentionAutocompleteProps {
 export function MentionAutocomplete({
   filteredPersonas,
   filteredSkills = [],
+  filteredCommands = [],
+  onSelectCommand,
   filteredFiles = [],
   isOpen,
   onSelectPersona,
@@ -73,6 +78,8 @@ export function MentionAutocomplete({
   const items: MentionItem[] = useMemo(() => {
     const result: MentionItem[] = [];
     if (atCategory === "skills") {
+      for (const name of filteredCommands)
+        result.push({ type: "command", name });
       for (const skill of filteredSkills) {
         result.push({ type: "skill" as const, skill });
       }
@@ -88,11 +95,18 @@ export function MentionAutocomplete({
       result.push({ type: "persona" as const, persona: p });
     }
     return result;
-  }, [atCategory, filteredPersonas, filteredSkills, filteredFiles]);
+  }, [
+    atCategory,
+    filteredPersonas,
+    filteredSkills,
+    filteredFiles,
+    filteredCommands,
+  ]);
 
   const handleSelect = useCallback(
     (item: MentionItem) => {
-      if (item.type === "persona") {
+      if (item.type === "command") onSelectCommand?.(item.name);
+      else if (item.type === "persona") {
         onSelectPersona(item.persona);
       } else if (item.type === "skill") {
         onSelectSkill?.(item.skill);
@@ -100,7 +114,7 @@ export function MentionAutocomplete({
         onSelectFile?.(item.file);
       }
     },
-    [onSelectPersona, onSelectSkill, onSelectFile],
+    [onSelectCommand, onSelectPersona, onSelectSkill, onSelectFile],
   );
 
   if (!isOpen) return null;
@@ -108,7 +122,9 @@ export function MentionAutocomplete({
   const showFileStates = atCategory === "files";
   const visibleFiles = showFileStates ? filteredFiles : [];
   const visiblePersonas = atCategory === "agents" ? filteredPersonas : [];
-  const visibleSkills = atCategory === "skills" ? filteredSkills : [];
+  const slashItems = items.filter(
+    (item) => item.type === "skill" || item.type === "command",
+  );
   const hasResults = items.length > 0;
   const showEmpty =
     (!showFileStates || (!pathsLoading && !pathsError)) && !hasResults;
@@ -278,11 +294,15 @@ export function MentionAutocomplete({
             );
           })}
 
-          {visibleSkills.map((skill, i) => {
+          {slashItems.map((item, i) => {
             const globalIndex = i;
             return (
               <button
-                key={skill.id}
+                key={
+                  item.type === "command"
+                    ? `command:${item.name}`
+                    : item.skill.id
+                }
                 ref={(el) => {
                   if (el) itemRefs.current.set(globalIndex, el);
                   else itemRefs.current.delete(globalIndex);
@@ -298,16 +318,26 @@ export function MentionAutocomplete({
                     ? "bg-accent text-foreground"
                     : "text-foreground hover:bg-accent",
                 )}
-                onClick={() => handleSelect({ type: "skill", skill })}
+                onClick={() => handleSelect(item)}
                 onMouseEnter={() => setInternalIndex(globalIndex)}
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center">
-                  <IconBook className="size-4 shrink-0" />
+                  {item.type === "command" ? (
+                    <Terminal className="size-4 shrink-0" />
+                  ) : (
+                    <IconBook className="size-4 shrink-0" />
+                  )}
                 </div>
                 <div className="flex min-w-0 flex-col">
-                  <span className="text-sm font-normal">{skill.name}</span>
-                  <span className="truncate text-xs text-muted-foreground/60">
-                    {skill.description || skill.sourceLabel}
+                  <span className="text-sm font-normal">
+                    {item.type === "command"
+                      ? `/${item.name}`
+                      : item.skill.name}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {item.type === "command"
+                      ? t(`automation.hint.${item.name}`)
+                      : item.skill.description || item.skill.sourceLabel}
                   </span>
                 </div>
               </button>

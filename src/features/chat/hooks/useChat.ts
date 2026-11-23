@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { pauseStoppedAutomationTurn } from "@/features/chat-automation/pauseStoppedAutomationTurn";
 import { useChatStore } from "../stores/chatStore";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { clearReplayBuffer } from "./replayBuffer";
@@ -319,6 +320,7 @@ export function useChat(
       return pendingCancellation;
     }
 
+    pauseStoppedAutomationTurn(sessionId);
     abortRef.current?.abort();
     const activeStreamingMessageId = runtime.streamingMessageId;
     // Nothing but a prompt of this window settles a pending stop (its send

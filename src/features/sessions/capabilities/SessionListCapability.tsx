@@ -1,3 +1,4 @@
+import { useActiveAutomationSessionIds } from "@/features/sessions/hooks/useActiveAutomationSessionIds";
 import {
   type CSSProperties,
   type KeyboardEventHandler,
@@ -421,6 +422,7 @@ export const SessionListCapability = memo(function SessionListCapability({
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const activeAutomationIds = useActiveAutomationSessionIds();
   const localMessageCountsBySession = useChatStore(
     useShallow(selectLocalMessageCountsBySession),
   );
@@ -509,7 +511,11 @@ export const SessionListCapability = memo(function SessionListCapability({
   );
   const visibleSessions = useMemo(() => {
     const included = includeSessionListPlaceholderSessions(
-      getVisibleSessions(sessions, localMessageCountsBySession),
+      getVisibleSessions(
+        sessions,
+        localMessageCountsBySession,
+        activeAutomationIds,
+      ),
       sessions,
       nonEmptyDraftSessionIds,
       sessionIdsWithTerminals,
@@ -525,6 +531,7 @@ export const SessionListCapability = memo(function SessionListCapability({
     };
   }, [
     activeSessionId,
+    activeAutomationIds,
     conductorSessionIds,
     localMessageCountsBySession,
     nestedExecutorIds,
