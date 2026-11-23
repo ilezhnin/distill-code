@@ -36,17 +36,28 @@ export function getReplayMessageId(
  * prompt in `_meta.distill.assistantMessageId`; history recorded before that
  * only carries the prompt's `messageId`, so its reply is folded under a
  * derived `${messageId}:reply` instead of colliding with the user message.
+ *
+ * The host's name comes first, before the `messageId` an agent puts on its
+ * own chunks. An agent numbers the messages of its provider, several to a
+ * turn, and only on text and thoughts; a tool call carries none. Read first,
+ * that number gave one reply a different id on every path: the host's while
+ * it streamed (its first tool call named it), the provider's once the chat
+ * was read again (its last text renamed it). Everything filed under a reply's
+ * id — an admitted wave plan, an applied memory, an answered recall — then
+ * met the same reply as a stranger and acted on it a second time. The host
+ * stamps one id on every update of a turn, live and stored alike, so it is
+ * the one id both paths can agree on.
  */
 export function getReplayAssistantMessageId(
   source: ReplayMetadataSource,
 ): string | null {
-  if (source.messageId) {
-    return source.messageId;
-  }
-
   const assistantMessageId = getHostAssistantMessageId(source);
   if (assistantMessageId) {
     return assistantMessageId;
+  }
+
+  if (source.messageId) {
+    return source.messageId;
   }
 
   const promptMessageId = getHostReplayMeta(source)?.messageId;

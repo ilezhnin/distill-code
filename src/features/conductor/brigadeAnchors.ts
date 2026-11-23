@@ -26,6 +26,10 @@ export const EMPTY_BRIGADE_NODES_BY_MESSAGE_ID: BrigadeNodesByMessageId =
  * their own row. Children without an anchor (or anchored to a message this
  * transcript does not contain) fall back to the single latest host message,
  * which is the pre-per-message behavior.
+ *
+ * An anchor may name a reply by an id its agent gave it
+ * (`MessageMetadata.agentMessageIds`): a wave planned while replies went by
+ * those ids is anchored under one, and stays on the reply that planned it.
  */
 export function groupBrigadeNodesByHostMessage(
   nodes: readonly SessionNode[],
@@ -33,16 +37,24 @@ export function groupBrigadeNodesByHostMessage(
 ): BrigadeNodesByMessageId {
   if (nodes.length === 0) return EMPTY_BRIGADE_NODES_BY_MESSAGE_ID;
 
-  const knownMessageIds = new Set<string>();
-  for (const message of messages) knownMessageIds.add(message.id);
+  const hostIdByAnchor = new Map<string, string>();
+  for (const message of messages) hostIdByAnchor.set(message.id, message.id);
+  for (const message of messages) {
+    for (const former of message.metadata?.agentMessageIds ?? []) {
+      if (!hostIdByAnchor.has(former)) hostIdByAnchor.set(former, message.id);
+    }
+  }
 
   let fallbackHostId: string | null | undefined;
   const grouped = new Map<string, SessionNode[]>();
 
   for (const node of nodes) {
     let hostId: string | null;
-    if (node.anchorMessageId && knownMessageIds.has(node.anchorMessageId)) {
-      hostId = node.anchorMessageId;
+    const anchored = node.anchorMessageId
+      ? hostIdByAnchor.get(node.anchorMessageId)
+      : undefined;
+    if (anchored) {
+      hostId = anchored;
     } else {
       if (fallbackHostId === undefined) {
         fallbackHostId = latestConductorFooterHostId(messages);

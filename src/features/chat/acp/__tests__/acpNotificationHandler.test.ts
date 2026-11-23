@@ -1302,6 +1302,129 @@ describe("acpNotificationHandler", () => {
       { type: "text", text: "Roses are red" },
     ]);
   });
+
+  describe("a reply whose agent numbers its own messages", () => {
+    // One turn as claude-acp and codex-acp send it, and as the host stores
+    // it: text and thoughts carry the provider's message id, a new one after
+    // every tool call; a tool call carries none; the host stamps the turn's
+    // reply id on all of them.
+    const distill = { messageId: "user-1", assistantMessageId: "reply-1" };
+    const turn = [
+      {
+        sessionUpdate: "agent_thought_chunk",
+        messageId: "msg_1",
+        content: { type: "text", text: "Check what is running first." },
+        _meta: { distill },
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_1",
+        content: { type: "text", text: "Checking the waves. " },
+        _meta: { distill },
+      },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "flockctl wave list",
+        status: "in_progress",
+        _meta: { distill },
+      },
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-1",
+        status: "completed",
+        _meta: { distill },
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_2",
+        content: {
+          type: "text",
+          text: "Nothing is running; here is the plan.",
+        },
+        _meta: { distill },
+      },
+    ];
+
+    async function deliver(updates: readonly object[]) {
+      for (const update of updates) {
+        await handleSessionNotification({
+          sessionId: "acp-session",
+          update,
+        } as never);
+      }
+    }
+
+    it("streams into one message under the host's reply id", async () => {
+      registerPreparedSession("acp-session", "claude-acp", "/Users/test");
+      setActiveMessageId("acp-session", "renderer-made-id");
+
+      await deliver(turn);
+      flushBufferedStreamingUpdatesForSession("acp-session");
+
+      const messages = useChatStore.getState().messagesBySession["acp-session"];
+      expect(messages.map((message) => message.id)).toEqual(["reply-1"]);
+      expect(messages[0].content.map((block) => block.type)).toEqual([
+        "thinking",
+        "text",
+        "toolRequest",
+        "toolResponse",
+        "text",
+      ]);
+    });
+
+    it("comes back from the log under the id it streamed under", async () => {
+      // The id a wave plan, a memory fence or a recall question in this reply
+      // was filed under while it streamed. Read again under any other id, the
+      // reply was new to all of them, and the plan started a second wave.
+      registerPreparedSession("acp-session", "claude-acp", "/Users/test");
+      await deliver(turn);
+      flushBufferedStreamingUpdatesForSession("acp-session");
+      const live = useChatStore.getState().messagesBySession["acp-session"];
+
+      markSessionReplayLoading();
+      await deliver(turn);
+      const replayed = getReplayBuffer("acp-session") ?? [];
+
+      expect(replayed.map((message) => message.id)).toEqual(
+        live.map((message) => message.id),
+      );
+      expect(replayed.map((message) => message.id)).toEqual(["reply-1"]);
+    });
+
+    it("remembers the first and the latest of the agent's ids on replay", async () => {
+      // What the reply went by before the host's id came first: the first
+      // while it streamed, the latest once its chat had been read again.
+      markSessionReplayLoading();
+      await deliver([
+        ...turn,
+        {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "msg_3",
+          content: { type: "text", text: " Done." },
+          _meta: { distill },
+        },
+      ]);
+
+      const [reply] = getReplayBuffer("acp-session") ?? [];
+      expect(reply.metadata?.agentMessageIds).toEqual(["msg_1", "msg_3"]);
+    });
+
+    it("keeps the agent's id for a reply the host never named", async () => {
+      markSessionReplayLoading();
+      await deliver([
+        {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "agent-msg-7",
+          content: { type: "text", text: "From another app's history." },
+        },
+      ]);
+
+      const [reply] = getReplayBuffer("acp-session") ?? [];
+      expect(reply.id).toBe("agent-msg-7");
+      expect(reply.metadata?.agentMessageIds).toBeUndefined();
+    });
+  });
 });
 
 // The app answers permission requests itself. A `cancelled` answer ends the

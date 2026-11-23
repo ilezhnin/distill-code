@@ -7,7 +7,11 @@
  */
 
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
-import { getTextContent, type Message } from "@/shared/types/messages";
+import {
+  getTextContent,
+  isMessageKnownAs,
+  type Message,
+} from "@/shared/types/messages";
 
 import {
   WAVE_FENCE_TAG,
@@ -48,7 +52,9 @@ function isSettledAssistantMessage(message: Message): boolean {
  * broken fence from re-erroring on every store change. It is asked before the
  * text is even joined, and it is given the message's conductor and `created`
  * time so the caller can also answer "this one is behind my watermark" without
- * a second pass over the transcript.
+ * a second pass over the transcript. A message is asked about under every id
+ * it has gone by (`isMessageKnownAs`): a plan admitted while replies were
+ * still named by their agent has its tombstone under that name.
  */
 export function detectWavePlanCandidates(args: {
   conductorSessionIds: readonly string[];
@@ -76,14 +82,9 @@ export function detectWavePlanCandidates(args: {
     if (!messages?.length) continue;
     for (const message of messages) {
       if (!isSettledAssistantMessage(message)) continue;
-      if (
-        args.isProcessed(message.id, {
-          conductorSessionId,
-          createdAt: message.created,
-        })
-      ) {
+      const context = { conductorSessionId, createdAt: message.created };
+      if (isMessageKnownAs(message, (id) => args.isProcessed(id, context)))
         continue;
-      }
       const text = getTextContent(message);
       // Cheap reject before the real parse: most conductor turns are prose.
       if (!text.includes(WAVE_FENCE_TAG)) {

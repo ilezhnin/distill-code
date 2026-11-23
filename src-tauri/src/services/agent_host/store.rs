@@ -183,14 +183,17 @@ enum Piece {
 }
 
 /// The message a stored update belongs to on the renderer's side, by the
-/// rules the renderer names messages with on replay (`acpReplayMetadata.ts`):
-/// the update's own `messageId` first — an agent that numbers its messages
-/// puts each in its own, whatever the host stamped around it; else, for a
-/// prompt, the `messageId` the host stamped, and for a reply its
-/// `assistantMessageId` — or, for history recorded before replies had ids of
-/// their own, the prompt's id under the `:reply` suffix the renderer derives.
-/// A prompt is its user chunks, a reply its agent chunks, thoughts and tool
-/// calls; any other update belongs to no message.
+/// rules the renderer names messages with, live and on replay
+/// (`acpReplayMetadata.ts`). A reply is named by the `assistantMessageId` the
+/// host stamped on it, before the `messageId` an agent puts on its own
+/// chunks: an agent numbers its provider's messages, several to a turn and
+/// only on text and thoughts, so a reply named after them had one id while
+/// it streamed and another once its chat was read again. Without the host's
+/// name a reply goes by its chunk's own id, and history recorded before
+/// replies had ids of their own by the prompt's id under the `:reply` suffix
+/// the renderer derives. A prompt goes by its chunk's own `messageId`, else
+/// the one the host stamped. A prompt is its user chunks, a reply its agent
+/// chunks, thoughts and tool calls; any other update belongs to no message.
 fn renderer_identity(update: &Value) -> Option<(MessageSide, String)> {
     let side = match update.get("sessionUpdate").and_then(Value::as_str)? {
         "user_message_chunk" => MessageSide::User,
@@ -199,9 +202,7 @@ fn renderer_identity(update: &Value) -> Option<(MessageSide, String)> {
         }
         _ => return None,
     };
-    if let Some(own) = update.get("messageId").and_then(Value::as_str) {
-        return Some((side, own.to_string()));
-    }
+    let own = update.get("messageId").and_then(Value::as_str);
     let stamped = |key: &str| {
         update
             .pointer("/_meta/distill")
@@ -209,9 +210,9 @@ fn renderer_identity(update: &Value) -> Option<(MessageSide, String)> {
             .and_then(Value::as_str)
     };
     let id = match side {
-        MessageSide::User => stamped("messageId")?.to_string(),
-        MessageSide::Assistant => match stamped("assistantMessageId") {
-            Some(own) => own.to_string(),
+        MessageSide::User => own.or_else(|| stamped("messageId"))?.to_string(),
+        MessageSide::Assistant => match stamped("assistantMessageId").or(own) {
+            Some(id) => id.to_string(),
             None => format!("{}:reply", stamped("messageId")?),
         },
     };
@@ -4864,21 +4865,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chunk_that_names_its_own_message_is_not_reached_through_the_turns_stamp() {
-        // An agent that numbers its messages: the renderer shows each under
-        // its own id, and the turn's stamp names only what carries no id.
+    async fn a_chunk_its_agent_numbered_answers_to_the_turns_stamp_and_not_to_the_number() {
+        // An agent that numbers its provider's messages: the reply is still
+        // the one the host named, with its tool calls, which carry no number.
+        // The renderer shows it under the host's id, live and after a reload.
         let stamp = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
         let mut named = chunk("agent_message_chunk", stamp.clone(), text("reply"));
         named["update"]["messageId"] = json!("msg_1");
         let (dir, store) = store_with_conversation(&[named]).await;
 
         let rewrite = store
-            .rewrite_message_text("c", MessageSide::Assistant, "r1", "hijack", None)
+            .rewrite_message_text("c", MessageSide::Assistant, "msg_1", "hijack", None)
             .await
             .expect("rewrite");
         assert_eq!(rewrite.chunks, 0);
         let rewrite = store
-            .rewrite_message_text("c", MessageSide::Assistant, "msg_1", "edited", None)
+            .rewrite_message_text("c", MessageSide::Assistant, "r1", "edited", None)
             .await
             .expect("rewrite");
         assert_eq!(rewrite.chunks, 1);
@@ -4887,6 +4889,33 @@ mod tests {
             vec![("agent_message_chunk".to_string(), "edited".to_string())]
         );
         dir.close().await;
+    }
+
+    #[test]
+    fn a_reply_keeps_one_identity_whatever_its_agent_numbers_its_pieces() {
+        // One turn as claude-acp and codex-acp record it: text and thoughts
+        // carry the provider's message number, a new one after every tool
+        // call, and tool calls carry none.
+        let piece = |kind: &str, own: Option<&str>| {
+            let mut update = json!({
+                "sessionUpdate": kind,
+                "_meta": { "distill": { "messageId": "m1", "assistantMessageId": "r1" } }
+            });
+            if let Some(own) = own {
+                update["messageId"] = json!(own);
+            }
+            update
+        };
+        let reply = (MessageSide::Assistant, "r1".to_string());
+        for update in [
+            piece("agent_thought_chunk", Some("msg_1")),
+            piece("agent_message_chunk", Some("msg_1")),
+            piece("tool_call", None),
+            piece("tool_call_update", None),
+            piece("agent_message_chunk", Some("msg_2")),
+        ] {
+            assert_eq!(renderer_identity(&update), Some(reply.clone()));
+        }
     }
 
     #[tokio::test]
@@ -4921,8 +4950,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chunk_named_by_the_agent_itself_is_found_under_that_name() {
-        let stamp = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+    async fn a_chunk_only_its_agent_named_is_found_under_that_name() {
+        // No reply id from the host: history another app recorded, or a turn
+        // from before replies had ids of their own.
+        let stamp = json!({ "messageId": "m1", "runId": "run-1" });
         let mut named = chunk("agent_message_chunk", stamp, text("reply"));
         named["update"]["messageId"] = json!("agent-msg-7");
         let (dir, store) = store_with_conversation(&[named]).await;

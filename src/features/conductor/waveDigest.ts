@@ -25,7 +25,7 @@
  */
 
 import type { Message } from "@/shared/types/messages";
-import { getTextContent } from "@/shared/types/messages";
+import { getTextContent, isMessageKnownAs } from "@/shared/types/messages";
 
 import { stripProtocolFences } from "@/shared/lib/protocolFences";
 export { stripProtocolFences } from "@/shared/lib/protocolFences";
@@ -178,7 +178,8 @@ export function findVerdictMessageAfter(
     const message = messages[index];
     if (message.role !== "assistant") continue;
     if (message.metadata?.completionStatus === "inProgress") continue;
-    if (options.isConsumed?.(message.id)) continue;
+    const isConsumed = options.isConsumed;
+    if (isConsumed && isMessageKnownAs(message, isConsumed)) continue;
     const named = options.namedWaveOf?.(message);
     if (named && options.waveId && !sameWaveId(named, options.waveId)) {
       continue;

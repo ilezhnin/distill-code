@@ -325,6 +325,14 @@ export interface MessageMetadata {
    * it was, so a reader of the notice can tell what it is about.
    */
   failedMessageId?: string;
+  /**
+   * The ids the agent itself gave the pieces of this reply, when they are not
+   * the reply's own: at most the first one and the latest. A reply used to be
+   * named after them (see `getReplayAssistantMessageId`), so what was filed
+   * under a reply's id before the host's name took over is filed under one of
+   * these. Read through `isMessageKnownAs`, never to name a message.
+   */
+  agentMessageIds?: string[];
 }
 
 export interface Message {
@@ -361,6 +369,24 @@ export function isSystemNotification(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+/**
+ * True when `isKnown` holds for any id a message may have been filed under:
+ * its own, or one its agent gave it (`MessageMetadata.agentMessageIds`).
+ *
+ * For whoever acts on a settled message exactly once and remembers it by id —
+ * wave plans, verdicts, memory and recall fences. Asking about the message's
+ * own id alone forgets what was recorded while replies still went by their
+ * agent's ids, and acts on those replies again.
+ */
+export function isMessageKnownAs(
+  message: Pick<Message, "id" | "metadata">,
+  isKnown: (messageId: string) => boolean,
+): boolean {
+  if (isKnown(message.id)) return true;
+  const former = message.metadata?.agentMessageIds;
+  return former ? former.some((id) => isKnown(id)) : false;
+}
 
 export function getTextContent(message: Message): string {
   return message.content

@@ -79,6 +79,28 @@ export function ensureReplayAssistantMessage(
   return message;
 }
 
+/**
+ * Keeps the id an agent gave a piece of a reply the host names otherwise
+ * (`MessageMetadata.agentMessageIds`): the first such id and the latest, the
+ * two a reply could have been named after before the host's id came first —
+ * the first while it streamed, the latest once its chat was read again.
+ */
+export function rememberAgentMessageId(
+  message: Message,
+  agentMessageId: string | null | undefined,
+): void {
+  if (!agentMessageId || agentMessageId === message.id) return;
+  const known = message.metadata?.agentMessageIds ?? [];
+  if (known[known.length - 1] === agentMessageId) return;
+  message.metadata = {
+    ...message.metadata,
+    agentMessageIds:
+      known.length === 0 || known[0] === agentMessageId
+        ? [agentMessageId]
+        : [known[0], agentMessageId],
+  };
+}
+
 function mergeAssistantMetadata(
   message: Message,
   metadata: ReplayAssistantMetadata | undefined,

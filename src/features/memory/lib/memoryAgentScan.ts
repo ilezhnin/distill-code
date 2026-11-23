@@ -6,7 +6,11 @@
  */
 
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
-import { getTextContent, type Message } from "@/shared/types/messages";
+import {
+  getTextContent,
+  isMessageKnownAs,
+  type Message,
+} from "@/shared/types/messages";
 
 import {
   MEMORY_FENCE_TAG,
@@ -67,7 +71,7 @@ export function detectMemoryFenceCandidates(args: {
       : MEMORY_SCAN_TAIL;
     for (const message of messages.slice(-depth)) {
       if (!isSettledAssistantMessage(message)) continue;
-      if (args.isApplied(message.id)) continue;
+      if (isMessageKnownAs(message, args.isApplied)) continue;
       // The tag test rejects nearly every message, so it runs on the parts
       // as they are; the text is only joined for the ones it lets through.
       if (!messageMentions(message, MEMORY_FENCE_TAG)) continue;

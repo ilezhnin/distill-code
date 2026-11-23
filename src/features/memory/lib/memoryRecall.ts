@@ -16,7 +16,11 @@
  */
 
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
-import { getTextContent, type Message } from "@/shared/types/messages";
+import {
+  getTextContent,
+  isMessageKnownAs,
+  type Message,
+} from "@/shared/types/messages";
 
 import { appliesToProject, type MemoryEntry } from "./memoryEntry";
 import type { MemorySearchHit } from "./memorySearch";
@@ -271,7 +275,7 @@ export function detectRecallFenceCandidates(args: {
     let recentTexts: string[] | null = null;
     for (const message of tail) {
       if (!isSettledAssistantMessage(message)) continue;
-      if (args.isAnswered(message.id)) continue;
+      if (isMessageKnownAs(message, args.isAnswered)) continue;
       // The tag test rejects nearly every message, so it runs on the parts
       // as they are; the text is only joined for the ones it lets through.
       if (!messageMentions(message, RECALL_FENCE_TAG)) continue;

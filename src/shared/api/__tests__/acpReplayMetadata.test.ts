@@ -14,6 +14,27 @@ describe("getReplayAssistantMessageId", () => {
     ).toBe("a1");
   });
 
+  it("reads the host's reply id before the id an agent gave its own chunk", () => {
+    // claude-acp and codex-acp number their provider's messages, several to
+    // a turn and never on a tool call; the host's id is the one every update
+    // of the turn carries.
+    expect(
+      getReplayAssistantMessageId({
+        messageId: "msg_1",
+        _meta: { distill: { messageId: "u1", assistantMessageId: "a1" } },
+      }),
+    ).toBe("a1");
+  });
+
+  it("falls back to the agent's own id when the host named no reply", () => {
+    expect(
+      getReplayAssistantMessageId({
+        messageId: "msg_1",
+        _meta: { distill: { messageId: "u1" } },
+      }),
+    ).toBe("msg_1");
+  });
+
   it("derives a reply id from the prompt's id for older history", () => {
     expect(
       getReplayAssistantMessageId({ _meta: { distill: { messageId: "u1" } } }),

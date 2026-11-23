@@ -1389,6 +1389,40 @@ describe("waveRunner", () => {
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
   });
 
+  it("does not run a plan again when its chat is read again under the host's reply id", async () => {
+    // What happened to nearly every plan of a long sitting: the reply was
+    // filed under the id its agent gave it, the chat was read again from the
+    // log a while later, and the same reply came back under another id —
+    // written in this sitting, so no watermark stood in its way — and
+    // started a second wave beside the first. The reply reads under the
+    // host's id now and carries the ids it used to go by.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    const plan = fence(
+      '{"steps":[{"role":"scout","subtask":"Look","access":[]}]}',
+    );
+    setTranscript([{ ...assistant("msg_plan", plan), created: Date.now() }]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    setTranscript([
+      {
+        ...assistant("host-reply-1", plan),
+        created: Date.now() + 60_000,
+        metadata: {
+          completionStatus: "completed",
+          agentMessageIds: ["msg_plan"],
+        },
+      },
+    ]);
+    for (let index = 0; index < 3; index += 1) runWaveEngineTick();
+    await Promise.resolve();
+
+    expect(getWaveEngineState().waves).toHaveLength(1);
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+  });
+
   it("resumes a wave after a restart without spawning a second worker", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);

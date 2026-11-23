@@ -71,6 +71,7 @@ import {
   clearReplayAssistantTracking,
   completeReplayAssistantMessage,
   ensureReplayAssistantMessage,
+  rememberAgentMessageId,
   getTrackedReplayAssistantMessageId,
 } from "./acpReplayAssistant";
 import {
@@ -654,9 +655,14 @@ function getChunkMessageId(update: SessionUpdate): string | null {
 }
 
 /**
- * The assistant message a live agent-side update streams into: the ACP
- * chunk's own `messageId` when the agent sends one, otherwise the reply id
- * the host stamps on every update of a turn (`hostTurn`).
+ * The assistant message a live agent-side update streams into: the reply id
+ * the host stamps on every update of a turn (`hostTurn`), otherwise the ACP
+ * chunk's own `messageId` when the agent sends one.
+ *
+ * In that order, the same as a replay reads them (`getReplayAssistantMessageId`
+ * says why): a reply that streamed under one id and came back from the log
+ * under another was a new reply to everything that remembers replies by id,
+ * and its wave plan was admitted a second time.
  */
 interface LiveAssistantMessageId {
   id: string;
@@ -666,12 +672,12 @@ interface LiveAssistantMessageId {
 function getLiveAssistantMessageId(
   update: SessionUpdate,
 ): LiveAssistantMessageId | null {
-  const chunkMessageId = getChunkMessageId(update);
-  if (chunkMessageId) {
-    return { id: chunkMessageId, hostTurn: false };
-  }
   const hostMessageId = getHostAssistantMessageId(update);
-  return hostMessageId ? { id: hostMessageId, hostTurn: true } : null;
+  if (hostMessageId) {
+    return { id: hostMessageId, hostTurn: true };
+  }
+  const chunkMessageId = getChunkMessageId(update);
+  return chunkMessageId ? { id: chunkMessageId, hostTurn: false } : null;
 }
 
 function isRunInterventionBoundary(update: SessionUpdate): boolean {
@@ -804,6 +810,7 @@ async function handleReplay(
         getReplayCreated(update),
         getReplayAssistantMessageMetadata(sourceSessionId, update),
       );
+      rememberAgentMessageId(msg, getChunkMessageId(update));
       if (update.content.type === "text" && "text" in update.content) {
         const last = msg.content[msg.content.length - 1];
         if (last?.type === "text") {
@@ -826,6 +833,7 @@ async function handleReplay(
           getReplayCreated(update),
           getReplayAssistantMessageMetadata(sourceSessionId, update),
         );
+        rememberAgentMessageId(msg, getChunkMessageId(update));
         upsertThinkingContent(msg.content, update.content.text);
       }
       break;

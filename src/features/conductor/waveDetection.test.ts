@@ -110,4 +110,33 @@ describe("detectWavePlanCandidates", () => {
       "a2",
     ]);
   });
+
+  it("skips a plan whose tombstone was filed under the id its agent gave it", () => {
+    // Before the host's reply id came first, a reply was named after its
+    // agent's own message id, and its plan was tombstoned under that. The
+    // reply reads under the host's id now; the old tombstone still holds.
+    const reply: Message = {
+      ...assistant("host-reply-1", PLAN, "completed"),
+      metadata: {
+        completionStatus: "completed",
+        agentMessageIds: ["msg_first", "msg_last"],
+      },
+    };
+    for (const filedUnder of ["msg_first", "msg_last", "host-reply-1"]) {
+      const candidates = detectWavePlanCandidates({
+        conductorSessionIds: ["conductor-1"],
+        messagesBySession: { "conductor-1": [reply] },
+        isProcessed: (planMessageId) => planMessageId === filedUnder,
+      });
+      expect(candidates).toEqual([]);
+    }
+    const unseen = detectWavePlanCandidates({
+      conductorSessionIds: ["conductor-1"],
+      messagesBySession: { "conductor-1": [reply] },
+      isProcessed: neverProcessed,
+    });
+    expect(unseen.map((candidate) => candidate.planMessageId)).toEqual([
+      "host-reply-1",
+    ]);
+  });
 });

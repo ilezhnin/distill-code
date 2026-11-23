@@ -12,7 +12,11 @@
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
-import { getTextContent, type Message } from "@/shared/types/messages";
+import {
+  getTextContent,
+  isMessageKnownAs,
+  type Message,
+} from "@/shared/types/messages";
 
 import { BoundedSet } from "./boundedSet";
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -102,8 +106,16 @@ export function processRoadmaps(
       if (!isSettledAssistantMessage(message)) continue;
       const current = next.roadmaps[node.sessionId];
       // Older than the roadmap the conductor already has: read before, or
-      // superseded by a later block — either way not news.
-      if (current && message.created <= current.sourceCreatedAt) {
+      // superseded by a later block — either way not news. Nor is the very
+      // message that roadmap came from, whatever time it carries now: a reply
+      // read again from the log is stamped with the time of its last piece,
+      // later than the one it had while it streamed, and reading it as newer
+      // than itself announced an unchanged roadmap after every restart.
+      if (
+        current &&
+        (message.created <= current.sourceCreatedAt ||
+          isMessageKnownAs(message, (id) => id === current.sourceMessageId))
+      ) {
         scanned.add(message.id);
         continue;
       }
