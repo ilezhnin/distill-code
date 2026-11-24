@@ -1086,7 +1086,13 @@ async fn run_fix(
         npm_registry(app),
         managed_acp_tools::provider_setup_env(app).await,
         move |line| {
-            log::info!("{log_tag_for_lines} {line}");
+            // A sign-in or an install prints tokens and one-time codes. The
+            // setup screen shows the line as printed; the log, which the
+            // agents of every provider can read, keeps it masked.
+            log::info!(
+                "{log_tag_for_lines} {}",
+                crate::services::log_redaction::redact_log_line(line)
+            );
             append_output(
                 &app_for_lines,
                 &registry_for_lines,
@@ -1099,7 +1105,11 @@ async fn run_fix(
 
     match &result {
         Ok(()) => log::info!("{log_tag} fix succeeded"),
-        Err(error) => log::info!("{log_tag} fix failed: {error}"),
+        // A failed command's error is what it printed on stderr.
+        Err(error) => log::info!(
+            "{log_tag} fix failed: {}",
+            crate::services::log_redaction::redact_log_line(error)
+        ),
     }
     result
 }
@@ -1272,7 +1282,11 @@ async fn run_managed_install(
     let provider_for_lines = provider_id.to_string();
     let log_tag_for_lines = log_tag.to_string();
     let on_line = move |line: &str| {
-        log::info!("{log_tag_for_lines} {line}");
+        // Masked for the log like the other fixes' output (`run_fix`).
+        log::info!(
+            "{log_tag_for_lines} {}",
+            crate::services::log_redaction::redact_log_line(line)
+        );
         append_output(
             &app_for_lines,
             &registry_for_lines,
@@ -1286,7 +1300,10 @@ async fn run_managed_install(
 
     match &result {
         Ok(()) => log::info!("{log_tag} managed install succeeded"),
-        Err(error) => log::info!("{log_tag} managed install failed: {error}"),
+        Err(error) => log::info!(
+            "{log_tag} managed install failed: {}",
+            crate::services::log_redaction::redact_log_line(error)
+        ),
     }
     result
 }

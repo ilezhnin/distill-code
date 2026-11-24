@@ -911,7 +911,13 @@ impl Bridge {
                             // Keep bounded diagnostics without copying it to app logs.
                             log::debug!("[{harness}] benchmark stderr: {} bytes", line.len());
                         }
-                        Ok(Some(line)) => log::info!("[{harness}] {line}"),
+                        // A provider CLI prints what it likes on stderr, and the
+                        // log is readable by the agents of every provider: what
+                        // looks like a credential is masked before it is kept.
+                        Ok(Some(line)) => log::info!(
+                            "[{harness}] {}",
+                            crate::services::log_redaction::redact_log_line(&line)
+                        ),
                         Ok(None) => break,
                         Err(_) => {
                             transport_failed(

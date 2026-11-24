@@ -1,16 +1,23 @@
 //! Shared log-line redaction.
 //!
-//! `redact_log_line` masks the values of a fixed allowlist of secret-ish keys
-//! (`authorization`, `api_key`, `token`, …) wherever they appear in a line. It
+//! `redact_log_line` masks what looks like a credential in one line of text:
+//! the values of a fixed list of secret-ish keys (`authorization`, `api_key`,
+//! `token`, …), a token after a bare `Bearer`, the secret parameters of a URL
+//! query (`?code=`, `&sig=`) and provider keys that stand alone (`sk-…`). It
 //! is applied to every string field of a diagnostic event before the event is
-//! recorded (see `services::diagnostic_log`).
+//! recorded (see `services::diagnostic_log`), and to what a bridge writes on
+//! stderr and a provider CLI prints while it is set up or signed in, before
+//! either reaches the app log: the log lives in the Flock root, which the
+//! agents of every provider can read.
 //!
-//! NOTE: this is a *key-based* redactor — it scrubs `key=value` / `key: "value"`
-//! pairs, not free-form prose. It cannot tell whether arbitrary text contains
-//! user/LLM content.
+//! NOTE: this is a *shape-based* redactor — it scrubs `key=value` / `key: "value"`
+//! pairs and the few value shapes listed above, not free-form prose. It cannot
+//! tell whether arbitrary text contains user/LLM content.
+
+const REDACTED: &str = "[redacted]";
 
 pub(crate) fn redact_log_line(line: &str) -> String {
-    [
+    let keyed = [
         "authorization",
         "refresh_token",
         "access_token",
@@ -21,10 +28,12 @@ pub(crate) fn redact_log_line(line: &str) -> String {
         "apikey",
         "password",
         "secret",
+        "cookie",
         "token",
     ]
     .into_iter()
-    .fold(line.to_string(), redact_sensitive_key)
+    .fold(line.to_string(), redact_sensitive_key);
+    redact_bare_credentials(redact_bearer_tokens(redact_url_parameters(keyed)))
 }
 
 fn redact_sensitive_key(line: String, key: &str) -> String {
@@ -48,11 +57,8 @@ fn redact_sensitive_key(line: String, key: &str) -> String {
         }
 
         let mut delimiter_index = key_end;
-        if matches!(
-            lower.as_bytes().get(delimiter_index).copied(),
-            Some(b'"' | b'\'')
-        ) {
-            delimiter_index += 1;
+        if let Some(quote) = quote_at(lower.as_bytes(), delimiter_index) {
+            delimiter_index = quote.after;
         }
         delimiter_index = skip_ascii_whitespace(lower.as_bytes(), delimiter_index);
 
@@ -65,27 +71,20 @@ fn redact_sensitive_key(line: String, key: &str) -> String {
         }
 
         let mut value_start = skip_ascii_whitespace(lower.as_bytes(), delimiter_index + 1);
-        let quote = match lower.as_bytes().get(value_start).copied() {
-            Some(b'"') => {
-                value_start += 1;
-                Some(b'"')
-            }
-            Some(b'\'') => {
-                value_start += 1;
-                Some(b'\'')
-            }
-            _ => None,
-        };
+        let quote = quote_at(lower.as_bytes(), value_start);
+        if let Some(quote) = &quote {
+            value_start = quote.after;
+        }
 
-        let value_end = find_value_end(lower.as_bytes(), value_start, quote, key);
+        let value_end = find_value_end(lower.as_bytes(), value_start, quote.as_ref(), key);
         if value_end <= value_start {
             search_start = value_start;
             continue;
         }
 
-        redacted.replace_range(value_start..value_end, "[redacted]");
-        lower.replace_range(value_start..value_end, "[redacted]");
-        search_start = value_start + "[redacted]".len();
+        redacted.replace_range(value_start..value_end, REDACTED);
+        lower.replace_range(value_start..value_end, REDACTED);
+        search_start = value_start + REDACTED.len();
     }
 
     redacted
@@ -114,13 +113,60 @@ fn skip_ascii_whitespace(bytes: &[u8], start: usize) -> usize {
     index
 }
 
-fn find_value_end(bytes: &[u8], value_start: usize, quote: Option<u8>, key: &str) -> usize {
+/// A quote that opens or closes a key or a value.
+struct Quote {
+    byte: u8,
+    /// The backslashes in front of it. JSON carried inside a JSON string
+    /// writes its quotes as `\"` (and as `\\\"` one level further in), so the
+    /// delimiter is the quote together with its backslashes.
+    escapes: usize,
+    /// Where the text behind the quote starts.
+    after: usize,
+}
+
+fn quote_at(bytes: &[u8], index: usize) -> Option<Quote> {
+    let mut quote_index = index;
+    while bytes.get(quote_index) == Some(&b'\\') {
+        quote_index += 1;
+    }
+    match bytes.get(quote_index).copied() {
+        Some(byte @ (b'"' | b'\'')) => Some(Quote {
+            byte,
+            escapes: quote_index - index,
+            after: quote_index + 1,
+        }),
+        _ => None,
+    }
+}
+
+fn find_value_end(bytes: &[u8], value_start: usize, quote: Option<&Quote>, key: &str) -> usize {
     if let Some(quote) = quote {
+        // The value ends at the quote escaped as its opening one was. A quote
+        // behind more backslashes is a quote inside the value: stopping there
+        // would log the rest of the secret.
+        let mut index = value_start;
+        while let Some(relative) = bytes[index..].iter().position(|byte| *byte == quote.byte) {
+            let quote_index = index + relative;
+            let escapes = bytes[value_start..quote_index]
+                .iter()
+                .rev()
+                .take_while(|byte| **byte == b'\\')
+                .count();
+            if escapes <= quote.escapes {
+                return quote_index - escapes;
+            }
+            index = quote_index + 1;
+        }
+        return bytes.len();
+    }
+
+    if key == "cookie" {
+        // A cookie header is one secret after another, `;` between them: the
+        // rest of the line goes.
         return bytes[value_start..]
             .iter()
-            .position(|byte| *byte == quote)
-            .map(|relative| value_start + relative)
-            .unwrap_or(bytes.len());
+            .position(|byte| matches!(*byte, b'\r' | b'\n'))
+            .map_or(bytes.len(), |relative| value_start + relative);
     }
 
     let allow_spaces = key == "authorization";
@@ -132,6 +178,214 @@ fn find_value_end(bytes: &[u8], value_start: usize, quote: Option<u8>, key: &str
         value_end += 1;
     }
     value_end
+}
+
+/// Query parameters that carry a credential under exactly this name: an OAuth
+/// authorization or device code, the signature of a signed link.
+const SECRET_URL_PARAMETERS: &[&str] = &["code", "device_code", "sig"];
+/// Query parameters that carry one under any name that is, or ends in, one of
+/// these words: `key`, `subscription-key`, `X-Amz-Signature`.
+const SECRET_URL_PARAMETER_ENDINGS: &[&str] = &["key", "signature"];
+
+/// Mask the secret parameters of a URL query or a form body. Only a
+/// parameter that follows `?` or `&` counts: `code` and `key` are ordinary
+/// words everywhere else (`exit code=1`), and a line without a secret has to
+/// reach the log as it was written.
+fn redact_url_parameters(line: String) -> String {
+    if !line.contains('=') {
+        return line;
+    }
+    let bytes = line.as_bytes();
+    let mut redacted = String::new();
+    let mut copied = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let Some(name_start) = url_parameter_start(&line, index) else {
+            index += 1;
+            continue;
+        };
+        let mut name_end = name_start;
+        while bytes
+            .get(name_end)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-' | b'.'))
+        {
+            name_end += 1;
+        }
+        if bytes.get(name_end) != Some(&b'=')
+            || !is_secret_url_parameter(&line[name_start..name_end])
+        {
+            index = name_start;
+            continue;
+        }
+        let value_start = name_end + 1;
+        let mut value_end = value_start;
+        while bytes
+            .get(value_end)
+            .is_some_and(|byte| !ends_url_value(*byte))
+        {
+            value_end += 1;
+        }
+        if value_end > value_start {
+            redacted.push_str(&line[copied..value_start]);
+            redacted.push_str(REDACTED);
+            copied = value_end;
+        }
+        index = value_end;
+    }
+    if copied == 0 {
+        return line;
+    }
+    redacted.push_str(&line[copied..]);
+    redacted
+}
+
+/// Where a parameter name starts when `index` is at what introduces one: `?`,
+/// `&`, or `&` as HTML (`&amp;`) and as some JSON encoders (`\u0026`) write it.
+fn url_parameter_start(line: &str, index: usize) -> Option<usize> {
+    let rest = &line.as_bytes()[index..];
+    if rest.starts_with(b"&amp;") {
+        Some(index + "&amp;".len())
+    } else if rest.starts_with(b"\\u0026") {
+        Some(index + "\\u0026".len())
+    } else if matches!(rest.first(), Some(b'?' | b'&')) {
+        Some(index + 1)
+    } else {
+        None
+    }
+}
+
+fn is_secret_url_parameter(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    SECRET_URL_PARAMETERS.contains(&name.as_str())
+        || SECRET_URL_PARAMETER_ENDINGS.iter().any(|ending| {
+            name.strip_suffix(ending)
+                .is_some_and(|head| head.is_empty() || head.ends_with(['_', '-', '.']))
+        })
+}
+
+fn ends_url_value(byte: u8) -> bool {
+    byte.is_ascii_whitespace()
+        || matches!(
+            byte,
+            b'&' | b'#'
+                | b'"'
+                | b'\''
+                | b'<'
+                | b'>'
+                | b'\\'
+                | b'`'
+                | b')'
+                | b']'
+                | b'}'
+                | b','
+                | b';'
+                | b'|'
+        )
+}
+
+/// The shortest run after `Bearer` that is taken for a token. Prose puts
+/// ordinary words there (`Bearer authentication`), and none of them is this
+/// long; no provider issues a token this short.
+const BEARER_TOKEN_MIN_CHARS: usize = 16;
+
+/// Mask the token after a `Bearer` that is not the value of an
+/// `authorization` key (those are masked whole above): a header logged on its
+/// own, or inside a list.
+fn redact_bearer_tokens(line: String) -> String {
+    const WORD: &[u8] = b"bearer";
+    let bytes = line.as_bytes();
+    let mut redacted = String::new();
+    let mut copied = 0;
+    let mut index = 0;
+    while let Some(relative) = bytes[index..]
+        .windows(WORD.len())
+        .position(|window| window.eq_ignore_ascii_case(WORD))
+    {
+        let word_start = index + relative;
+        let word_end = word_start + WORD.len();
+        index = word_end;
+        if word_start > 0 && bytes[word_start - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        let token_start = skip_ascii_whitespace(bytes, word_end);
+        if token_start == word_end {
+            continue;
+        }
+        let mut token_end = token_start;
+        while bytes.get(token_end).is_some_and(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(*byte, b'.' | b'_' | b'~' | b'+' | b'/' | b'=' | b'-')
+        }) {
+            token_end += 1;
+        }
+        if token_end - token_start < BEARER_TOKEN_MIN_CHARS {
+            continue;
+        }
+        redacted.push_str(&line[copied..token_start]);
+        redacted.push_str(REDACTED);
+        copied = token_end;
+        index = token_end;
+    }
+    if copied == 0 {
+        return line;
+    }
+    redacted.push_str(&line[copied..]);
+    redacted
+}
+
+/// How the keys of the providers Flock runs start when they stand in a line
+/// with no key in front of them: OpenAI, Anthropic and Moonshot (`sk-`), xAI,
+/// and the GitHub tokens Copilot signs in with.
+const BARE_CREDENTIAL_PREFIXES: &[&str] = &[
+    "sk-",
+    "xai-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+];
+/// How much has to follow a prefix for it to be a key and not a word that
+/// merely starts the same way.
+const BARE_CREDENTIAL_MIN_CHARS: usize = 20;
+
+/// Mask a provider key that stands alone. The prefix stays: it says whose key
+/// was printed, and nothing else about it.
+fn redact_bare_credentials(line: String) -> String {
+    let bytes = line.as_bytes();
+    let is_key_byte = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-');
+    let mut redacted = String::new();
+    let mut copied = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        // `task-sk-…` is a word that happens to contain a prefix, not a key.
+        let starts_a_word = index == 0 || !is_key_byte(bytes[index - 1]);
+        let prefix = BARE_CREDENTIAL_PREFIXES
+            .iter()
+            .filter(|_| starts_a_word)
+            .find(|prefix| bytes[index..].starts_with(prefix.as_bytes()));
+        let Some(prefix) = prefix else {
+            index += 1;
+            continue;
+        };
+        let secret_start = index + prefix.len();
+        let mut secret_end = secret_start;
+        while bytes.get(secret_end).is_some_and(|byte| is_key_byte(*byte)) {
+            secret_end += 1;
+        }
+        if secret_end - secret_start >= BARE_CREDENTIAL_MIN_CHARS {
+            redacted.push_str(&line[copied..secret_start]);
+            redacted.push_str(REDACTED);
+            copied = secret_end;
+        }
+        index = secret_end;
+    }
+    if copied == 0 {
+        return line;
+    }
+    redacted.push_str(&line[copied..]);
+    redacted
 }
 
 #[cfg(test)]
@@ -189,5 +443,143 @@ mod tests {
         let redacted = redact_log_line("Authorization: Bearer abc.def, status=401");
 
         assert_eq!(redacted, "Authorization: [redacted], status=401");
+    }
+
+    /// JSON logged inside a JSON string writes its quotes with a backslash,
+    /// once per level it is nested: the key is followed by `\"`, not `"`.
+    #[test]
+    fn redacts_json_carried_inside_a_json_string() {
+        assert_eq!(
+            redact_log_line(
+                r#"{"body":"{\"access_token\":\"at-invented-1\",\"expires_in\":3600}"}"#
+            ),
+            r#"{"body":"{\"access_token\":\"[redacted]\",\"expires_in\":3600}"}"#
+        );
+        assert_eq!(
+            redact_log_line(r#"payload={\\\"refresh_token\\\" : \\\"rt-invented-2\\\"} done"#),
+            r#"payload={\\\"refresh_token\\\" : \\\"[redacted]\\\"} done"#
+        );
+        // A quote escaped inside the value does not end it.
+        assert_eq!(
+            redact_log_line(r#"{"password":"in\"vented","user":"example"}"#),
+            r#"{"password":"[redacted]","user":"example"}"#
+        );
+    }
+
+    #[test]
+    fn redacts_a_bearer_token_that_follows_no_authorization_key() {
+        assert_eq!(
+            redact_log_line("sending header Bearer inv3nted.t0ken-value_0123456789 to the proxy"),
+            "sending header Bearer [redacted] to the proxy"
+        );
+        assert_eq!(
+            redact_log_line(r#"headers: ["bearer AbCdEfGhIjKlMnOpQrStUv=="]"#),
+            r#"headers: ["bearer [redacted]"]"#
+        );
+        // Prose about the scheme is not a token.
+        for line in [
+            "401: Bearer authentication is required",
+            "expected a Bearer token, got none",
+            "Bearer <token> is missing",
+            "the forbearer abcdefghijklmnopqrstuvwxyz stays",
+        ] {
+            assert_eq!(redact_log_line(line), line);
+        }
+    }
+
+    #[test]
+    fn redacts_the_secret_parameters_of_a_url() {
+        assert_eq!(
+            redact_log_line(
+                "GET http://localhost:1455/auth/callback?code=invented-code-1&state=st-2 200"
+            ),
+            "GET http://localhost:1455/auth/callback?code=[redacted]&state=st-2 200"
+        );
+        assert_eq!(
+            redact_log_line(
+                "open https://example.test/v1/models?key=AIzaInvented3&alt=json#top then wait"
+            ),
+            "open https://example.test/v1/models?key=[redacted]&alt=json#top then wait"
+        );
+        assert_eq!(
+            redact_log_line(
+                "https://example.test/blob?sv=2024&sig=inv%2Bented4&X-Amz-Signature=5f5f&subscription-key=k6"
+            ),
+            "https://example.test/blob?sv=2024&sig=[redacted]&X-Amz-Signature=[redacted]&subscription-key=[redacted]"
+        );
+        assert_eq!(
+            redact_log_line("body: client_id=app&device_code=dc-invented-7&grant_type=x"),
+            "body: client_id=app&device_code=[redacted]&grant_type=x"
+        );
+        assert_eq!(
+            redact_log_line(r#"<a href="https://example.test/cb?a=1&amp;code=c8">link</a>"#),
+            r#"<a href="https://example.test/cb?a=1&amp;code=[redacted]">link</a>"#
+        );
+        assert_eq!(
+            redact_log_line(r#"{"url":"https://example.test/cb?a=1\u0026code=c9\u0026b=2"}"#),
+            r#"{"url":"https://example.test/cb?a=1\u0026code=[redacted]\u0026b=2"}"#
+        );
+        // `token` in a query was already covered by the key list.
+        assert_eq!(
+            redact_log_line("ws://127.0.0.1:9000/socket?token=invented10&v=2"),
+            "ws://127.0.0.1:9000/socket?token=[redacted]&v=2"
+        );
+    }
+
+    #[test]
+    fn redacts_cookie_headers_whole() {
+        assert_eq!(
+            redact_log_line("Cookie: session=inv11; csrf=inv12"),
+            "Cookie: [redacted]"
+        );
+        assert_eq!(
+            redact_log_line(r#"{"set-cookie":"sid=inv13; Path=/; HttpOnly","status":200}"#),
+            r#"{"set-cookie":"[redacted]","status":200}"#
+        );
+        assert_eq!(redact_log_line("cookies=3 sent"), "cookies=3 sent");
+    }
+
+    #[test]
+    fn redacts_provider_keys_that_stand_alone() {
+        assert_eq!(
+            redact_log_line("using sk-ant-api03-InventedInventedInvented-0000 for the request"),
+            "using sk-[redacted] for the request"
+        );
+        assert_eq!(
+            redact_log_line(r#"argv: ["--key","xai-InventedInventedInvented0000"]"#),
+            r#"argv: ["--key","xai-[redacted]"]"#
+        );
+        assert_eq!(
+            redact_log_line("remote: https://gho_InventedInventedInvented0000@example.test/repo"),
+            "remote: https://gho_[redacted]@example.test/repo"
+        );
+        // A word that only starts like a key, and a key-like tail of a word.
+        for line in [
+            "sk-learn is not installed",
+            "task-sk-abcdefghijklmnopqrstuvwxyz0123 queued",
+        ] {
+            assert_eq!(redact_log_line(line), line);
+        }
+    }
+
+    /// What a bridge and a provider CLI ordinarily print carries no secret
+    /// and reaches the log as it was written.
+    #[test]
+    fn leaves_lines_without_a_secret_unchanged() {
+        for line in [
+            "",
+            "[2026-11-24T10:00:00Z] INFO session ready in 412 ms",
+            r"spawned C:\Users\example\AppData\Local\tool\bin\agent.cmd --stdio",
+            "process exited with exit code=1, signal=none",
+            "status code: 404 for GET https://example.test/v1/models?limit=20&after=abc",
+            r#"{"jsonrpc":"2.0","id":7,"method":"session/update","params":{"sessionId":"s1"}}"#,
+            "Open https://example.test/device and enter the code shown in the terminal",
+            "authorize at https://example.test/oauth/authorize?response_type=code&client_id=app&code_challenge=abc&code_challenge_method=S256&state=xyz",
+            "hotkey=ctrl+c monkey=banana zipcode=00000 country_code=US",
+            "npm warn deprecated example@1.0.0: use example-next",
+            "Привет, мир: строка без секретов",
+        ] {
+            assert_eq!(redact_log_line(line), line, "{line}");
+        }
     }
 }
