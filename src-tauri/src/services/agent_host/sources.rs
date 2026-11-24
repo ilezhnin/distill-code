@@ -1246,10 +1246,11 @@ fn refuse_a_taken_name(
 ///
 /// The file may come from anyone, so it decides nothing but its own content.
 /// The request says which kind is being imported (`type`: `skill` from the
-/// Skills screen, `agent` from Agents) and a file of another kind is refused;
-/// a project is imported from neither. The app's own metadata keys are not
-/// taken from the file, and a name that is already taken refuses the import
-/// instead of the file being written beside the source it names.
+/// Skills screen, `agent` from Agents) and a file of another kind is refused,
+/// as is a request that names no kind; a project is imported from neither.
+/// The app's own metadata keys are not taken from the file, and a name that
+/// is already taken refuses the import instead of the file being written
+/// beside the source it names.
 pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
     let data = string_param(params, "data")?;
     let value: Value = serde_json::from_str(&data)
@@ -1263,15 +1264,19 @@ pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             "Unsupported source export version: {version}"
         )));
     }
-    let expected = match params.get("type") {
-        // The Agents import (`importPersonas` in the renderer) does not name
-        // its kind: a request without one is held to an agent, the only kind
-        // that caller sends.
-        None | Some(Value::Null) => SourceType::Agent,
-        Some(requested) => match requested.as_str().and_then(SourceType::parse) {
-            Some(kind @ (SourceType::Skill | SourceType::Agent)) => kind,
-            _ => return Err(invalid_params("Only a skill or an agent can be imported")),
-        },
+    // Both screens name their kind. A request that names none is refused
+    // rather than read as one of them: the file cannot be asked what it is.
+    let expected = match params
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(SourceType::parse)
+    {
+        Some(kind @ (SourceType::Skill | SourceType::Agent)) => kind,
+        _ => {
+            return Err(invalid_params(
+                "An import must name its kind (\"type\"): a skill or an agent",
+            ))
+        }
     };
     // A file that names no kind is a skill, as it always was.
     let found = match value.get("type") {
@@ -1638,8 +1643,8 @@ mod tests {
     }
 
     /// Import `file` the way a screen does: `kind` is what the Skills screen
-    /// (`skill`) or a caller that names its kind sends; `None` is the request
-    /// the Agents screen sends.
+    /// (`skill`) or the Agents screen (`agent`) sends; `None` is a request
+    /// that names no kind.
     fn import_file(roots: &SourceRoots, kind: Option<&str>, file: Value) -> Result<Value, Value> {
         let mut params = json!({ "data": file.to_string(), "target": { "scope": "global" } });
         if let Some(kind) = kind {
@@ -1698,12 +1703,10 @@ mod tests {
         let skill_file = json!({
             "version": 1, "type": "skill", "name": "notes", "description": "d", "content": "c"
         });
-        for agents_request in [Some("agent"), None] {
-            assert_eq!(
-                refusal(import_file(&roots, agents_request, skill_file.clone())),
-                json!({ "reason": "otherKind", "expected": "agent", "found": "skill" })
-            );
-        }
+        assert_eq!(
+            refusal(import_file(&roots, Some("agent"), skill_file.clone())),
+            json!({ "reason": "otherKind", "expected": "agent", "found": "skill" })
+        );
 
         // A project is imported from neither screen: every folder it names
         // as a working directory would be probed and given a `.distill` on
@@ -1714,7 +1717,7 @@ mod tests {
             "version": 1, "type": "project", "name": "p1",
             "properties": { "workingDirs": [named_folder], "archivedAt": "2026-01-01" }
         });
-        for request in [Some("skill"), Some("agent"), None] {
+        for request in [Some("skill"), Some("agent")] {
             assert_eq!(
                 refusal(import_file(&roots, request, project_file.clone()))["found"],
                 "project"
@@ -1874,30 +1877,28 @@ mod tests {
             // The name of its file is a name an agent answers to as well.
             ("acceptor", "Acceptance Check"),
         ] {
-            for agents_request in [Some("agent"), None] {
-                let refused = import_file(
-                    &roots,
-                    agents_request,
-                    json!({
-                        "version": 1, "type": "agent", "name": name,
-                        "description": "d", "content": "MARKER-PERSONA"
-                    }),
-                )
-                .unwrap_err();
-                assert_eq!(
-                    refused["data"]["importRefused"],
-                    json!({
-                        "reason": "nameTaken", "kind": "agent",
-                        "name": shown_name(name), "existing": taken_by
-                    }),
-                    "{name:?}"
-                );
-                let message = refused["message"].as_str().unwrap();
-                assert!(
-                    message.contains(&format!("the agent \"{taken_by}\"")),
-                    "{message}"
-                );
-            }
+            let refused = import_file(
+                &roots,
+                Some("agent"),
+                json!({
+                    "version": 1, "type": "agent", "name": name,
+                    "description": "d", "content": "MARKER-PERSONA"
+                }),
+            )
+            .unwrap_err();
+            assert_eq!(
+                refused["data"]["importRefused"],
+                json!({
+                    "reason": "nameTaken", "kind": "agent",
+                    "name": shown_name(name), "existing": taken_by
+                }),
+                "{name:?}"
+            );
+            let message = refused["message"].as_str().unwrap();
+            assert!(
+                message.contains(&format!("the agent \"{taken_by}\"")),
+                "{message}"
+            );
         }
         assert_eq!(file_names(&agents), ["acceptor.md", "reviewer.md"]);
         let listed = list(&json!({ "type": "agent" }), &roots).unwrap();
@@ -1996,9 +1997,10 @@ mod tests {
         let exported = export(&json!({ "type": "agent", "path": path }), &roots).unwrap();
         assert_eq!(exported["filename"], "release-manager.agent.json");
         delete(&json!({ "type": "agent", "path": path }), &roots).unwrap();
-        // The Agents screen's request names no kind.
         let imported = import(
-            &json!({ "data": exported["json"], "target": { "scope": "global" } }),
+            &json!({
+                "data": exported["json"], "target": { "scope": "global" }, "type": "agent"
+            }),
             &roots,
         )
         .unwrap();
@@ -2016,6 +2018,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plain["sources"][0]["type"], "skill");
+    }
+
+    /// A request without a kind used to be held to an agent, because the
+    /// Agents screen sent none. Both screens name theirs now, and a request
+    /// that does not is refused whatever the file holds.
+    #[test]
+    fn an_import_that_names_no_kind_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = SourceRoots::new(dir.path().join("root"), None);
+        let agent_file = json!({
+            "version": 1, "type": "agent", "name": "Scout", "description": "d", "content": "c"
+        });
+        let skill_file = json!({
+            "version": 1, "type": "skill", "name": "notes", "description": "d", "content": "c"
+        });
+        let mut nameless_kind = json!({
+            "data": agent_file.to_string(), "target": { "scope": "global" }, "type": null
+        });
+        for file in [&agent_file, &skill_file] {
+            let error = import_file(&roots, None, file.clone()).unwrap_err();
+            assert_eq!(error["code"], -32602, "{error}");
+            let message = error["message"].as_str().unwrap();
+            assert!(message.contains("must name its kind"), "{message}");
+            nameless_kind["data"] = json!(file.to_string());
+            assert!(import(&nameless_kind, &roots).is_err());
+        }
+        assert!(!roots.root.join("agents").exists());
+        assert!(!roots.root.join("skills").exists());
+
+        // Named, the same agent is imported.
+        let created = import_file(&roots, Some("agent"), agent_file).unwrap();
+        assert_eq!(created["sources"][0]["type"], "agent");
     }
 
     /// Creating a source in the app is not an import: the agent builder

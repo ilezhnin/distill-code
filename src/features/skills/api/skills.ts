@@ -584,13 +584,12 @@ export async function importSkills(
   // The file says what it holds, and it may come from anyone: an agent or a
   // project dropped here was created under a "skill imported" message. The
   // request names the kind this screen imports and the host refuses any
-  // other. (Built first because `sourcesImport` does not declare `type` yet.)
-  const request = {
+  // other.
+  const response = await client.host.sourcesImport({
     data,
-    target: { scope: "global" as const },
+    target: { scope: "global" },
     type: SKILL_SOURCE_TYPE,
-  };
-  const response = await client.host.sourcesImport(request);
+  });
 
   const imported = response.sources.filter(isFilesystemSkillSource);
   if (imported.length === 0 || imported.length !== response.sources.length) {

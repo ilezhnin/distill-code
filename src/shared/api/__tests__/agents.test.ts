@@ -611,7 +611,7 @@ Research carefully.
     );
   });
 
-  it("imports native agent JSON through ACP source import", async () => {
+  it("imports native agent JSON through ACP source import, naming the kind it imports", async () => {
     mockGooseSourcesImport.mockResolvedValue({ sources: [agentSource] });
 
     const { importPersonas } = await import("../agents");
@@ -625,9 +625,11 @@ Research carefully.
 
     await importPersonas(raw, "scout.agent.json");
 
+    // The host refuses an import request that names no kind.
     expect(mockGooseSourcesImport).toHaveBeenCalledWith({
       data: raw,
       target: { scope: "global" },
+      type: "agent",
     });
     expect(mockGooseSourcesCreate).not.toHaveBeenCalled();
   });

@@ -1060,9 +1060,11 @@ impl Bridge {
                             );
                             break;
                         }
+                        // Masked like a stderr line, and before it is cut: half
+                        // a credential is no shape the redactor knows.
                         None => log::warn!(
                             "[{harness}] unparseable line on stdout: {}",
-                            truncate(&line, 200)
+                            truncate(&crate::services::log_redaction::redact_log_line(&line), 200)
                         ),
                     }
                 }

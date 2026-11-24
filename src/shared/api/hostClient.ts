@@ -218,7 +218,12 @@ export class HostExt {
       params,
     );
   }
-  sourcesImport(params: { data: string; target: SourceScope }) {
+  sourcesImport(params: {
+    data: string;
+    target: SourceScope;
+    /** The kind the importing screen takes; the host refuses any other. */
+    type: Extract<SourceType, "skill" | "agent">;
+  }) {
     return this.call<{ sources: SourceEntry[] }>("sources/import", params);
   }
 }

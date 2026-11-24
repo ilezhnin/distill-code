@@ -1571,9 +1571,12 @@ export async function importPersonas(
 
   if (parsed.type === AGENT_SOURCE_TYPE) {
     const nativeImport = sanitizedNativeAgentImport(parsed);
+    // The request names the kind this screen imports; the host refuses a
+    // file of any other kind, and a request that names none.
     const response = await client.host.sourcesImport({
       data: nativeImport.data,
       target: { scope: "global" },
+      type: AGENT_SOURCE_TYPE,
     });
     const sources = await Promise.all(
       response.sources
