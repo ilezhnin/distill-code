@@ -41,6 +41,7 @@ import {
   sessionPulse,
 } from "@/features/chat/lib/sessionPulse";
 import { sessionBackgroundWorkLive } from "./backgroundWork";
+import { attachedFoldersOf } from "./conductorFolders";
 import { skipConductorNoticeRelay } from "./conductorNoticeRelay";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
@@ -929,6 +930,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           workingDir:
             useChatSessionStore.getState().getSession(wave.conductorSessionId)
               ?.workingDir ?? undefined,
+          attachedFolders: attachedFoldersOf(wave.conductorSessionId),
         });
         step = {
           ...step,

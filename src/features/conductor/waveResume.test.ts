@@ -23,12 +23,32 @@ describe("statusFilePathIn", () => {
     ).toBe("E:\\games\\mod\\docs/STATUS.md");
   });
 
-  it("keeps an absolute path and reads nothing without a folder", () => {
+  it("keeps an absolute path inside the conductor's folders and reads nothing without a folder", () => {
+    expect(
+      statusFilePathIn("Wrote C:\\work\\STATUS.md with the plan", "C:\\work"),
+    ).toBe("C:\\work\\STATUS.md");
+    expect(
+      statusFilePathIn("Wrote D:\\notes\\STATUS.md", "C:\\work", ["D:\\notes"]),
+    ).toBe("D:\\notes\\STATUS.md");
+    // With no folder there is nothing a path could be inside.
     expect(
       statusFilePathIn("Wrote C:\\work\\STATUS.md with the plan", undefined),
-    ).toBe("C:\\work\\STATUS.md");
+    ).toBeUndefined();
     expect(statusFilePathIn("see STATUS.md", undefined)).toBeUndefined();
     expect(statusFilePathIn("no file named here", "/w")).toBeUndefined();
+  });
+
+  it("leaves a status path on a server, or outside the folders, as text", () => {
+    for (const text of [
+      "state is in \\\\192.0.2.10\\s\\STATUS.md",
+      "state is in //192.0.2.10/s/STATUS.md",
+      "state is in \\\\?\\UNC\\192.0.2.10\\s\\STATUS.md",
+      "state is in C:\\Users\\me\\secrets\\STATUS.md",
+      "state is in ..\\..\\other\\STATUS.md",
+      "state is in /etc/STATUS.md",
+    ]) {
+      expect(statusFilePathIn(text, "C:\\work\\mod"), text).toBeUndefined();
+    }
   });
 });
 
@@ -68,6 +88,30 @@ describe("loadWaveResumeContext", () => {
     expect(preamble).toContain("step 3 of this wave");
     expect(preamble).toContain("Half done; state is in ./STATUS.md");
     expect(preamble).toContain("- cache: 40%");
+  });
+
+  it("never reads a status file a dead executor named on a server", async () => {
+    const reads: string[] = [];
+    setWaveResumeIoForTests({
+      lastMessages: async () => [
+        {
+          role: "assistant",
+          text: "State is in \\\\192.0.2.10\\s\\STATUS.md, carry on from there.",
+        },
+      ],
+      readText: async (path) => {
+        reads.push(path);
+        return "planted";
+      },
+    });
+    const context = await loadWaveResumeContext({
+      previousSessionId: "dead",
+      workingDir: "C:\\work\\mod",
+    });
+    expect(reads).toEqual([]);
+    expect(context.statusFile).toBeUndefined();
+    // The message still says where it is, as text.
+    expect(context.lastMessage).toContain("\\\\192.0.2.10\\s\\STATUS.md");
   });
 
   it("survives a transcript that cannot be read and a file that cannot", async () => {

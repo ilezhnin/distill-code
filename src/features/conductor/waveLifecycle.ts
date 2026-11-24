@@ -41,6 +41,7 @@
  * `admitCandidates` looks, that message id is already spent.
  */
 
+import { hasNamedSender } from "@/features/chat/lib/queuedMessageOrigin";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -393,13 +394,20 @@ function clearVerdictSilence(wave: WaveState): void {
 /**
  * True while the conductor's queue still holds the message that carries this
  * marker: a wave's digest, or a continue turn.
+ *
+ * Only one the app queued itself. A `flockctl session send` that carries the
+ * marker waits in the same queue, and counting it held the real digest back
+ * for as long as it waited; every message a flockctl command delivers names
+ * its sender, and the app's own never do.
  */
 function isMarkerQueued(conductorSessionId: string, marker: string): boolean {
   const queued =
     useChatStore.getState().queuedMessageBySession[conductorSessionId] ?? [];
   return queued.some(
     (record) =>
-      record.kind === "transport-ready" && record.payload.text.includes(marker),
+      record.kind === "transport-ready" &&
+      !hasNamedSender(record.payload.sendOptions?.userMessageMetadata) &&
+      record.payload.text.includes(marker),
   );
 }
 

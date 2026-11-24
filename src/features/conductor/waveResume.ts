@@ -15,6 +15,8 @@
 import { lastSessionMessages } from "@/shared/api/sessionSearch";
 import { readTextFile } from "@/shared/api/system";
 
+import { isInsideConductorFolders } from "./conductorFolders";
+
 /** Cap on the previous session's last message, as quoted into the brief. */
 export const MAX_RESUME_MESSAGE_CHARS = 6_000;
 
@@ -73,21 +75,37 @@ function isAbsolutePath(path: string): boolean {
   );
 }
 
-/** The status file path a message names, resolved against the working folder. */
+/**
+ * The status file path a message names, resolved against the working folder,
+ * when it lies in the conductor's folders (`isInsideConductorFolders`): the
+ * working folder and `attachedFolders`. A path on a server or a device, or
+ * outside every folder, is left as the text it is in the message.
+ */
 export function statusFilePathIn(
   text: string,
   workingDir: string | undefined,
+  attachedFolders: readonly string[] = [],
 ): string | undefined {
   const match = STATUS_FILE_PATTERN.exec(text);
   if (!match) return undefined;
   const named = match[0].replace(/^[.\s]+(?=[^.])/, (prefix) =>
     prefix.trim().replace(/^\.(?=[\\/])/, "."),
   );
-  if (isAbsolutePath(named)) return named;
-  if (!workingDir) return undefined;
-  const separator = workingDir.includes("\\") ? "\\" : "/";
-  const relative = named.replace(/^\.[\\/]/, "");
-  return `${workingDir.replace(/[\\/]+$/, "")}${separator}${relative}`;
+  let resolved: string;
+  if (isAbsolutePath(named)) {
+    resolved = named;
+  } else {
+    if (!workingDir) return undefined;
+    const separator = workingDir.includes("\\") ? "\\" : "/";
+    const relative = named.replace(/^\.[\\/]/, "");
+    resolved = `${workingDir.replace(/[\\/]+$/, "")}${separator}${relative}`;
+  }
+  return isInsideConductorFolders(named, resolved, [
+    workingDir,
+    ...attachedFolders,
+  ])
+    ? resolved
+    : undefined;
 }
 
 /**
@@ -97,6 +115,8 @@ export function statusFilePathIn(
 export async function loadWaveResumeContext(args: {
   previousSessionId: string;
   workingDir?: string;
+  /** The conductor's other folders, where a status file may also live. */
+  attachedFolders?: readonly string[];
 }): Promise<WaveResumeContext> {
   const context: WaveResumeContext = {};
   let messages: Array<{ role: string | null; text: string }> = [];
@@ -113,7 +133,11 @@ export async function loadWaveResumeContext(args: {
     .find((message) => message.role === "assistant" && message.text.trim());
   if (!last) return context;
   context.lastMessage = cap(last.text, MAX_RESUME_MESSAGE_CHARS);
-  const statusPath = statusFilePathIn(last.text, args.workingDir);
+  const statusPath = statusFilePathIn(
+    last.text,
+    args.workingDir,
+    args.attachedFolders,
+  );
   if (!statusPath) return context;
   try {
     const contents = await io.readText(statusPath);

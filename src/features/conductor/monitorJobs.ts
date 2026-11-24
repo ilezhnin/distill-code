@@ -264,10 +264,48 @@ function minutesBetween(from: number, to: number): number {
   return Math.max(0, Math.round((to - from) / 60_000));
 }
 
-function quoteArg(value: string): string {
-  return /^[A-Za-z0-9._:/=-]+$/.test(value)
-    ? value
-    : `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+/**
+ * An argument as the stop command can carry it in sh, PowerShell and cmd
+ * alike, or `null` when no one spelling is right in all three.
+ *
+ * The owner runs the command in whichever shell its harness has, and the
+ * three agree only on the plain cases: sh escapes with a backslash,
+ * PowerShell with a backtick and still expands `$(...)` between double
+ * quotes, cmd expands `%NAME%` and escapes nothing. The quoting used here
+ * before was right for sh alone, so a state key such as
+ * `k$(Start-Process calc)` ran its own text when the line was pasted into
+ * PowerShell. Only what every shell reads as written goes on the line: a
+ * bare word, or words between double quotes holding nothing a shell acts on.
+ */
+function plainShellArg(value: string): string | null {
+  if (/^[A-Za-z0-9._:/=][A-Za-z0-9._:/=-]*$/.test(value)) return value;
+  if (
+    /^[A-Za-z0-9._:/=][A-Za-z0-9 ._:/=,@+-]*[A-Za-z0-9._:/=,@+-]$/.test(value)
+  ) {
+    return `"${value}"`;
+  }
+  return null;
+}
+
+/**
+ * How to stop the job: the command itself when both of its values can be
+ * written for any shell, and otherwise the values on lines of their own,
+ * for the owner to quote for the shell it runs.
+ */
+function stopCommandLines(job: MonitorJob): string[] {
+  const sessionId = plainShellArg(job.ownerSessionId);
+  const stateKey = plainShellArg(job.stateKey);
+  if (sessionId !== null && stateKey !== null) {
+    return [
+      `  flock-monitor stop --session-id ${sessionId} --state-key ${stateKey}`,
+    ];
+  }
+  return [
+    "  flock-monitor stop --session-id <session id> --state-key <state key>",
+    `  session id: ${job.ownerSessionId}`,
+    `  state key: ${job.stateKey}`,
+    "Pass each of the two values as one argument, quoted for the shell you run: no one quoting is right for every shell, so Flock writes none.",
+  ];
 }
 
 /**
@@ -290,7 +328,7 @@ export function monitorSilenceNoticeText(job: MonitorJob, now: number): string {
     "If it is stuck, look at what it is doing" +
       (job.logPath ? ` (its stderr is in ${job.logPath})` : "") +
       ", or stop it with:",
-    `  flock-monitor stop --session-id ${quoteArg(job.ownerSessionId)} --state-key ${quoteArg(job.stateKey)}`,
+    ...stopCommandLines(job),
     "This is said once per silence: Flock says it again only after the job prints something and goes quiet again.",
   ];
   return lines.join("\n");

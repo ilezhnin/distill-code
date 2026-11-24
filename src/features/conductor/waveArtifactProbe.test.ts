@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { StructuredReport } from "./types";
 import {
@@ -126,6 +126,79 @@ describe("startWaveArtifactProbe", () => {
     expect(asked).toEqual(["C:\\repo\\src/a.ts"]);
     expect(waveNow().checkedArtifacts).toBe(1);
     expect(waveNow().missingArtifacts).toBeUndefined();
+  });
+
+  it("asks only about paths inside the conductor's folders, never a server", async () => {
+    seedWave();
+    const asked: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setWaveArtifactProbeIoForTests({
+      canProbe: () => true,
+      workingDirOf: () => "C:\\repo",
+      attachedFoldersOf: () => ["D:\\assets"],
+      exists: async (path) => {
+        asked.push(path);
+        return false;
+      },
+    });
+    await settled(
+      startWaveArtifactProbe({
+        waveId: "w1",
+        conductorSessionId: "c1",
+        reports: [
+          report({
+            artifacts: [
+              { label: "unc", path: "\\\\198.51.100.7\\s\\data.txt" },
+              { label: "fwd", path: "//198.51.100.7/s/data.txt" },
+              { label: "dev", path: "\\\\?\\UNC\\198.51.100.7\\s\\x" },
+              { label: "up", path: "..\\..\\Users\\me\\x.txt" },
+              { label: "other", path: "C:\\Users\\me\\x.txt" },
+              { label: "root", path: "\\src\\a.ts" },
+              { label: "in", path: "src\\a.ts" },
+              { label: "attached", path: "D:\\assets\\logo.png" },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(asked).toEqual(["C:\\repo\\src\\a.ts", "D:\\assets\\logo.png"]);
+    expect(waveNow().checkedArtifacts).toBe(2);
+    expect(waveNow().missingArtifacts).toEqual([
+      "src\\a.ts",
+      "D:\\assets\\logo.png",
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("6 artifact path(s) outside"),
+    );
+    warn.mockRestore();
+  });
+
+  it("starts no check when every path lies outside the folders", () => {
+    seedWave();
+    const asked: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    setWaveArtifactProbeIoForTests({
+      canProbe: () => true,
+      workingDirOf: () => "C:\\repo",
+      attachedFoldersOf: () => [],
+      exists: async (path) => {
+        asked.push(path);
+        return true;
+      },
+    });
+    expect(
+      startWaveArtifactProbe({
+        waveId: "w1",
+        conductorSessionId: "c1",
+        reports: [
+          report({
+            artifacts: [{ label: "unc", path: "\\\\host\\share\\a.ts" }],
+          }),
+        ],
+      }),
+    ).toBe(false);
+    expect(asked).toEqual([]);
+    vi.restoreAllMocks();
   });
 
   it("treats a backend that throws as no answer, never as a missing file", async () => {

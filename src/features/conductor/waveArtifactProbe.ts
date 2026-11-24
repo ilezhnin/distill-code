@@ -29,6 +29,10 @@ import { taskBindingId } from "@/features/chat/lib/executionOwnership";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { pathExists } from "@/shared/api/system";
 
+import {
+  attachedFoldersOf,
+  isInsideConductorFolders,
+} from "./conductorFolders";
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { StructuredReport } from "./types";
 import type { WaveState, WaveStepState } from "./waveEngine";
@@ -70,6 +74,8 @@ interface WaveArtifactProbeIo {
   canProbe: () => boolean;
   exists: (path: string) => Promise<boolean>;
   workingDirOf: (sessionId: string) => string | undefined;
+  /** The folders attached to the chat, beside its working folder. */
+  attachedFoldersOf: (sessionId: string) => string[];
   /** The native task binding a child session executes, if it is owned. */
   bindingOf: (sessionId: string) => string | null;
   /** True when the child's graph node reached `completed`. */
@@ -87,6 +93,7 @@ const defaultIo: WaveArtifactProbeIo = {
   workingDirOf: (sessionId) =>
     useChatSessionStore.getState().getSession(sessionId)?.workingDir?.trim() ||
     undefined,
+  attachedFoldersOf,
   bindingOf: taskBindingId,
   completed: (sessionId) =>
     useConductorGraphStore.getState().getNode(sessionId)?.status ===
@@ -167,8 +174,8 @@ export function isCheckableArtifactPath(reported: string): boolean {
  *
  * Workers write repository-relative paths because that is what they see. An
  * absolute path — POSIX, a Windows drive path, a UNC or root-relative Windows
- * path — a `~` path, or a URI is left alone: the absolute ones are already
- * answerable, and the others are not this check's business. A trailing
+ * path — a `~` path, or a URI is left alone: whether it may be asked about at
+ * all is `isInsideConductorFolders`'s call, made on what this returns. A trailing
  * `:line` or `:line:col` (how workers cite a place in a file) is dropped:
  * no Windows file name can contain a colon, so it never names the file.
  */
@@ -295,14 +302,34 @@ export function startWaveArtifactProbe(args: {
       onSettled: args.onSettled,
     });
   }
-  const paths = artifactPathsOf(args.reports).filter(isCheckableArtifactPath);
+  const workingDir = io.workingDirOf(args.conductorSessionId);
+  const folders = [
+    workingDir,
+    ...io.attachedFoldersOf(args.conductorSessionId),
+  ];
+  const checkable = artifactPathsOf(args.reports).filter(
+    isCheckableArtifactPath,
+  );
+  // Only what lies in the conductor's own folders is asked about; the rest
+  // stays text in the reports, not checked and not counted as checked.
+  const paths = checkable.filter((reported) =>
+    isInsideConductorFolders(
+      reported,
+      resolveArtifactPath(reported, workingDir),
+      folders,
+    ),
+  );
+  if (paths.length < checkable.length) {
+    console.warn(
+      `[conductor] wave ${args.waveId}: ${checkable.length - paths.length} artifact path(s) outside the conductor's folders were not checked`,
+    );
+  }
   if (paths.length === 0) return false;
 
   inFlightProbes.add(args.waveId);
   void (async () => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const workingDir = io.workingDirOf(args.conductorSessionId);
       const looked = paths.slice(0, MAX_CHECKED_ARTIFACT_PATHS);
       const check = (async () => {
         const missing: string[] = [];

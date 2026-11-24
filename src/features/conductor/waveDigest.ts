@@ -24,6 +24,7 @@
  * new anchor rather than a second message that collides with the first.
  */
 
+import { hasNamedSender } from "@/features/chat/lib/queuedMessageOrigin";
 import type { Message } from "@/shared/types/messages";
 import { getTextContent, isMessageKnownAs } from "@/shared/types/messages";
 
@@ -128,7 +129,38 @@ export function isDigestMessage(message: Message): boolean {
 }
 
 /**
- * Index of the last message carrying `marker`, or `-1`.
+ * True when `text` with the send `metadata` it went out with is the digest
+ * the app delivered under `marker`.
+ *
+ * The marker is text, and a session that sends this chat a message chooses
+ * its text: a `flockctl session send` that merely carried
+ * `[flock-digest:<wave>#<n>]` used to be taken for the delivered digest, so
+ * it anchored the wave's verdict on whatever the conductor answered it, and
+ * before the real digest went out it made the engine believe it already
+ * had. What tells them apart is who delivered it: every message a flockctl
+ * command delivers names its sender (`hasNamedSender`), and the app's own
+ * digest never does. The marker must also open the message, as the app
+ * writes it, rather than appear somewhere in it.
+ *
+ * Where a harness's history does not bring a message's metadata back after
+ * a reload, a named sender cannot be seen, and the text is all there is.
+ */
+export function isDeliveredDigest(
+  text: string,
+  metadata: Parameters<typeof hasNamedSender>[0],
+  marker: string,
+): boolean {
+  if (hasNamedSender(metadata)) return false;
+  const envelope = parseDigestEnvelope(text);
+  return (
+    envelope !== null &&
+    `${DIGEST_MARKER_PREFIX}${envelope.digestKey}]` === marker
+  );
+}
+
+/**
+ * Index of the last message that is the digest delivered under `marker`,
+ * or `-1`.
  *
  * Last rather than first: a retried digest uses a new marker, but a transcript
  * that somehow holds two copies of the same one is answered by the newest.
@@ -141,7 +173,9 @@ export function findDigestMessageIndex(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "user") continue;
-    if (getTextContent(message).includes(marker)) return index;
+    if (isDeliveredDigest(getTextContent(message), message.metadata, marker)) {
+      return index;
+    }
   }
   return -1;
 }

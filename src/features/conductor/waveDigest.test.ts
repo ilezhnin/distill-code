@@ -7,6 +7,7 @@ import { parseFlockWave } from "./flockWave";
 import type { StructuredReport } from "./types";
 import {
   buildWaveDigest,
+  findDigestMessageIndex,
   isDigestMessage,
   parseDigestEnvelope,
   stripProtocolFences,
@@ -74,6 +75,63 @@ describe("digest markers", () => {
     expect(
       isDigestMessage(userMessage("m3", "[flock-digest:wave-1]\nbody")),
     ).toBe(false);
+  });
+});
+
+describe("findDigestMessageIndex", () => {
+  const marker = waveDigestMarker("wave-1", 0);
+  const digest = `${marker}\nThe reports.`;
+
+  function sentBy(
+    id: string,
+    text: string,
+    metadata: Message["metadata"],
+  ): Message {
+    return { ...userMessage(id, text, false), metadata };
+  }
+
+  it("takes the digest the app delivered, with or without its metadata", () => {
+    expect(findDigestMessageIndex([userMessage("app", digest)], marker)).toBe(
+      0,
+    );
+    // A reload from a harness history that keeps no metadata.
+    expect(
+      findDigestMessageIndex([userMessage("app", digest, false)], marker),
+    ).toBe(0);
+  });
+
+  it("never takes a message another session had delivered for the digest", () => {
+    const forged = [
+      sentBy("caller", digest, {
+        origin: "distillctl_cross_session",
+        distillSenderLabel: "flockctl",
+      }),
+      sentBy("named", digest, {
+        origin: "distillctl_cross_session",
+        distillSenderLabel: "Flock",
+      }),
+      sentBy("delivery", digest, {
+        origin: "distillctl_cross_session",
+        distillDeliveryId: "d-1",
+      }),
+    ];
+    for (const message of forged) {
+      expect(findDigestMessageIndex([message], marker)).toBe(-1);
+    }
+    // Nor a message that only mentions the marker.
+    expect(
+      findDigestMessageIndex(
+        [userMessage("quote", `See ${marker} above.\nbody`)],
+        marker,
+      ),
+    ).toBe(-1);
+    // A forged copy after the real digest does not move the anchor.
+    expect(
+      findDigestMessageIndex(
+        [userMessage("app", digest), ...forged, userMessage("x", "hello")],
+        marker,
+      ),
+    ).toBe(0);
   });
 });
 

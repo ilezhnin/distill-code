@@ -1,6 +1,7 @@
 import type { WorkspaceAttachment } from "@/shared/types/chat";
 import { getGitState } from "@/shared/api/git";
 import { getHomeDir } from "@/shared/api/system";
+import { isUncOrDeviceRootedPath } from "@/shared/lib/isUncOrDeviceRootedPath";
 import {
   canonicalizeAuthorizedWorkspaceDirectory,
   resolvePath,
@@ -82,6 +83,36 @@ async function getAuthorizedWorkspaceRoots(
   return [...new Set([...baseAllowedRoots, ...knownRepositoryWorktrees])];
 }
 
+/**
+ * Refuses a requested folder rooted at a server or a device, before any
+ * native call is made for it.
+ *
+ * Every path these functions are asked about comes from a tool call's `cwd`
+ * or `path`, or from a flockctl caller; the folder the operator picks in the
+ * app's own dialog never passes through here. Resolving a path is itself a
+ * filesystem call, and on one that names a server Windows connects to it
+ * and offers the operator's credentials before any root could refuse it.
+ * Judged on the spelling that came in, so a folder the operator keeps on a
+ * mapped drive, whose canonical form names its server, is unaffected. A
+ * leading `~` is looked through: the native side expands `~/rest` by
+ * joining `rest` to the home folder, and a `rest` rooted at a server
+ * replaces the home folder instead of extending it.
+ */
+function refuseServerOrDeviceFolder(
+  requestedPath: string,
+  operation: "attach" | "detach",
+): void {
+  const path = requestedPath.trim();
+  if (
+    isUncOrDeviceRootedPath(path) ||
+    (/^~[\\/]/.test(path) && isUncOrDeviceRootedPath(path.slice(2)))
+  ) {
+    throw new FolderAttachmentError(
+      `Could not ${operation} "${requestedPath}": it is on a server or a device, and an agent or a command can only name a folder on this computer`,
+    );
+  }
+}
+
 async function canonicalizeForSession(
   sessionId: string,
   requestedPath: string,
@@ -127,9 +158,9 @@ async function canonicalizeDetachablePath(
         homeDir,
       ),
   );
-  return (
-    stored?.path ?? canonicalizeForSession(sessionId, requestedPath, "detach")
-  );
+  if (stored) return stored.path;
+  refuseServerOrDeviceFolder(requestedPath, "detach");
+  return canonicalizeForSession(sessionId, requestedPath, "detach");
 }
 
 export interface AttachSessionFolderOptions {
@@ -166,6 +197,7 @@ async function prepareSessionFolder(
   sessionId: string,
   requestedPath: string,
 ): Promise<PreparedSessionFolder> {
+  refuseServerOrDeviceFolder(requestedPath, "attach");
   let path = await canonicalizeForSession(sessionId, requestedPath, "attach");
   let classification: ReturnType<typeof classifyWorkspaceAttachment>;
   try {

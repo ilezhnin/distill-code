@@ -207,6 +207,56 @@ describe("monitorSilenceNoticeText", () => {
     );
     expect(text).toContain("once per silence");
   });
+
+  // One quoting cannot be right for sh, PowerShell and cmd at once: what was
+  // escaped for sh ran as code when the line was pasted into PowerShell.
+  it("writes no command line around a value some shell would act on", () => {
+    for (const stateKey of [
+      "k$(Start-Process calc)",
+      'sync "prod"',
+      "a`b",
+      "50%done",
+      "C:\\jobs\\build",
+      "-rf",
+      "k;calc",
+      "k&calc",
+      "k|calc",
+      " padded ",
+    ]) {
+      const job = recorded([[report({ stateKey }), T0 + 25 * MINUTE]])[
+        "job-1"
+      ] as MonitorJob;
+      const lines = monitorSilenceNoticeText(job, T0 + 25 * MINUTE).split("\n");
+      // The command names its two values and holds neither.
+      expect(lines).toContain(
+        "  flock-monitor stop --session-id <session id> --state-key <state key>",
+      );
+      expect(lines).toContain("  session id: worker-1");
+      expect(lines).toContain(`  state key: ${stateKey}`);
+      expect(
+        lines.filter(
+          (line) =>
+            line.includes("flock-monitor stop") && line.includes(stateKey),
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  it("keeps the ready command for the keys every shell reads as written", () => {
+    for (const [stateKey, written] of [
+      ["build", "build"],
+      ["ci:main/nightly-2", "ci:main/nightly-2"],
+      ["re scrape", '"re scrape"'],
+      ["sync prod, eu+us", '"sync prod, eu+us"'],
+    ]) {
+      const job = recorded([[report({ stateKey }), T0 + 25 * MINUTE]])[
+        "job-1"
+      ] as MonitorJob;
+      expect(monitorSilenceNoticeText(job, T0 + 25 * MINUTE)).toContain(
+        `  flock-monitor stop --session-id worker-1 --state-key ${written}\n`,
+      );
+    }
+  });
 });
 
 describe("pruneMonitorJobs", () => {

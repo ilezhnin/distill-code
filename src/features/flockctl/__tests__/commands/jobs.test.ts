@@ -147,9 +147,11 @@ describe("flockctl job report", () => {
       "@/features/conductor/monitorJobs"
     );
     const notice = monitorSilenceNoticeText(job, Date.now()).split("\n");
-    // The app's five lines, the path inside the one that names it.
-    expect(notice).toHaveLength(5);
+    // The path sits inside the app's own line that names it. How many lines
+    // follow depends on the key: one that a shell would act on is listed
+    // beside the stop command instead of inside it.
     expect(notice[2]).toContain(`(its stderr is in ${logPath})`);
+    expect(notice.filter((line) => line.includes(logPath))).toHaveLength(1);
   });
 });
 

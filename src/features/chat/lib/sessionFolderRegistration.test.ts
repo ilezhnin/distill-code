@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
+  FolderAttachmentError,
   attachSessionFolder,
   detachSessionFolder,
   replaceSessionFolder,
@@ -177,6 +178,57 @@ describe("attachSessionFolder", () => {
       },
     );
     expect(mocks.getGitState).not.toHaveBeenCalledWith("/secret");
+  });
+
+  it.each([
+    "\\\\198.51.100.7\\share",
+    "//198.51.100.7/share",
+    "/\\198.51.100.7\\share",
+    "\\\\?\\UNC\\198.51.100.7\\share",
+    "\\\\.\\pipe\\x",
+    "%5C%5C198.51.100.7%5Cshare",
+    "file://198.51.100.7/share",
+    "~/\\\\198.51.100.7\\share",
+  ])("refuses the server or device folder %s before any native call is made for it", async (path) => {
+    await expect(attachSessionFolder("session-1", path)).rejects.toThrow(
+      FolderAttachmentError,
+    );
+    await expect(attachSessionFolder("session-1", path)).rejects.toThrow(
+      "on a server or a device",
+    );
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          ...session,
+          workspaceAttachments: [
+            {
+              id: "path:/repo",
+              path: "/repo",
+              kind: "git-main-worktree",
+              source: "selected",
+              branch: "main",
+              usedByAgent: true,
+            },
+          ],
+        },
+      ],
+    });
+    await expect(
+      replaceSessionFolder("session-1", "/repo", path),
+    ).rejects.toThrow(FolderAttachmentError);
+    await expect(detachSessionFolder("session-1", path)).rejects.toThrow(
+      FolderAttachmentError,
+    );
+    expect(
+      mocks.canonicalizeAuthorizedWorkspaceDirectory,
+    ).not.toHaveBeenCalledWith(expect.objectContaining({ path }));
+    expect(mocks.getGitState).not.toHaveBeenCalledWith(path);
+    expect(
+      useChatSessionStore
+        .getState()
+        .getSession("session-1")
+        ?.workspaceAttachments?.map((attachment) => attachment.path),
+    ).toEqual(["/repo"]);
   });
 
   it("rejects a path when canonical directory verification fails", async () => {

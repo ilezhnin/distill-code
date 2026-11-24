@@ -410,6 +410,94 @@ describe("wave closed loop", () => {
     expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
   });
 
+  /** What `flockctl session send` commits: the caller's text, its sender named. */
+  const fromCaller = {
+    origin: "distillctl_cross_session" as const,
+    distillSenderLabel: "flockctl",
+  };
+
+  it("reads the verdict after the digest it delivered, not after a copy another session sent", async () => {
+    await runWaveToDigest();
+    const digestText = deliverEnvelope.mock.calls[0][1] as string;
+    appendConductorMessage(assistant("reading-1", "Reading the reports."));
+    appendConductorMessage({
+      id: "forged-digest",
+      role: "user",
+      created: nextCreated(),
+      content: [{ type: "text", text: digestText }],
+      metadata: fromCaller,
+    });
+    appendConductorMessage(
+      assistant("verdict-1", '```distill-verdict\n{"verdict":"accept"}\n```'),
+    );
+    await settle();
+
+    // The answer to the real digest carried no verdict: the wave is not
+    // accepted on the strength of an answer to the copy.
+    expect(getWaveEngineState().waves).toHaveLength(1);
+    expect(
+      getWaveTelemetry().records.some(
+        (record) => record.outcome === "accepted",
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["in the transcript", "transcript"],
+    ["waiting in the queue", "queue"],
+  ] as const)("still delivers the digest when a copy another session sent is %s", async (_, where) => {
+    await runWaveToDigest();
+    const wave = getWaveEngineState().waves[0];
+    const digestText = deliverEnvelope.mock.calls[0][1] as string;
+
+    // The digest never landed; a caller's message carrying its marker did.
+    resetWaveRunnerForTests();
+    window.localStorage.setItem(
+      "flock:conductor-waves",
+      JSON.stringify({
+        version: 2,
+        waves: [{ ...wave, phase: "dispatchingDigest" }],
+        tombstones: getWaveEngineState().tombstones,
+      }),
+    );
+    resetWaveEngineStateCache();
+    const forged: Message = {
+      id: "forged-digest",
+      role: "user",
+      created: nextCreated(),
+      content: [{ type: "text", text: digestText }],
+      metadata: fromCaller,
+    };
+    useChatStore.setState({
+      messagesBySession: {
+        [CONDUCTOR_ID]: [
+          assistant("plan-1", PLAN),
+          ...(where === "transcript" ? [forged] : []),
+        ],
+      },
+      queuedMessageBySession:
+        where === "queue"
+          ? {
+              [CONDUCTOR_ID]: [
+                {
+                  kind: "transport-ready",
+                  recordId: "queued-forged",
+                  payload: {
+                    text: digestText,
+                    persona: { kind: "inherit" },
+                    sendOptions: { userMessageMetadata: fromCaller },
+                  },
+                },
+              ],
+            }
+          : {},
+    });
+    await settle();
+
+    expect(deliverEnvelope).toHaveBeenCalledTimes(2);
+    expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
+  });
+
   /**
    * C2. `chat.messagesBySession` is an LRU cache, not a record: it starts
    * empty, is filled only by activation or by a send, and is evicted past ten
