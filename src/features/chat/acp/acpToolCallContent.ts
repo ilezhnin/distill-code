@@ -5,6 +5,7 @@ import {
 import { readImageAttachment } from "@/shared/api/system";
 import type { ImageContent } from "@/shared/types/messages";
 import { isRecord } from "@/shared/lib/isRecord";
+import { isUncOrDeviceRootedPath } from "@/shared/lib/isUncOrDeviceRootedPath";
 import {
   fileUrlToPath,
   isFileUrl,
@@ -90,9 +91,17 @@ function mimeTypeFromImagePath(path: string): string {
   }
 }
 
+/**
+ * A tool's result is text someone else wrote: a remote MCP server's answer, a
+ * web page or a file the tool returned word for word. A path in it that names
+ * a server would have the machine connect there and offer the user's
+ * credentials the moment the file is read, so no spelling of one counts as a
+ * file the tool wrote.
+ */
 function isAbsoluteLocalPath(path: string): boolean {
+  if (isUncOrDeviceRootedPath(path)) return false;
   if (/^[A-Za-z]:[\\/]/.test(path)) return true;
-  return path.startsWith("/") && !path.startsWith("//");
+  return path.startsWith("/");
 }
 
 function imagePathFromUnknown(value: unknown): string | null {
@@ -135,7 +144,11 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 function localPathFromImage(image: Pick<ImageContent, "uri">): string | null {
   const uri = typeof image.uri === "string" ? image.uri.trim() : "";
   if (!uri) return null;
-  if (isFileUrl(uri)) return fileUrlToPath(uri);
+  if (isFileUrl(uri)) {
+    // `file://server/share/a.png` converts to a server path like any other.
+    const path = fileUrlToPath(uri);
+    return path !== null && !isUncOrDeviceRootedPath(path) ? path : null;
+  }
   if (isAbsoluteLocalPath(uri) && IMAGE_PATH_EXTENSION_RE.test(uri)) {
     return uri;
   }
@@ -145,7 +158,8 @@ function localPathFromImage(image: Pick<ImageContent, "uri">): string | null {
 /**
  * ACP image blocks plus image files named by the tool (Grok `image_gen`
  * returns JSON `{ path, filename }` in `rawOutput` / text, not an image
- * ContentBlock). Relative and UNC paths are ignored.
+ * ContentBlock). Relative paths and paths rooted at a server or a device are
+ * ignored.
  */
 export function extractToolResultImages(update: {
   // biome-ignore lint/suspicious/noExplicitAny: ACP SDK ToolCallContent type is complex
