@@ -593,6 +593,13 @@ async fn run_git_output_with_env_source_async(
 ///   repository defines, which `diff` and `status` run on a changed file,
 ///   by [`repository_filter_overrides`]. `diff` also takes `--no-ext-diff`
 ///   and `--no-textconv`. All three were seen running on git 2.56.
+/// * Two more ways the same reads reach a program the repository names go
+///   around those three, and were seen running on git 2.56 as well. A
+///   repository that declares a promisor remote has git fetch any object it
+///   finds missing, with `remote.<name>.uploadpack` from its own config: see
+///   [`GIT_NO_LAZY_FETCH_ENV`]. And `status` and `diff` start a second git
+///   inside every nested repository, which reads the config found there and
+///   runs its filters: see [`GIT_SUBMODULE_OVERRIDE`].
 /// * Keys with no `-c` spelling that would neutralise them are *not* covered
 ///   for the commands the user asks for: `credential.helper`,
 ///   `filter.<driver>.smudge`/`clean` on a checkout, and `core.gitProxy` still
@@ -681,11 +688,40 @@ fn git_transport_args(args: &[&str]) -> &'static [&'static str] {
         // config name programs a diff runs; the app reads numbers and
         // patches, and needs neither.
         ["diff", ..] => &GIT_DIFF_OVERRIDES,
+        ["status", ..] => std::slice::from_ref(&GIT_SUBMODULE_OVERRIDE),
         _ => &[],
     }
 }
 
-const GIT_DIFF_OVERRIDES: [&str; 2] = ["--no-ext-diff", "--no-textconv"];
+/// Keeps `status` and `diff` out of nested repositories. For a folder the
+/// index lists as one (a submodule, or any folder with its own `.git` that
+/// was added), both start a second git inside it to ask whether its files
+/// changed. That git reads the config of the nested repository, and a filter
+/// defined only there is not among the drivers
+/// [`repository_filter_overrides`] switches off. With this option a nested
+/// repository counts as changed when its commit moved and is not looked
+/// into. What it costs an honest repository: uncommitted edits inside a
+/// submodule do not show in the app's own status and diff.
+const GIT_SUBMODULE_OVERRIDE: &str = "--ignore-submodules=dirty";
+const GIT_DIFF_OVERRIDES: [&str; 3] = ["--no-ext-diff", "--no-textconv", GIT_SUBMODULE_OVERRIDE];
+
+/// Tells git not to fetch an object it finds missing. A repository whose
+/// config declares a promisor remote has every command that reads an object
+/// fetch a missing one on its own, and that fetch runs what the same config
+/// names: `remote.<name>.uploadpack`, an `ext::` address, a credential
+/// helper. One branch pointing at an object that is not there is enough for
+/// `status`. Git 2.45 and later honour the variable; an older git ignores it
+/// and is not protected.
+const GIT_NO_LAZY_FETCH_ENV: &str = "GIT_NO_LAZY_FETCH";
+
+/// The commands the user asks for that may need objects a partial clone left
+/// on its remote. Every other command runs with [`GIT_NO_LAZY_FETCH_ENV`].
+fn git_args_may_fetch_missing_objects(args: &[&str]) -> bool {
+    matches!(
+        args,
+        ["switch", ..] | ["checkout", ..] | ["fetch", ..] | ["pull", ..] | ["worktree", "add", ..]
+    )
+}
 
 /// The commands the app runs on its own, with no action of the user's, that
 /// read changed files through the repository's filters.
@@ -855,6 +891,9 @@ async fn run_git_once_async(
     .await;
     // After the environment: every inherited `GIT_*` control was removed
     // there, and these are the app's own.
+    if !git_args_may_fetch_missing_objects(args) {
+        command.env(GIT_NO_LAZY_FETCH_ENV, "1");
+    }
     if git_args_read_changed_files_unasked(args) {
         let overrides = repository_filter_overrides(&git, path).await;
         if !overrides.is_empty() {
@@ -1732,23 +1771,220 @@ mod tests {
             &["diff", "HEAD", "--numstat", "-z"],
         ));
         assert_eq!(
-            built[built.len() - 6..],
+            built[built.len() - 7..],
             [
                 "diff",
                 "--no-ext-diff",
                 "--no-textconv",
+                "--ignore-submodules=dirty",
                 "HEAD",
                 "--numstat",
                 "-z"
             ]
         );
-        // They are options of `diff` alone.
+        // The first two are options of `diff` alone; `status` shares the third.
         let status = command_args(&build_git_command(
             Path::new("git"),
             Path::new("/repo"),
             &["status", "--porcelain"],
         ));
         assert!(!status.iter().any(|arg| arg.starts_with("--no-")));
+        assert_eq!(
+            status[status.len() - 3..],
+            ["status", "--ignore-submodules=dirty", "--porcelain"]
+        );
+    }
+
+    /// A folder that came with its own `.git` holds a nested repository whose
+    /// config names a filter. The outer repository defines none, so nothing
+    /// is switched off by name; the two reads the sidebar makes on its own
+    /// must still not run it. The same reads made without the app's
+    /// hardening do, which is what shows the plant works.
+    #[tokio::test]
+    async fn status_and_diff_do_not_run_a_nested_repositorys_filter() {
+        let Some(git) = dir_env::resolve_control_executable("git") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let scratch = tempfile::tempdir().expect("scratch folder");
+        let repo = scratch.path().join("repo");
+        let nested = repo.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested folder");
+        let marks = scratch.path().to_string_lossy().replace('\\', "/");
+        let filter_mark = scratch.path().join("filter-ran");
+
+        let plain = |folder: &Path, args: &[&str]| {
+            let output = std::process::Command::new(&git)
+                .args(args)
+                .current_dir(folder)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .expect("git runs");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let identify = |folder: &Path| {
+            plain(folder, &["init", "-q", "."]);
+            plain(
+                folder,
+                &["config", "user.email", "invented@example.invalid"],
+            );
+            plain(folder, &["config", "user.name", "Invented"]);
+            plain(folder, &["config", "core.autocrlf", "false"]);
+        };
+        identify(&nested);
+        std::fs::write(nested.join("tracked.txt"), "one\n").expect("write");
+        plain(&nested, &["add", "tracked.txt"]);
+        plain(&nested, &["commit", "-q", "-m", "first"]);
+        plain(
+            &nested,
+            &[
+                "config",
+                "filter.planted.clean",
+                &format!("sh -c 'echo clean >> {marks}/filter-ran; cat'"),
+            ],
+        );
+        std::fs::write(nested.join(".gitattributes"), "* filter=planted\n").expect("write");
+        identify(&repo);
+        plain(&repo, &["add", "nested"]);
+        plain(&repo, &["commit", "-q", "-m", "outer"]);
+
+        // A tracked file inside the nested repository whose time moved: the
+        // git started there reads it again, through the filter.
+        let age = |hours: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(nested.join("tracked.txt"))
+                .and_then(|file| {
+                    file.set_modified(
+                        std::time::SystemTime::now() - Duration::from_secs(hours * 3600),
+                    )
+                })
+                .expect("set the file's time");
+        };
+
+        // The control: git as anything else would run it.
+        age(2);
+        plain(&repo, &["status", "--porcelain"]);
+        assert!(
+            filter_mark.exists(),
+            "the planted filter did not run in the control"
+        );
+
+        // The app's own reads of the same state.
+        for args in [
+            &["status", "--porcelain"][..],
+            &["diff", "HEAD", "--numstat", "-z"][..],
+        ] {
+            let _ = std::fs::remove_file(&filter_mark);
+            age(3);
+            let output = run_git_output_async(&repo, args, Duration::from_secs(30))
+                .await
+                .expect("the app's read runs");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !filter_mark.exists(),
+                "the app's {} ran the nested repository's filter",
+                args[0]
+            );
+        }
+    }
+
+    /// A folder that came with its own `.git` declares a promisor remote and
+    /// points its branch at an object that is not there. Git answers a
+    /// missing object by fetching it, with the program that config names.
+    /// The reads the app makes on its own must not start that fetch; the
+    /// same read made without the app's hardening does.
+    #[tokio::test]
+    async fn the_apps_own_reads_do_not_fetch_a_missing_object() {
+        let Some(git) = dir_env::resolve_control_executable("git") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let scratch = tempfile::tempdir().expect("scratch folder");
+        let repo = scratch.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo folder");
+        let marks = scratch.path().to_string_lossy().replace('\\', "/");
+        let fetch_mark = scratch.path().join("fetch-ran");
+
+        let plain = |args: &[&str]| {
+            std::process::Command::new(&git)
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .expect("git runs")
+        };
+        assert!(plain(&["init", "-q", "-b", "main", "."]).status.success());
+        plain(&["config", "remote.planted.url", "."]);
+        plain(&["config", "remote.planted.promisor", "true"]);
+        plain(&[
+            "config",
+            "remote.planted.uploadpack",
+            &format!("sh -c 'echo fetch >> {marks}/fetch-ran' #"),
+        ]);
+        std::fs::write(
+            repo.join(".git").join("refs").join("heads").join("main"),
+            "1111111111111111111111111111111111111111\n",
+        )
+        .expect("write the branch");
+
+        // The control: git as anything else would run it. The read itself
+        // fails, the object being nowhere; the fetch was started first.
+        plain(&["status", "--porcelain"]);
+        assert!(
+            fetch_mark.exists(),
+            "the planted program did not run in the control"
+        );
+
+        for args in [
+            &["status", "--porcelain"][..],
+            &["diff", "HEAD", "--numstat", "-z"][..],
+            &["rev-list", "--count", "HEAD"][..],
+        ] {
+            let _ = std::fs::remove_file(&fetch_mark);
+            let _ = run_git_output_async(&repo, args, Duration::from_secs(30)).await;
+            assert!(
+                !fetch_mark.exists(),
+                "the app's {} fetched from the repository's remote",
+                args[0]
+            );
+        }
+    }
+
+    /// What the user asks for in a partial clone may need the objects it left
+    /// on its remote, so those commands keep fetching them.
+    #[test]
+    fn only_the_users_own_commands_may_fetch_missing_objects() {
+        for asked in [
+            &["switch", "main"][..],
+            &["checkout", "main"][..],
+            &["fetch", "origin"][..],
+            &["pull", "--ff-only"][..],
+            &["worktree", "add", "../tree"][..],
+        ] {
+            assert!(git_args_may_fetch_missing_objects(asked), "{asked:?}");
+        }
+        for unasked in [
+            &["status", "--porcelain"][..],
+            &["diff", "HEAD", "--numstat", "-z"][..],
+            &["rev-list", "--count", "HEAD"][..],
+            &["for-each-ref", "refs/heads"][..],
+            &["worktree", "list", "--porcelain"][..],
+            &["stash", "list"][..],
+            &["branch", "--show-current"][..],
+        ] {
+            assert!(!git_args_may_fetch_missing_objects(unasked), "{unasked:?}");
+        }
     }
 
     #[test]
