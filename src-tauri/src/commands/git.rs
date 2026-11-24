@@ -926,7 +926,7 @@ async fn run_git_once_async(
 }
 
 /// Which environment a command runs with. `Captured` — the user's own
-/// directory environment, Hermit shims and all — is for the commands whose work
+/// environment, with no folder of the project on PATH — is for the commands whose work
 /// still reaches programs the user's setup names: checkout *filters*
 /// (`filter.lfs.smudge` on a `switch`/`worktree add`/`stash`, which git runs
 /// itself, not through a hook) and credential helpers plus `GIT_SSH_COMMAND` on
@@ -2943,9 +2943,13 @@ mod tests {
     /// `repository_hooks_do_not_run_during_branch_switch` is the pin for that).
     /// The environment it checks is what checkout filters — `git lfs` through
     /// `filter.lfs.smudge` — and credential helpers still need.
+    ///
+    /// What it must not hand over is a way into the project: a tool planted in
+    /// the repository's own `.hermit\bin` is not on the child's PATH, so the
+    /// hook, which did run, cannot start it.
     #[cfg(windows)]
     #[tokio::test]
-    async fn windows_captured_env_reaches_a_git_child_with_the_hermit_path() {
+    async fn windows_captured_env_gives_a_git_child_no_path_into_the_project() {
         let temp = tempfile::tempdir().expect("temp dir");
         let repo = temp.path().join("Project With Spaces");
         let hook = repo.join(".git").join("hooks").join("post-checkout");
@@ -2992,7 +2996,7 @@ mod tests {
         // cannot silently pass.
         std::fs::write(
             &hook,
-            "#!/bin/sh\nPATHEXT=\".CMD${PATHEXT:+;$PATHEXT}\"\nexport PATHEXT\nMSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c hermit-hook-tool\nexit \"$?\"\n",
+            "#!/bin/sh\necho ran > hook-ran.txt\nPATHEXT=\".CMD${PATHEXT:+;$PATHEXT}\"\nexport PATHEXT\nMSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c hermit-hook-tool\nexit \"$?\"\n",
         )
         .expect("hook");
         let mut command = TokioCommand::new("git");
@@ -3016,16 +3020,16 @@ mod tests {
         );
         let output = command.output().await.expect("run Git hook");
 
+        // The hook's exit status is the checkout's, and the hook fails for
+        // want of the tool: that failure is the expected one.
         assert!(
-            output.status.success(),
-            "git checkout failed: {}",
+            repo.join("hook-ran.txt").exists(),
+            "the hook did not run: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(
-            std::fs::read_to_string(marker)
-                .expect("Hermit hook marker")
-                .trim(),
-            "managed"
+        assert!(
+            !marker.exists(),
+            "a tool from the project's own folder ran for a git child"
         );
     }
 

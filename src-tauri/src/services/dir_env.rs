@@ -159,10 +159,11 @@ pub async fn capture_home_interactive_env() -> HashMap<String, String> {
 
 /// Capture the environment used to launch an interactive terminal.
 ///
-/// Unix shells activate directory-scoped tools during startup, so they begin
-/// with the sanitized home environment. Windows has no equivalent startup
-/// activation; its platform capture reconstructs validated project-local tool
-/// state for the requested working directory.
+/// The app itself takes nothing from `dir` on either platform. A Unix shell
+/// begins with the sanitized home environment and then runs the user's own
+/// startup files in the folder. Windows has no such startup step and gets the
+/// session environment as it is: a project's own tools (Hermit and the like)
+/// are activated in the terminal by hand.
 pub async fn capture_terminal_env(dir: &Path) -> HashMap<String, String> {
     platform::capture_terminal_env(dir, HOME_ENV_CAPTURE_TIMEOUT).await
 }
@@ -227,43 +228,6 @@ fn put_cached(key: PathBuf, env: HashMap<String, String>) {
             captured_at: Instant::now(),
         },
     );
-}
-
-/// The validated project Hermit `bin` directory, in a form PATH consumers accept.
-///
-/// Canonicalization is what makes the containment check trustworthy, but on
-/// Windows `Path::canonicalize` always returns a verbatim `\\?\C:\…` path, and
-/// this value is prepended to the terminal/project PATH. cmd.exe and anything
-/// that resolves a program by concatenating a PATH entry with a file name do not
-/// accept the `\\?\` prefix, so the "validated Hermit entry" would be unusable
-/// from the spawned terminal. Compare canonical paths, hand back a simplified
-/// one. `dunce::simplified` is a no-op off Windows and for paths that need the
-/// prefix (UNC, over-long), which stay verbatim.
-#[cfg(any(windows, test))]
-fn find_project_hermit_bin_within(start: &Path, repo_root: &Path) -> Option<PathBuf> {
-    let canonical_repo = repo_root.canonicalize().ok()?;
-    let canonical_start = start.canonicalize().ok()?;
-    if !canonical_start.starts_with(&canonical_repo) {
-        return None;
-    }
-
-    for project_dir in canonical_start.ancestors() {
-        let hermit_dir = project_dir.join(".hermit");
-        let bin = hermit_dir.join("bin");
-        if bin.is_dir() {
-            let canonical_hermit = hermit_dir.canonicalize().ok()?;
-            let canonical_bin = bin.canonicalize().ok()?;
-            if canonical_hermit.starts_with(&canonical_repo)
-                && canonical_bin.starts_with(&canonical_hermit)
-            {
-                return Some(dunce::simplified(&canonical_bin).to_path_buf());
-            }
-        }
-        if project_dir == canonical_repo {
-            break;
-        }
-    }
-    None
 }
 
 /// The PATH entries a tool lookup is allowed to probe.
@@ -494,17 +458,63 @@ mod tests {
     fn windows_process_env_preserves_critical_variables() {
         // The process already inherited the Windows session environment; the
         // capture must surface the variables child processes cannot run without.
-        let env = platform::windows_process_env_for_dir(
-            dirs::home_dir()
-                .as_deref()
-                .unwrap_or_else(|| Path::new("C:\\")),
-        );
+        let env = platform::windows_process_env();
 
         for key in ["SystemRoot", "ComSpec", "PATHEXT"] {
             if std::env::var_os(key).is_some() {
                 assert!(
                     env.keys().any(|k| k.eq_ignore_ascii_case(key)),
                     "expected captured Windows env to preserve {key}"
+                );
+            }
+        }
+    }
+
+    /// What a cloned repository can carry: a `.git` that git itself accepts
+    /// and a Hermit `bin` holding a file named like a tool the operator types.
+    #[cfg(windows)]
+    fn cloned_repository_with_its_own_tools(root: &Path) -> PathBuf {
+        let repo = root.join("Cloned Project");
+        let git_dir = repo.join(".git");
+        std::fs::create_dir_all(git_dir.join("objects")).expect("objects");
+        std::fs::create_dir_all(git_dir.join("refs")).expect("refs");
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        let hermit_bin = repo.join(".hermit").join("bin");
+        std::fs::create_dir_all(&hermit_bin).expect("Hermit bin");
+        std::fs::write(hermit_bin.join("git.cmd"), "@echo RAN-FROM-REPO\r\n")
+            .expect("planted tool");
+        std::fs::create_dir_all(repo.join("nested").join("folder")).expect("nested folder");
+        repo
+    }
+
+    /// The environment the app captures for a folder, for a terminal and for
+    /// its own git commands, takes no PATH entry from that folder. Windows
+    /// used to ask git for the repository around it and put the repository's
+    /// `.hermit\bin` first.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_environment_for_a_folder_takes_no_path_entry_from_it() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo = cloned_repository_with_its_own_tools(temp.path());
+        let canonical_repo = dunce::canonicalize(&repo).expect("canonical repository");
+
+        for dir in [repo.clone(), repo.join("nested").join("folder")] {
+            let for_terminal = capture_terminal_env(&dir).await;
+            let for_git = capture_dir_env(&dir, Duration::from_secs(10))
+                .await
+                .expect("captured environment");
+            for (consumer, env) in [("terminal", &for_terminal), ("git", &for_git)] {
+                let inside: Vec<PathBuf> =
+                    std::env::split_paths(env_key::get(env, "PATH").expect("PATH"))
+                        .filter(|entry| {
+                            dunce::canonicalize(entry)
+                                .is_ok_and(|entry| entry.starts_with(&canonical_repo))
+                        })
+                        .collect();
+                assert!(
+                    inside.is_empty(),
+                    "the {consumer} environment for {} has PATH entries inside the repository: {inside:?}",
+                    dir.display()
                 );
             }
         }
@@ -535,67 +545,5 @@ mod tests {
             cached.get("PATH"),
             Some(&"/repo/.hermit/bin:/usr/bin".to_string())
         );
-    }
-
-    #[test]
-    fn project_hermit_discovery_is_scoped_to_the_git_repository() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let repo = temp.path().join("Project With Spaces");
-        let target = repo.join("nested").join("worktree");
-        let hermit_bin = repo.join(".hermit").join("bin");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::create_dir_all(&hermit_bin).expect("hermit bin");
-
-        // `dunce::canonicalize`, not `Path::canonicalize`: this path is prepended
-        // to the terminal PATH, and cmd.exe cannot use the `\\?\` prefix that
-        // Windows canonicalization always adds.
-        let discovered = find_project_hermit_bin_within(&target, &repo);
-        assert_eq!(
-            discovered,
-            Some(dunce::canonicalize(&hermit_bin).expect("canonical Hermit bin"))
-        );
-        assert!(
-            !discovered
-                .expect("discovered Hermit bin")
-                .to_string_lossy()
-                .starts_with(r"\\?\"),
-            "a PATH entry must not carry the verbatim prefix"
-        );
-    }
-
-    #[test]
-    fn project_hermit_discovery_stops_at_the_repository_boundary() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let repo = temp.path().join("project");
-        let target = repo.join("nested");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::create_dir_all(temp.path().join(".hermit").join("bin"))
-            .expect("ancestor Hermit bin");
-
-        assert_eq!(find_project_hermit_bin_within(&target, &repo), None);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn project_hermit_discovery_rejects_non_repository_ancestor() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let target = temp.path().join("project").join("nested");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::create_dir_all(temp.path().join(".hermit").join("bin"))
-            .expect("untrusted Hermit bin");
-
-        assert_eq!(platform::find_project_hermit_bin(&target), None);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn project_hermit_discovery_rejects_fake_git_marker_file() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let repo = temp.path().join("repo");
-        let hermit_bin = repo.join(".hermit").join("bin");
-        std::fs::create_dir_all(&hermit_bin).expect("Hermit bin");
-        std::fs::write(repo.join(".git"), "not a Git worktree marker").expect("fake Git marker");
-
-        assert_eq!(platform::find_project_hermit_bin(&repo), None);
     }
 }

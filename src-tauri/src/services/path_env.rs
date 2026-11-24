@@ -43,11 +43,9 @@ pub fn resolve_executable(
     None
 }
 
-fn push_existing_path(paths: &mut Vec<PathBuf>, path: &str, preserve_hermit: bool) {
+fn push_existing_path(paths: &mut Vec<PathBuf>, path: &str) {
     paths.extend(std::env::split_paths(path).filter(|path| {
-        preserve_hermit
-            || (!path.to_string_lossy().contains(".hermit")
-                && !path.join("activate-hermit").exists())
+        !path.to_string_lossy().contains(".hermit") && !path.join("activate-hermit").exists()
     }));
 }
 
@@ -55,22 +53,14 @@ pub fn build_extended_path_with_prepended_dirs(
     path: Option<&str>,
     prepend_dirs: &[PathBuf],
 ) -> String {
-    build_extended_path(path, prepend_dirs, false)
-}
-
-fn build_extended_path(
-    path: Option<&str>,
-    prepend_dirs: &[PathBuf],
-    preserve_hermit: bool,
-) -> String {
     let mut paths: Vec<PathBuf> = prepend_dirs.to_vec();
 
     if let Some(path) = path {
-        push_existing_path(&mut paths, path, preserve_hermit);
+        push_existing_path(&mut paths, path);
     } else if let Ok(system_path) = std::env::var("PATH") {
         // Login-shell capture can fail; preserve the app process PATH as a
         // fallback instead of dropping all inherited search paths.
-        push_existing_path(&mut paths, &system_path, preserve_hermit);
+        push_existing_path(&mut paths, &system_path);
     }
 
     push_tool_manager_dirs(&mut paths);
@@ -118,11 +108,18 @@ fn build_extended_path_from_path(path: Option<&str>) -> String {
     build_extended_path_with_prepended_dirs(path, &[])
 }
 
-/// Build the terminal PATH according to the platform activation contract.
-/// Windows preserves its validated project Hermit entry; Unix removes inherited
-/// Hermit state because the interactive shell activates the requested cwd.
+/// Build the PATH a terminal's shell starts with: the one the provider
+/// bridges get, without the managed tool directories prepended for them.
+///
+/// It takes no folder, so nothing of the project the terminal opens in is
+/// added, and an inherited Hermit entry is dropped as it is for a bridge. A
+/// cloned repository is content: until the operator can say a folder is
+/// trusted, its files must not answer to `git`, `node` or any other name
+/// typed in the terminal. Windows used to keep the project's Hermit `bin` in
+/// front here. On Unix the shell still runs the user's own startup files in
+/// the folder, which may activate what the user set up for it.
 pub fn build_terminal_path(path: Option<&str>) -> String {
-    platform::build_terminal_path(path)
+    build_extended_path_with_prepended_dirs(path, &[])
 }
 
 /// Build a deterministic environment snapshot with PATH normalized through
@@ -169,8 +166,12 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
 
+    /// A terminal starts with the PATH the provider bridges get. On Windows
+    /// it used to keep a project's Hermit `bin` in front, so a cloned
+    /// repository's files answered to `git`, `node` or any other name typed
+    /// in the terminal.
     #[test]
-    fn terminal_path_applies_platform_hermit_activation_contract() {
+    fn terminal_path_keeps_no_project_hermit_directory_on_any_platform() {
         let input = std::env::join_paths([
             PathBuf::from("project/.hermit/bin"),
             PathBuf::from("system/bin"),
@@ -182,10 +183,15 @@ mod tests {
         let path = super::build_terminal_path(Some(&input));
         let paths: Vec<_> = std::env::split_paths(&path).collect();
 
+        assert!(
+            !paths.iter().any(|path| path.ends_with(".hermit/bin")),
+            "a project's Hermit directory must not be on a terminal's PATH: {paths:?}"
+        );
+        assert!(paths.iter().any(|path| path.ends_with("system/bin")));
         assert_eq!(
-            paths.iter().any(|path| path.ends_with(".hermit/bin")),
-            cfg!(windows),
-            "Windows preserves validated Hermit activation; Unix shells reactivate cwd"
+            path,
+            build_extended_path_with_prepended_dirs(Some(&input), &[]),
+            "a terminal and a provider bridge get the same PATH"
         );
     }
 

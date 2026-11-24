@@ -1,42 +1,31 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
-use super::find_project_hermit_bin_within;
 use crate::services::{env_key, shell_env};
 
-/// Windows has no general-purpose login shell. The inherited process
-/// environment is the session environment; repository-local Hermit activation
-/// is reconstructed only after Git identifies the requested repository.
+/// Windows has no general-purpose login shell: the inherited process
+/// environment is the session environment, the same for every folder.
+///
+/// Nothing is taken from the folder itself. A project is content, a cloned
+/// repository included, and the app has no way yet to ask whether a folder is
+/// trusted. A directory inside it on PATH (its Hermit `bin`, anything found
+/// by walking the folder or its parents) would let the repository's files
+/// answer to `git`, `node` or `powershell` in a terminal and in what git
+/// starts by name. Whoever wants a project's own tools activates them in the
+/// terminal by hand.
 pub(super) async fn capture_dir_env_uncached(
-    dir: &Path,
+    _dir: &Path,
     _timeout_duration: Duration,
 ) -> HashMap<String, String> {
-    windows_process_env_for_dir_off_runtime(dir).await
+    windows_process_env()
 }
 
-/// [`windows_process_env_for_dir`] runs `git rev-parse` synchronously to find
-/// the repository; keep that wait off the async runtime's worker threads.
-async fn windows_process_env_for_dir_off_runtime(dir: &Path) -> HashMap<String, String> {
-    let dir = dir.to_path_buf();
-    match tokio::task::spawn_blocking(move || windows_process_env_for_dir(&dir)).await {
-        Ok(env) => env,
-        Err(error) => {
-            log::warn!("Windows environment capture task failed: {error}");
-            HashMap::new()
-        }
-    }
-}
-
-pub(crate) fn windows_process_env_for_dir(dir: &Path) -> HashMap<String, String> {
+pub(crate) fn windows_process_env() -> HashMap<String, String> {
     let mut env = dedupe_env_case_insensitive(env_key::process_vars_lossy());
     strip_untrusted_windows_tool_state(&mut env);
-    if let Some(hermit_bin) = find_project_hermit_bin(dir) {
-        prepend_dir_to_windows_path(&mut env, &hermit_bin);
-    }
     env
 }
 
@@ -59,35 +48,6 @@ pub(crate) fn strip_untrusted_windows_tool_state(env: &mut HashMap<String, Strin
     if let Ok(path) = std::env::join_paths(paths) {
         env_key::upsert_map(env, "PATH", path.to_string_lossy().into_owned());
     }
-}
-
-/// Ask Git for the repository boundary instead of duplicating its `.git`,
-/// worktree, and common-directory rules. Inherited Git controls are removed so
-/// discovery describes `dir`, not the process that launched Flock.
-pub(crate) fn find_project_hermit_bin(dir: &Path) -> Option<PathBuf> {
-    let target = dir.canonicalize().ok()?;
-    let start = if target.is_dir() {
-        target.as_path()
-    } else {
-        target.parent()?
-    };
-    let mut env = dedupe_env_case_insensitive(env_key::process_vars_lossy());
-    strip_untrusted_windows_tool_state(&mut env);
-    env.retain(|key, _| !key.to_ascii_uppercase().starts_with("GIT_"));
-    let git = find_file_on_windows_path("git.exe", env_key::get(&env, "PATH"))?;
-    let mut command = Command::new(git);
-    command
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(start)
-        .env_clear()
-        .envs(&env);
-    crate::services::process::apply_no_window(&mut command);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let repo_root = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
-    find_project_hermit_bin_within(start, &repo_root)
 }
 
 pub(crate) fn resolve_control_executable(name: &str) -> Option<PathBuf> {
@@ -114,18 +74,6 @@ pub(crate) fn find_file_on_windows_path(file_name: &str, path: Option<&str>) -> 
     super::find_file_on_path_dirs(file_name, path)
 }
 
-fn prepend_dir_to_windows_path(env: &mut HashMap<String, String>, dir: &Path) {
-    let mut paths = vec![dir.to_path_buf()];
-    if let Some(path) = env_key::get(env, "PATH") {
-        paths.extend(std::env::split_paths(path));
-    }
-    let mut seen = HashSet::new();
-    paths.retain(|path| seen.insert(path.to_string_lossy().to_ascii_lowercase()));
-    if let Ok(path) = std::env::join_paths(paths) {
-        env_key::upsert_map(env, "PATH", path.to_string_lossy().into_owned());
-    }
-}
-
 pub(crate) fn dedupe_env_case_insensitive(
     vars: impl IntoIterator<Item = (String, String)>,
 ) -> HashMap<String, String> {
@@ -144,8 +92,8 @@ pub(crate) fn dedupe_env_case_insensitive(
 }
 
 pub(super) async fn capture_terminal_env(
-    dir: &Path,
+    _dir: &Path,
     _timeout_duration: Duration,
 ) -> HashMap<String, String> {
-    windows_process_env_for_dir_off_runtime(dir).await
+    windows_process_env()
 }

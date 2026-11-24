@@ -184,10 +184,7 @@ pub async fn start_terminal(
     on_event: Channel<TerminalEvent>,
 ) -> Result<String, String> {
     let cwd = resolve_terminal_cwd(&cwd)?;
-    let mut shell_env = dir_env::capture_terminal_env(&cwd).await;
-    add_fallback_env_vars(&mut shell_env);
-    shell_env::sanitize_shell_env(&mut shell_env);
-    let extended_path = build_terminal_path(env_key::get(&shell_env, "PATH"));
+    let (shell_env, extended_path) = terminal_shell_env(&cwd).await;
     let shell = resolve_shell(&shell_env);
     let terminal_id = Uuid::new_v4().to_string();
     let size = terminal_size(cols, rows);
@@ -405,6 +402,19 @@ pub fn stop_terminal(state: State<'_, TerminalState>, terminal_id: String) -> Re
     Ok(())
 }
 
+/// The environment a terminal's shell starts with, and its PATH.
+///
+/// The folder decides nothing in either. The shell starts in it, and that is
+/// all: no directory of the folder is put on PATH (see
+/// [`build_terminal_path`]).
+async fn terminal_shell_env(cwd: &Path) -> (HashMap<String, String>, String) {
+    let mut shell_env = dir_env::capture_terminal_env(cwd).await;
+    add_fallback_env_vars(&mut shell_env);
+    shell_env::sanitize_shell_env(&mut shell_env);
+    let extended_path = build_terminal_path(env_key::get(&shell_env, "PATH"));
+    (shell_env, extended_path)
+}
+
 /// Decodes everything in `pending` except a trailing, still-incomplete UTF-8
 /// sequence, which stays in `pending` for the next read.
 ///
@@ -501,12 +511,14 @@ fn resolve_shell(shell_env: &HashMap<String, String>) -> String {
 
 /// Windows PowerShell by its full path under the system folder.
 ///
-/// A bare `powershell.exe` is looked up on the terminal's own PATH, and that
-/// PATH starts with the folder's `.hermit/bin`: a repository that ships a
-/// `powershell.exe` there had it run by opening a terminal in it, before
-/// the operator typed anything. The system folder comes from the app's own
-/// environment, which no project folder writes. No fallback to the bare
-/// name: a shell that is not where the system keeps it is not started.
+/// A bare `powershell.exe` is looked up on the terminal's own PATH. That
+/// PATH once started with the folder's `.hermit/bin`: a repository that
+/// shipped a `powershell.exe` there had it run by opening a terminal in it,
+/// before the operator typed anything. No folder of a project is put on
+/// that PATH any more, and the shell does not depend on it either way: the
+/// system folder comes from the app's own environment, which no project
+/// folder writes. No fallback to the bare name: a shell that is not where
+/// the system keeps it is not started.
 fn windows_powershell_path(system_root: Option<&std::ffi::OsStr>) -> String {
     let root = system_root
         .filter(|value| !value.is_empty())
@@ -571,8 +583,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// The shell is named by a full path under the system folder, so no
-    /// folder on the terminal's PATH — a project's `.hermit/bin` first of
-    /// all — can stand in for it.
+    /// folder on the terminal's PATH can stand in for it.
     #[test]
     fn the_terminal_shell_is_named_by_its_full_system_path() {
         let named = windows_powershell_path(Some(std::ffi::OsStr::new(r"D:\Invented\Windows")));
@@ -593,6 +604,44 @@ mod tests {
             let shell = super::resolve_shell(&std::collections::HashMap::new());
             assert!(std::path::Path::new(&shell).is_absolute(), "{shell}");
             assert!(std::path::Path::new(&shell).is_file(), "{shell}");
+        }
+    }
+
+    /// A terminal opened in a cloned repository starts with no PATH entry
+    /// inside that repository, whatever the repository ships: here a `.git`
+    /// that git itself accepts and a Hermit `bin` with a file named `git`.
+    /// The app used to put that `bin` first, so the repository's file ran
+    /// when the operator typed `git`.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_terminal_in_a_cloned_repository_has_no_path_entry_inside_it() {
+        let temp = tempdir().expect("tempdir");
+        let repo = temp.path().join("Cloned Project");
+        let git_dir = repo.join(".git");
+        std::fs::create_dir_all(git_dir.join("objects")).expect("objects");
+        std::fs::create_dir_all(git_dir.join("refs")).expect("refs");
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        let hermit_bin = repo.join(".hermit").join("bin");
+        std::fs::create_dir_all(&hermit_bin).expect("Hermit bin");
+        std::fs::write(hermit_bin.join("git.cmd"), "@echo RAN-FROM-REPO\r\n")
+            .expect("planted tool");
+        let nested = repo.join("nested").join("folder");
+        std::fs::create_dir_all(&nested).expect("nested folder");
+        let canonical_repo = dunce::canonicalize(&repo).expect("canonical repository");
+
+        for folder in [&repo, &nested] {
+            let cwd = resolve_terminal_cwd(&folder.to_string_lossy()).expect("resolve cwd");
+            let (_, path) = super::terminal_shell_env(&cwd).await;
+            let inside: Vec<_> = std::env::split_paths(&path)
+                .filter(|entry| {
+                    dunce::canonicalize(entry).is_ok_and(|entry| entry.starts_with(&canonical_repo))
+                })
+                .collect();
+            assert!(
+                inside.is_empty(),
+                "a terminal in {} has PATH entries inside the repository: {inside:?}",
+                cwd.display()
+            );
         }
     }
 

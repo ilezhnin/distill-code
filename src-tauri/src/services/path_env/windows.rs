@@ -88,7 +88,3 @@ pub(super) fn dedupe_paths(paths: &mut Vec<PathBuf>) {
     let mut seen = HashSet::new();
     paths.retain(|path| seen.insert(path.to_string_lossy().to_ascii_lowercase()));
 }
-
-pub(super) fn build_terminal_path(path: Option<&str>) -> String {
-    super::build_extended_path(path, &[], true)
-}

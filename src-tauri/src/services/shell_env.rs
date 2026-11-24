@@ -3,7 +3,8 @@
 //! Two policies live here and [`sanitize_shell_env`] applies both:
 //!
 //! 1. Repository tool-manager state captured from the user's shell (Hermit
-//!    activation, npm prefix overrides). Flock resolves project tooling itself.
+//!    activation, npm prefix overrides). It belongs to the folder Flock was
+//!    launched from, not to the folder a child works in.
 //! 2. The identity of whatever launched Flock. Terminal emulators, multiplexers,
 //!    and coding-agent hosts (Orca, Claude Code, Codex, Grok) stamp their
 //!    children with per-pane / per-session variables, and the agent CLIs carry
