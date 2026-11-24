@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 /// (src-tauri/crates/flockctl); the CLI does not depend on this crate —
 /// bump both together.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Directory under the host's base folder (the Flock root) holding the
 /// per-instance discovery files.

@@ -324,8 +324,20 @@ to agents for one release, as input only:
 ## Versioning
 
 The broker writes a discovery file (`<Flock root>/flockctl/control-<pid>.json`)
-with `protocolVersion`, generation, port and the call token. The CLI verifies
-it via `/v1/ping` before calls, and sends the token with each call. The file lives under the root rather than the OS app
+with `protocolVersion`, generation, port and the call token. Before its first
+call the CLI pings `/v1/ping` with a fresh random nonce in `x-flock-nonce`
+(32 bytes from the OS, hex). The broker answers with its generation, its
+protocol version and `proof`, the lowercase hex SHA-256 of `<token>:<nonce>`.
+The CLI goes on only when the generation and version match the file and the
+proof matches, compared in constant time. Otherwise it stops with exit 3: the
+app on that port is not the one the file names, for example a program that
+took the port of an app that quit. Such a listener has been sent the nonce and
+nothing else. Only after the proof does the CLI send the token with the call.
+An app without the proof answers an older version and is refused as updated.
+`flock-monitor` delivers and reports through a new `flockctl` process each
+time, so every send it makes is proven afresh. The CLI's check
+(`crates/flockctl/src/broker_proof.rs`) is compiled into the plugin's tests
+and run against the real broker, so the two sides cannot drift. The file lives under the root rather than the OS app
 data folder because on Windows that folder is not one folder for every
 process; [Flock data storage](flock-root-layout.md) explains the redirection.
 

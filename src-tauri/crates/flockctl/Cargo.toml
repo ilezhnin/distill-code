@@ -11,11 +11,15 @@ edition = "2021"
 # wrap_help: authored help prose carries no manual line breaks; clap wraps it
 # at the pinned width tree.rs sets.
 clap = { version = "4", features = ["env", "string", "wrap_help"] }
+# The ping nonce (broker_proof.rs): fresh OS randomness per handshake.
+getrandom = "0.4"
 # serde: the contract files' key order IS the CLI's noun/verb order (help
 # output must stay byte-stable under regeneration).
 indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Checks the broker's proof that it holds the discovery file's token.
+sha2 = "0.10"
 ureq = { version = "3", features = ["json"] }
 
 [features]

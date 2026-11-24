@@ -13,6 +13,7 @@
 //! tests. Authored in Rust: the top-level identity/guide and globals
 //! (`tree.rs`), exit-code mapping, and the wire client.
 
+mod broker_proof;
 mod client;
 mod contract;
 mod discovery;

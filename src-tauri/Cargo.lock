@@ -1610,9 +1610,11 @@ name = "flockctl"
 version = "0.6.2"
 dependencies = [
  "clap",
+ "getrandom 0.4.3",
  "indexmap 2.13.1",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "ureq",
 ]
 
@@ -5606,10 +5608,12 @@ name = "tauri-plugin-flockctl"
 version = "0.6.2"
 dependencies = [
  "axum",
+ "getrandom 0.4.3",
  "log",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-plugin",
  "tokio",

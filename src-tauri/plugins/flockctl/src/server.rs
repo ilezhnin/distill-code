@@ -1,6 +1,7 @@
 //! Loopback-only HTTP broker for the flockctl CLI.
 //!
-//! Serves `GET /v1/ping` (generation/protocol handshake) and `POST /v1/call`
+//! Serves `GET /v1/ping` (generation/protocol handshake, and proof of the
+//! discovery file's token for the caller's nonce) and `POST /v1/call`
 //! (command dispatch over the renderer bridge). There is no application auth
 //! in v1; the header rejection below (any `Origin`, any `Sec-Fetch-*`, `Host`
 //! mismatch) is the sole defense against browser-JS-to-localhost and DNS
@@ -17,6 +18,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -247,6 +249,23 @@ fn same_bytes(expected: &[u8], given: &[u8]) -> bool {
             == 0
 }
 
+/// The header a ping carries the caller's nonce in.
+pub const NONCE_HEADER: &str = "x-flock-nonce";
+
+/// Bounds of a nonce in hex digits. The CLI sends 64; the proof is only
+/// ever computed over the shape it sends.
+const MIN_NONCE_HEX_DIGITS: usize = 32;
+const MAX_NONCE_HEX_DIGITS: usize = 128;
+
+/// What only a holder of `token` can answer to `nonce`: lowercase hex
+/// SHA-256 of `<token>:<nonce>`. The CLI checks it before it sends the token
+/// anywhere, so a process that took the port of an app that quit cannot pass
+/// for the app its discovery file names. The CLI's copy of the formula is in
+/// crates/flockctl/src/broker_proof.rs; a test below holds the two together.
+fn ping_proof(token: &str, nonce: &str) -> String {
+    format!("{:x}", Sha256::digest(format!("{token}:{nonce}")))
+}
+
 async fn handle_ping<D: CommandDispatcher>(
     State(ctx): State<Arc<ServerContext<D>>>,
     headers: HeaderMap,
@@ -254,11 +273,34 @@ async fn handle_ping<D: CommandDispatcher>(
     if let Some(rejection) = forbidden_header_response(&ctx, &headers) {
         return rejection;
     }
-    Json(json!({
+    let mut answer = json!({
         "generation": ctx.generation,
         "protocolVersion": PROTOCOL_VERSION,
-    }))
-    .into_response()
+    });
+    // A ping without a nonce still answers, so an older CLI learns the
+    // version and says the app was updated; it just proves nothing.
+    if let Some(value) = headers.get(NONCE_HEADER) {
+        let nonce = value.to_str().ok().filter(|nonce| {
+            (MIN_NONCE_HEX_DIGITS..=MAX_NONCE_HEX_DIGITS).contains(&nonce.len())
+                && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+        let Some(nonce) = nonce else {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!(
+                    "the {NONCE_HEADER} header must be {MIN_NONCE_HEX_DIGITS} to \
+                     {MAX_NONCE_HEX_DIGITS} hex digits"
+                ),
+            );
+        };
+        // A broker without a token answers nobody, and a proof over an
+        // empty token is one anybody could make.
+        if !ctx.token.is_empty() {
+            answer["proof"] = Value::String(ping_proof(&ctx.token, nonce));
+        }
+    }
+    Json(answer).into_response()
 }
 
 // Unknown body fields are ignored (serde's default), so additions to the wire
@@ -408,6 +450,12 @@ fn log_call(command: &str, result_code: &str, started: Instant) {
     );
 }
 
+// The CLI's side of the ping proof, compiled from the CLI crate's own source
+// so the test below runs the CLI's check against this broker.
+#[cfg(test)]
+#[path = "../../../crates/flockctl/src/broker_proof.rs"]
+mod cli_broker_proof;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,6 +591,66 @@ mod tests {
         let body: Value = response.json().await.unwrap();
         assert_eq!(body["generation"], TEST_GENERATION);
         assert_eq!(body["protocolVersion"], PROTOCOL_VERSION);
+        // No nonce, no proof.
+        assert!(body.get("proof").is_none());
+    }
+
+    /// The two sides of the proof in one test: the CLI's own nonce, header
+    /// name, answer shape and check, compiled from the CLI crate's source,
+    /// against this broker over a real socket. A change to the formula or a
+    /// name on either side fails here.
+    #[tokio::test]
+    async fn the_clis_proof_check_accepts_this_broker_and_only_for_its_nonce() {
+        use super::cli_broker_proof as cli;
+
+        let server = spawn_server(StubBehavior::Echo, Limits::default()).await;
+        let nonce = cli::new_nonce().unwrap();
+        let response = reqwest::Client::new()
+            .get(format!("{}/v1/ping", server.base))
+            .header(cli::NONCE_HEADER, &nonce)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let text = response.text().await.unwrap();
+        assert!(!text.contains(TEST_TOKEN));
+        let ping: cli::PingResponse = serde_json::from_str(&text).unwrap();
+        assert_eq!(ping.generation, TEST_GENERATION);
+        assert_eq!(ping.protocol_version, PROTOCOL_VERSION);
+        let proof = ping.proof.as_deref();
+        assert!(cli::proves_token(TEST_TOKEN, &nonce, proof));
+        assert!(proof == Some(cli::expected_proof(TEST_TOKEN, &nonce).as_str()));
+
+        // It proves this token for this nonce, and nothing else.
+        assert!(!cli::proves_token("another-token", &nonce, proof));
+        let other_nonce = cli::new_nonce().unwrap();
+        assert_ne!(other_nonce, nonce);
+        assert!(!cli::proves_token(TEST_TOKEN, &other_nonce, proof));
+    }
+
+    /// The proof is only ever computed over the nonce shape the CLI sends.
+    #[tokio::test]
+    async fn a_nonce_that_is_not_bounded_hex_is_refused() {
+        let server = spawn_server(StubBehavior::Echo, Limits::default()).await;
+        let client = reqwest::Client::new();
+        for nonce in [
+            String::new(),
+            "not-hex".to_string(),
+            "a".repeat(MIN_NONCE_HEX_DIGITS - 1),
+            "g".repeat(64),
+            "a".repeat(MAX_NONCE_HEX_DIGITS + 1),
+        ] {
+            let response = client
+                .get(format!("{}/v1/ping", server.base))
+                .header(NONCE_HEADER, &nonce)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 400, "{nonce:?}");
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["error"]["code"], "bad_request");
+            assert!(body.get("proof").is_none());
+        }
     }
 
     #[tokio::test]
@@ -550,9 +658,11 @@ mod tests {
         let server = spawn_server(StubBehavior::Echo, Limits::default()).await;
         let client = reqwest::Client::new();
 
+        // A browser gets no proof either, nonce or not.
         let ping = client
             .get(format!("{}/v1/ping", server.base))
             .header("Origin", "https://evil.example")
+            .header(NONCE_HEADER, "ab".repeat(32))
             .send()
             .await
             .unwrap();
@@ -560,6 +670,7 @@ mod tests {
         let body: Value = ping.json().await.unwrap();
         assert_eq!(body["ok"], false);
         assert_eq!(body["error"]["code"], "forbidden");
+        assert!(body.get("proof").is_none());
 
         let call = client
             .post(format!("{}/v1/call", server.base))
@@ -630,6 +741,18 @@ mod tests {
             }
             assert_eq!(request.json(&body).send().await.unwrap().status(), 401);
         }
+        // Nor does it prove a token it does not have.
+        let ping: Value = client
+            .get(format!("{base}/v1/ping"))
+            .header(NONCE_HEADER, "ab".repeat(32))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(ping["generation"], TEST_GENERATION);
+        assert!(ping.get("proof").is_none());
     }
 
     #[tokio::test]

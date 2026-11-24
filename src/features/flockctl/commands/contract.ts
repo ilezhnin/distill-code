@@ -28,7 +28,7 @@ import type { AppCommand, ToolGroup } from "./types";
  *  Mirror of `PROTOCOL_VERSION` in both discovery.rs copies (a flockctl
  *  crate test pins the CLI copy, and a plugin crate test pins the broker
  *  copy); bump all copies together. */
-const WIRE_PROTOCOL_VERSION = 7;
+const WIRE_PROTOCOL_VERSION = 8;
 
 type FieldSpec = {
   /** snake_case wire field name. */
