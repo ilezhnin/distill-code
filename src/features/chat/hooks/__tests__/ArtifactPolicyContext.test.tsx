@@ -14,10 +14,17 @@ const mockAllowAssetDirectories = vi.fn<
   (paths: readonly string[]) => Promise<void>
 >(async () => {});
 
+const mockInspectAttachmentPaths =
+  vi.fn<
+    (paths: string[]) => Promise<{ name: string; path: string; kind: string }[]>
+  >();
+
 vi.mock("@/shared/api/system", () => ({
   pathExists: (path: string) => mockPathExists(path),
   allowAssetDirectories: (paths: readonly string[]) =>
     mockAllowAssetDirectories(paths),
+  inspectAttachmentPaths: (paths: string[]) =>
+    mockInspectAttachmentPaths(paths),
 }));
 
 function LinkProbe({ href }: { href: string }) {
@@ -168,6 +175,10 @@ describe("ArtifactPolicyContext open gate", () => {
     mockArtifactRoot = null;
     mockPathExists.mockReset();
     mockPathExists.mockResolvedValue(true);
+    mockInspectAttachmentPaths.mockReset();
+    mockInspectAttachmentPaths.mockImplementation(async (paths) =>
+      paths.map((path) => ({ name: path, path, kind: "file" })),
+    );
     mockRevealInFileManager.mockReset();
     mockRevealInFileManager.mockResolvedValue(undefined);
     mockToastMessage.mockReset();
@@ -217,6 +228,17 @@ describe("ArtifactPolicyContext open gate", () => {
     "patch.mst",
     "app.appinstaller",
     "wizard.diagcab",
+    // Git for Windows runs these in Git Bash on a stock install.
+    "setup.sh",
+    "module.pyc",
+    "task.rb",
+    "macro.ahk",
+    "look.theme",
+    "found.search-ms",
+    "patch.msu",
+    // A name that is nothing but the extension is still that type.
+    ".bat",
+    ".cmd",
     // An alternate-data-stream suffix hides the real extension from the
     // denylist unless it is cut off first.
     "payload.exe::$DATA",
@@ -240,6 +262,69 @@ describe("ArtifactPolicyContext open gate", () => {
       `C:/Users/me/repo/${name}`,
     );
     expect(screen.getByTestId("open-error")).toHaveTextContent("");
+  });
+
+  // Asked to open `gradlew`, the Windows shell starts the `gradlew.bat`
+  // beside it. Nothing here can see the sibling, so a file the shell reads no
+  // extension off never reaches the shell.
+  it.each([
+    "gradlew",
+    "NOTES",
+    "node_modules/.bin/tsc",
+    "LICENSE.",
+    "run.x y",
+  ])("reveals the file %s, whose name has no extension", async (name) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path={name} />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).toHaveBeenCalledWith(
+      `C:/Users/me/repo/${name}`,
+    );
+    expect(mockToastMessage).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("open-error")).toHaveTextContent("");
+  });
+
+  it("still opens a folder, which has no extension either", async () => {
+    mockInspectAttachmentPaths.mockImplementation(async (paths) =>
+      paths.map((path) => ({ name: path, path, kind: "directory" })),
+    );
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path="docs/reports" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(openPath).toHaveBeenCalledWith("C:/Users/me/repo/docs/reports"),
+    );
+    expect(mockRevealInFileManager).not.toHaveBeenCalled();
+  });
+
+  it("does not open what it cannot tell from a file", async () => {
+    mockInspectAttachmentPaths.mockResolvedValue([]);
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path="gradlew" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).toHaveBeenCalledTimes(1);
   });
 
   it("asks before opening a document outside every known root, and opens on confirm", async () => {

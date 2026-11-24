@@ -16,7 +16,11 @@ import type {
   ToolCallLocation,
   ToolKind,
 } from "@/shared/types/messages";
-import { allowAssetDirectories, pathExists } from "@/shared/api/system";
+import {
+  allowAssetDirectories,
+  inspectAttachmentPaths,
+  pathExists,
+} from "@/shared/api/system";
 import { useResolvedArtifactRoot } from "@/shared/artifacts/useResolvedArtifactRoot";
 import { revealInFileManager } from "@/shared/lib/fileManager";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
@@ -190,6 +194,20 @@ const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
   "pyz",
   "pyzw",
   "jar",
+  // Script types whose installer registers a run verb: Git for Windows gives
+  // `.sh` to Git Bash unless told not to, the Python launcher runs compiled
+  // files, and Ruby, Perl, Tcl, AutoHotkey, AutoIt and Java Web Start
+  // register their own.
+  "sh",
+  "pyc",
+  "pyo",
+  "rb",
+  "rbw",
+  "pl",
+  "tcl",
+  "ahk",
+  "au3",
+  "jnlp",
   // More script-host spellings of the families above.
   "sct",
   "wsc",
@@ -206,8 +224,13 @@ const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
   "settingcontent-ms",
   "library-ms",
   "searchconnector-ms",
+  "search-ms",
   "appref-ms",
   "website",
+  // A theme is applied the moment it is opened, and names the files to load.
+  "theme",
+  "themepack",
+  "deskthemepack",
   // Help and diagnostics containers: compiled help runs script in its own
   // host, and a `.diagcab`/`.msdt` package runs a troubleshooter.
   "chm",
@@ -221,6 +244,8 @@ const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
   "appx",
   "appxbundle",
   "appinstaller",
+  "msu",
+  "vsix",
 ]);
 
 /**
@@ -236,17 +261,55 @@ const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
  * app links to needs stream syntax.
  */
 export function isExecutableOpenTarget(path: string): boolean {
+  const { name, namesStream } = openTargetName(path);
+  const extension = shellExtension(name);
+  return (
+    namesStream ||
+    (extension !== null && EXECUTABLE_OPEN_EXTENSIONS.has(extension))
+  );
+}
+
+/**
+ * True when the Windows shell reads no extension off the name. Asked to open
+ * such a file by its path, the shell first looks for a program that shares
+ * the name (`.pif`, `.com`, `.exe`, `.bat`, `.lnk`, `.cmd`) and runs that:
+ * `gradlew` starts the `gradlew.bat` beside it. A folder is opened by
+ * identity, not by name, so the caller applies this to files only.
+ */
+export function isExtensionlessOpenTarget(path: string): boolean {
+  const { name, namesStream } = openTargetName(path);
+  return !namesStream && shellExtension(name) === null;
+}
+
+/** The last name of `path` as Win32 looks it up, and whether it named a stream. */
+function openTargetName(path: string): { name: string; namesStream: boolean } {
   const rawName = basenameOf(normalizePath(path));
   const streamIndex = rawName.indexOf(":");
-  const name = (
-    streamIndex === -1 ? rawName : rawName.slice(0, streamIndex)
-  ).replace(/[. ]+$/, "");
+  return {
+    name: (streamIndex === -1
+      ? rawName
+      : rawName.slice(0, streamIndex)
+    ).replace(/[. ]+$/, ""),
+    namesStream: streamIndex !== -1,
+  };
+}
+
+/**
+ * The extension the Windows shell reads off a name: what follows the last
+ * dot, wherever that dot is, unless a space follows it. So a file named
+ * `.bat` is a batch file, and `run.x y` has no extension.
+ */
+function shellExtension(name: string): string | null {
   const dot = name.lastIndexOf(".");
-  if (dot <= 0 || dot === name.length - 1) return streamIndex !== -1;
-  return (
-    streamIndex !== -1 ||
-    EXECUTABLE_OPEN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())
-  );
+  if (dot === -1) return null;
+  const extension = name.slice(dot + 1);
+  return extension.includes(" ") ? null : extension.toLowerCase();
+}
+
+/** Whether `path` is a folder. A path that cannot be inspected is not one. */
+async function isFolder(path: string): Promise<boolean> {
+  const [info] = await inspectAttachmentPaths([path]);
+  return info?.kind === "directory";
 }
 
 // "C:/x", "C:\x" and — once the markdown renderer has percent-encoded the
@@ -658,7 +721,9 @@ export function ArtifactPolicyProvider({
    * so the gate lives here rather than in any one caller:
    *
    * 1. Anything Windows would *run* rather than show is revealed in the file
-   *    manager instead, with a notice saying so.
+   *    manager instead, with a notice saying so: a program or script, and a
+   *    file without an extension, which the shell answers by running the
+   *    program that shares its name.
    * 2. A target outside the session cwd, the attached workspaces and the
    *    artifact root asks first, the way an external URL does.
    */
@@ -677,13 +742,15 @@ export function ArtifactPolicyProvider({
       }
       lastOpenAtByPathRef.current.set(key, now);
 
-      if (isExecutableOpenTarget(resolvedTarget)) {
+      const revealed = isExecutableOpenTarget(resolvedTarget)
+        ? ("openPath.revealedInsteadOfRun" as const)
+        : isExtensionlessOpenTarget(resolvedTarget) &&
+            !(await isFolder(resolvedTarget))
+          ? ("openPath.revealedWithoutExtension" as const)
+          : null;
+      if (revealed) {
         await revealInFileManager(resolvedTarget);
-        toast.message(
-          t("openPath.revealedInsteadOfRun", {
-            name: basenameOf(resolvedTarget),
-          }),
-        );
+        toast.message(t(revealed, { name: basenameOf(resolvedTarget) }));
         return;
       }
 

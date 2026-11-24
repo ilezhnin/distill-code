@@ -1242,6 +1242,7 @@
   },
   "openPath": {
     "revealedInsteadOfRun": "{{name}} es un programa o script, así que se mostró en el Explorador de archivos en lugar de ejecutarse.",
+    "revealedWithoutExtension": "{{name}} no tiene extensión de archivo, así que se mostró en el Explorador de archivos en lugar de abrirse.",
     "confirmTitle": "¿Abrir un archivo fuera de las carpetas de este chat?",
     "confirmOpen": "Abrir",
     "confirmCancel": "Cancelar"
