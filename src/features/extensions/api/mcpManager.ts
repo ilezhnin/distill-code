@@ -10,6 +10,29 @@ export interface McpCheckResult {
   tools: { name: string; description: string }[];
 }
 
+/**
+ * What checking a server defined inside a project folder would start or
+ * contact. Environment variables and headers come by name only.
+ */
+export interface McpLaunchPreview {
+  file: string;
+  program: string | null;
+  args: string[];
+  envNames: string[];
+  endpoint: string | null;
+  headerNames: string[];
+}
+
+/**
+ * The answer to a check of a project's server that has not been confirmed:
+ * nothing was started. Check again with `configurationRevision` to go ahead.
+ */
+export interface McpCheckConfirmation {
+  status: "needsConfirmation";
+  configurationRevision: string;
+  launch: McpLaunchPreview;
+}
+
 export interface LocalMcpConfiguration {
   configuration: Record<string, unknown>;
   revision: string;
@@ -53,6 +76,12 @@ export function checkMcpConnection(
   id: string,
   workspacePaths: string[],
   configuration?: Record<string, unknown>,
-): Promise<McpCheckResult> {
-  return invoke("check_mcp_connection", { id, workspacePaths, configuration });
+  confirmedRevision?: string,
+): Promise<McpCheckResult | McpCheckConfirmation> {
+  return invoke("check_mcp_connection", {
+    id,
+    workspacePaths,
+    configuration,
+    confirmedRevision,
+  });
 }

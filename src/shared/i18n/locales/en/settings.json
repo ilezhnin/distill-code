@@ -882,6 +882,19 @@
     "invalidImport": "Paste a server configuration or an mcpServers JSON object.",
     "singleImport": "Import one server at a time.",
     "pluginSource": "Provided by {{source}}. Manage this server through the plugin’s provider settings.",
-    "inheritedSource": "{{source}}. Configure or remove it in the original provider. This switch controls Grok only."
+    "inheritedSource": "{{source}}. Configure or remove it in the original provider. This switch controls Grok only.",
+    "checkQuestionTitle": "Start {{name}} from this project?",
+    "checkQuestionRemoteTitle": "Connect to {{name}} from this project?",
+    "checkQuestion": "This server is defined in a file inside the project folder, so whoever wrote the project chose what it runs. Checking it starts this program on your computer with your permissions.",
+    "checkQuestionRemote": "This server is defined in a file inside the project folder, so whoever wrote the project chose where it connects. Checking it contacts this address with these headers.",
+    "checkQuestionConfirm": "Start and check",
+    "checkQuestionRemoteConfirm": "Connect and check",
+    "launchProgram": "Program",
+    "launchArguments": "Arguments",
+    "launchEnvironment": "Environment variables it sets",
+    "launchEndpoint": "Address",
+    "launchHeaders": "Headers it sends",
+    "launchFile": "Defined in",
+    "launchNone": "None"
   }
 }

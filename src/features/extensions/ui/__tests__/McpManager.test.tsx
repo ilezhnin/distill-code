@@ -254,4 +254,177 @@ describe("MCP management", () => {
       "config_key",
     );
   });
+
+  describe("a server defined inside the project folder", () => {
+    const projectSource = {
+      ...source,
+      id: "claude-project-fixture",
+      harness: "claudeCode",
+      source: { scope: "project", label: "Claude Code project config" },
+      configKey: "github",
+      name: "github",
+      transport: "stdio",
+      endpoint: null,
+      description: "GitHub",
+    };
+    const question = {
+      status: "needsConfirmation",
+      configurationRevision: "shown-revision",
+      launch: {
+        file: "C:\\Invented\\Cloned Project\\.mcp.json",
+        program: "C:\\Windows\\System32\\cmd.exe",
+        args: ["/c", "echo ran> %TEMP%\\flock-mcp-check-ran"],
+        envNames: ["GITHUB_TOKEN"],
+        endpoint: null,
+        headerNames: [],
+      },
+    };
+    const connected = {
+      status: "connected",
+      checkedAt: "2026-11-24T12:00:00Z",
+      configurationRevision: "shown-revision",
+      message: null,
+      serverName: "fixture",
+      serverVersion: null,
+      tools: [],
+    };
+
+    beforeEach(() => {
+      mocks.listExtensions.mockResolvedValue([]);
+      mocks.listLocalMcpInventory.mockResolvedValue({
+        harnesses: [
+          {
+            harness: "claudeCode",
+            status: "configured",
+            checkedLocations: [],
+            servers: [projectSource],
+          },
+        ],
+      });
+    });
+
+    async function openDetails() {
+      const user = userEvent.setup();
+      renderManager(["C:\\Invented\\Cloned Project"]);
+      await user.click(await screen.findByRole("button", { name: "Details" }));
+      return user;
+    }
+
+    it("shows what Check would start and asks every time before it starts", async () => {
+      mocks.checkMcpConnection
+        .mockResolvedValueOnce(question)
+        .mockResolvedValueOnce(question)
+        .mockResolvedValueOnce(connected);
+      const user = await openDetails();
+
+      await user.click(
+        screen.getByRole("button", { name: "Check connection" }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      expect(
+        within(dialog).getByText("Start github from this project?"),
+      ).toBeInTheDocument();
+      for (const shown of [
+        "C:\\Windows\\System32\\cmd.exe",
+        "/c",
+        "echo ran> %TEMP%\\flock-mcp-check-ran",
+        "GITHUB_TOKEN",
+        "C:\\Invented\\Cloned Project\\.mcp.json",
+      ]) {
+        expect(within(dialog).getByText(shown)).toBeInTheDocument();
+      }
+      // The first call only asked; it named no revision, so nothing started.
+      expect(mocks.checkMcpConnection).toHaveBeenCalledTimes(1);
+      expect(mocks.checkMcpConnection).toHaveBeenLastCalledWith(
+        "claude-project-fixture",
+        ["C:\\Invented\\Cloned Project"],
+        undefined,
+      );
+
+      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(mocks.checkMcpConnection).toHaveBeenCalledTimes(1);
+
+      // No remembered answer: the next Check asks again.
+      await user.click(
+        screen.getByRole("button", { name: "Check connection" }),
+      );
+      const again = await screen.findByRole("dialog");
+      expect(mocks.checkMcpConnection).toHaveBeenCalledTimes(2);
+      await user.click(
+        within(again).getByRole("button", { name: "Start and check" }),
+      );
+      await waitFor(() =>
+        expect(mocks.checkMcpConnection).toHaveBeenCalledTimes(3),
+      );
+      expect(mocks.checkMcpConnection).toHaveBeenLastCalledWith(
+        "claude-project-fixture",
+        ["C:\\Invented\\Cloned Project"],
+        undefined,
+        "shown-revision",
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("names a remote server's address and headers before contacting it", async () => {
+      mocks.checkMcpConnection.mockResolvedValueOnce({
+        ...question,
+        launch: {
+          ...question.launch,
+          program: null,
+          args: [],
+          envNames: [],
+          endpoint: "https://example.com/mcp",
+          headerNames: ["Authorization"],
+        },
+      });
+      const user = await openDetails();
+
+      await user.click(
+        screen.getByRole("button", { name: "Check connection" }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      expect(
+        within(dialog).getByText("Connect to github from this project?"),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByText("https://example.com/mcp"),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByText("Authorization")).toBeInTheDocument();
+      expect(
+        within(dialog).getByRole("button", { name: "Connect and check" }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("checks a server from the operator's own configuration without a question", async () => {
+    const user = userEvent.setup();
+    mocks.listExtensions.mockResolvedValue([]);
+    mocks.checkMcpConnection.mockResolvedValue({
+      status: "connected",
+      checkedAt: "2026-11-24T12:00:00Z",
+      configurationRevision: "current",
+      message: null,
+      serverName: "example",
+      serverVersion: null,
+      tools: [],
+    });
+    renderManager(["/workspace"]);
+    await user.click(await screen.findByRole("button", { name: "Details" }));
+    await user.click(screen.getByRole("button", { name: "Check connection" }));
+
+    await waitFor(() =>
+      expect(mocks.checkMcpConnection).toHaveBeenCalledWith(
+        "codex-fixture",
+        ["/workspace"],
+        undefined,
+      ),
+    );
+    expect(mocks.checkMcpConnection).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
 });

@@ -30,6 +30,8 @@ import {
   readLocalMcpConfiguration,
   updateLocalMcpConfiguration,
   type LocalMcpConfiguration,
+  type McpCheckConfirmation,
+  type McpLaunchPreview,
 } from "../api/mcpManager";
 import { HARNESS_LABELS, harnessesWithErrors } from "../lib/localMcpInventory";
 import {
@@ -69,6 +71,10 @@ interface EditorState extends McpTarget {
   local?: LocalMcpConfiguration;
 }
 
+interface CheckQuestion extends McpTarget {
+  question: McpCheckConfirmation;
+}
+
 export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
   const { t } = useTranslation("settings");
   const queryClient = useQueryClient();
@@ -92,6 +98,9 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
   const [adding, setAdding] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [removing, setRemoving] = useState<McpTarget | null>(null);
+  const [checkQuestion, setCheckQuestion] = useState<CheckQuestion | null>(
+    null,
+  );
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -179,7 +188,10 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
       }
     });
 
-  const check = (target: McpTarget) =>
+  // A server defined inside the project folder is not started on the first
+  // call: the app answers with what it would run, and only a second call that
+  // names that exact revision starts it. Nothing is remembered between checks.
+  const check = (target: McpTarget, confirmedRevision?: string) =>
     run(`check:${target.source?.id ?? target.item.id}`, async () => {
       const id = target.source?.id ?? target.item.id;
       const managed = target.item.managed;
@@ -193,12 +205,29 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
             ),
           )
         : undefined;
-      await checkMcpConnection(
-        id,
-        workspacePaths,
-        target.source ? undefined : raw,
-      );
+      const outcome = confirmedRevision
+        ? await checkMcpConnection(
+            id,
+            workspacePaths,
+            undefined,
+            confirmedRevision,
+          )
+        : await checkMcpConnection(
+            id,
+            workspacePaths,
+            target.source ? undefined : raw,
+          );
+      if (outcome.status === "needsConfirmation") {
+        setCheckQuestion({ ...target, question: outcome });
+      }
     });
+
+  const confirmCheck = async () => {
+    if (!checkQuestion) return;
+    const { question, ...target } = checkQuestion;
+    setCheckQuestion(null);
+    await check(target, question.configurationRevision);
+  };
 
   const remove = async () => {
     if (!removing) return;
@@ -724,6 +753,82 @@ export function McpManager({ workspacePaths }: { workspacePaths: string[] }) {
         isLoading={Boolean(busy?.startsWith("remove:"))}
         onConfirm={remove}
       />
+      <ConfirmDialog
+        open={Boolean(checkQuestion)}
+        onOpenChange={(open) => {
+          if (!open) setCheckQuestion(null);
+        }}
+        title={t(
+          checkQuestion?.question.launch.program === null
+            ? "mcpManager.checkQuestionRemoteTitle"
+            : "mcpManager.checkQuestionTitle",
+          { name: checkQuestion?.item.name ?? "" },
+        )}
+        description={
+          checkQuestion ? (
+            <>
+              {t(
+                checkQuestion.question.launch.program === null
+                  ? "mcpManager.checkQuestionRemote"
+                  : "mcpManager.checkQuestion",
+              )}
+              <McpLaunchSummary launch={checkQuestion.question.launch} />
+            </>
+          ) : null
+        }
+        cancelLabel={t("mcpManager.cancel")}
+        confirmLabel={t(
+          checkQuestion?.question.launch.program === null
+            ? "mcpManager.checkQuestionRemoteConfirm"
+            : "mcpManager.checkQuestionConfirm",
+        )}
+        onConfirm={confirmCheck}
+      />
     </div>
+  );
+}
+
+/**
+ * What a check would start or contact, for the question asked before a
+ * project's server is checked. Variables and headers are listed by name.
+ */
+function McpLaunchSummary({ launch }: { launch: McpLaunchPreview }) {
+  const { t } = useTranslation("settings");
+  const rows =
+    launch.program === null
+      ? [
+          {
+            label: t("mcpManager.launchEndpoint"),
+            values: launch.endpoint === null ? [] : [launch.endpoint],
+          },
+          { label: t("mcpManager.launchHeaders"), values: launch.headerNames },
+        ]
+      : [
+          { label: t("mcpManager.launchProgram"), values: [launch.program] },
+          { label: t("mcpManager.launchArguments"), values: launch.args },
+          { label: t("mcpManager.launchEnvironment"), values: launch.envNames },
+        ];
+  rows.push({ label: t("mcpManager.launchFile"), values: [launch.file] });
+  return (
+    <>
+      {rows.map(({ label, values }) => (
+        <span key={label} className="mt-3 block">
+          <span className="block font-medium text-foreground">{label}</span>
+          {values.length === 0 ? (
+            <span className="block">{t("mcpManager.launchNone")}</span>
+          ) : (
+            values.map((value, index) => (
+              <span
+                // biome-ignore lint/suspicious/noArrayIndexKey: arguments may repeat, their position is their identity
+                key={index}
+                className="block break-all font-mono text-foreground"
+              >
+                {value}
+              </span>
+            ))
+          )}
+        </span>
+      ))}
+    </>
   );
 }

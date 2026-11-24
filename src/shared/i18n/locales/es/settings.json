@@ -882,6 +882,19 @@
     "invalidImport": "Pega una configuración de servidor o un objeto JSON mcpServers.",
     "singleImport": "Importa un servidor a la vez.",
     "pluginSource": "Proporcionado por {{source}}. Administra este servidor en los ajustes del proveedor del plugin.",
-    "inheritedSource": "{{source}}. Configúralo o elimínalo en el proveedor original. Este interruptor solo controla Grok."
+    "inheritedSource": "{{source}}. Configúralo o elimínalo en el proveedor original. Este interruptor solo controla Grok.",
+    "checkQuestionTitle": "¿Iniciar {{name}} desde este proyecto?",
+    "checkQuestionRemoteTitle": "¿Conectar con {{name}} desde este proyecto?",
+    "checkQuestion": "Este servidor está definido en un archivo dentro de la carpeta del proyecto, así que quien escribió el proyecto eligió qué ejecuta. Al comprobarlo se inicia este programa en tu equipo con tus permisos.",
+    "checkQuestionRemote": "Este servidor está definido en un archivo dentro de la carpeta del proyecto, así que quien escribió el proyecto eligió a dónde se conecta. Al comprobarlo se contacta esta dirección con estas cabeceras.",
+    "checkQuestionConfirm": "Iniciar y comprobar",
+    "checkQuestionRemoteConfirm": "Conectar y comprobar",
+    "launchProgram": "Programa",
+    "launchArguments": "Argumentos",
+    "launchEnvironment": "Variables de entorno que define",
+    "launchEndpoint": "Dirección",
+    "launchHeaders": "Cabeceras que envía",
+    "launchFile": "Definido en",
+    "launchNone": "Ninguno"
   }
 }

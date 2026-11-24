@@ -13,7 +13,8 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use super::local_mcp_inventory::{
-    configuration_revision, effective_workspace_paths, locate_server, McpConfigScope, McpHarnessId,
+    codex_config_files, configuration_revision, effective_workspace_paths, locate_server,
+    ConfigFile, LocatedMcpServer, McpConfigScope, McpHarnessId,
 };
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(40);
@@ -30,6 +31,40 @@ pub struct McpCheckResult {
     pub server_name: Option<String>,
     pub server_version: Option<String>,
     pub tools: Vec<Value>,
+}
+
+/// What a check of a server defined inside a project folder would start or
+/// contact. Environment variables and headers are named, never valued.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpLaunchPreview {
+    /// The configuration file the server is defined in.
+    pub file: String,
+    /// The program that would start: its full path when it is found on PATH,
+    /// otherwise the name as the file writes it.
+    pub program: Option<String>,
+    pub args: Vec<String>,
+    pub env_names: Vec<String>,
+    /// A remote server's address, without credentials, query or fragment.
+    pub endpoint: Option<String>,
+    pub header_names: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCheckConfirmation {
+    /// Always `needsConfirmation`, so the renderer can tell this answer apart.
+    pub status: &'static str,
+    /// What the operator confirms: the next check passes it back.
+    pub configuration_revision: String,
+    pub launch: McpLaunchPreview,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum McpCheckOutcome {
+    Checked(McpCheckResult),
+    NeedsConfirmation(McpCheckConfirmation),
 }
 
 #[derive(Serialize)]
@@ -386,16 +421,32 @@ pub async fn check_mcp_connection(
     id: String,
     configuration: Option<Value>,
     workspace_paths: Option<Vec<String>>,
-) -> Result<McpCheckResult, String> {
+    confirmed_revision: Option<String>,
+) -> Result<McpCheckOutcome, String> {
     if id.is_empty() || id.len() > 2048 {
         return Err("Invalid MCP configuration id".into());
     }
-    let config = match configuration {
-        Some(config) => config,
-        None => locate_server(&id, &effective_workspace_paths(&app, workspace_paths)?)?.config,
-    };
-    validate_configuration(&config)?;
     let env = crate::services::managed_acp_tools::provider_env(&app).await;
+    let config = match configuration {
+        Some(config) => {
+            validate_configuration(&config)?;
+            config
+        }
+        None => {
+            let workspace_paths = effective_workspace_paths(&app, workspace_paths)?;
+            let located = locate_server(&id, &workspace_paths)?;
+            validate_configuration(&located.config)?;
+            if let Some(question) = confirmation_before_start(
+                &located,
+                &workspace_paths,
+                confirmed_revision.as_deref(),
+                crate::services::env_key::get(&env, "PATH"),
+            ) {
+                return Ok(McpCheckOutcome::NeedsConfirmation(question));
+            }
+            located.config
+        }
+    };
     let checked = tokio::time::timeout(CHECK_TIMEOUT, probe_connection(&config, &env)).await;
     let mut result = McpCheckResult {
         status: "connected".into(),
@@ -458,7 +509,145 @@ pub async fn check_mcp_connection(
         &path,
         &serde_json::to_vec(&records).map_err(|_| "Cannot encode MCP diagnostics")?,
     )?;
-    Ok(result)
+    Ok(McpCheckOutcome::Checked(result))
+}
+
+/// The question "Check" asks before it starts or contacts a server defined in
+/// a file inside a project folder, or `None` when it may go ahead.
+///
+/// Such a file is content: a cloned repository can put any program behind a
+/// friendly name and description, and the list shows neither the program nor
+/// its arguments. So the operator is shown what would run and asked, every
+/// time. The answer names the revision that was shown; a file that changed
+/// since is asked about again instead of started. Servers from the operator's
+/// own configuration are not asked about.
+fn confirmation_before_start(
+    located: &LocatedMcpServer,
+    workspace_paths: &[String],
+    confirmed_revision: Option<&str>,
+    path: Option<&str>,
+) -> Option<McpCheckConfirmation> {
+    if !comes_from_a_project(&located.file, workspace_paths) {
+        return None;
+    }
+    let revision = configuration_revision(&located.config.to_string());
+    if confirmed_revision == Some(revision.as_str()) {
+        return None;
+    }
+    Some(McpCheckConfirmation {
+        status: "needsConfirmation",
+        configuration_revision: revision,
+        launch: launch_preview(&located.file.path, &located.config, path),
+    })
+}
+
+/// Whether a configuration file lies inside one of the project folders.
+///
+/// A Codex profile gets its own scope whichever file it is in, so where that
+/// file lives decides; the inventory's own file list says which Codex file
+/// belongs to a project.
+fn comes_from_a_project(file: &ConfigFile, workspace_paths: &[String]) -> bool {
+    match file.scope {
+        McpConfigScope::Project => true,
+        McpConfigScope::Profile => codex_config_files(workspace_paths)
+            .iter()
+            .any(|codex| codex.path == file.path && codex.scope == McpConfigScope::Project),
+        McpConfigScope::User | McpConfigScope::LocalProject | McpConfigScope::Plugin => false,
+    }
+}
+
+fn launch_preview(file: &Path, config: &Value, path: Option<&str>) -> McpLaunchPreview {
+    let mut preview = McpLaunchPreview {
+        file: dunce::simplified(file).display().to_string(),
+        program: None,
+        args: Vec::new(),
+        env_names: Vec::new(),
+        endpoint: None,
+        header_names: Vec::new(),
+    };
+    if let Some(launch) = local_launch(config) {
+        preview.program = launch.program.map(|program| {
+            crate::services::path_env::resolve_executable(program, &[], path)
+                .map(|resolved| resolved.display().to_string())
+                .unwrap_or_else(|| program.to_string())
+        });
+        preview.env_names = launch
+            .env
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        preview.args = launch.args;
+    } else {
+        preview.endpoint = remote_endpoint(config).map(|raw| scrub(raw, config));
+        preview.header_names = remote_headers(config)
+            .map(|headers| headers.keys().cloned().collect())
+            .unwrap_or_default();
+    }
+    preview
+}
+
+/// What a local configuration starts: the program as written, its arguments
+/// and the variables it adds to the environment.
+struct LocalLaunch<'a> {
+    program: Option<&'a str>,
+    args: Vec<String>,
+    env: Vec<(&'a str, &'a str)>,
+}
+
+/// Read one way for both the spawn and the question, so the operator is shown
+/// exactly what runs. `None` for a remote server.
+fn local_launch(config: &Value) -> Option<LocalLaunch<'_>> {
+    let command = config.get("command").or_else(|| config.get("cmd"))?;
+    let mut args = command
+        .as_array()
+        .map(|v| {
+            v.iter()
+                .filter_map(Value::as_str)
+                .skip(1)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    args.extend(
+        config
+            .get("args")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string),
+    );
+    let env = config
+        .get("env")
+        .or_else(|| config.get("envs"))
+        .or_else(|| config.get("environment"))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| Some((key.as_str(), value.as_str()?)))
+        .collect();
+    Some(LocalLaunch {
+        program: command
+            .as_str()
+            .or_else(|| command.as_array()?.first()?.as_str()),
+        args,
+        env,
+    })
+}
+
+fn remote_endpoint(config: &Value) -> Option<&str> {
+    config
+        .get("url")
+        .or_else(|| config.get("uri"))
+        .or_else(|| config.get("httpUrl"))
+        .and_then(Value::as_str)
+}
+
+fn remote_headers(config: &Value) -> Option<&serde_json::Map<String, Value>> {
+    config
+        .get("headers")
+        .or_else(|| config.get("http_headers"))
+        .and_then(Value::as_object)
 }
 
 fn scrub(text: &str, config: &Value) -> String {
@@ -495,30 +684,8 @@ async fn probe_connection(
 ) -> Result<(Value, Vec<Value>), String> {
     let mut child = None;
     let mut tree = None;
-    let client = if let Some(command) = config.get("command").or_else(|| config.get("cmd")) {
-        let mut args = command
-            .as_array()
-            .map(|v| {
-                v.iter()
-                    .filter_map(Value::as_str)
-                    .skip(1)
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        args.extend(
-            config
-                .get("args")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_string),
-        );
-        let program = command
-            .as_str()
-            .or_else(|| command.as_array()?.first()?.as_str())
-            .ok_or("Missing MCP command")?;
+    let client = if let Some(launch) = local_launch(config) {
+        let program = launch.program.ok_or("Missing MCP command")?;
         let resolved = crate::services::path_env::resolve_executable(
             program,
             &[],
@@ -526,20 +693,11 @@ async fn probe_connection(
         )
         .ok_or("The MCP command is not installed or is not on PATH.")?;
         let mut command = tokio::process::Command::new(resolved);
-        command.args(args).env_clear().envs(env);
+        command.args(launch.args).env_clear().envs(env);
         crate::services::shell_env::remove_inherited_launcher_env(command.as_std_mut());
         crate::services::process::apply_no_window_async(&mut command);
-        if let Some(vars) = config
-            .get("env")
-            .or_else(|| config.get("envs"))
-            .or_else(|| config.get("environment"))
-            .and_then(Value::as_object)
-        {
-            for (key, value) in vars {
-                if let Some(value) = value.as_str() {
-                    command.env(key, value);
-                }
-            }
+        for (key, value) in launch.env {
+            command.env(key, value);
         }
         let mut spawned = command
             .stdin(std::process::Stdio::piped())
@@ -559,18 +717,9 @@ async fn probe_connection(
             .await
             .map_err(|error| error.to_string())?
     } else {
-        let url = config
-            .get("url")
-            .or_else(|| config.get("uri"))
-            .or_else(|| config.get("httpUrl"))
-            .and_then(Value::as_str)
-            .ok_or("Missing MCP endpoint")?;
+        let url = remote_endpoint(config).ok_or("Missing MCP endpoint")?;
         let mut transport = StreamableHttpClientTransportConfig::with_uri(url);
-        if let Some(headers) = config
-            .get("headers")
-            .or_else(|| config.get("http_headers"))
-            .and_then(Value::as_object)
-        {
+        if let Some(headers) = remote_headers(config) {
             for (name, value) in headers {
                 let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
                     .map_err(|_| "Invalid MCP header name")?;
@@ -676,6 +825,155 @@ mod tests {
             validate_configuration(&json!({"type":"http","url":"https://example.com/mcp"})).is_ok()
         );
         assert!(validate_configuration(&json!({"httpUrl":"https://example.com/mcp"})).is_ok());
+    }
+
+    /// A server defined in a project folder's `.mcp.json`, as a cloned
+    /// repository carries it, located with the path and scope the inventory
+    /// gives such a file.
+    fn project_server(config: Value) -> (tempfile::TempDir, Vec<String>, LocatedMcpServer) {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("Cloned Project");
+        fs::create_dir_all(&project).unwrap();
+        let workspace_paths = vec![project.to_string_lossy().into_owned()];
+        let located = LocatedMcpServer {
+            file: ConfigFile {
+                path: project.canonicalize().unwrap().join(".mcp.json"),
+                scope: McpConfigScope::Project,
+                label: "Claude Code project config".into(),
+            },
+            harness: McpHarnessId::ClaudeCode,
+            pointer: vec!["mcpServers".into(), "github".into()],
+            config_key: "github".into(),
+            config,
+            contents: String::new(),
+        };
+        (dir, workspace_paths, located)
+    }
+
+    /// Check on a project's server stops at a question that names the
+    /// program, every argument, the names of the variables it sets and the
+    /// file, and carries no variable's value.
+    #[test]
+    fn a_project_server_is_shown_and_asked_about_before_it_starts() {
+        let (_dir, workspaces, located) = project_server(json!({
+            "command": ["cmd.exe", "/d"],
+            "args": ["/c", "echo ran> %TEMP%\\flock-mcp-check-ran"],
+            "env": {"GITHUB_TOKEN": "environment-secret"},
+            "description": "GitHub"
+        }));
+
+        let question = confirmation_before_start(&located, &workspaces, None, None)
+            .expect("a question before anything starts");
+
+        assert_eq!(question.status, "needsConfirmation");
+        assert_eq!(question.launch.program.as_deref(), Some("cmd.exe"));
+        assert_eq!(
+            question.launch.args,
+            ["/d", "/c", "echo ran> %TEMP%\\flock-mcp-check-ran"]
+        );
+        assert_eq!(question.launch.env_names, ["GITHUB_TOKEN"]);
+        assert_eq!(
+            question.launch.file,
+            dunce::simplified(&located.file.path).display().to_string()
+        );
+        assert!(question.launch.file.ends_with(".mcp.json"));
+        assert!(!question.launch.file.starts_with(r"\\?\"));
+        let shown = serde_json::to_string(&question).unwrap();
+        assert!(!shown.contains("environment-secret"), "{shown}");
+        // The spawn reads the program and arguments the same way.
+        let launch = local_launch(&located.config).unwrap();
+        assert_eq!(launch.program, Some("cmd.exe"));
+        assert_eq!(launch.args, question.launch.args);
+    }
+
+    /// The program is shown by the full path it would start from.
+    #[test]
+    fn the_question_names_the_program_by_the_path_it_would_start_from() {
+        let (dir, workspaces, located) =
+            project_server(json!({"command": "fixture-tool.exe", "args": []}));
+        let bin = dir.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("fixture-tool.exe"), b"fixture").unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+
+        let question =
+            confirmation_before_start(&located, &workspaces, None, path.to_str()).unwrap();
+
+        assert_eq!(
+            question.launch.program.map(std::path::PathBuf::from),
+            Some(bin.join("fixture-tool.exe"))
+        );
+    }
+
+    /// Only the revision that was shown lets the check go ahead, and only for
+    /// that one check: a changed definition is asked about again.
+    #[test]
+    fn a_project_server_starts_only_with_the_revision_the_operator_was_shown() {
+        let (_dir, workspaces, located) =
+            project_server(json!({"command": "cmd.exe", "args": ["/c", "echo first"]}));
+        let shown = confirmation_before_start(&located, &workspaces, None, None)
+            .unwrap()
+            .configuration_revision;
+
+        let shown = Some(shown.as_str());
+
+        assert!(confirmation_before_start(&located, &workspaces, shown, None).is_none());
+        assert!(confirmation_before_start(&located, &workspaces, Some("stale"), None).is_some());
+
+        let mut changed = located;
+        changed.config["args"] = json!(["/c", "echo second"]);
+        assert!(confirmation_before_start(&changed, &workspaces, shown, None).is_some());
+    }
+
+    /// A remote server from a project is not contacted before the question
+    /// either; the address is shown without credentials, headers by name.
+    #[test]
+    fn a_project_remote_server_is_asked_about_before_it_is_contacted() {
+        let (_dir, workspaces, located) = project_server(json!({
+            "url": "https://user:password@example.com/mcp?token=query-secret",
+            "headers": {"Authorization": "Bearer header-secret"}
+        }));
+
+        let question = confirmation_before_start(&located, &workspaces, None, None).unwrap();
+
+        assert_eq!(
+            question.launch.endpoint.as_deref(),
+            Some("https://example.com/mcp")
+        );
+        assert_eq!(question.launch.header_names, ["Authorization"]);
+        assert_eq!(question.launch.program, None);
+        let shown = serde_json::to_string(&question).unwrap();
+        for secret in ["password", "query-secret", "header-secret"] {
+            assert!(!shown.contains(secret), "{secret}");
+        }
+    }
+
+    /// Servers from the operator's own configuration check as before. A Codex
+    /// profile is asked about when it sits in the project's Codex file.
+    #[test]
+    fn servers_from_the_operators_own_configuration_start_without_a_question() {
+        let (dir, workspaces, mut located) = project_server(json!({"command": "cmd.exe"}));
+        located.file.path = dir.path().join("home").join(".claude.json");
+        for scope in [
+            McpConfigScope::User,
+            McpConfigScope::LocalProject,
+            McpConfigScope::Plugin,
+            McpConfigScope::Profile,
+        ] {
+            located.file.scope = scope;
+            assert!(
+                confirmation_before_start(&located, &workspaces, None, None).is_none(),
+                "{scope:?}"
+            );
+        }
+
+        let project_codex = codex_config_files(&workspaces)
+            .into_iter()
+            .find(|file| file.scope == McpConfigScope::Project)
+            .expect("the project's Codex file");
+        located.file.path = project_codex.path;
+        located.file.scope = McpConfigScope::Profile;
+        assert!(confirmation_before_start(&located, &workspaces, None, None).is_some());
     }
 
     #[test]
