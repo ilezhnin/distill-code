@@ -620,6 +620,7 @@ describe("automated turns", () => {
 // caller of `flockctl session send` chooses is its text, its `--from` and its
 // `--delivery-id`; a message that carries a sender label or a delivery id of
 // the caller's is drawn as that session's plain message, whatever it says.
+// The one look a label still buys is a monitor update's (below).
 describe("messages another session sent", () => {
   afterEach(cleanup);
   beforeEach(async () => {
@@ -673,30 +674,6 @@ describe("messages another session sent", () => {
     expect(container).toHaveTextContent("Scout reports: all tests pass.");
   });
 
-  it("shows a flock-monitor delivery under the plain label of its source, with no preview of its own", () => {
-    const { container } = render(
-      <MessageBubble
-        message={userMessage("[monitor: build | pid 7]\nstage 2 done", {
-          metadata: {
-            origin: "distillctl_cross_session",
-            distillSenderLabel: "flock-monitor",
-            distillDeliveryId: "distill-monitor-00000000000000aa-7-1-0",
-          },
-        })}
-      />,
-    );
-    expect(senderLabel(container)).toHaveTextContent(
-      "Sent by Flock from another session",
-    );
-    expect(senderLabel(container)).toHaveTextContent("source: flock-monitor");
-    expect(screen.queryByText("Background task update")).toBeNull();
-    // A short message is shown whole, like any other.
-    expect(
-      container.querySelector('[data-role="user-message-clamp"]'),
-    ).toBeNull();
-    expect(container).toHaveTextContent("stage 2 done");
-  });
-
   it.each([
     ["goal", goalPrompt("Check fixtures")],
     ["loop", loopPrompt("Check fixtures", true)],
@@ -738,5 +715,75 @@ describe("messages another session sent", () => {
       "Check fixtures",
     );
     expect(screen.queryByText(/End your reply/)).toBeNull();
+  });
+});
+
+// The operator reads monitor updates all day, so they keep the compact look
+// they had. It rests on the `flock-monitor` label alone: nothing a monitor
+// delivers proves yet that it reports to its own chat.
+describe("a flock-monitor update", () => {
+  afterEach(() => {
+    cleanup();
+    restoreScrollHeight();
+  });
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+  const fromSender = (text: string, sender: string) =>
+    userMessage(text, {
+      metadata: {
+        origin: "distillctl_cross_session",
+        distillSenderLabel: sender,
+        distillDeliveryId: "distill-monitor-00000000000000aa-7-1-0",
+      },
+    });
+  const clampOf = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>('[data-role="user-message-clamp"]');
+
+  it("reads as a background task update and is clamped even when short", () => {
+    const { container } = render(
+      <MessageBubble
+        message={fromSender(
+          "[monitor: build | pid 7]\nstage 2 done",
+          "flock-monitor",
+        )}
+      />,
+    );
+    const label = container.querySelector(
+      '[data-role="flockctl-cross-session-message-label"]',
+    );
+    expect(label).toHaveTextContent("Background task update");
+    expect(label).not.toHaveTextContent("source: flock-monitor");
+    expect(clampOf(container)).not.toBeNull();
+    expect(container).toHaveTextContent("stage 2 done");
+  });
+
+  it("folds at 80 px, where another session's message of the same height is shown whole", () => {
+    withUserMessageScrollHeight(200);
+    const text = `[monitor: build | pid 7]\n${"stage done\n".repeat(20)}`;
+    const monitor = render(
+      <MessageBubble message={fromSender(text, "flock-monitor")} />,
+    );
+    const clamp = clampOf(monitor.container);
+    expect(clamp).toHaveAttribute("data-user-message-clamped", "true");
+    expect(
+      clamp?.querySelector<HTMLElement>(
+        '[data-role="user-message-clamp-content"]',
+      )?.parentElement?.style.maxHeight,
+    ).toBe("80px");
+    monitor.unmount();
+
+    const other = render(
+      <MessageBubble message={fromSender(text, "the CI chat")} />,
+    );
+    expect(clampOf(other.container)).toHaveAttribute(
+      "data-user-message-clamped",
+      "false",
+    );
+    expect(
+      other.container.querySelector(
+        '[data-role="flockctl-cross-session-message-label"]',
+      ),
+    ).toHaveTextContent("source: the CI chat");
   });
 });

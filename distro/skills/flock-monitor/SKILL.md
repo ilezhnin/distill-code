@@ -58,8 +58,8 @@ background-task preview; expand it to inspect the complete output.
 Pending events retry without being dropped, and a trailing partial line is
 delivered when the producer exits.
 
-Delivered messages are visibly labeled as coming from `flock-monitor` (the
-label reads `source: flock-monitor`). Stop a monitor with:
+Delivered messages carry the sender label `flock-monitor` and read as a
+"Background task update" in the chat. Stop a monitor with:
 
 ```bash
 flock-monitor stop --session-id <your session id> --state-key <stable-key>

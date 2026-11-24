@@ -562,6 +562,7 @@
     "voiceSpeechInterruptedLabel": "Interrupted",
     "voiceSpeechNotSpokenLabel": "Not spoken",
     "voiceSpeechFailedLabel": "Failed",
+    "monitorLabel": "Background task update",
     "steerUnconfirmedLabel": "Delivery not confirmed. Check before resending.",
     "steerFailedLabel": "Could not deliver to the running agent.",
     "partialAnswer": "The agent stopped before it finished. This is what it had said."
@@ -787,8 +788,8 @@
       },
       "stepAllowanceWait": {
         "onModel": " on {{model}}",
-        "withReset": "Step {{step}} ({{name}}) is waiting{{on}}: every account it can run on has used up its allowance until {{reset}}. It goes on by itself then. To run it on another model now: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`.",
-        "noReset": "Step {{step}} ({{name}}) is waiting{{on}}: every account it can run on has used up its allowance, and the provider gives no reset time. It goes on by itself when the allowance is back. To run it on another model now: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`."
+        "withReset": "Step {{step}} ({{name}}) is waiting{{on}}: every account it can run on has used up its allowance until {{reset}}. It goes on by itself then. To run it on another model now: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`, from an agent's shell with the conductor's `--session-token`.",
+        "noReset": "Step {{step}} ({{name}}) is waiting{{on}}: every account it can run on has used up its allowance, and the provider gives no reset time. It goes on by itself when the allowance is back. To run it on another model now: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`, from an agent's shell with the conductor's `--session-token`."
       },
       "stop": "Stop the wave",
       "digest": {

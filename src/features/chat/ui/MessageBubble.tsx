@@ -1002,6 +1002,12 @@ export const MessageBubble = memo(function MessageBubble({
     isUser && message.metadata?.delivery === "steering";
   const isFlockctlCrossSessionMessage =
     isUser && message.metadata?.origin === "distillctl_cross_session";
+  // A monitor update is read all day, so it keeps its compact look. The look
+  // rests on the sender label alone, which any flockctl caller can claim:
+  // nothing a monitor delivers proves it is the chat's own yet.
+  const isMonitorMessage =
+    isFlockctlCrossSessionMessage &&
+    message.metadata?.distillSenderLabel === "flock-monitor";
   const isUnconfirmedSteerMessage =
     isUser && message.metadata?.delivery === "steer_unconfirmed";
   const isFailedSteerMessage =
@@ -1181,11 +1187,13 @@ export const MessageBubble = memo(function MessageBubble({
                     >
                       {automatedTurn
                         ? t(`automation.turn.${automatedTurn.kind}`)
-                        : distillSenderLabel
-                          ? t("message.flockctlCrossSessionNamedLabel", {
-                              sender: distillSenderLabel,
-                            })
-                          : t("message.flockctlCrossSessionLabel")}
+                        : isMonitorMessage
+                          ? t("message.monitorLabel")
+                          : distillSenderLabel
+                            ? t("message.flockctlCrossSessionNamedLabel", {
+                                sender: distillSenderLabel,
+                              })
+                            : t("message.flockctlCrossSessionLabel")}
                     </span>
                   ) : null}
                   {isUnconfirmedSteerMessage || isFailedSteerMessage ? (
@@ -1272,11 +1280,13 @@ export const MessageBubble = memo(function MessageBubble({
                 const block = section.items[0] as MessageContent;
                 if (isUser && block.type === "text") {
                   if (!block.text.trim()) return null;
-                  return couldOverflowUserMessagePreview(block.text) ? (
+                  return isMonitorMessage ||
+                    couldOverflowUserMessagePreview(block.text) ? (
                     <UserMessageClamp
                       key={`${message.id}-${section.key}`}
                       text={block.text}
                       stateKey={section.key}
+                      compact={isMonitorMessage}
                     />
                   ) : (
                     <LinkifiedText

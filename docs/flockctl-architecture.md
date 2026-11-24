@@ -142,6 +142,18 @@ Required command properties:
   read by its `actor`. The proof is a guardrail, not a security boundary:
   an agent has a shell, and can read another session's token from that
   session's transcript or unset the variable
+- verbs that act on what one session owns ask an agent's call for the same
+  token (`resolveFlockctlCaller` in `runtime/spawnGate.ts`): `session stop`
+  stops only a session the proven chat started, directly or under one of
+  its own sessions, and `wave cancel`, `steer`, `amend`, `skip` and
+  `restart` change only a wave the proven chat conducts. Without the token
+  an agent's call is refused (`spawn_not_allowed`, `wave_not_allowed`); the
+  operator's terminal needs none
+- chat commands stay the operator's: `/goal` and `/loop` are commands only
+  where the operator typed them. A prompt that `session send` or
+  `session create` delivers, or that `wave steer` steers, reaches the agent
+  as text and starts, changes or stops nothing (`automationCommand` in
+  `src/features/chat-automation/commands.ts`)
 
 Delete, bulk, silent, invisible, or destructive verbs require reopening the
 auth/confirmation design before implementation: until the broker can
@@ -174,6 +186,9 @@ dropped); `steer` sends one message to every running executor through the
 same `session send` path; `amend` and `skip` change a step that has not
 been dispatched yet; `roadmap` reads the goal a conductor published with a
 `distill-roadmap` block. Every mutation posts a notice in the conductor chat.
+From an agent's shell `cancel`, `steer`, `amend`, `skip` and `restart` are
+the wave's conductor's alone and need its `--session-token`; reading a wave
+needs none.
 `session list` and `session get` carry `parent_session_id`, `wave_id` and
 `wave_step` from the conductor graph, so a conductor can tell its own workers
 apart from the operator's chats.
@@ -298,7 +313,10 @@ to agents for one release, as input only:
   pending-file header and the `distill-monitor-` delivery-id prefix. So
   `flock-monitor stop` finds a monitor the old build started, its undelivered
   output is still flushed, and delivery dedupe survives the upgrade. Delivered
-  messages are labelled `source: flock-monitor`.
+  messages carry the sender label `flock-monitor`, which the transcript shows
+  as a compact "Background task update". The label is a claim any flockctl
+  caller can make with `--from flock-monitor`; nothing proves it is a
+  monitor's.
 - The persisted queued-message keys `distillctl_cross_session`,
   `distillSenderLabel` and `distillDeliveryId` keep their names; the label
   they render is "Sent by Flock from another session".
@@ -338,6 +356,8 @@ bump. Adding a command or optional field is not a wire reshape.
 | safety metadata complete | flockctl command tests |
 | spawn ACL on create/fork | `spawnGate.test.ts` + `commands.test.ts` |
 | an agent's spawn proves its session | `sessionToken.test.ts` + `spawnGate.test.ts` + `commands.test.ts` |
+| an agent's `session stop` and wave changes prove their session | `stopSession.test.ts` + `waves.test.ts` + `spawnGate.test.ts` |
+| `/goal` and `/loop` from another session are text | `goalRuntime.test.ts` + `commands.test.ts` |
 | anonymous spawns logged | `spawnGate.test.ts` |
 | each session learns its own id | `appPreamble.test.ts` |
 

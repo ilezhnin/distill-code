@@ -562,6 +562,7 @@
     "voiceSpeechInterruptedLabel": "Interrumpido",
     "voiceSpeechNotSpokenLabel": "No hablado",
     "voiceSpeechFailedLabel": "Fallido",
+    "monitorLabel": "Novedad de una tarea en segundo plano",
     "steerUnconfirmedLabel": "Entrega sin confirmar. Compruébalo antes de reenviar.",
     "steerFailedLabel": "No se pudo entregar al agente en ejecución.",
     "partialAnswer": "El agente se detuvo antes de terminar. Esto es lo que había dicho."
@@ -787,8 +788,8 @@
       },
       "stepAllowanceWait": {
         "onModel": " en {{model}}",
-        "withReset": "El paso {{step}} ({{name}}) está esperando{{on}}: todas las cuentas en las que puede ejecutarse han agotado su cuota hasta {{reset}}. Entonces continúa solo. Para ejecutarlo ahora en otro modelo: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`.",
-        "noReset": "El paso {{step}} ({{name}}) está esperando{{on}}: todas las cuentas en las que puede ejecutarse han agotado su cuota y el proveedor no indica cuándo se restablece. Continúa solo cuando la cuota vuelva. Para ejecutarlo ahora en otro modelo: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`."
+        "withReset": "El paso {{step}} ({{name}}) está esperando{{on}}: todas las cuentas en las que puede ejecutarse han agotado su cuota hasta {{reset}}. Entonces continúa solo. Para ejecutarlo ahora en otro modelo: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`, desde la shell de un agente con el `--session-token` del conductor.",
+        "noReset": "El paso {{step}} ({{name}}) está esperando{{on}}: todas las cuentas en las que puede ejecutarse han agotado su cuota y el proveedor no indica cuándo se restablece. Continúa solo cuando la cuota vuelva. Para ejecutarlo ahora en otro modelo: `flockctl wave restart --wave-id {{waveId}} --step {{step}}`, desde la shell de un agente con el `--session-token` del conductor."
       },
       "stop": "Detener la ola",
       "digest": {

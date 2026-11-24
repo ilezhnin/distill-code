@@ -43,6 +43,11 @@ when its turn ends, so it does not need to be told to report back. Leave
 `--parent-session-id` out only when the user asks for an independent chat;
 the token is still needed.
 
+A message you give another session, as the first prompt of `session create`,
+with `session send` or with `wave steer`, reaches its agent as text. `/goal`
+and `/loop` are chat commands only where the user types them, so sent from
+here they start, change or stop nothing.
+
 Several sessions started on one account at once can meet the provider's
 rate limit (HTTP 429). A session whose first message the provider refused
 that way has not failed: the message waits first in its queue, your chat
@@ -65,8 +70,11 @@ then. `flockctl session get` reports the same `provider_wait` and its
 `queued_messages`, so an idle session with messages waiting is not read as
 finished.
 
-To stop one of those sessions, run `flockctl session stop --session-id <id>`
-with `--from` and `--reason` saying who and why; its chip shows both. Do not
+To stop one of those sessions, run `flockctl session stop --session-id <id>
+--session-token <your token>` with `--from` and `--reason` saying who and
+why; its chip shows both. From an agent's shell the stop is refused without
+the token, and for any session not started by your chat or by a session it
+started. Do not
 try to stop it by sending it a message: a message to a running session waits
 in its queue until the turn ends, and a turn stuck on a provider out of quota
 never ends. The stop drops its queue and cancels its turn, and when the agent
@@ -117,7 +125,9 @@ are separate choices, and each model offers its own set of them.
   `flockctl wave skip` change a step that has not been dispatched yet, and
   `flockctl wave restart` stops a dispatched step and runs it again in a new
   session, with a correction to its brief when one is given. Each posts a
-  notice in the conductor chat.
+  notice in the conductor chat. From an agent's shell these five verbs are
+  the conductor's alone: pass `--session-token <your token>`, and expect a
+  refusal for a wave your chat does not conduct.
 - A wave step is not handed to a model whose accounts have all used up
   their allowance: another model the role ranks runs it, and a step that
   names a spent model fails saying until when, so name another. A step
