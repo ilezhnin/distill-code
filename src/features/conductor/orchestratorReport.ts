@@ -1,11 +1,32 @@
 import { i18n } from "@/shared/i18n";
+import { protocolBlocks } from "@/shared/lib/protocolFences";
 
 import type { SessionNode, StructuredReport } from "./types";
 
 /** The fence tag an executor reports through (LAWS/WAVES.md, The report). */
 export const REPORT_FENCE_TAG = "distill-report";
 
-const REPORT_FENCE_PATTERN = /```distill-report\s*([\s\S]*?)```/i;
+/**
+ * The executor's report: the first closed `distill-report` block its reply
+ * shows as its own (`protocolBlocks`). It used to be any text between the
+ * tag and the next three backticks, so a report the executor quoted from a
+ * file or a page became its report, artifact paths and all.
+ */
+function reportBlock(
+  text: string,
+): { body: string; start: number; end: number } | null {
+  if (!text.toLowerCase().includes(REPORT_FENCE_TAG)) return null;
+  const block = protocolBlocks(text, REPORT_FENCE_TAG, "info").find(
+    (candidate) => candidate.closed,
+  );
+  return block
+    ? {
+        body: text.slice(block.bodyStart, block.bodyEnd),
+        start: block.start,
+        end: block.end,
+      }
+    : null;
+}
 
 /**
  * Hard cap on a blocked report's `reason`, applied by truncation.
@@ -305,8 +326,8 @@ export function parseStructuredReport(
   status: StructuredReport["status"],
   assistantText: string,
 ): StructuredReport {
-  const fenced = assistantText.match(REPORT_FENCE_PATTERN);
-  const body = fenced?.[1] ? parseReportFenceBody(fenced[1], status) : null;
+  const fenced = reportBlock(assistantText);
+  const body = fenced ? parseReportFenceBody(fenced.body, status) : null;
   if (body) {
     // A worker whose whole reply is the report block leaves nothing behind
     // once the fence is stripped. Falling back to the raw text (as the
@@ -342,11 +363,14 @@ export function parseStructuredReport(
 
 /** True when the text carries a `distill-report` block. */
 export function hasReportFence(text: string): boolean {
-  return REPORT_FENCE_PATTERN.test(text);
+  return reportBlock(text) !== null;
 }
 
 export function stripReportFence(text: string): string {
-  return text.replace(REPORT_FENCE_PATTERN, "").trim();
+  const block = reportBlock(text);
+  return block
+    ? `${text.slice(0, block.start)}${text.slice(block.end)}`.trim()
+    : text.trim();
 }
 
 /**

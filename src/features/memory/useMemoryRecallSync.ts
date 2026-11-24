@@ -112,6 +112,15 @@ function drainRecallFences(): void {
       // still marked unanswered when the next pass runs is a question asked
       // twice.
       useMemoryStore.getState().markRecallAnswered(candidate.messageId);
+      // Told the limit and asking again: the answer would be the same
+      // sentence, and delivering it would start one more turn that asks once
+      // more. Nothing is sent until something else reaches the session.
+      if (candidate.limitAlreadySaid) {
+        console.warn(
+          `[memory] distill-recall fence in session ${candidate.sessionId} was not answered: the session was already told it reached the recall limit`,
+        );
+        continue;
+      }
       // Refused rather than deferred, which is where this parts company with
       // the write pause: a write held back is applied later and the fact
       // survives, while an answer held back would arrive in a conversation

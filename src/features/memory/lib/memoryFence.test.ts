@@ -54,6 +54,13 @@ describe("parseMemoryFences", () => {
       [`The page contained ${block.join(" ")} at the end.`],
       // Opened and never closed.
       block.slice(0, 2),
+      // In an HTML comment: the transcript shows nothing at all, so the
+      // record of what the reply did was never drawn either.
+      ["Done.", "<!--", ...block, "-->"],
+      // In a list item, a `$$` math block, an HTML block.
+      ["- Kept for later:", ...block.map((line) => `  ${line}`)],
+      ["$$", ...block, "$$"],
+      ["<details>", ...block, "</details>"],
     ]) {
       expect(parseMemoryFences(quoted.join("\n"))).toBeNull();
     }

@@ -289,6 +289,38 @@ describe("useMemoryRecallSync", () => {
     expect(delivered()[0].text).toBe(RECALL_LIMIT_REACHED_TEXT);
   });
 
+  it("sends nothing, and starts no turn, for a question asked after the limit was said", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-1", null);
+    useMemoryStore.setState({ entries: [entry({ id: "g", text: "A fact" })] });
+    renderHook(() => useMemoryRecallSync());
+
+    const answer =
+      '<memory-recall query="fact">\nNothing found.\n</memory-recall>';
+    const told = [
+      plain("a-1", "user", answer),
+      plain("a-2", "user", answer),
+      plain("a-3", "user", answer),
+      plain("limit", "user", RECALL_LIMIT_REACHED_TEXT),
+    ];
+    putMessages("s-1", [...told, assistant("m-1", '{"query":"fact"}')]);
+
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+    expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("already told it reached the recall limit"),
+    );
+
+    // Once the operator speaks, the session may be answered again.
+    putMessages("s-1", [
+      ...told,
+      assistant("m-1", '{"query":"fact"}'),
+      plain("op", "user", "Look again, please."),
+      assistant("m-2", '{"query":"fact"}'),
+    ]);
+    expect(delivered()).toHaveLength(1);
+  });
+
   it("waits for the turn to settle before answering", () => {
     putSession("s-1", null);
     renderHook(() => useMemoryRecallSync());

@@ -16,6 +16,7 @@
  */
 
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
+import { protocolBlocks } from "@/shared/lib/protocolFences";
 import {
   getTextContent,
   isMessageKnownAs,
@@ -30,8 +31,6 @@ export const RECALL_FENCE_TAG = "distill-recall";
 
 /** The tag the answer comes back under. Not a fence: the model reads it. */
 export const RECALL_ANSWER_TAG = "memory-recall";
-
-const RECALL_FENCE_PATTERN = /```distill-recall\s*([\s\S]*?)```/gi;
 
 export type MemoryRecallScope = "project" | "global" | "all";
 
@@ -105,12 +104,17 @@ function parseBody(body: string): MemoryRecallRequest | null {
  * One question per reply, unlike the write fence which merges every block it
  * finds: each answer is a message delivered back into the session, and a
  * reply carrying four questions would wake the model four times over.
+ *
+ * Read like the write fence (`protocolBlocks`): a block the reply only
+ * quoted, or hid in a comment the transcript does not show, asks nothing.
+ * It used to be any run of text between the tag and the next three
+ * backticks, a quoted one and one in the middle of a sentence included.
  */
 export function parseRecallFence(text: string): MemoryRecallRequest | null {
   if (!text.includes(RECALL_FENCE_TAG)) return null;
-  RECALL_FENCE_PATTERN.lastIndex = 0;
-  for (const match of text.matchAll(RECALL_FENCE_PATTERN)) {
-    const parsed = match[1] ? parseBody(match[1]) : null;
+  for (const block of protocolBlocks(text, RECALL_FENCE_TAG, "info")) {
+    if (!block.closed) continue;
+    const parsed = parseBody(text.slice(block.bodyStart, block.bodyEnd));
     if (parsed) return parsed;
   }
   return null;
@@ -235,6 +239,31 @@ export interface MemoryRecallCandidate {
   request: MemoryRecallRequest;
   /** The session's tail, for the loop guard above. */
   recentTexts: string[];
+  /**
+   * The last message the session received before this question was the
+   * limit sentence: it was told, and asks again anyway.
+   */
+  limitAlreadySaid: boolean;
+}
+
+/**
+ * Whether the last user-side message before `index` is the limit sentence.
+ *
+ * The limit sentence is itself a delivered message, and every delivered
+ * message starts a turn: a model that ends every reply with a recall block
+ * was told the limit, asked again, was told again, without end and without
+ * the operator saying a word. Anything else that reached the session in
+ * between — the operator, a digest — starts the count afresh.
+ */
+function limitSaidBefore(messages: readonly Message[], index: number): boolean {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const message = messages[cursor];
+    if (message.role !== "user") continue;
+    return getTextContent(message)
+      .trimStart()
+      .startsWith(RECALL_LIMIT_REACHED_TEXT);
+  }
+  return false;
 }
 
 /**
@@ -271,9 +300,10 @@ export function detectRecallFenceCandidates(args: {
   const candidates: MemoryRecallCandidate[] = [];
   for (const [sessionId, messages] of Object.entries(args.messagesBySession)) {
     if (!messages?.length) continue;
-    const tail = messages.slice(-RECALL_SCAN_TAIL);
+    const tailStart = Math.max(0, messages.length - RECALL_SCAN_TAIL);
     let recentTexts: string[] | null = null;
-    for (const message of tail) {
+    for (let index = tailStart; index < messages.length; index += 1) {
+      const message = messages[index];
       if (!isSettledAssistantMessage(message)) continue;
       if (isMessageKnownAs(message, args.isAnswered)) continue;
       // The tag test rejects nearly every message, so it runs on the parts
@@ -289,6 +319,7 @@ export function detectRecallFenceCandidates(args: {
         messageId: message.id,
         request,
         recentTexts,
+        limitAlreadySaid: limitSaidBefore(messages, index),
       });
     }
   }

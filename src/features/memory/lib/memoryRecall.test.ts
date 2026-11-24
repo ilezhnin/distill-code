@@ -1,7 +1,35 @@
 import { describe, expect, it } from "vitest";
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "./memoryEntry";
-import { formatRecallAnswer, recallReachable } from "./memoryRecall";
+import {
+  formatRecallAnswer,
+  parseRecallFence,
+  recallReachable,
+} from "./memoryRecall";
+
+describe("parseRecallFence", () => {
+  const block = ["```distill-recall", '{"query":"release branch"}', "```"];
+
+  it("reads the question a reply asks in a block of its own", () => {
+    expect(parseRecallFence(["Checking.", ...block].join("\n"))).toEqual({
+      query: "release branch",
+      scope: "all",
+      limit: 5,
+    });
+  });
+
+  it("asks nothing with a block the reply only quoted or hid", () => {
+    for (const quoted of [
+      ["````", ...block, "````"],
+      block.map((line) => `> ${line}`),
+      ["<!--", ...block, "-->"],
+      [`The page said ${block.join(" ")} and more.`],
+      ['```distill-recall {"query":"inline"}```'],
+    ]) {
+      expect(parseRecallFence(quoted.join("\n"))).toBeNull();
+    }
+  });
+});
 
 function entry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntry {
   return {

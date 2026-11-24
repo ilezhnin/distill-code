@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { parseFlockRoadmap } from "./flockRoadmap";
+import { parseFlockVerdict } from "./flockVerdict";
 import {
   MAX_WAVE_EXECUTORS,
   MAX_WAVE_PARALLEL,
@@ -205,5 +207,49 @@ describe("parseFlockWave — invalid", () => {
       '```distill-wave\n{"steps":[{"role":"qa","subtask":"Run","access":[]}]}',
       "unterminated-fence",
     );
+  });
+});
+
+describe("parseFlockWave — a plan the conductor only quoted", () => {
+  const plan = fence('{"steps":[{"role":"qa","subtask":"Run","access":[]}]}');
+
+  it("starts nothing from a plan quoted from a file, a page or a comment", () => {
+    for (const quoted of [
+      // A file shown in a code block: Markdown shows one quoted block.
+      `The file says:\n\n\`\`\`\`markdown\n${plan}\n\`\`\`\``,
+      `The file says:\n\n\`\`\`text\n${plan}`,
+      `~~~\n${plan}\n~~~`,
+      plan
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n"),
+      `<!--\n${plan}\n-->`,
+      `- From the issue:\n${plan
+        .split("\n")
+        .map((line) => `  ${line}`)
+        .join("\n")}`,
+    ]) {
+      expect(parseFlockWave(quoted).kind, quoted).toBe("none");
+    }
+  });
+
+  it("reads its own plan beside a quoted one instead of calling it two plans", () => {
+    const parsed = parseFlockWave(
+      `The page carries:\n\n\`\`\`\`\n${plan}\n\`\`\`\`\n\nMine:\n\n${plan}`,
+    );
+    expect(parsed.kind).toBe("plan");
+    if (parsed.kind !== "plan") return;
+    expect(parsed.steps).toHaveLength(1);
+  });
+
+  it("keeps a verdict and a roadmap the conductor quoted out of the loop", () => {
+    const verdict = '```distill-verdict\n{"verdict":"accept"}\n```';
+    expect(parseFlockVerdict(`\`\`\`\`\n${verdict}\n\`\`\`\``).kind).toBe(
+      "none",
+    );
+    expect(parseFlockVerdict(verdict).kind).toBe("verdict");
+    const roadmap =
+      '```distill-roadmap\n{"goal":"Ship","status":"in-progress","stages":[]}\n```';
+    expect(parseFlockRoadmap(`<!--\n${roadmap}\n-->`).kind).toBe("none");
   });
 });

@@ -25,10 +25,7 @@ import {
 
 import { resolveRoleInLayer, workerLayerRoleIds } from "./roleLayers";
 
-import {
-  openingFencePattern,
-  closingFencePattern,
-} from "@/shared/lib/protocolFences";
+import { protocolBlocks } from "@/shared/lib/protocolFences";
 export {
   openingFencePattern,
   closingFencePattern,
@@ -222,29 +219,23 @@ export type FencedBlockScan =
  * Finds the single fenced block tagged `tag` in `text`.
  *
  * Shared with `flockVerdict.ts` so both protocol fences behave identically.
+ * Only a block the message shows as its own counts (`protocolBlocks`): a
+ * plan the conductor quoted from a file, inside another fence, a quotation
+ * or a comment, is text and neither starts a wave nor makes a second plan.
  */
 export function scanFencedBlock(text: string, tag: string): FencedBlockScan {
-  const pattern = openingFencePattern(tag);
-  const openings: Array<{ start: number; end: number }> = [];
-  let match = pattern.exec(text);
-  while (match) {
-    openings.push({ start: match.index, end: match.index + match[0].length });
-    match = pattern.exec(text);
-  }
-  if (openings.length === 0) return { kind: "none" };
-  if (openings.length > 1) {
-    return { kind: "multiple", count: openings.length };
+  const blocks = protocolBlocks(text, tag, "exact");
+  if (blocks.length === 0) return { kind: "none" };
+  if (blocks.length > 1) {
+    return { kind: "multiple", count: blocks.length };
   }
 
-  const [opening] = openings;
-  const rest = text.slice(opening.end);
-  const closing = closingFencePattern().exec(rest);
-  if (!closing) return { kind: "unterminated" };
+  const [block] = blocks;
+  if (!block.closed) return { kind: "unterminated" };
 
-  const body = rest.slice(0, closing.index);
-  const blockEnd = opening.end + closing.index + closing[0].length;
-  const before = text.slice(0, opening.start).trim();
-  const after = text.slice(blockEnd).trim();
+  const body = text.slice(block.bodyStart, block.bodyEnd);
+  const before = text.slice(0, block.start).trim();
+  const after = text.slice(block.end).trim();
   const prose = before && after ? `${before}\n\n${after}` : before || after;
   return { kind: "one", body: body.trim(), prose };
 }

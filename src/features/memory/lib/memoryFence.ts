@@ -8,15 +8,12 @@
  * Pure. Applying a fence is the store's job.
  */
 
+import { protocolBlocks } from "@/shared/lib/protocolFences";
+
 import type { MemoryScope } from "./memoryEntry";
 import { normalizeMemoryText } from "./memoryEntry";
 
 export const MEMORY_FENCE_TAG = "distill-memory";
-
-/** A line that opens a fenced block: up to three spaces, the fence, its tag. */
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`]*)[^`]*$/;
-/** A line that closes one: the fence alone. */
-const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 /**
  * The bodies of the `distill-memory` blocks that stand in `text` as blocks
@@ -29,42 +26,18 @@ const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
  * or a quotation — was applied as if the agent had asked for it, which let
  * text the agent merely looked at write the operator's memory.
  *
- * Read as Markdown reads fences, line by line: a block opens on a line of
- * its own, is not indented into a code block, is not inside a quotation,
- * and is not inside another fenced block, whose contents are text. A block
- * that never closes asks for nothing.
+ * Read as Markdown reads the message (`protocolBlocks`): a block opens on a
+ * line of its own at the top level, not indented into a code block, not in
+ * a quotation, a list item or an HTML block — a comment, which the
+ * transcript does not show at all — and not inside another fenced block,
+ * whose contents are text. A block that never closes asks for nothing.
  */
 export function memoryFenceBodies(text: string): string[] {
-  const bodies: string[] = [];
-  let open: {
-    mark: string;
-    length: number;
-    body: string[] | null;
-  } | null = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (open) {
-      const close = FENCE_CLOSE.exec(line);
-      if (
-        close &&
-        close[1][0] === open.mark &&
-        close[1].length >= open.length
-      ) {
-        if (open.body) bodies.push(open.body.join("\n"));
-        open = null;
-      } else {
-        open.body?.push(line);
-      }
-      continue;
-    }
-    const start = FENCE_OPEN.exec(line);
-    if (!start) continue;
-    open = {
-      mark: start[1][0],
-      length: start[1].length,
-      body: start[2].toLowerCase() === MEMORY_FENCE_TAG ? [] : null,
-    };
-  }
-  return bodies;
+  return protocolBlocks(text, MEMORY_FENCE_TAG, "info")
+    .filter((block) => block.closed)
+    .map((block) =>
+      text.slice(block.bodyStart, block.bodyEnd).replace(/\r?\n$|\r$/, ""),
+    );
 }
 
 export interface MemoryFenceRemember {
