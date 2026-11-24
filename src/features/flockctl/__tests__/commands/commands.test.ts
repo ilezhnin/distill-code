@@ -390,8 +390,10 @@ beforeEach(() => {
     isLoading: false,
     isLoadingMoreSessions: false,
     hasHydratedSessions: false,
+    hasStartedSessionPaging: false,
     sessionPageCursor: null,
     hasMoreSessions: false,
+    hasMoreActiveSessions: false,
     isRightRailOpen: false,
     activeWorkspaceBySession: {},
   });
@@ -1815,6 +1817,61 @@ describe("sessions.list", () => {
 
     expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(2);
     expect(result.sessions.map((s) => s.session_id)).toEqual(["s-2"]);
+  });
+
+  it("stops at the archive when fewer unarchived sessions exist than the limit", async () => {
+    mockSessionPages(
+      {
+        sessions: [
+          makeAcpSession({ sessionId: "kept" }),
+          makeAcpSession({
+            sessionId: "archived",
+            archivedAt: "2026-04-01T00:00:00.000Z",
+          }),
+        ],
+        nextCursor: "page-2",
+        activeComplete: true,
+      },
+      {
+        sessions: [
+          makeAcpSession({
+            sessionId: "archived-earlier",
+            archivedAt: "2026-03-01T00:00:00.000Z",
+          }),
+        ],
+        nextCursor: null,
+      },
+    );
+
+    const result = (await dispatchCommand(
+      "sessions",
+      { action: "list", limit: 20 },
+      ctx,
+    )) as { sessions: Array<{ session_id: string }> };
+
+    expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(1);
+    expect(result.sessions.map((s) => s.session_id)).toEqual(["kept"]);
+  });
+
+  it("leaves the app's own place in the session list where it was", async () => {
+    useChatSessionStore.setState({
+      hasStartedSessionPaging: true,
+      sessionPageCursor: "page-5",
+      hasMoreSessions: true,
+      hasMoreActiveSessions: false,
+    });
+    mockSessionPages({
+      sessions: [makeAcpSession({ sessionId: "s-1" })],
+      nextCursor: "page-2",
+    });
+
+    await dispatchCommand("sessions", { action: "list", limit: 1 }, ctx);
+
+    const state = useChatSessionStore.getState();
+    expect(state.sessions.map((session) => session.id)).toEqual(["s-1"]);
+    expect(state.sessionPageCursor).toBe("page-5");
+    expect(state.hasMoreSessions).toBe(true);
+    expect(state.hasMoreActiveSessions).toBe(false);
   });
 });
 

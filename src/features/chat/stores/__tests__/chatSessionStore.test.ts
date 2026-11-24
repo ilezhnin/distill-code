@@ -57,8 +57,10 @@ function resetStore() {
     isLoading: false,
     isLoadingMoreSessions: false,
     hasHydratedSessions: false,
+    hasStartedSessionPaging: false,
     sessionPageCursor: null,
     hasMoreSessions: false,
+    hasMoreActiveSessions: false,
     isRightRailOpen: false,
     activeWorkspaceBySession: {},
     archiveMutationBySessionId: {},
@@ -110,8 +112,9 @@ function makeAcpSession(
 function mockPage(
   sessions: AcpSessionInfo[] = [],
   nextCursor: string | null = null,
+  activeComplete?: boolean,
 ) {
-  return { sessions, nextCursor };
+  return { sessions, nextCursor, activeComplete };
 }
 
 function readPersistedWorkspaceMetadata(): Record<
@@ -732,10 +735,9 @@ describe("chatSessionStore", () => {
       warnSpy.mockRestore();
     });
 
-    it("does not apply stale loadMore results after loadSessions starts", async () => {
+    it("keeps a page in flight when the list is refreshed meanwhile", async () => {
       const loadMore = createDeferredPromise<ReturnType<typeof mockPage>>();
-      const loadFirstPage =
-        createDeferredPromise<ReturnType<typeof mockPage>>();
+      const refresh = createDeferredPromise<ReturnType<typeof mockPage>>();
       useChatSessionStore.setState({
         sessions: [
           makeSession({
@@ -743,32 +745,37 @@ describe("chatSessionStore", () => {
             updatedAt: "2026-04-03T00:00:00.000Z",
           }),
         ],
+        hasStartedSessionPaging: true,
         sessionPageCursor: "cursor-2",
         hasMoreSessions: true,
+        hasMoreActiveSessions: true,
       });
       mocks.acpListSessionsPage
         .mockReturnValueOnce(loadMore.promise)
-        .mockReturnValueOnce(loadFirstPage.promise);
+        .mockReturnValueOnce(refresh.promise);
 
       const loadMorePromise = useChatSessionStore.getState().loadMoreSessions();
-      const loadSessionsPromise = useChatSessionStore.getState().loadSessions();
+      const refreshPromise = useChatSessionStore.getState().loadSessions();
 
-      loadFirstPage.resolve(
-        mockPage([
-          makeAcpSession({
-            sessionId: "fresh-session",
-            updatedAt: "2026-04-04T00:00:00.000Z",
-          }),
-        ]),
+      refresh.resolve(
+        mockPage(
+          [
+            makeAcpSession({
+              sessionId: "fresh-session",
+              updatedAt: "2026-04-04T00:00:00.000Z",
+            }),
+          ],
+          "cursor-2",
+        ),
       );
-      await loadSessionsPromise;
+      await refreshPromise;
 
       loadMore.resolve(
         mockPage(
           [
             makeAcpSession({
-              sessionId: "stale-session",
-              updatedAt: "2026-04-05T00:00:00.000Z",
+              sessionId: "older-session",
+              updatedAt: "2026-04-02T00:00:00.000Z",
             }),
           ],
           "cursor-3",
@@ -784,10 +791,119 @@ describe("chatSessionStore", () => {
       expect(state.sessions.map((session) => session.id)).toEqual([
         "fresh-session",
         "existing-session",
+        "older-session",
+      ]);
+      expect(state.sessionPageCursor).toBe("cursor-3");
+      expect(state.hasMoreSessions).toBe(true);
+      expect(state.isLoadingMoreSessions).toBe(false);
+    });
+
+    it("refreshes the first page without sending the walk back to the second", async () => {
+      mocks.acpListSessionsPage
+        .mockResolvedValueOnce(
+          mockPage([makeAcpSession({ sessionId: "acp-1" })], "cursor-2"),
+        )
+        .mockResolvedValueOnce(
+          mockPage([makeAcpSession({ sessionId: "acp-2" })], null, true),
+        )
+        .mockResolvedValueOnce(
+          mockPage(
+            [
+              makeAcpSession({ sessionId: "acp-0" }),
+              makeAcpSession({ sessionId: "acp-1" }),
+            ],
+            "cursor-2",
+          ),
+        );
+
+      await useChatSessionStore.getState().loadSessions();
+      await useChatSessionStore.getState().loadMoreSessions();
+      // The minute's refresh: the list is already read to its end, and a new
+      // chat at the top of the first page does not make that untrue.
+      await useChatSessionStore.getState().loadSessions();
+
+      const state = useChatSessionStore.getState();
+      expect(state.sessions.map((session) => session.id).sort()).toEqual([
+        "acp-0",
+        "acp-1",
+        "acp-2",
       ]);
       expect(state.sessionPageCursor).toBeNull();
       expect(state.hasMoreSessions).toBe(false);
-      expect(state.isLoadingMoreSessions).toBe(false);
+      expect(state.hasMoreActiveSessions).toBe(false);
+      await useChatSessionStore.getState().loadMoreSessions();
+      expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(3);
+    });
+
+    it("starts the walk on a later load when the first one failed", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mocks.acpListSessionsPage
+        .mockRejectedValueOnce(new Error("host not ready"))
+        .mockResolvedValueOnce(
+          mockPage([makeAcpSession({ sessionId: "acp-1" })], "cursor-2"),
+        );
+
+      await useChatSessionStore.getState().loadSessions();
+      expect(useChatSessionStore.getState().hasStartedSessionPaging).toBe(
+        false,
+      );
+      await useChatSessionStore.getState().loadSessions();
+
+      const state = useChatSessionStore.getState();
+      expect(state.sessionPageCursor).toBe("cursor-2");
+      expect(state.hasMoreSessions).toBe(true);
+      expect(state.hasMoreActiveSessions).toBe(true);
+      errorSpy.mockRestore();
+    });
+
+    it("knows the unarchived chats are all in before the archive is", async () => {
+      useChatSessionStore.setState({
+        hasStartedSessionPaging: true,
+        sessionPageCursor: "cursor-2",
+        hasMoreSessions: true,
+        hasMoreActiveSessions: true,
+      });
+      mocks.acpListSessionsPage.mockResolvedValue(
+        mockPage(
+          [
+            makeAcpSession({ sessionId: "last-kept" }),
+            makeAcpSession({
+              sessionId: "first-archived",
+              archivedAt: "2026-04-01T00:00:00.000Z",
+            }),
+          ],
+          "cursor-3",
+          true,
+        ),
+      );
+
+      await useChatSessionStore.getState().loadMoreSessions();
+
+      const state = useChatSessionStore.getState();
+      expect(state.hasMoreActiveSessions).toBe(false);
+      expect(state.hasMoreSessions).toBe(true);
+      expect(state.sessionPageCursor).toBe("cursor-3");
+    });
+
+    it("reads on to the end of the list when the host does not say where the archive starts", async () => {
+      useChatSessionStore.setState({
+        hasStartedSessionPaging: true,
+        sessionPageCursor: "cursor-2",
+        hasMoreSessions: true,
+        hasMoreActiveSessions: true,
+      });
+      mocks.acpListSessionsPage
+        .mockResolvedValueOnce(
+          mockPage([makeAcpSession({ sessionId: "acp-2" })], "cursor-3"),
+        )
+        .mockResolvedValueOnce(
+          mockPage([makeAcpSession({ sessionId: "acp-3" })]),
+        );
+
+      await useChatSessionStore.getState().loadMoreSessions();
+      expect(useChatSessionStore.getState().hasMoreActiveSessions).toBe(true);
+      await useChatSessionStore.getState().loadMoreSessions();
+      expect(useChatSessionStore.getState().hasMoreActiveSessions).toBe(false);
     });
   });
 

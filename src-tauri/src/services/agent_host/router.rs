@@ -39,8 +39,8 @@ use super::sandbox_sign_in::SignInRenewals;
 use super::session_title;
 use super::sources::SourceRoots;
 use super::store::{
-    message_snippet, ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo,
-    SNIPPET_CHARS,
+    message_snippet, ForkBoundary, MessageSide, SessionListPosition, SessionRecord, SessionStore,
+    SessionTouchUndo, SNIPPET_CHARS,
 };
 use super::text_execution;
 use crate::services::computer_use;

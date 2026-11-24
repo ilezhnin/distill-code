@@ -20,6 +20,12 @@ interface SessionPageState {
   archiveMutationBySessionId: ArchiveMutationBySessionId;
   sessionPageCursor: string | null;
   hasMoreSessions: boolean;
+  /**
+   * Whether a chat that is not archived may still be on a page not yet read.
+   * The host lists those chats first, so this turns false pages before
+   * `hasMoreSessions` does: the rest of the list is the archive.
+   */
+  hasMoreActiveSessions: boolean;
 }
 
 export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
@@ -222,9 +228,25 @@ export function mergeAcpSessionInfo(
   state: Pick<SessionPageState, "sessions" | "archiveMutationBySessionId">,
   session: AcpSessionInfo,
 ): Pick<SessionPageState, "sessions" | "archiveMutationBySessionId"> {
+  return mergeAcpSessions(state, [session]);
+}
+
+/**
+ * Folds rows the host listed into the store without touching how far the
+ * store's own walk through the list has got.
+ *
+ * For every read that is not that walk: a refresh of the first page, a
+ * `flockctl` read that pages on its own. Their cursors say where that read
+ * stopped, not which pages the store holds, so taking one would send the
+ * sidebar back over pages it already has.
+ */
+export function mergeAcpSessions(
+  state: Pick<SessionPageState, "sessions" | "archiveMutationBySessionId">,
+  sessions: AcpSessionInfo[],
+): Pick<SessionPageState, "sessions" | "archiveMutationBySessionId"> {
   return mergeSessionMetadata(
     state.sessions,
-    [acpSessionToChatSession(session)],
+    sessions.map(acpSessionToChatSession),
     state.archiveMutationBySessionId,
   );
 }
@@ -277,16 +299,15 @@ export function mergeAcpSessionPage(
     );
   }
   const hasMoreSessions = nextCursor != null && !repeatedCursor;
-  const merged = mergeSessionMetadata(
-    state.sessions,
-    page.sessions.map(acpSessionToChatSession),
-    state.archiveMutationBySessionId,
-  );
+  const merged = mergeAcpSessions(state, page.sessions);
 
   return {
     sessions: merged.sessions,
     archiveMutationBySessionId: merged.archiveMutationBySessionId,
     sessionPageCursor: hasMoreSessions ? nextCursor : null,
     hasMoreSessions,
+    // Without the host's word that the unarchived chats are all in, only the
+    // end of the list proves it.
+    hasMoreActiveSessions: hasMoreSessions && page.activeComplete !== true,
   };
 }

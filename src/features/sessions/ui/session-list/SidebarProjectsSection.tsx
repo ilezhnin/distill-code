@@ -156,7 +156,7 @@ export function SidebarProjectsSection({
   const showProjects = collapsed || projectsSectionOpen;
   // Surface the Session History route whenever the grouped view can hide
   // chats: loaded standalone chats were truncated to the recents cap, or the
-  // backend has more sessions than are loaded. Gating on loaded chat counts
+  // backend has more unarchived chats than are loaded. Gating on loaded chat counts
   // would hide the link exactly when loading failed to reach the user's
   // chats, which is when the escape hatch is needed most. Brand-new users
   // have no chats and no backend pages, so they never see the link.

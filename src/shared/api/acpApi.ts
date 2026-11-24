@@ -75,6 +75,12 @@ export interface AcpSessionInfo {
 export interface AcpSessionsPage {
   sessions: AcpSessionInfo[];
   nextCursor: string | null;
+  /**
+   * True once every chat that is not archived is on this page or an earlier
+   * one: the host lists those first and the archive after them. A host that
+   * does not say leaves it unset, which a reader takes as "not yet".
+   */
+  activeComplete?: boolean;
 }
 
 export async function listProviders(): Promise<AcpProvider[]> {
@@ -212,6 +218,7 @@ export async function listSessionsPage({
   return {
     sessions,
     nextCursor: response.nextCursor?.trim() || null,
+    activeComplete: response._meta?.activeComplete === true,
   };
 }
 

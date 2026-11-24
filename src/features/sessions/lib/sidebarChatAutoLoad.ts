@@ -1,5 +1,6 @@
 /**
- * The sidebar loads further chat pages on its own until it has enough rows.
+ * The sidebar loads further chat pages on its own until every chat that is
+ * not archived is in.
  * Each cursor is attempted once, so a page that never arrives used to leave
  * the sidebar short for the rest of the run — the effect only retries when the
  * cursor advances, and a failed page does not advance it.

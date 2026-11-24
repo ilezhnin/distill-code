@@ -24,7 +24,10 @@ import {
   archiveSession as acpArchiveSession,
   unarchiveSession as acpUnarchiveSession,
 } from "@/shared/api/acpApi";
-import { mergeAcpSessionPage } from "@/features/chat/lib/acpSessionMapping";
+import {
+  mergeAcpSessionPage,
+  mergeAcpSessions,
+} from "@/features/chat/lib/acpSessionMapping";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   logReasoningEffortInfo,
@@ -231,8 +234,21 @@ interface ChatSessionStoreState {
   isLoading: boolean;
   isLoadingMoreSessions: boolean;
   hasHydratedSessions: boolean;
+  /**
+   * Whether the first page of the list has landed, so the walk through the
+   * rest of it has a cursor to continue from. Every later `loadSessions` is a
+   * refresh of that first page and leaves the walk where it is.
+   */
+  hasStartedSessionPaging: boolean;
   sessionPageCursor: string | null;
+  /** More pages exist, the archive included. */
   hasMoreSessions: boolean;
+  /**
+   * A chat that is not archived may still be on a page not yet read. The
+   * sidebar reads pages until this is false: a chat stays reachable until it
+   * is archived, however long ago it was last used.
+   */
+  hasMoreActiveSessions: boolean;
   isRightRailOpen: boolean;
   activeWorkspaceBySession: Record<string, ActiveWorkspace>;
   archiveMutationBySessionId: ArchiveMutationBySessionId;
@@ -642,8 +658,10 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
   isLoading: false,
   isLoadingMoreSessions: false,
   hasHydratedSessions: false,
+  hasStartedSessionPaging: false,
   sessionPageCursor: null,
   hasMoreSessions: false,
+  hasMoreActiveSessions: false,
   isRightRailOpen: loadRightRailOpenPreference(),
   activeWorkspaceBySession: {},
   archiveMutationBySessionId: {},
@@ -955,7 +973,17 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     try {
       const page = await acpListSessionsPage();
       if (sessionLoadEpoch !== loadEpoch) return;
-      set((state) => mergeAcpSessionPage(state, page, null));
+      set((state) =>
+        state.hasStartedSessionPaging
+          ? // A refresh: the first page again, for what changed since. Taking
+            // its cursor would send the walk back to the second page every
+            // minute, over pages the store already holds.
+            mergeAcpSessions(state, page.sessions)
+          : {
+              ...mergeAcpSessionPage(state, page, null),
+              hasStartedSessionPaging: true,
+            },
+      );
       const { sessions, hasMoreSessions } = get();
       if (!hasMoreSessions) {
         // With the whole list in hand, an unread flag for an id the host does
@@ -985,16 +1013,14 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       return;
     }
 
-    const loadEpoch = sessionLoadEpoch;
     set({ isLoadingMoreSessions: true });
     try {
+      // A refresh that starts meanwhile leaves the cursor alone, so this page
+      // is still the next one when it lands.
       const page = await acpListSessionsPage({ cursor: sessionPageCursor });
-      if (sessionLoadEpoch !== loadEpoch) return;
       set((state) => mergeAcpSessionPage(state, page, sessionPageCursor));
     } catch (error) {
-      if (sessionLoadEpoch === loadEpoch) {
-        console.error("Failed to load more sessions from ACP:", error);
-      }
+      console.error("Failed to load more sessions from ACP:", error);
     } finally {
       set({ isLoadingMoreSessions: false });
     }

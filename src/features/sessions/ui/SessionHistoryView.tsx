@@ -171,7 +171,10 @@ export function SessionHistoryView({
   const localMessageCountsBySession = useChatStore(
     useShallow(selectLocalMessageCountsBySession),
   );
-  const hasMoreSessions = useChatSessionStore((s) => s.hasMoreSessions);
+  const hasMoreListedSessions = useChatSessionStore((s) => s.hasMoreSessions);
+  const hasMoreActiveSessions = useChatSessionStore(
+    (s) => s.hasMoreActiveSessions,
+  );
   const isLoadingMoreSessions = useChatSessionStore(
     (s) => s.isLoadingMoreSessions,
   );
@@ -179,6 +182,11 @@ export function SessionHistoryView({
   const removeSession = useChatSessionStore((s) => s.removeSession);
   const loadMoreInFlightRef = useRef(false);
   const [scope, setScope] = useState<SessionScope>("active");
+  // The host lists chats that are not archived first, so the Active tab has
+  // everything once those are in. Reading on from there would page through
+  // the whole archive for rows this tab never shows.
+  const hasMoreSessions =
+    scope === "archived" ? hasMoreListedSessions : hasMoreActiveSessions;
   const [view, setView] = useState<SessionListView>(readStoredView);
   const handleViewChange = useCallback((nextView: SessionListView) => {
     setView(nextView);

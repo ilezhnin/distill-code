@@ -1,7 +1,7 @@
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import {
   mergeAcpSessionInfo,
-  mergeAcpSessionPage,
+  mergeAcpSessions,
 } from "@/features/chat/lib/acpSessionMapping";
 import {
   type ChatSession,
@@ -35,14 +35,15 @@ export async function loadAllSessionsForFlockctl(): Promise<HostSessionInfoById>
 
 /**
  * Loads only as much of the session table as a `--limit`ed list can show:
- * paging stops once `rowLimit` unarchived rows have been fetched.
+ * paging stops once `rowLimit` unarchived rows have been fetched, or the host
+ * says there are no more of them.
  *
- * Safe because the host pages `ORDER BY updated_at DESC` and the renderer
- * ranks by last activity, which a session's `updated_at` always covers — a
- * session cannot rank above one we already fetched without having been
- * updated more recently. Only for an unfiltered list: a `--query` or
- * `--project-id` match can sit on any page, so those still need the full
- * table.
+ * Safe because the host lists unarchived sessions first, `ORDER BY updated_at
+ * DESC`, and the renderer ranks by last activity, which a session's
+ * `updated_at` always covers — a session cannot rank above one we already
+ * fetched without having been updated more recently. Only for an unfiltered
+ * list: a `--query` or `--project-id` match can sit on any page, so those
+ * still need the full table.
  */
 export async function loadRecentSessionsForFlockctl(
   rowLimit: number,
@@ -54,17 +55,14 @@ async function loadSessionsForFlockctl(
   rowLimit: number | null,
 ): Promise<HostSessionInfoById> {
   try {
-    const pages: Array<{
-      page: AcpSessionsPage;
-      previousCursor: string | null;
-    }> = [];
+    const rows: AcpSessionInfo[] = [];
     let cursor: string | null = null;
     let previousCursor: string | null = null;
     let unarchivedRows = 0;
 
     for (;;) {
-      const page = await acpListSessionsPage({ cursor });
-      pages.push({ page, previousCursor });
+      const page: AcpSessionsPage = await acpListSessionsPage({ cursor });
+      rows.push(...page.sessions);
       unarchivedRows += page.sessions.filter(
         (session) => session.archivedAt == null,
       ).length;
@@ -73,7 +71,12 @@ async function loadSessionsForFlockctl(
       // hasMoreSessions: a host that keeps handing back the cursor it was
       // given must not spin this loop forever.
       if (!nextCursor || nextCursor === previousCursor) break;
-      if (rowLimit != null && unarchivedRows >= rowLimit) break;
+      if (
+        rowLimit != null &&
+        (unarchivedRows >= rowLimit || page.activeComplete === true)
+      ) {
+        break;
+      }
       previousCursor = nextCursor;
       cursor = nextCursor;
     }
@@ -81,29 +84,19 @@ async function loadSessionsForFlockctl(
     // One setState for all pages. The sidebar subscribes to this store, so a
     // write per page made every `flockctl session list` cost one full sidebar
     // re-render per 200 sessions — visible as composer jank while an agent
-    // polls and the operator types. Folding inside the updater, over the
-    // state as it is at commit time rather than a snapshot taken before the
-    // awaits, keeps the per-page merge semantics unchanged.
-    useChatSessionStore.setState((state) => {
-      let merged: ReturnType<typeof mergeAcpSessionPage> = {
-        sessions: state.sessions,
-        archiveMutationBySessionId: state.archiveMutationBySessionId,
-        sessionPageCursor: state.sessionPageCursor,
-        hasMoreSessions: state.hasMoreSessions,
-      };
-      for (const entry of pages) {
-        merged = mergeAcpSessionPage(merged, entry.page, entry.previousCursor);
-      }
-      return { ...merged, hasHydratedSessions: true, isLoading: false };
-    });
+    // polls and the operator types. The rows go in and the store's own place
+    // in the list stays put: where this read stopped is not which pages the
+    // store holds, and taking its cursor would send the sidebar back over
+    // them after every poll.
+    useChatSessionStore.setState((state) => ({
+      ...mergeAcpSessions(state, rows),
+      hasHydratedSessions: true,
+      isLoading: false,
+    }));
     // The chat store has no place for the host's acknowledged run settings of
     // a chat nobody opened, so the rows this read fetched are handed back to
     // the command that asked for them instead.
-    return new Map(
-      pages.flatMap(({ page }) =>
-        page.sessions.map((session) => [session.sessionId, session] as const),
-      ),
-    );
+    return new Map(rows.map((session) => [session.sessionId, session]));
   } catch (error) {
     throw new CommandError(
       "backend_read_failed",

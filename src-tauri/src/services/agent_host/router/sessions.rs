@@ -897,27 +897,31 @@ impl Inner {
     }
 
     pub(super) async fn list_sessions(&self, params: Value) -> Result<Value, Value> {
-        let offset: i64 = params
-            .get("cursor")
-            .and_then(Value::as_str)
-            .and_then(|cursor| cursor.parse().ok())
-            .unwrap_or(0);
-        let records = self
+        let from = match params.get("cursor") {
+            None | Some(Value::Null) => SessionListPosition::START,
+            Some(cursor) => cursor
+                .as_str()
+                .and_then(SessionListPosition::from_cursor)
+                .ok_or_else(|| invalid_params("cursor is not one session/list handed out"))?,
+        };
+        let page = self
             .store
-            .list_sessions(offset, SESSION_PAGE_SIZE)
+            .list_session_page(from, SESSION_PAGE_SIZE)
             .await
             .map_err(protocol::internal)?;
-        let next_cursor = if records.len() as i64 == SESSION_PAGE_SIZE {
-            Some((offset + SESSION_PAGE_SIZE).to_string())
-        } else {
-            None
-        };
-        let mut sessions = Vec::with_capacity(records.len());
-        for record in &records {
+        let mut sessions = Vec::with_capacity(page.sessions.len());
+        for record in &page.sessions {
             let active = self.reported_run_id(&record.id).await;
             sessions.push(Self::session_info(record, active.as_deref()));
         }
-        Ok(json!({ "sessions": sessions, "nextCursor": next_cursor }))
+        // `activeComplete`: every chat that is not archived is on this page or
+        // an earlier one. The sidebar reads pages until it is true, and leaves
+        // the archive to whoever opens it.
+        Ok(json!({
+            "sessions": sessions,
+            "nextCursor": page.next_cursor,
+            "_meta": { "activeComplete": page.active_complete },
+        }))
     }
 
     pub(super) async fn delete_session(&self, params: Value) -> Result<Value, Value> {

@@ -29,11 +29,7 @@ import {
   getVisibleSessions,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
-import {
-  chatAutoLoadCursorKey,
-  chatAutoLoadPageLanded,
-  chatAutoLoadRetryDelayMs,
-} from "@/features/sessions/lib/sidebarChatAutoLoad";
+import { useSidebarChatAutoLoad } from "@/features/sessions/hooks/useSidebarChatAutoLoad";
 import type { SessionAction } from "@/features/sessions/lib/sessionSelection";
 import {
   compareSessionsByActivityDesc,
@@ -81,7 +77,6 @@ const EXPANDED_PROJECTS_STORAGE_KEY = "flock:sidebar:expanded-projects";
 const SECTION_VISIBILITY_STORAGE_KEY = "flock:sidebar:section-visibility";
 const DISPLAY_OPTIONS_STORAGE_KEY = "flock:sidebar:display-options";
 const MAX_RECENTS = MAX_FLAT_SIDEBAR_CHATS;
-const MAX_AUTO_LOADED_GROUPED_CHATS = MAX_FLAT_SIDEBAR_CHATS * 2;
 const FLAT_CHAT_GROUP_REFRESH_INTERVAL_MS = 60 * 1000;
 
 type SessionListSectionVisibility = {
@@ -466,29 +461,14 @@ export const SessionListCapability = memo(function SessionListCapability({
   const activeWorkspaceBySession = useChatSessionStore(
     (s) => s.activeWorkspaceBySession,
   );
-  const hasMoreSessions = useChatSessionStore((s) => s.hasMoreSessions);
-  const isLoadingMoreSessions = useChatSessionStore(
-    (s) => s.isLoadingMoreSessions,
-  );
-  const sessionPageCursor = useChatSessionStore((s) => s.sessionPageCursor);
-  const loadMoreSessions = useChatSessionStore((s) => s.loadMoreSessions);
+  // The sidebar shows chats that are not archived, so those are the pages it
+  // waits for; the archive behind them is the history view's to read.
+  const hasMoreSessions = useChatSessionStore((s) => s.hasMoreActiveSessions);
+  useSidebarChatAutoLoad(!surface.preview);
   const { enabled: groupChatsByProject, setEnabled: setGroupChatsByProject } =
     useSidebarChatGroupingPreference();
   const [flatChatGroupNowMs, setFlatChatGroupNowMs] = useState(() =>
     Date.now(),
-  );
-  const attemptedChatLoadMoreCursorRef = useRef<string | null>(null);
-  const chatLoadMoreRetryTimerRef = useRef<number | null>(null);
-  // Failed attempts for the current cursor. Part of the attempt key, so a
-  // scheduled retry re-runs the auto-load effect for the same cursor.
-  const [chatLoadMoreAttempt, setChatLoadMoreAttempt] = useState(0);
-  useEffect(
-    () => () => {
-      if (chatLoadMoreRetryTimerRef.current != null) {
-        window.clearTimeout(chatLoadMoreRetryTimerRef.current);
-      }
-    },
-    [],
   );
   const projectIds = useMemo(
     () => new Set(projects.map((project) => project.id)),
@@ -719,76 +699,6 @@ export const SessionListCapability = memo(function SessionListCapability({
 
   const hasFlatChatOverflow =
     flatSessionCandidates.length > MAX_FLAT_SIDEBAR_CHATS || hasMoreSessions;
-  const standaloneChatCount = groupChatsByProject
-    ? projectSessions.standalone.length
-    : flatSessionCandidates.length;
-  const groupedChatCount = useMemo(
-    () =>
-      projectSessions.standalone.length +
-      Object.values(projectSessions.byProject).reduce(
-        (count, chats) => count + chats.length,
-        0,
-      ),
-    [projectSessions],
-  );
-  const reachedAutoLoadLimit = groupChatsByProject
-    ? standaloneChatCount >= MAX_FLAT_SIDEBAR_CHATS ||
-      groupedChatCount >= MAX_AUTO_LOADED_GROUPED_CHATS
-    : standaloneChatCount >= MAX_FLAT_SIDEBAR_CHATS;
-  const chatLoadMoreCursorKey = chatAutoLoadCursorKey(sessionPageCursor);
-
-  const chatLoadMoreAttemptKey = `${chatLoadMoreCursorKey}#${chatLoadMoreAttempt}`;
-
-  useEffect(() => {
-    if (
-      surface.preview ||
-      !hasMoreSessions ||
-      isLoadingMoreSessions ||
-      reachedAutoLoadLimit
-    ) {
-      return;
-    }
-    if (attemptedChatLoadMoreCursorRef.current === chatLoadMoreAttemptKey) {
-      return;
-    }
-
-    attemptedChatLoadMoreCursorRef.current = chatLoadMoreAttemptKey;
-    void (async () => {
-      await loadMoreSessions();
-      // The store logs and swallows a failed page, so "nothing arrived" is the
-      // only signal: the cursor did not move and there is still more to load.
-      // Without a retry the sidebar would stay short for the rest of the run.
-      const state = useChatSessionStore.getState();
-      const landed = chatAutoLoadPageLanded({
-        cursorKeyBefore: chatLoadMoreCursorKey,
-        cursorKeyAfter: chatAutoLoadCursorKey(state.sessionPageCursor),
-        hasMoreSessions: state.hasMoreSessions,
-      });
-      if (landed) {
-        setChatLoadMoreAttempt((current) => (current === 0 ? current : 0));
-        return;
-      }
-      // Back off, and give up after a few tries: the effect re-runs as soon as
-      // `isLoadingMoreSessions` flips back, so an unbounded retry would spin
-      // against a host that keeps failing.
-      const attempt = chatLoadMoreAttempt + 1;
-      const retryInMs = chatAutoLoadRetryDelayMs(attempt);
-      if (retryInMs === null) return;
-      chatLoadMoreRetryTimerRef.current = window.setTimeout(() => {
-        chatLoadMoreRetryTimerRef.current = null;
-        setChatLoadMoreAttempt(attempt);
-      }, retryInMs);
-    })();
-  }, [
-    chatLoadMoreAttempt,
-    chatLoadMoreAttemptKey,
-    chatLoadMoreCursorKey,
-    hasMoreSessions,
-    isLoadingMoreSessions,
-    loadMoreSessions,
-    reachedAutoLoadLimit,
-    surface.preview,
-  ]);
 
   const activeProjectId = useMemo(() => {
     if (!activeSessionId) return undefined;

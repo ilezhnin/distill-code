@@ -25,7 +25,76 @@ pub(super) fn message_snippet(text: &str) -> Option<String> {
 
 // Ownership can grow from one probe to thousands of rows between planner
 // maintenance runs. Its unique key must remain a lookup even with stale stats.
-const SESSION_LIST_SQL: &str = "SELECT s.*, o.policy_json AS execution_policy_json, o.owner_purpose AS execution_owner_purpose FROM sessions s INDEXED BY sessions_visible_activity LEFT JOIN session_execution_owners o INDEXED BY sqlite_autoindex_session_execution_owners_1 ON o.session_id = s.id WHERE s.hidden = 0 ORDER BY s.updated_at DESC, s.created_at DESC LIMIT ? OFFSET ?";
+/// One part of the visible session list, most recent activity first. The
+/// argument is `NULL` for chats that are not archived and `NOT NULL` for the
+/// archive.
+macro_rules! session_list_sql {
+    ($archived_at_is:literal) => {
+        concat!(
+            "SELECT s.*, o.policy_json AS execution_policy_json, o.owner_purpose AS execution_owner_purpose FROM sessions s INDEXED BY sessions_visible_activity LEFT JOIN session_execution_owners o INDEXED BY sqlite_autoindex_session_execution_owners_1 ON o.session_id = s.id WHERE s.hidden = 0 AND s.archived_at IS ",
+            $archived_at_is,
+            " ORDER BY s.updated_at DESC, s.created_at DESC LIMIT ? OFFSET ?"
+        )
+    };
+}
+
+/// Which part of the visible session list a page is read from.
+///
+/// The list is two lists end to end: every chat that is not archived, then
+/// the archive. A chat stays reachable until it is archived, so the first part
+/// has to be readable in full without paging through an archive that only
+/// grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionListPart {
+    Active,
+    Archived,
+}
+
+/// Where a page of the session list starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionListPosition {
+    pub part: SessionListPart,
+    pub offset: i64,
+}
+
+impl SessionListPosition {
+    /// The top of the list: the most recently active chat that is not archived.
+    pub const START: Self = Self {
+        part: SessionListPart::Active,
+        offset: 0,
+    };
+
+    /// Reads a cursor an earlier page handed out; `None` for any other text.
+    pub fn from_cursor(cursor: &str) -> Option<Self> {
+        let (part, offset) = cursor.split_once(':')?;
+        let part = match part {
+            "active" => SessionListPart::Active,
+            "archived" => SessionListPart::Archived,
+            _ => return None,
+        };
+        let offset = offset.parse::<i64>().ok().filter(|offset| *offset >= 0)?;
+        Some(Self { part, offset })
+    }
+
+    pub fn cursor(self) -> String {
+        let part = match self.part {
+            SessionListPart::Active => "active",
+            SessionListPart::Archived => "archived",
+        };
+        format!("{part}:{}", self.offset)
+    }
+}
+
+/// One page of the session list.
+#[derive(Debug)]
+pub struct SessionListPage {
+    pub sessions: Vec<SessionRecord>,
+    /// Where the next page starts; `None` once the archive is read to its end.
+    pub next_cursor: Option<String>,
+    /// Whether every chat that is not archived is on this page or an earlier
+    /// one, so a reader that wants only those can stop here.
+    pub active_complete: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -1179,14 +1248,59 @@ impl SessionStore {
             .map_err(|e| db_error("read execution reservation", e))
     }
 
-    /// Sessions ordered by most recent activity. Hidden sessions (private
-    /// background work such as conductor probes) are excluded.
-    pub async fn list_sessions(
+    /// One page of the session list: every chat that is not archived, most
+    /// recent activity first, then the archive in the same order.
+    ///
+    /// A page is short only at the end of the list. The page the chats that
+    /// are not archived end on is filled up from the top of the archive, so a
+    /// reader is never handed a cursor to a page that turns out to be empty.
+    pub async fn list_session_page(
         &self,
+        from: SessionListPosition,
+        page_size: i64,
+    ) -> Result<SessionListPage, String> {
+        let mut sessions = self
+            .list_sessions(from.part, from.offset, page_size)
+            .await?;
+        let mut next = SessionListPosition {
+            part: from.part,
+            offset: from.offset + sessions.len() as i64,
+        };
+        if from.part == SessionListPart::Active && (sessions.len() as i64) < page_size {
+            let archived = self
+                .list_sessions(
+                    SessionListPart::Archived,
+                    0,
+                    page_size - sessions.len() as i64,
+                )
+                .await?;
+            next = SessionListPosition {
+                part: SessionListPart::Archived,
+                offset: archived.len() as i64,
+            };
+            sessions.extend(archived);
+        }
+        Ok(SessionListPage {
+            next_cursor: (sessions.len() as i64 == page_size).then(|| next.cursor()),
+            active_complete: next.part == SessionListPart::Archived,
+            sessions,
+        })
+    }
+
+    /// One part of the session list, ordered by most recent activity. Hidden
+    /// sessions (private background work such as conductor probes) are
+    /// excluded.
+    async fn list_sessions(
+        &self,
+        part: SessionListPart,
         offset: i64,
         limit: i64,
     ) -> Result<Vec<SessionRecord>, String> {
-        let rows = sqlx::query(SESSION_LIST_SQL)
+        let sql = match part {
+            SessionListPart::Active => session_list_sql!("NULL"),
+            SessionListPart::Archived => session_list_sql!("NOT NULL"),
+        };
+        let rows = sqlx::query(sql)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)
@@ -3220,7 +3334,10 @@ mod tests {
 
         let restarted = SessionStore::open(&path).await.unwrap();
         dir.register(&restarted.pool);
-        let listed = restarted.list_sessions(0, 50).await.unwrap();
+        let listed = restarted
+            .list_sessions(SessionListPart::Active, 0, 50)
+            .await
+            .unwrap();
         assert_eq!(listed.len(), 3);
         assert!(listed.iter().all(|session| session.id != "hidden"));
         for session in listed {
@@ -3255,8 +3372,139 @@ mod tests {
                 .unwrap()["_meta"]["executionOwner"],
             json!({"kind":"task","id":"task:hidden"})
         );
-        assert_eq!(restarted.list_sessions(1, 1).await.unwrap().len(), 1);
+        assert_eq!(
+            restarted
+                .list_sessions(SessionListPart::Active, 1, 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         dir.close().await;
+    }
+
+    /// Reads the whole list a page at a time, as a client does.
+    async fn read_session_list(store: &SessionStore, page_size: i64) -> Vec<SessionListPage> {
+        let mut pages = Vec::new();
+        let mut from = SessionListPosition::START;
+        loop {
+            let page = store.list_session_page(from, page_size).await.unwrap();
+            let next = page.next_cursor.clone();
+            pages.push(page);
+            match next {
+                Some(cursor) => from = SessionListPosition::from_cursor(&cursor).unwrap(),
+                None => return pages,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_session_list_reads_every_unarchived_chat_before_the_archive() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("list.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        // Three chats nobody archived, last touched long ago, and four archived
+        // later: by activity alone the archive fills the first pages.
+        for (id, updated_at) in [
+            ("kept-1", "2026-01-01T00:00:01.000Z"),
+            ("kept-2", "2026-01-01T00:00:02.000Z"),
+            ("kept-3", "2026-01-01T00:00:03.000Z"),
+        ] {
+            let mut session = record(id);
+            session.updated_at = updated_at.into();
+            store.insert_session(&session).await.unwrap();
+        }
+        for index in 1..=4 {
+            let id = format!("archived-{index}");
+            store.insert_session(&record(&id)).await.unwrap();
+            store.set_archived(&id, true).await.unwrap();
+        }
+        let mut hidden = record("hidden");
+        hidden.hidden = true;
+        store.insert_session(&hidden).await.unwrap();
+
+        let pages = read_session_list(&store, 2).await;
+        let ids: Vec<Vec<&str>> = pages
+            .iter()
+            .map(|page| {
+                page.sessions
+                    .iter()
+                    .map(|session| session.id.as_str())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(ids[0], ["kept-3", "kept-2"]);
+        assert_eq!(ids[1][0], "kept-1");
+        let listed: Vec<&str> = ids.concat();
+        assert_eq!(listed.len(), 7, "{listed:?}");
+        assert!(listed[3..].iter().all(|id| id.starts_with("archived-")));
+        let mut unique = listed.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 7, "a chat is listed once: {listed:?}");
+        // The second page holds the last unarchived chat, so a reader after
+        // those alone stops there; the archive goes on for two more pages.
+        assert_eq!(
+            pages
+                .iter()
+                .map(|page| page.active_complete)
+                .collect::<Vec<_>>(),
+            [false, true, true, true]
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_session_list_ends_on_the_page_that_holds_its_last_chat() {
+        let dir = crate::test_support::TempRoot::new();
+        let store = SessionStore::open(&dir.path().join("list-end.db"))
+            .await
+            .unwrap();
+        dir.register(&store.pool);
+        for id in ["first", "second"] {
+            store.insert_session(&record(id)).await.unwrap();
+        }
+        // Nothing archived: one short page, complete, with nowhere to go on to.
+        let page = store
+            .list_session_page(SessionListPosition::START, 50)
+            .await
+            .unwrap();
+        assert_eq!(page.sessions.len(), 2);
+        assert!(page.active_complete);
+        assert_eq!(page.next_cursor, None);
+        // A page the unarchived chats fill exactly cannot say they are all
+        // there; the next one can.
+        let pages = read_session_list(&store, 2).await;
+        assert_eq!(pages.len(), 2);
+        assert!(!pages[0].active_complete);
+        assert!(pages[1].sessions.is_empty());
+        assert!(pages[1].active_complete);
+        dir.close().await;
+    }
+
+    #[test]
+    fn a_session_list_cursor_is_read_back_only_in_the_form_it_was_handed_out() {
+        for position in [
+            SessionListPosition::START,
+            SessionListPosition {
+                part: SessionListPart::Active,
+                offset: 400,
+            },
+            SessionListPosition {
+                part: SessionListPart::Archived,
+                offset: 71,
+            },
+        ] {
+            assert_eq!(
+                SessionListPosition::from_cursor(&position.cursor()),
+                Some(position)
+            );
+        }
+        for foreign in ["", "200", "active", "active:", "active:-1", "recent:0"] {
+            assert_eq!(SessionListPosition::from_cursor(foreign), None, "{foreign}");
+        }
     }
 
     #[tokio::test]

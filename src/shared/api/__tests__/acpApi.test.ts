@@ -190,6 +190,23 @@ describe("listSessionsPage", () => {
     expect(page.sessions[1]).toHaveProperty("activeRunId", null);
     expect(page.sessions[2]).not.toHaveProperty("activeRunId");
   });
+
+  it("reports the unarchived chats as all listed only on the host's word", async () => {
+    mocks.listSessions
+      .mockResolvedValueOnce({ sessions: [], nextCursor: "archived:0" })
+      .mockResolvedValueOnce({
+        sessions: [],
+        nextCursor: "archived:200",
+        _meta: { activeComplete: true },
+      });
+
+    const { listSessionsPage } = await import("../acpApi");
+
+    expect((await listSessionsPage()).activeComplete).toBe(false);
+    expect(
+      (await listSessionsPage({ cursor: "archived:0" })).activeComplete,
+    ).toBe(true);
+  });
 });
 
 describe("native owned metadata recovery", () => {
