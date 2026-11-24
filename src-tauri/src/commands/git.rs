@@ -157,7 +157,20 @@ async fn get_git_state_inner(path: String) -> Result<GitState, String> {
         GIT_READ_COMMAND_TIMEOUT,
     )
     .await?;
-    let worktrees = parse_worktrees(&worktrees_output, main_worktree_path.as_deref());
+    let listed = parse_worktrees(&worktrees_output, main_worktree_path.as_deref());
+    // Joined onto the toplevel it was asked from, like the main worktree path.
+    let common_dir = Path::new(&current_root).join(
+        git_common_dir
+            .as_deref()
+            .ok_or("Could not determine the repository's git folder")?,
+    );
+    let asked_from = repo_path.clone();
+    // File reads, possibly on a slow or sleeping drive: off the async runtime.
+    let worktrees = tokio::task::spawn_blocking(move || {
+        worktrees_of_this_repository(listed, &common_dir, &asked_from)
+    })
+    .await
+    .map_err(|error| format!("Failed to inspect worktrees: {error}"))?;
     let is_worktree = main_worktree_path
         .as_deref()
         .map(|main_path| normalize_path_string(&current_root) != main_path)
@@ -1359,6 +1372,167 @@ fn build_worktree(
     }
 }
 
+/// The folders `git worktree list` printed that are worktrees of the
+/// repository `asked_from` is in, by their own account as well as git's.
+///
+/// The renderer takes every worktree in a chat folder's git state for an
+/// authorized workspace root: an agent may attach any folder under one. Git's
+/// list is no proof of that. It prints one folder for each
+/// `worktrees/<id>/gitdir` file in the repository's git folder, whatever the
+/// file says, so a folder that came with its own `.git` (an archive, a shared
+/// or synced folder) can name `C:/Users` there and have it listed. And a
+/// folder whose `.git` is one line pointing at another repository's git
+/// folder is shown that repository's whole list, though the repository knows
+/// nothing of the folder.
+///
+/// So a listed folder is kept when it holds the repository itself (the main
+/// worktree, or a bare repository's own folder) or when its `.git` file
+/// points back at this repository's `worktrees/<id>`. And nothing is kept
+/// unless `asked_from` lies in one of the folders kept: a folder that is no
+/// worktree of a repository does not get that repository's list.
+///
+/// What it costs an honest repository: a worktree whose folder was deleted or
+/// moved without `git worktree remove` or `repair` is no longer listed, and
+/// nothing is listed for a folder whose `.git` file names a git folder
+/// directly (`git init --separate-git-dir`, a submodule), which the registry
+/// cannot tell from the borrowed list.
+fn worktrees_of_this_repository(
+    listed: Vec<WorktreeInfo>,
+    common_dir: &Path,
+    asked_from: &Path,
+) -> Vec<WorktreeInfo> {
+    let Ok(real_common_dir) = dunce::canonicalize(common_dir) else {
+        warn_once_about_worktrees(format!(
+            "Listing no worktree of '{}': the git folder cannot be resolved",
+            common_dir.display()
+        ));
+        return Vec::new();
+    };
+    // Git writes its own spelling of the repository into a worktree's `.git`
+    // file, and on a network drive that is not the resolved one.
+    let registries = [
+        lexically_normalized(&real_common_dir.join("worktrees")),
+        lexically_normalized(&common_dir.join("worktrees")),
+    ];
+    let mut confirmed: Vec<(PathBuf, WorktreeInfo)> = Vec::new();
+    for worktree in listed {
+        match confirmed_worktree_root(Path::new(&worktree.path), &real_common_dir, &registries) {
+            Some(root) => confirmed.push((root, worktree)),
+            None => warn_once_about_worktrees(format!(
+                "Not listing '{}' as a worktree of '{}': nothing there points back at it",
+                worktree.path,
+                common_dir.display()
+            )),
+        }
+    }
+    let asked_from_a_worktree = dunce::canonicalize(asked_from).is_ok_and(|asked_from| {
+        confirmed
+            .iter()
+            .any(|(root, _)| asked_from.starts_with(root))
+    });
+    if !asked_from_a_worktree {
+        warn_once_about_worktrees(format!(
+            "Listing no worktree of '{}' for '{}', which is in none of them",
+            common_dir.display(),
+            asked_from.display()
+        ));
+        return Vec::new();
+    }
+    confirmed
+        .into_iter()
+        .map(|(_, worktree)| worktree)
+        .collect()
+}
+
+/// The resolved folder of a worktree git listed, when the folder itself says
+/// it belongs to the repository whose git folder is `common_dir`.
+fn confirmed_worktree_root(
+    listed: &Path,
+    common_dir: &Path,
+    registries: &[PathBuf],
+) -> Option<PathBuf> {
+    let root = dunce::canonicalize(listed).ok()?;
+    // A bare repository is listed as its own folder.
+    if root == common_dir {
+        return Some(root);
+    }
+    let dot_git = root.join(".git");
+    // The main worktree holds the repository's git folder.
+    if dunce::canonicalize(&dot_git).is_ok_and(|git_dir| git_dir == common_dir) {
+        return Some(root);
+    }
+    // A linked worktree's `.git` is a file that names its entry in the
+    // registry, from the worktree when the path is relative. The name is
+    // compared as written and never opened: whoever owns the folder chose
+    // it, and it may as well name another machine.
+    let entry = lexically_normalized(&root.join(gitfile_target(&dot_git)?));
+    let registry = entry.parent()?;
+    registries
+        .iter()
+        .any(|known| same_spelling(registry, known))
+        .then_some(root)
+}
+
+/// No path is this long; a `.git` file that is, is not read to its end.
+const GITFILE_READ_LIMIT: u64 = 64 * 1024;
+
+/// What a `.git` file names: `gitdir: <path>`, as git reads it. `None` for a
+/// folder and for a file that says anything else.
+fn gitfile_target(dot_git: &Path) -> Option<PathBuf> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(dot_git)
+        .ok()?
+        .take(GITFILE_READ_LIMIT)
+        .read_to_string(&mut text)
+        .ok()?;
+    let named = text
+        .strip_prefix("gitdir: ")?
+        .trim_end_matches(['\n', '\r']);
+    (!named.is_empty()).then(|| PathBuf::from(named))
+}
+
+/// `path` with its `.` and `..` resolved by name alone: nothing on disk is
+/// asked.
+fn lexically_normalized(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            named => normalized.push(named),
+        }
+    }
+    normalized
+}
+
+/// Whether two normalized paths are spelled alike, compared the way the file
+/// system compares names: without case on Windows.
+fn same_spelling(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+    } else {
+        a == b
+    }
+}
+
+/// Logs a worktree left out of the list once per run. The git state is read
+/// again on every window focus, and a worktree someone deleted by hand would
+/// fill the log.
+fn warn_once_about_worktrees(message: String) {
+    static SAID: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let first_time = SAID
+        .get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|mut said| said.insert(message.clone()));
+    if first_time {
+        log::warn!("{message}");
+    }
+}
+
 fn branch_name(branch_ref: &str) -> String {
     branch_ref
         .strip_prefix("refs/heads/")
@@ -2293,6 +2467,341 @@ mod tests {
         for name in ["console", "contrib", "com10", "auxiliary"] {
             assert_eq!(validate_worktree_name(name).as_deref(), Ok(name));
         }
+    }
+
+    fn real(path: &Path) -> PathBuf {
+        dunce::canonicalize(path).expect("a path that resolves")
+    }
+
+    fn sorted(mut folders: Vec<PathBuf>) -> Vec<PathBuf> {
+        folders.sort();
+        folders
+    }
+
+    /// The folders git itself lists as worktrees when asked in `folder`.
+    async fn folders_git_lists(folder: &Path) -> Vec<PathBuf> {
+        let raw = run_git_success_async(
+            folder,
+            &["worktree", "list", "--porcelain"],
+            GIT_READ_COMMAND_TIMEOUT,
+        )
+        .await
+        .expect("git lists worktrees");
+        parse_worktrees(&raw, None)
+            .iter()
+            .map(|worktree| real(Path::new(&worktree.path)))
+            .collect()
+    }
+
+    /// The folders the app offers as worktrees when asked in `folder`.
+    async fn folders_the_app_offers(folder: &Path) -> Vec<PathBuf> {
+        let state = get_git_state_inner(folder.to_string_lossy().into_owned())
+            .await
+            .expect("git state");
+        assert!(state.is_git_repo, "{} is a repository", folder.display());
+        sorted(
+            state
+                .worktrees
+                .iter()
+                .map(|worktree| real(Path::new(&worktree.path)))
+                .collect(),
+        )
+    }
+
+    /// `<scratch>/repo` with one commit and `<scratch>/linked`, a worktree
+    /// git added to it: what an honest repository looks like.
+    fn repository_with_a_linked_worktree(git: &Path, scratch: &Path) -> (PathBuf, PathBuf) {
+        let repo = scratch.join("repo");
+        let linked = scratch.join("linked");
+        std::fs::create_dir_all(&repo).expect("repo folder");
+        let plain = |args: &[&str]| {
+            let output = std::process::Command::new(git)
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .expect("git runs");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        plain(&["init", "-q", "-b", "main", "."]);
+        plain(&["config", "user.email", "invented@example.invalid"]);
+        plain(&["config", "user.name", "Invented"]);
+        plain(&["commit", "-q", "--allow-empty", "-m", "first"]);
+        plain(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            &linked.to_string_lossy(),
+        ]);
+        (repo, linked)
+    }
+
+    /// An honest repository keeps every worktree it had, whichever of its
+    /// folders the question is asked from.
+    #[tokio::test]
+    async fn real_worktrees_are_offered_from_every_folder_of_the_repository() {
+        let Some(git) = dir_env::resolve_control_executable("git") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let scratch = tempfile::tempdir().expect("scratch folder");
+        let (repo, linked) = repository_with_a_linked_worktree(&git, scratch.path());
+        let nested = repo.join("packages").join("app");
+        std::fs::create_dir_all(&nested).expect("nested folder");
+
+        let both = sorted(vec![real(&repo), real(&linked)]);
+        for asked_from in [&repo, &linked, &nested] {
+            assert_eq!(
+                folders_the_app_offers(asked_from).await,
+                both,
+                "asked from {}",
+                asked_from.display()
+            );
+        }
+        let state = get_git_state_inner(repo.to_string_lossy().into_owned())
+            .await
+            .expect("git state");
+        let main: Vec<_> = state
+            .worktrees
+            .iter()
+            .filter(|worktree| worktree.is_main)
+            .map(|worktree| real(Path::new(&worktree.path)))
+            .collect();
+        assert_eq!(main, [real(&repo)]);
+    }
+
+    /// A folder that came with its own `.git` adds an entry to the worktree
+    /// registry that names a folder it has nothing to do with. Git lists
+    /// that folder. The app lets a chat attach anything under a worktree it
+    /// lists, so it must not.
+    #[tokio::test]
+    async fn a_folder_a_fabricated_worktree_entry_names_is_not_offered() {
+        let Some(git) = dir_env::resolve_control_executable("git") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let scratch = tempfile::tempdir().expect("scratch folder");
+        let (repo, linked) = repository_with_a_linked_worktree(&git, scratch.path());
+        let unrelated = scratch.path().join("unrelated");
+        std::fs::create_dir_all(&unrelated).expect("unrelated folder");
+        let planted = repo.join(".git").join("worktrees").join("planted");
+        std::fs::create_dir_all(&planted).expect("registry entry");
+        std::fs::write(
+            planted.join("gitdir"),
+            format!("{}/.git\n", unrelated.to_string_lossy().replace('\\', "/")),
+        )
+        .expect("write the entry");
+
+        // The control: git lists the folder the entry names.
+        assert!(
+            folders_git_lists(&repo).await.contains(&real(&unrelated)),
+            "git does not list the planted entry"
+        );
+
+        let honest = sorted(vec![real(&repo), real(&linked)]);
+        for asked_from in [&repo, &linked] {
+            assert_eq!(
+                folders_the_app_offers(asked_from).await,
+                honest,
+                "asked from {}",
+                asked_from.display()
+            );
+        }
+    }
+
+    /// A folder says, in one line, that its repository is someone else's.
+    /// Git asked there lists that repository's worktrees, all of them real.
+    /// That repository never heard of the folder, which must gain nothing.
+    #[tokio::test]
+    async fn a_folder_cannot_borrow_the_worktrees_of_a_repository_it_points_at() {
+        let Some(git) = dir_env::resolve_control_executable("git") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let scratch = tempfile::tempdir().expect("scratch folder");
+        let (repo, linked) = repository_with_a_linked_worktree(&git, scratch.path());
+        let repo_git = repo.join(".git").to_string_lossy().replace('\\', "/");
+
+        // A `.git` file naming the other repository's git folder.
+        let by_file = scratch.path().join("by-file");
+        std::fs::create_dir_all(&by_file).expect("folder");
+        std::fs::write(by_file.join(".git"), format!("gitdir: {repo_git}\n")).expect("write");
+        // A git folder of its own that shares the other repository's.
+        let by_folder = scratch.path().join("by-folder");
+        std::fs::create_dir_all(by_folder.join(".git")).expect("folder");
+        std::fs::write(
+            by_folder.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write");
+        std::fs::write(
+            by_folder.join(".git").join("commondir"),
+            format!("{repo_git}\n"),
+        )
+        .expect("write");
+
+        for borrower in [&by_file, &by_folder] {
+            // The control: git lists the other repository's worktrees there.
+            let listed = folders_git_lists(borrower).await;
+            assert!(
+                listed.contains(&real(&repo)) && listed.contains(&real(&linked)),
+                "git does not list the other repository from {}",
+                borrower.display()
+            );
+            assert_eq!(
+                folders_the_app_offers(borrower).await,
+                Vec::<PathBuf>::new(),
+                "asked from {}",
+                borrower.display()
+            );
+        }
+    }
+
+    /// The folders kept out of `listed`, for the checks that need no git.
+    fn folders_kept(listed: &[&Path], common_dir: &Path, asked_from: &Path) -> Vec<PathBuf> {
+        let listed = listed
+            .iter()
+            .map(|folder| build_worktree(folder.to_string_lossy().into_owned(), None, None))
+            .collect();
+        sorted(
+            worktrees_of_this_repository(listed, common_dir, asked_from)
+                .iter()
+                .map(|worktree| real(Path::new(&worktree.path)))
+                .collect(),
+        )
+    }
+
+    /// What a folder's own `.git` file has to say before it counts as a
+    /// worktree, on folders made by hand: the spellings git writes, and the
+    /// ones that prove nothing.
+    #[test]
+    fn a_linked_worktree_is_confirmed_by_its_own_git_file() {
+        let temp = tempfile::tempdir().expect("scratch folder");
+        let scratch = real(temp.path());
+        let spelled = scratch.to_string_lossy().replace('\\', "/");
+        let folder_with_git_file = |name: &str, contents: String| {
+            let folder = scratch.join(name);
+            std::fs::create_dir_all(&folder).expect("folder");
+            std::fs::write(folder.join(".git"), contents).expect("write");
+            folder
+        };
+        let repo = scratch.join("repo");
+        let common_dir = repo.join(".git");
+        std::fs::create_dir_all(common_dir.join("worktrees")).expect("registry");
+        std::fs::create_dir_all(scratch.join("other").join(".git").join("worktrees"))
+            .expect("another repository");
+
+        // As git writes it, and as git writes it with relative paths on.
+        let absolute = folder_with_git_file(
+            "absolute",
+            format!("gitdir: {spelled}/repo/.git/worktrees/absolute\n"),
+        );
+        let relative = folder_with_git_file(
+            "relative",
+            "gitdir: ../repo/.git/worktrees/relative\r\n".to_string(),
+        );
+        let unconfirmed = [
+            // A worktree of some other repository.
+            folder_with_git_file(
+                "of-another",
+                format!("gitdir: {spelled}/other/.git/worktrees/of-another\n"),
+            ),
+            // The same, spelled to start inside this repository's registry.
+            folder_with_git_file(
+                "climbing",
+                format!("gitdir: {spelled}/repo/.git/worktrees/../../../other/.git/worktrees/x\n"),
+            ),
+            // The git folder itself and not an entry of its registry.
+            folder_with_git_file("git-folder", format!("gitdir: {spelled}/repo/.git\n")),
+            // A registry on another machine. The name is compared and never
+            // opened; opened, this address would stall the test for seconds.
+            folder_with_git_file(
+                "elsewhere",
+                "gitdir: //192.0.2.10/share/repo/.git/worktrees/elsewhere\n".to_string(),
+            ),
+            // Not what git writes in a `.git` file.
+            folder_with_git_file(
+                "not-a-pointer",
+                format!("{spelled}/repo/.git/worktrees/not-a-pointer\n"),
+            ),
+            // No `.git` at all, and no folder at all.
+            {
+                std::fs::create_dir_all(scratch.join("no-git")).expect("folder");
+                scratch.join("no-git")
+            },
+            scratch.join("gone"),
+        ];
+
+        let mut listed: Vec<&Path> = vec![&repo, &absolute, &relative];
+        listed.extend(unconfirmed.iter().map(PathBuf::as_path));
+        let confirmed = sorted(vec![absolute.clone(), relative.clone(), repo.clone()]);
+        for asked_from in [&repo, &absolute, &relative] {
+            assert_eq!(
+                folders_kept(&listed, &common_dir, asked_from),
+                confirmed,
+                "asked from {}",
+                asked_from.display()
+            );
+        }
+        // Listed by git is not enough to ask from either.
+        for asked_from in [&unconfirmed[0], &unconfirmed[5]] {
+            assert_eq!(
+                folders_kept(&listed, &common_dir, asked_from),
+                Vec::<PathBuf>::new(),
+                "asked from {}",
+                asked_from.display()
+            );
+        }
+
+        // Windows compares names without case, and so must this.
+        if cfg!(windows) {
+            let shouted = folder_with_git_file(
+                "shouted",
+                format!(
+                    "gitdir: {}/REPO/.GIT/WORKTREES/shouted\n",
+                    spelled.to_uppercase()
+                ),
+            );
+            assert_eq!(
+                folders_kept(&[&repo, &shouted], &common_dir, &repo),
+                sorted(vec![repo.clone(), shouted.clone()])
+            );
+        }
+    }
+
+    /// A bare repository is listed as its own folder, next to its worktrees.
+    #[test]
+    fn a_bare_repositorys_own_folder_stays_listed() {
+        let temp = tempfile::tempdir().expect("scratch folder");
+        let scratch = real(temp.path());
+        let spelled = scratch.to_string_lossy().replace('\\', "/");
+        let store = scratch.join("store.git");
+        std::fs::create_dir_all(store.join("worktrees")).expect("registry");
+        let linked = scratch.join("linked");
+        std::fs::create_dir_all(&linked).expect("folder");
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {spelled}/store.git/worktrees/linked\n"),
+        )
+        .expect("write");
+        let outside = scratch.join("outside");
+        std::fs::create_dir_all(&outside).expect("folder");
+
+        assert_eq!(
+            folders_kept(&[&store, &linked], &store, &linked),
+            sorted(vec![linked.clone(), store.clone()])
+        );
+        assert_eq!(
+            folders_kept(&[&store, &linked], &store, &outside),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[test]
