@@ -1,3 +1,5 @@
+import { z } from "zod/v4";
+
 /**
  * Length caps for the free-text wire fields (invariant 3: bounds live in zod,
  * clap only mirrors them).
@@ -26,6 +28,28 @@ export const FLOCKCTL_BOUNDS = {
   /** Elements in a repeated flag's array. */
   listLength: 32,
 } as const;
+
+/**
+ * The `--session-token` field of a command that acts on what one session
+ * owns. The token is the one `session create` takes; `proves` says whose
+ * call it has to be here. The CLI fills the field from FLOCK_SESSION_TOKEN
+ * for every command that declares it (`wire.rs`).
+ */
+export function sessionTokenField(proves: string) {
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .max(FLOCKCTL_BOUNDS.id + 32)
+    .optional()
+    .describe(
+      "Your session's token (the Flock preamble states it beside your " +
+        `session id): the proof that the call is made by ${proves}. ` +
+        "Required when the command runs in an agent session's shell; the " +
+        "operator's own terminal needs none. A script you start reads it " +
+        "from FLOCK_SESSION_TOKEN in its environment instead of the flag.",
+    );
+}
 
 /** Truncate with an ellipsis; shared by previews/summaries/message bodies. */
 export function truncate(text: string, max: number): string {

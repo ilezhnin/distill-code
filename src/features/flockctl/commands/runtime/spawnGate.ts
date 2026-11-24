@@ -232,10 +232,13 @@ export interface FlockctlSpawnCaller {
   parentSessionId: string | undefined;
 }
 
-const TOKEN_WHERE =
+export const TOKEN_WHERE =
   "Pass `--session-token` with the token from your app context, where it " +
   "stands beside your session id; a script you started reads it from " +
   "FLOCK_SESSION_TOKEN in its environment.";
+
+export const TOKEN_NOT_THIS_APPS =
+  "`--session-token` is not a token this app gave a session. Pass the one from your own app context, unchanged.";
 
 /** How far up the tree a named parent is looked for its starter. */
 const MAX_PARENT_DEPTH = 32;
@@ -245,7 +248,10 @@ const MAX_PARENT_DEPTH = 32;
  * it. A session's dispatcher hangs what it starts where the work is: under
  * the session itself, or under an executor that session started.
  */
-function isInSessionTree(sessionId: string, ancestorId: string): boolean {
+export function isInSessionTree(
+  sessionId: string,
+  ancestorId: string,
+): boolean {
   const graph = useConductorGraphStore.getState();
   let current: string | null | undefined = sessionId;
   for (let depth = 0; current && depth < MAX_PARENT_DEPTH; depth += 1) {
@@ -279,10 +285,7 @@ export async function resolveFlockctlSpawnCaller(args: {
   if (token) {
     const proven = await verifySessionToken(token);
     if (!proven) {
-      throw new CommandError(
-        "spawn_not_allowed",
-        "`--session-token` is not a token this app gave a session. Pass the one from your own app context, unchanged.",
-      );
+      throw new CommandError("spawn_not_allowed", TOKEN_NOT_THIS_APPS);
     }
     if (parent && !isInSessionTree(parent, proven.sessionId)) {
       throw new CommandError(
@@ -309,6 +312,53 @@ export async function resolveFlockctlSpawnCaller(args: {
     "spawn_not_allowed",
     `This call comes from an agent's shell and does not say which session makes it, so it is not read as the operator's. ${TOKEN_WHERE} Add \`--parent-session-id\` with your session id when the new session takes on part of your work. ${TOKEN_NONE_FOR_SOME}`,
   );
+}
+
+/**
+ * Who makes a flockctl call that acts on what one session owns: a wave its
+ * conductor planned, a session another chat started.
+ */
+export type FlockctlCaller =
+  /** No agent mark: the operator's own terminal, or the app itself. */
+  | { kind: "operator" }
+  /** A session: proven by its token, or named by its harness's own actor. */
+  | { kind: "session"; sessionId: string }
+  /** An agent's shell that proved no session. */
+  | { kind: "unproven" }
+  /** A token this app did not give a session. */
+  | { kind: "bad-token" };
+
+/**
+ * Reads the caller of an owner-only command the way a spawn's caller is
+ * read: a valid `--session-token` proves the session, a harness that exports
+ * its own actor names it, and a call with no agent mark is the operator's.
+ * The command decides what each caller may do, and words the refusal.
+ *
+ * The same guardrail as the spawn gate, with the same limit. The mark and
+ * the actor come from the CLI, and a token can be read from its session's
+ * transcript: this stops an agent that was confused or talked into the
+ * call, not a process that sets out to pass as another.
+ */
+export async function resolveFlockctlCaller(args: {
+  actor: string | null | undefined;
+  fromAgent: boolean | undefined;
+  sessionToken: string | null | undefined;
+}): Promise<FlockctlCaller> {
+  const token = args.sessionToken?.trim() || undefined;
+  if (token) {
+    const proven = await verifySessionToken(token);
+    return proven
+      ? { kind: "session", sessionId: proven.sessionId }
+      : { kind: "bad-token" };
+  }
+  const actor = args.actor?.trim() || undefined;
+  if (actor) return { kind: "session", sessionId: actor };
+  // Where no session could be told a token, none can be asked for: the call
+  // is read as it was before tokens (`sessionTokensAvailable`).
+  if (!args.fromAgent || !(await sessionTokensAvailable())) {
+    return { kind: "operator" };
+  }
+  return { kind: "unproven" };
 }
 
 /**

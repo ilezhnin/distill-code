@@ -157,10 +157,12 @@ describe("FlockctlBridge request handling", () => {
     });
     await flushAsync();
 
+    // Every call that came in over the broker says so: a command tells a
+    // caller of the CLI from the app dispatching the same command itself.
     expect(mocks.dispatchCommand).toHaveBeenCalledWith(
       "projects",
       { action: "list" },
-      { deadlineMs: expect.any(Number) },
+      { deadlineMs: expect.any(Number), viaBroker: true },
     );
     expect(mocks.invoke).toHaveBeenCalledWith("plugin:flockctl|submit_result", {
       result: { id: "req-1", ok: true, data: { projects: [] } },
@@ -184,7 +186,7 @@ describe("FlockctlBridge request handling", () => {
     expect(mocks.dispatchCommand).toHaveBeenCalledWith(
       "sessions",
       { action: "create", prompt: "hi" },
-      { deadlineMs: now + 5_000 },
+      { deadlineMs: now + 5_000, viaBroker: true },
     );
     nowSpy.mockRestore();
   });

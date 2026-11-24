@@ -562,7 +562,6 @@
     "voiceSpeechInterruptedLabel": "Interrupted",
     "voiceSpeechNotSpokenLabel": "Not spoken",
     "voiceSpeechFailedLabel": "Failed",
-    "monitorLabel": "Background task update",
     "steerUnconfirmedLabel": "Delivery not confirmed. Check before resending.",
     "steerFailedLabel": "Could not deliver to the running agent.",
     "partialAnswer": "The agent stopped before it finished. This is what it had said."

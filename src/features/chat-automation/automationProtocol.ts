@@ -9,6 +9,25 @@ export const LOOP_STATE_FENCE = "flock-loop-state";
 
 export const GOAL_STATE_FENCE = "flock-goal-state";
 
+/**
+ * True for a delivery id in the namespace the app keeps for the messages it
+ * sends for a goal or a loop.
+ *
+ * The id is what says "Flock sent this": the transcript labels such a
+ * message as the app's and folds its body, the composer's indicator reads
+ * it as the turn at work, and recovery after a restart counts it as a turn
+ * of the goal or loop. `flockctl session send` therefore refuses a caller's
+ * `--delivery-id` in this namespace, so that only the app can write one.
+ */
+export function isAutomationDeliveryId(deliveryId: string): boolean {
+  return [
+    GOAL_TURN_PREFIX,
+    LOOP_TURN_PREFIX,
+    GOAL_REPORT_PREFIX,
+    LOOP_REPORT_PREFIX,
+  ].some((prefix) => deliveryId.startsWith(prefix));
+}
+
 export function goalPrompt(objective: string): string {
   return `Work toward this chat's goal:\n\n${objective}\n\nEnd your reply with a fenced ${GOAL_STATE_FENCE} JSON object. Use continue for more work, reached when complete, or blocked when you need help. Give the reason in note.\n\n\`\`\`${GOAL_STATE_FENCE}\n{"status":"continue","note":"progress or reason"}\n\`\`\``;
 }

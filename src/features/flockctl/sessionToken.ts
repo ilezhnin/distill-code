@@ -11,7 +11,9 @@
  * The app therefore tells each session that may start others a token only
  * the app can make: the session's id and a keyed digest of it. The session
  * passes it back as `--session-token`, and the spawn gate recomputes the
- * digest. Checking needs no record of what was issued.
+ * digest. Checking needs no record of what was issued. The commands that
+ * act on what one session owns ask for the same proof: `session stop`, and
+ * the wave verbs that change a wave (`resolveFlockctlCaller`).
  *
  * This is a guardrail, not a security boundary. An agent has a shell: it can
  * read another session's transcript, where that session's token is written,

@@ -12,6 +12,9 @@ export interface CommandContext {
    *  an agent is calling, not which one: a command that must know asks
    *  the caller for its session token. */
   fromAgent?: boolean;
+  /** True when the call came in over the broker, from flockctl or any other
+   *  process. Absent when the app's own code dispatches a command. */
+  viaBroker?: boolean;
 }
 
 export type CommandEffect = "read" | "create" | "update" | "archive";
@@ -103,6 +106,7 @@ export const COMMAND_ERROR_CODES = [
   "wave_step_not_pending",
   "wave_step_not_dispatched",
   "wave_not_running",
+  "wave_not_allowed",
   "timed_out",
   "internal_error",
 ] as const;

@@ -51,7 +51,7 @@ export async function steerPromptInSession(
     sendOptions?.acpPromptMetadata?.flockLoopId
   )
     return false;
-  if (automationCommand(text)) {
+  if (automationCommand(text, sendOptions?.userMessageMetadata)) {
     if (!options.queueIfUnavailable) return false;
     const accepted = useChatStore
       .getState()

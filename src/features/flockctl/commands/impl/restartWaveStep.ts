@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 
-import { FLOCKCTL_BOUNDS } from "../helpers";
+import { FLOCKCTL_BOUNDS, sessionTokenField } from "../helpers";
 import { defineCommand } from "../types";
 
 const restartWaveStepSchema = z
@@ -26,6 +26,7 @@ const restartWaveStepSchema = z
       .describe(
         "Optional correction appended to the step's brief, after a blank line (1-20000 chars).",
       ),
+    session_token: sessionTokenField("the chat that conducts this wave"),
   })
   .strict();
 
@@ -43,20 +44,29 @@ export const restartWaveStepCommand = defineCommand({
     "to end on providers that take no message mid-turn. The stopped session " +
     "stays in the sidebar; files it wrote stay as they are. The conductor " +
     "chat shows a notice. Refused for a step that has not been dispatched " +
-    "and for a wave that is no longer running its steps.",
+    "and for a wave that is no longer running its steps. Only the chat that " +
+    "conducts the wave can change it: from an agent's shell the call needs " +
+    "that chat's --session-token, and without it no session is stopped or " +
+    "started.",
   helpFooter: `Example:
-  flockctl wave restart --wave-id <wave-id> --step 2 --text "Use the 2020 register, not the 1998 one."
+  flockctl wave restart --wave-id <wave-id> --step 2 --session-token <your-session-token> \\
+    --text "Use the 2020 register, not the 1998 one."
 
 Result:
   {"ok": true, "wave_id": "...", "step": 2, "stopped_session_id": "..."|null}
-  Refused with "wave_step_not_dispatched" for a pending step (use \`wave amend\`)
-  and with "wave_not_running" once the wave has gone to its digest.`,
+  Refused with "wave_step_not_dispatched" for a pending step (use \`wave amend\`),
+  with "wave_not_running" once the wave has gone to its digest, and with
+  "wave_not_allowed" for an agent that does not conduct the wave.`,
   schema: restartWaveStepSchema,
   execute: async (args, ctx) => {
-    const { requireWave, restartWaveStep, waveCommandCaller } = await import(
-      "../runtime/waves"
+    const { requireWaveForChange, restartWaveStep, waveCommandCaller } =
+      await import("../runtime/waves");
+    const wave = await requireWaveForChange(
+      args.wave_id,
+      "restart",
+      ctx,
+      args.session_token,
     );
-    const wave = requireWave(args.wave_id);
     const stopped = await restartWaveStep(
       wave,
       args.step,

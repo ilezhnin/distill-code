@@ -75,6 +75,13 @@ describe("getFlockctlPreamble", () => {
     // terminal instead.
     expect(preamble).toContain(`\`FLOCK_SESSION_TOKEN=${token}\``);
     expect(preamble).toContain("yours to delegate");
+    // The token also opens what else is the session's own, and the text
+    // says so: a conductor that is not told would have its own `wave steer`
+    // refused and learn why from the refusal.
+    expect(preamble).toContain("stop a session you started (`session stop`)");
+    expect(preamble).toContain(
+      "change a wave you conduct (`wave cancel`, `steer`, `amend`, `skip`, `restart`)",
+    );
     expect(preamble).toContain(
       "Never ask the user to run something from their own terminal",
     );
@@ -103,6 +110,11 @@ describe("formatFlockctlPreamble", () => {
       "--session-token",
     );
     expect(worker).toContain("This session starts no other sessions");
+    // Nor does it stop one or change a wave: both ask for the token it has
+    // not got.
+    expect(worker).toContain(
+      "Nor are `flockctl session stop` and the `wave` verbs that change a wave",
+    );
     expect(worker).toContain("`needsOperator`, `nextSuggestedTask`");
   });
 });

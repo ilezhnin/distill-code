@@ -17,15 +17,38 @@ export {
   SessionDispatchUnresolvedError,
 } from "@/features/chat/lib/queuedSessionSend";
 import { formatIncludedWorkspacesPrompt } from "@/features/chat/lib/workspaceAttachments";
-import { flockctlCrossSessionSendOptions } from "@/features/chat/lib/queuedMessageOrigin";
+import {
+  flockctlCommandSendOptions,
+  flockctlCrossSessionSendOptions,
+} from "@/features/chat/lib/queuedMessageOrigin";
 import type { ChatSendOptions } from "@/features/chat/types";
 import { accountQuotaWaitData } from "@/features/chat/lib/accountQuotaWait";
+import type { CommandContext } from "../types";
 export { isFlockctlCrossSessionQueuedMessage } from "@/features/chat/lib/queuedMessageOrigin";
 
 export {
   FLOCKCTL_CROSS_SESSION_ORIGIN,
   flockctlCrossSessionSendOptions,
 } from "@/features/chat/lib/queuedMessageOrigin";
+
+/**
+ * Send options for the message a `session send` or `session create` call
+ * delivers.
+ *
+ * A call that came in over the broker is some process's, and its message
+ * always names a sender: the caller's `--from`, or the command's own name
+ * for it. The app dispatching the same command itself (the memory review
+ * chat) is the app speaking, and its message names none, like every other
+ * message the app sends into a chat.
+ */
+export function sendOptionsForCall(
+  ctx: Pick<CommandContext, "viaBroker">,
+  options: { senderLabel?: string; deliveryId?: string },
+): ChatSendOptions {
+  return ctx.viaBroker
+    ? flockctlCommandSendOptions(options)
+    : flockctlCrossSessionSendOptions(options);
+}
 
 const reservedDeliveryIds = new Set<string>();
 

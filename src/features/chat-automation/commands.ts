@@ -34,7 +34,20 @@ const handlers = {
 export type CommandName = keyof typeof handlers;
 export const automationCommandNames = Object.keys(handlers) as CommandName[];
 export const loadAutomationHandler = (name: CommandName) => handlers[name]();
-export function automationCommand(text: string) {
+/**
+ * The chat command a message is, or `null` for an ordinary message.
+ *
+ * A command is the operator's: text typed into this chat's composer. What
+ * another session or `flockctl session send` delivered is text for the
+ * agent, even when it opens with a command's name. Read as a command, one
+ * call from any agent set a goal of two hundred turns in another chat, or
+ * paused the operator's own.
+ */
+export function automationCommand(
+  text: string,
+  metadata?: Pick<MessageMetadata, "origin">,
+) {
+  if (metadata?.origin === "distillctl_cross_session") return null;
   if (!text.trimStart().startsWith("/")) return null;
   const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   const name = match?.[1].toLowerCase();

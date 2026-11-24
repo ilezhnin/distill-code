@@ -42,6 +42,7 @@ import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyC
 import { useArtifactLinkHandler } from "@/features/chat/hooks/useArtifactLinkHandler";
 import { LocalMarkdownLinkProvider } from "@/shared/ui/ai-elements/local-link-context";
 import { detectProviderErrorNotice } from "@/features/chat/lib/providerErrorNotice";
+import { hasNamedSender } from "@/features/chat/lib/queuedMessageOrigin";
 import {
   automationTurn,
   automationSenderKind,
@@ -1001,9 +1002,6 @@ export const MessageBubble = memo(function MessageBubble({
     isUser && message.metadata?.delivery === "steering";
   const isFlockctlCrossSessionMessage =
     isUser && message.metadata?.origin === "distillctl_cross_session";
-  const isMonitorMessage =
-    isFlockctlCrossSessionMessage &&
-    message.metadata?.distillSenderLabel === "flock-monitor";
   const isUnconfirmedSteerMessage =
     isUser && message.metadata?.delivery === "steer_unconfirmed";
   const isFailedSteerMessage =
@@ -1017,8 +1015,14 @@ export const MessageBubble = memo(function MessageBubble({
   // metadata is only restored for Goose replays, so gating on it would drop
   // the card — and dump the raw report JSON — after a reload on every other
   // harness.
+  // What metadata is there does rule a message out. The marker is text, and
+  // a session that sends this chat a message chooses its text; the card,
+  // with its reports linked to the real agents, would then be that
+  // session's to write. Every message a flockctl command delivers names its
+  // sender and the app's digest never does, so one that names a sender
+  // keeps its plain bubble whatever its first line says.
   const digestEnvelope =
-    isUser && isDigestMessage(message)
+    isUser && isDigestMessage(message) && !hasNamedSender(message.metadata)
       ? parseDigestEnvelope(getTextContent(message))
       : null;
   const senderKind = automationSenderKind(message.metadata?.distillDeliveryId);
@@ -1177,13 +1181,11 @@ export const MessageBubble = memo(function MessageBubble({
                     >
                       {automatedTurn
                         ? t(`automation.turn.${automatedTurn.kind}`)
-                        : isMonitorMessage
-                          ? t("message.monitorLabel")
-                          : distillSenderLabel
-                            ? t("message.flockctlCrossSessionNamedLabel", {
-                                sender: distillSenderLabel,
-                              })
-                            : t("message.flockctlCrossSessionLabel")}
+                        : distillSenderLabel
+                          ? t("message.flockctlCrossSessionNamedLabel", {
+                              sender: distillSenderLabel,
+                            })
+                          : t("message.flockctlCrossSessionLabel")}
                     </span>
                   ) : null}
                   {isUnconfirmedSteerMessage || isFailedSteerMessage ? (
@@ -1270,13 +1272,11 @@ export const MessageBubble = memo(function MessageBubble({
                 const block = section.items[0] as MessageContent;
                 if (isUser && block.type === "text") {
                   if (!block.text.trim()) return null;
-                  return isMonitorMessage ||
-                    couldOverflowUserMessagePreview(block.text) ? (
+                  return couldOverflowUserMessagePreview(block.text) ? (
                     <UserMessageClamp
                       key={`${message.id}-${section.key}`}
                       text={block.text}
                       stateKey={section.key}
-                      compact={isMonitorMessage}
                     />
                   ) : (
                     <LinkifiedText

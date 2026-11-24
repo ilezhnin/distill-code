@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 
-import { FLOCKCTL_BOUNDS } from "../helpers";
+import { FLOCKCTL_BOUNDS, sessionTokenField } from "../helpers";
 import { defineCommand } from "../types";
 
 const steerWaveSchema = z
@@ -27,6 +27,7 @@ const steerWaveSchema = z
       .regex(/^[^\r\n]*$/, "Sender label must be a single line.")
       .optional()
       .describe("Optional visible sender label for the message (1-120 chars)."),
+    session_token: sessionTokenField("the chat that conducts this wave"),
   })
   .strict();
 
@@ -41,9 +42,12 @@ export const steerWaveCommand = defineCommand({
     "and its provider takes a message mid-turn (Claude Code and Kimi Code " +
     "do), queued otherwise: a queued message is NOT delivered yet, the " +
     "executor reads it when its current turn ends. Executors that already " +
-    "finished are left alone. Each message is visible in that executor's chat.",
+    "finished are left alone. Each message is visible in that executor's chat. " +
+    "Only the chat that conducts the wave can steer it: from an agent's shell " +
+    "the call needs that chat's --session-token.",
   helpFooter: `Example:
-  flockctl wave steer --wave-id <wave-id> --prompt "Pause: the operator is about to restart Unity. Save your state to STATUS.md and wait." --json
+  flockctl wave steer --wave-id <wave-id> --session-token <your-session-token> \\
+    --prompt "Pause: the operator is about to restart Unity. Save your state to STATUS.md and wait." --json
 
 Result:
   {"wave_id": "...", "deliveries": [{"session_id": "...",
@@ -53,12 +57,23 @@ Result:
   "delivered_after_turn" marks a message queued behind a turn in progress:
   the executor has not read it, and will only when that turn ends.
   "provider_wait" appears when the message waits for the executor's provider.
-  An empty "deliveries" list means no executor of the wave is running.`,
+  An empty "deliveries" list means no executor of the wave is running.
+  Refused with "wave_not_allowed" for an agent that does not conduct the wave.`,
   schema: steerWaveSchema,
   execute: async (args, ctx) => {
-    const [{ requireWave, runningWaveSessionIds }, { sendSessionCommand }] =
-      await Promise.all([import("../runtime/waves"), import("./sendSession")]);
-    const wave = requireWave(args.wave_id);
+    const [
+      { requireWaveForChange, runningWaveSessionIds },
+      { sendSessionCommand },
+    ] = await Promise.all([
+      import("../runtime/waves"),
+      import("./sendSession"),
+    ]);
+    const wave = await requireWaveForChange(
+      args.wave_id,
+      "steer",
+      ctx,
+      args.session_token,
+    );
     const { useChatStore } = await import("@/features/chat/stores/chatStore");
     const { isSessionRunning } = await import(
       "@/features/chat/lib/sessionActivity"

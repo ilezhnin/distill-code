@@ -252,7 +252,7 @@ export async function dispatchPrompt(
   text: string,
   opts: SendCoreOptions,
 ): Promise<void> {
-  const command = automationCommand(text);
+  const command = automationCommand(text, opts.userMessageMetadata);
   if (command) {
     throwIfAborted(opts.signal);
     const handle = await loadAutomationHandler(command.name);

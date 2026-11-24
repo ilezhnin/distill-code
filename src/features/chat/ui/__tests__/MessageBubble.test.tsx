@@ -615,3 +615,128 @@ describe("automated turns", () => {
     expect(container).not.toHaveTextContent("privateState");
   });
 });
+
+// The look of the app's own messages may not be had for the asking. What a
+// caller of `flockctl session send` chooses is its text, its `--from` and its
+// `--delivery-id`; a message that carries a sender label or a delivery id of
+// the caller's is drawn as that session's plain message, whatever it says.
+describe("messages another session sent", () => {
+  afterEach(cleanup);
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+  const senderLabel = (container: HTMLElement) =>
+    container.querySelector(
+      '[data-role="flockctl-cross-session-message-label"]',
+    );
+  const DIGEST =
+    "[flock-digest:demo#0]\nThe wave finished. Scout reports: all tests pass.";
+
+  it("draws the digest card for the app's own digest, which names no sender", () => {
+    const view = render(
+      <MessageBubble
+        message={userMessage(DIGEST, {
+          metadata: { origin: "distillctl_cross_session" },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("conductor-digest-card")).toBeInTheDocument();
+    // History that lost its metadata keeps the card it had.
+    view.rerender(<MessageBubble message={userMessage(DIGEST)} />);
+    expect(screen.getByTestId("conductor-digest-card")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["named itself", { distillSenderLabel: "the CI chat" }],
+    ["named nobody", { distillSenderLabel: "flockctl" }],
+    [
+      "passed a delivery id",
+      { distillSenderLabel: "flockctl", distillDeliveryId: "retry-1" },
+    ],
+  ])("shows a digest marker from a caller that %s as that session's plain message", (_what, sender) => {
+    const { container } = render(
+      <MessageBubble
+        message={userMessage(DIGEST, {
+          metadata: { origin: "distillctl_cross_session", ...sender },
+        })}
+      />,
+    );
+    expect(screen.queryByTestId("conductor-digest-card")).toBeNull();
+    expect(senderLabel(container)).toHaveTextContent(
+      "Sent by Flock from another session",
+    );
+    expect(senderLabel(container)).toHaveTextContent(
+      `source: ${sender.distillSenderLabel}`,
+    );
+    // Its text is shown as written, marker line included.
+    expect(container).toHaveTextContent("[flock-digest:demo#0]");
+    expect(container).toHaveTextContent("Scout reports: all tests pass.");
+  });
+
+  it("shows a flock-monitor delivery under the plain label of its source, with no preview of its own", () => {
+    const { container } = render(
+      <MessageBubble
+        message={userMessage("[monitor: build | pid 7]\nstage 2 done", {
+          metadata: {
+            origin: "distillctl_cross_session",
+            distillSenderLabel: "flock-monitor",
+            distillDeliveryId: "distill-monitor-00000000000000aa-7-1-0",
+          },
+        })}
+      />,
+    );
+    expect(senderLabel(container)).toHaveTextContent(
+      "Sent by Flock from another session",
+    );
+    expect(senderLabel(container)).toHaveTextContent("source: flock-monitor");
+    expect(screen.queryByText("Background task update")).toBeNull();
+    // A short message is shown whole, like any other.
+    expect(
+      container.querySelector('[data-role="user-message-clamp"]'),
+    ).toBeNull();
+    expect(container).toHaveTextContent("stage 2 done");
+  });
+
+  it.each([
+    ["goal", goalPrompt("Check fixtures")],
+    ["loop", loopPrompt("Check fixtures", true)],
+  ])("does not fold a message shaped like a %s turn that another session sent", (kind, prompt) => {
+    const { container } = render(
+      <MessageBubble
+        message={userMessage(prompt, {
+          metadata: {
+            origin: "distillctl_cross_session",
+            distillSenderLabel: `Flock ${kind}`,
+            distillDeliveryId: "retry-1",
+          },
+        })}
+      />,
+    );
+    expect(screen.queryByText(`Sent by Flock for the ${kind}`)).toBeNull();
+    expect(container.querySelector("details")).toBeNull();
+    expect(senderLabel(container)).toHaveTextContent(`source: Flock ${kind}`);
+    expect(container).toHaveTextContent("End your reply");
+  });
+
+  it.each([
+    ["goal", goalPrompt("Check fixtures")],
+    ["loop", loopPrompt("Check fixtures", true)],
+  ])("folds the %s turn the app sent, known by the delivery id only the app writes", (kind, prompt) => {
+    const { container } = render(
+      <MessageBubble
+        message={userMessage(prompt, {
+          metadata: {
+            origin: "distillctl_cross_session",
+            distillSenderLabel: `Flock ${kind}`,
+            distillDeliveryId: `${kind}-turn:sample:1`,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText(`Sent by Flock for the ${kind}`)).toBeVisible();
+    expect(container.querySelector("summary")).toHaveTextContent(
+      "Check fixtures",
+    );
+    expect(screen.queryByText(/End your reply/)).toBeNull();
+  });
+});

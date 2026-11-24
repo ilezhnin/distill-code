@@ -161,6 +161,7 @@ export async function handleFlockctlRequest(
     // deadlines aligned.
     const ctx = {
       deadlineMs: Date.now() + request.timeoutMs,
+      viaBroker: true,
       ...(request.actor ? { actor: request.actor } : {}),
       ...(request.agent ? { fromAgent: true } : {}),
     };

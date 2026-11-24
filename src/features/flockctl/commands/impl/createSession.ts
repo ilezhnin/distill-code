@@ -146,6 +146,8 @@ export const createSessionCommand = defineCommand({
     "what `flockctl info models` reports for the chosen model. " +
     "Use --from to give the delegating session or tool a concise visible label on " +
     "the initial message. " +
+    "The prompt is delivered as a message: a leading /goal or /loop is text for " +
+    "the new session's agent, not a chat command. " +
     "When the new session takes on part of your own work, pass your session id " +
     "as --parent-session-id: it is shown under your chat rather than as a chat of " +
     "its own, your chat shows it working, and its result is delivered back to " +
@@ -211,7 +213,7 @@ Result:
         projectRequiresStartupWorkspaceName,
         rollbackProjectChatWorkspacePlan,
       },
-      { flockctlCrossSessionSendOptions },
+      { sendOptionsForCall },
       { DEFAULT_HARNESS_ID },
       { normalizeSessionExecutionTarget, targetFromAgentModelSelection },
       { findPersonaOrThrow },
@@ -397,7 +399,7 @@ Result:
         persona: persona
           ? { kind: "persona", id: persona.id, name: persona.displayName }
           : { kind: "inherit" },
-        sendOptions: flockctlCrossSessionSendOptions({
+        sendOptions: sendOptionsForCall(ctx, {
           senderLabel: args.from,
         }),
       }),

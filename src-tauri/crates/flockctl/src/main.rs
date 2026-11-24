@@ -167,6 +167,53 @@ mod tests {
         );
         let list = ["flockctl", "session", "list"];
         assert!(!body_of(&list, Some("invented.0000")).contains_key("session_token"));
+
+        // The commands that act on what one session owns take the token the
+        // same way: a conductor's script changes the conductor's wave, and
+        // stops what it started, as the conductor.
+        for owned in [
+            vec!["flockctl", "wave", "cancel", "--wave-id", "w"],
+            vec![
+                "flockctl",
+                "wave",
+                "steer",
+                "--wave-id",
+                "w",
+                "--prompt",
+                "p",
+            ],
+            vec![
+                "flockctl",
+                "wave",
+                "amend",
+                "--wave-id",
+                "w",
+                "--step",
+                "1",
+                "--text",
+                "t",
+            ],
+            vec!["flockctl", "wave", "skip", "--wave-id", "w", "--step", "1"],
+            vec![
+                "flockctl",
+                "wave",
+                "restart",
+                "--wave-id",
+                "w",
+                "--step",
+                "1",
+            ],
+            vec!["flockctl", "session", "stop", "--session-id", "s"],
+        ] {
+            assert_eq!(
+                body_of(&owned, Some("invented.0000"))["session_token"],
+                "invented.0000",
+                "{owned:?}"
+            );
+        }
+        // Reading a wave is open to every session and carries no token.
+        let get = ["flockctl", "wave", "get", "--wave-id", "w"];
+        assert!(!body_of(&get, Some("invented.0000")).contains_key("session_token"));
     }
 
     /// The contract gate: every cross-artifact inconsistency (missing or
@@ -660,11 +707,13 @@ the background without changing what the user sees; the user can open it
 themselves. Model, reasoning effort and fast mode are separate choices, each
 checked against what `flockctl info models` reports for the chosen model. Use
 --from to give the delegating session or tool a concise visible label on the
-initial message. When the new session takes on part of your own work, pass your
-session id as --parent-session-id: it is shown under your chat rather than as a
-chat of its own, your chat shows it working, and its result is delivered back to
-your chat when its turn ends, so do not ask it to report back itself. Only check
-on it later (action "get") if the user asks.
+initial message. The prompt is delivered as a message: a leading /goal or /loop
+is text for the new session's agent, not a chat command. When the new session
+takes on part of your own work, pass your session id as --parent-session-id: it
+is shown under your chat rather than as a chat of its own, your chat shows it
+working, and its result is delivered back to your chat when its turn ends, so do
+not ask it to report back itself. Only check on it later (action "get") if the
+user asks.
 
 Usage: flockctl session create [OPTIONS] --prompt <PROMPT>
 

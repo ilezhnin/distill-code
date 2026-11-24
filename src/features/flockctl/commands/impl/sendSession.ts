@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 
 import { FLOCKCTL_BOUNDS } from "../helpers";
+import { isAutomationDeliveryId } from "@/features/chat-automation/automationProtocol";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import {
   assertQueuedSessionReady,
@@ -56,9 +57,16 @@ const sendSessionSchema = z
       .min(1)
       .max(200)
       .regex(/^[^\r\n]*$/, "Delivery id must be a single line.")
+      // The app's own goal and loop messages are known by their delivery
+      // id: a caller that could write one would have its message shown as
+      // sent by Flock, and counted as a turn of the chat's goal or loop.
+      .refine(
+        (id) => !isAutomationDeliveryId(id),
+        "Delivery ids that begin with goal-turn:, loop-turn:, goal-report: or loop-report: are the app's own, for the messages it sends for a chat's goal or loop. Choose another id.",
+      )
       .optional()
       .describe(
-        "Optional idempotency id; a repeated id for this session is accepted without creating another user turn (1-200 chars).",
+        "Optional idempotency id; a repeated id for this session is accepted without creating another user turn (1-200 chars). Ids that begin with goal-turn:, loop-turn:, goal-report: or loop-report: are the app's own and are refused.",
       ),
   })
   .strict();
@@ -95,7 +103,10 @@ export const sendSessionCommand = defineCommand({
     "--if-running steer to add context when the provider supports safe steering (otherwise queue), or --if-running queue " +
     "to send one follow-up after the current run finishes. Use --from to give " +
     "the sending session or tool a concise visible label in the transcript. " +
-    "Use --delivery-id when retries must create at most one user turn.",
+    "Use --delivery-id when retries must create at most one user turn. " +
+    "The prompt is always delivered as a message: /goal and /loop are chat " +
+    "commands only when the user types them in that chat, so sent from here " +
+    "they reach its agent as text and start, change or stop nothing.",
   helpFooter: `Example:
   flockctl session send --session-id <session-id> \\
     --prompt "Check the latest CI failure" --if-running queue \\
@@ -114,14 +125,14 @@ Result:
   The user's current view does not change.`,
   schema: sendSessionSchema,
   bridgeTimeoutMs: 60_000,
-  execute: async (args): Promise<SendSessionResult> => {
+  execute: async (args, ctx): Promise<SendSessionResult> => {
     const [
       { acceptFirstSend },
       { loadSessionForFlockctl, providerWaitAfter, requireSession },
       { findProjectOrThrow },
       { accountQuotaWaitData, isAccountQuotaWaiting },
       {
-        flockctlCrossSessionSendOptions,
+        sendOptionsForCall,
         FlockctlDeliveryAlreadyAcceptedError,
         hasAcceptedFlockctlDelivery,
         reserveFlockctlDelivery,
@@ -138,7 +149,7 @@ Result:
     ]);
     const executorRequestKey = `chat:${crypto.randomUUID()}`;
     const sendOptions = {
-      ...flockctlCrossSessionSendOptions({
+      ...sendOptionsForCall(ctx, {
         senderLabel: args.from,
         deliveryId: args.delivery_id,
       }),

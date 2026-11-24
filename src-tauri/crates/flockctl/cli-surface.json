@@ -58,7 +58,7 @@
         "stop": {
           "action": "stop",
           "about": "Stop a session another chat started: end its turn, drop its queue",
-          "afterHelp": "Example:\n  flockctl session stop --session-id <child-session-id> --from \"Parent chat\" --reason \"provider out of quota\"\n\nResult:\n  {\"ok\": true, \"session_id\": \"...\", \"outcome\": \"stopped\"|\"already_finished\"}\n  \"stopped\": the session was working or had queued messages; it was told to stop.\n  \"already_finished\": it had already finished, failed or been stopped; nothing changed."
+          "afterHelp": "Example:\n  flockctl session stop --session-id <child-session-id> --session-token <your-session-token> \\\n    --from \"Parent chat\" --reason \"provider out of quota\"\n\nResult:\n  {\"ok\": true, \"session_id\": \"...\", \"outcome\": \"stopped\"|\"already_finished\"}\n  \"stopped\": the session was working or had queued messages; it was told to stop.\n  \"already_finished\": it had already finished, failed or been stopped; nothing changed.\n  Refused with \"spawn_not_allowed\" for an agent that did not start the session."
         }
       }
     },
@@ -178,27 +178,27 @@
         "cancel": {
           "action": "cancel",
           "about": "Cancel a wave: stop its running executors or drop it from the queue",
-          "afterHelp": "Example:\n  flockctl wave cancel --wave-id <wave-id>\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"outcome\": \"stopped\"|\"dropped\"|\"already_closed\"}\n  \"stopped\": the wave was live and its executors were told to stop.\n  \"dropped\": the wave was queued and never started.\n  \"already_closed\": the wave had already left the live loop; nothing changed."
+          "afterHelp": "Example:\n  flockctl wave cancel --wave-id <wave-id> --session-token <your-session-token>\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"outcome\": \"stopped\"|\"dropped\"|\"already_closed\"}\n  \"stopped\": the wave was live and its executors were told to stop.\n  \"dropped\": the wave was queued and never started.\n  \"already_closed\": the wave had already left the live loop; nothing changed.\n  Refused with \"wave_not_allowed\" for an agent that does not conduct the wave."
         },
         "steer": {
           "action": "steer",
           "about": "Send one message to every running executor of a wave",
-          "afterHelp": "Example:\n  flockctl wave steer --wave-id <wave-id> --prompt \"Pause: the operator is about to restart Unity. Save your state to STATUS.md and wait.\" --json\n\nResult:\n  {\"wave_id\": \"...\", \"deliveries\": [{\"session_id\": \"...\",\n      \"send_status\": \"dispatched\"|\"steered\"|\"queued\"|\"deduplicated\"|\"delivery_unconfirmed\"|\"not_delivered\",\n      \"delivered_after_turn\": true?,\n      \"provider_wait\": {\"reason\": \"allowance_spent\"|\"rate_limited\", \"until\": \"...\"|null}?}]}\n  \"delivered_after_turn\" marks a message queued behind a turn in progress:\n  the executor has not read it, and will only when that turn ends.\n  \"provider_wait\" appears when the message waits for the executor's provider.\n  An empty \"deliveries\" list means no executor of the wave is running."
+          "afterHelp": "Example:\n  flockctl wave steer --wave-id <wave-id> --session-token <your-session-token> \\\n    --prompt \"Pause: the operator is about to restart Unity. Save your state to STATUS.md and wait.\" --json\n\nResult:\n  {\"wave_id\": \"...\", \"deliveries\": [{\"session_id\": \"...\",\n      \"send_status\": \"dispatched\"|\"steered\"|\"queued\"|\"deduplicated\"|\"delivery_unconfirmed\"|\"not_delivered\",\n      \"delivered_after_turn\": true?,\n      \"provider_wait\": {\"reason\": \"allowance_spent\"|\"rate_limited\", \"until\": \"...\"|null}?}]}\n  \"delivered_after_turn\" marks a message queued behind a turn in progress:\n  the executor has not read it, and will only when that turn ends.\n  \"provider_wait\" appears when the message waits for the executor's provider.\n  An empty \"deliveries\" list means no executor of the wave is running.\n  Refused with \"wave_not_allowed\" for an agent that does not conduct the wave."
         },
         "amend": {
           "action": "amend",
           "about": "Add text to the brief of a step that has not started yet",
-          "afterHelp": "Example:\n  flockctl wave amend --wave-id <wave-id> --step 2 --text \"Also confirm the editor lock in Temp/UnityLockfile is released.\"\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 2}\n  Refused with \"wave_step_not_pending\" once the step has been dispatched."
+          "afterHelp": "Example:\n  flockctl wave amend --wave-id <wave-id> --step 2 --session-token <your-session-token> \\\n    --text \"Also confirm the editor lock in Temp/UnityLockfile is released.\"\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 2}\n  Refused with \"wave_step_not_pending\" once the step has been dispatched,\n  and with \"wave_not_allowed\" for an agent that does not conduct the wave."
         },
         "skip": {
           "action": "skip",
           "about": "Skip a step that has not started yet",
-          "afterHelp": "Example:\n  flockctl wave skip --wave-id <wave-id> --step 3\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 3}\n  Refused with \"wave_step_not_pending\" once the step has been dispatched."
+          "afterHelp": "Example:\n  flockctl wave skip --wave-id <wave-id> --step 3 --session-token <your-session-token>\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 3}\n  Refused with \"wave_step_not_pending\" once the step has been dispatched,\n  and with \"wave_not_allowed\" for an agent that does not conduct the wave."
         },
         "restart": {
           "action": "restart",
           "about": "Stop a dispatched step and run it again in a new session",
-          "afterHelp": "Example:\n  flockctl wave restart --wave-id <wave-id> --step 2 --text \"Use the 2020 register, not the 1998 one.\"\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 2, \"stopped_session_id\": \"...\"|null}\n  Refused with \"wave_step_not_dispatched\" for a pending step (use `wave amend`)\n  and with \"wave_not_running\" once the wave has gone to its digest."
+          "afterHelp": "Example:\n  flockctl wave restart --wave-id <wave-id> --step 2 --session-token <your-session-token> \\\n    --text \"Use the 2020 register, not the 1998 one.\"\n\nResult:\n  {\"ok\": true, \"wave_id\": \"...\", \"step\": 2, \"stopped_session_id\": \"...\"|null}\n  Refused with \"wave_step_not_dispatched\" for a pending step (use `wave amend`),\n  with \"wave_not_running\" once the wave has gone to its digest, and with\n  \"wave_not_allowed\" for an agent that does not conduct the wave."
         },
         "validate": {
           "action": "validate",

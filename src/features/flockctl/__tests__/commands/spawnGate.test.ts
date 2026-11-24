@@ -22,6 +22,7 @@ import { CommandError } from "../../commands/types";
 import {
   enforceFlockctlSpawnAcl,
   registerFlockctlChildNode,
+  resolveFlockctlCaller,
   resolveFlockctlSpawnCaller,
   resolveFlockctlSpawnParent,
 } from "../../commands/runtime/spawnGate";
@@ -448,6 +449,63 @@ describe("resolveFlockctlSpawnCaller", () => {
         sessionToken: undefined,
       }),
     ).toEqual({ actor: ACTOR_ID, parentSessionId: ACTOR_ID });
+  });
+});
+
+describe("resolveFlockctlCaller", () => {
+  beforeEach(() => {
+    __resetSessionTokenKeyForTests();
+  });
+
+  const caller = (args: Partial<Parameters<typeof resolveFlockctlCaller>[0]>) =>
+    resolveFlockctlCaller({
+      actor: undefined,
+      fromAgent: undefined,
+      sessionToken: undefined,
+      ...args,
+    });
+
+  it("reads the caller of an owner-only command the way a spawn's caller is read", async () => {
+    // The operator's own terminal, and the app itself: no mark, no proof.
+    expect(await caller({})).toEqual({ kind: "operator" });
+    expect(await caller({ fromAgent: false })).toEqual({ kind: "operator" });
+    // An agent's shell on the built-in host: the mark, and nobody proven.
+    expect(await caller({ fromAgent: true })).toEqual({ kind: "unproven" });
+    // A token proves its session, whoever else the call names.
+    expect(
+      await caller({
+        actor: ACTOR_ID,
+        fromAgent: true,
+        sessionToken: await sessionTokenFor("conductor-1"),
+      }),
+    ).toEqual({ kind: "session", sessionId: "conductor-1" });
+    // Shaped like a token, with a digest nobody signed.
+    expect(
+      await caller({
+        fromAgent: true,
+        sessionToken: `conductor-1.${"0".repeat(16)}`,
+      }),
+    ).toEqual({ kind: "bad-token" });
+    // A harness that exports its own actor names the session without one.
+    expect(await caller({ actor: ACTOR_ID, fromAgent: true })).toEqual({
+      kind: "session",
+      sessionId: ACTOR_ID,
+    });
+  });
+
+  it("asks no proof where the renderer can make no token", async () => {
+    // No session was told a token there, so a rule that asked for one would
+    // refuse every agent: the call is read as it was before tokens.
+    const storage = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage is unavailable");
+      });
+    try {
+      expect(await caller({ fromAgent: true })).toEqual({ kind: "operator" });
+    } finally {
+      storage.mockRestore();
+    }
   });
 });
 

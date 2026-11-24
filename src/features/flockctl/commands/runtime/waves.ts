@@ -50,10 +50,16 @@ import {
   withWave,
 } from "@/features/conductor/waveStore";
 import { isWaveLive } from "@/features/conductor/waveVerdict";
+import { resetPersonaHandoff } from "@/shared/api/acpPersonaHandoff";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { truncate } from "../helpers";
 import { CommandError, type CommandContext } from "../types";
+import {
+  resolveFlockctlCaller,
+  TOKEN_NOT_THIS_APPS,
+  TOKEN_WHERE,
+} from "./spawnGate";
 
 export const WAVE_SUMMARY_LIMIT = 500;
 export const WAVE_DETAIL_LIMIT = 4_000;
@@ -174,6 +180,62 @@ export function requireWave(waveId: string): WaveState {
       ? `"${waveId}" matches ${prefixed.length} waves; give more of the id.`
       : waveNotFoundMessage(waveId),
   );
+}
+
+/** A command that changes a wave, as its refusal names it. */
+export type WaveChangeVerb = "cancel" | "steer" | "amend" | "skip" | "restart";
+
+/**
+ * Finds the wave a changing command names, and refuses a session that does
+ * not conduct it.
+ *
+ * Until 2026-11-24 these commands read no caller at all. A worker could add
+ * to the brief of the step that checks its own work, skip that step, or have
+ * a sibling's step run again in a new session, each with one command, and
+ * what the app wrote down said only that "an agent" had asked. A wave is its
+ * conductor's to change: an agent's call has to prove it comes from that
+ * chat, with the token `session create` takes. The operator's own terminal
+ * and the app itself carry no agent mark and are read as before.
+ *
+ * A guardrail, like the spawn gate it borrows the proof from: it stops a
+ * confused or prompt-injected executor, not a process that sets out to pass
+ * as the conductor.
+ */
+export async function requireWaveForChange(
+  waveId: string,
+  verb: WaveChangeVerb,
+  ctx: Pick<CommandContext, "actor" | "fromAgent">,
+  sessionToken: string | undefined,
+): Promise<WaveState> {
+  const named = requireWave(waveId);
+  const caller = await resolveFlockctlCaller({
+    actor: ctx.actor,
+    fromAgent: ctx.fromAgent,
+    sessionToken,
+  });
+  if (caller.kind === "bad-token") {
+    throw new CommandError("wave_not_allowed", TOKEN_NOT_THIS_APPS);
+  }
+  if (caller.kind === "unproven") {
+    // The caller may be the conductor with its context compacted away: its
+    // next message carries the context, and so the token, again.
+    resetPersonaHandoff(named.conductorSessionId);
+    throw new CommandError(
+      "wave_not_allowed",
+      `This call comes from an agent's shell and does not prove which session makes it, so \`wave ${verb}\` is refused: only the chat that conducts wave "${named.waveId}" can change it. ${TOKEN_WHERE} If you conduct this wave and no longer have the token, the app sends that context again with the next message your chat receives. Any session may still read waves with \`flockctl wave list\` and \`flockctl wave get\`.`,
+    );
+  }
+  if (
+    caller.kind === "session" &&
+    caller.sessionId !== named.conductorSessionId
+  ) {
+    throw new CommandError(
+      "wave_not_allowed",
+      `Wave "${named.waveId}" is conducted by session "${named.conductorSessionId}", not by session "${caller.sessionId}" that this call is made for, so \`wave ${verb}\` is refused: only the chat that conducts a wave can change it. Any session may still read waves with \`flockctl wave list\` and \`flockctl wave get\`.`,
+    );
+  }
+  // The proof is checked across an await: read the wave again, as it is now.
+  return requireWave(named.waveId);
 }
 
 function queuedPosition(wave: WaveState): number | null {

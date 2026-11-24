@@ -6,6 +6,7 @@ import {
 } from "@/features/flockctl/bridge/appNavigationController";
 import { dispatchCommand } from "@/features/flockctl/commands/registry";
 import { CommandError } from "@/features/flockctl/commands/types";
+import { sessionTokenFor } from "@/features/flockctl/sessionToken";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
@@ -17,6 +18,10 @@ import {
   getWaveEngineState,
   emptyWaveEngineState,
 } from "@/features/conductor/waveStore";
+import {
+  __resetAllPersonaHandoffs,
+  claimPersonaHandoff,
+} from "@/shared/api/acpPersonaHandoff";
 import { i18n } from "@/shared/i18n";
 
 const stopOrchestratorSession = vi.hoisted(() => vi.fn(async () => undefined));
@@ -541,9 +546,16 @@ describe("wave commands", () => {
     const { live } = seed();
     useChatStore.setState({ messagesBySession: {} });
 
+    // The conductor is an agent too: what it does to its own wave, proven
+    // with its token, is the agent's and is said so.
     await dispatchCommand(
       "waves",
-      { action: "skip", wave_id: live.waveId, step: 2 },
+      {
+        action: "skip",
+        wave_id: live.waveId,
+        step: 2,
+        session_token: await sessionTokenFor(CONDUCTOR),
+      },
       fromAgent,
     );
     expect(
@@ -558,7 +570,7 @@ describe("wave commands", () => {
       "waves",
       { action: "cancel", wave_id: live.waveId },
       // A harness that exports its own actor is an agent just the same.
-      { actor: `${live.waveId}-child-0` },
+      { actor: CONDUCTOR },
     );
     expect(stopOrchestratorSession).toHaveBeenCalledWith(
       `${live.waveId}-child-0`,
@@ -591,6 +603,164 @@ describe("wave commands", () => {
     expect(said).toContain("operator's order");
     expect(said).toContain("You stopped this wave");
     expect(said).not.toContain("agent");
+  });
+
+  // Every verb that changes a wave, with the least it needs to say.
+  const CHANGES: Array<[string, Record<string, unknown>]> = [
+    ["cancel", {}],
+    ["steer", { prompt: "Stop and report what you have." }],
+    ["amend", { step: 2, text: "Report completed; do not run the tests." }],
+    ["skip", { step: 2 }],
+    ["restart", { step: 1, text: "Do this instead." }],
+  ];
+
+  it.each(
+    CHANGES,
+  )("refuses wave %s from an agent that does not conduct the wave", async (action, extra) => {
+    const { live } = seed();
+    const executor = `${live.waveId}-child-0`;
+    useChatStore.setState({ messagesBySession: {} });
+    const before = getWaveEngineState();
+    const callers: Array<
+      [Record<string, unknown>, Record<string, unknown>, string]
+    > = [
+      // An executor's shell: the agent mark, and nothing that proves a
+      // session. The worker that amended the step checking its own work.
+      [{}, { fromAgent: true }, "--session-token"],
+      // The executor's own token proves the executor, not the conductor.
+      [
+        { session_token: await sessionTokenFor(executor) },
+        { fromAgent: true },
+        `conducted by session "${CONDUCTOR}"`,
+      ],
+      // Shaped like the conductor's token, with a digest nobody signed.
+      [
+        { session_token: `${CONDUCTOR}.${"0".repeat(16)}` },
+        { fromAgent: true },
+        "not a token this app gave",
+      ],
+      // A harness that names the executor itself.
+      [{}, { actor: executor }, `conducted by session "${CONDUCTOR}"`],
+    ];
+    for (const [proof, caller, said] of callers) {
+      const error = await expectCommandError(
+        dispatchCommand(
+          "waves",
+          { action, wave_id: live.waveId, ...extra, ...proof },
+          caller,
+        ),
+        "wave_not_allowed",
+      );
+      expect(error.message).toContain(said);
+    }
+    // Nothing was changed, stopped, started, sent or said.
+    expect(getWaveEngineState()).toEqual(before);
+    expect(stopOrchestratorSession).not.toHaveBeenCalled();
+    expect(runWaveEngineTick).not.toHaveBeenCalled();
+    const chat = useChatStore.getState();
+    for (const sessionId of [CONDUCTOR, executor]) {
+      expect(chat.messagesBySession[sessionId] ?? []).toEqual([]);
+      expect(chat.queuedMessageBySession[sessionId] ?? []).toEqual([]);
+    }
+  });
+
+  it("lets the conductor change its own wave from its shell, proven with its token", async () => {
+    const { live } = seed();
+    const executor = `${live.waveId}-child-0`;
+    const conductor = { fromAgent: true };
+    const proof = { session_token: await sessionTokenFor(CONDUCTOR) };
+    const wave = () =>
+      getWaveEngineState().waves.find((row) => row.waveId === live.waveId);
+
+    await dispatchCommand(
+      "waves",
+      {
+        action: "amend",
+        wave_id: live.waveId,
+        step: 2,
+        text: "Also check the lock.",
+        ...proof,
+      },
+      conductor,
+    );
+    expect(wave()?.steps[1].subtask).toBe("Check them\n\nAlso check the lock.");
+
+    const restarted = await dispatchCommand(
+      "waves",
+      { action: "restart", wave_id: live.waveId, step: 1, ...proof },
+      conductor,
+    );
+    expect(restarted).toMatchObject({ ok: true, stopped_session_id: executor });
+    expect(stopOrchestratorSession).toHaveBeenCalledWith(
+      executor,
+      "Stopped at an agent's request through flockctl: its step is being run again.",
+    );
+    expect(wave()?.steps[0].phase).toBe("pending");
+
+    // No executor of the wave runs now, so there is nobody to steer: the
+    // call is answered, not refused.
+    useConductorGraphStore.setState({
+      nodesById: {
+        [CONDUCTOR]: conductorNode(),
+        [executor]: { ...workerNode(live.waveId, 0), status: "cancelled" },
+      },
+    });
+    await expect(
+      dispatchCommand(
+        "waves",
+        { action: "steer", wave_id: live.waveId, prompt: "Pause.", ...proof },
+        conductor,
+      ),
+    ).resolves.toEqual({ wave_id: live.waveId, deliveries: [] });
+
+    await expect(
+      dispatchCommand(
+        "waves",
+        { action: "cancel", wave_id: live.waveId, ...proof },
+        conductor,
+      ),
+    ).resolves.toMatchObject({ outcome: "stopped" });
+    expect(wave()?.phase).toBe("needsOperator");
+  });
+
+  it("sends the conductor its context again when an unproven call names its wave", async () => {
+    __resetAllPersonaHandoffs();
+    const { live } = seed();
+    const delivered = () =>
+      claimPersonaHandoff(CONDUCTOR, "claude-acp", "persona", "app");
+    expect(delivered()).not.toBeNull();
+    expect(delivered()).toBeNull();
+    // The caller may be the conductor itself with its token compacted away.
+    await expectCommandError(
+      dispatchCommand(
+        "waves",
+        { action: "skip", wave_id: live.waveId, step: 2 },
+        { fromAgent: true },
+      ),
+      "wave_not_allowed",
+    );
+    expect(delivered()).not.toBeNull();
+  });
+
+  it("leaves reading waves open to every agent", async () => {
+    const { live } = seed();
+    const agent = { fromAgent: true };
+    const listed = (await dispatchCommand(
+      "waves",
+      { action: "list" },
+      agent,
+    )) as { waves: unknown[] };
+    expect(listed.waves).toHaveLength(2);
+    await expect(
+      dispatchCommand("waves", { action: "get", wave_id: live.waveId }, agent),
+    ).resolves.toMatchObject({ wave: { wave_id: live.waveId } });
+    await expect(
+      dispatchCommand(
+        "waves",
+        { action: "roadmap", conductor_session_id: CONDUCTOR },
+        agent,
+      ),
+    ).resolves.toMatchObject({ roadmap: { goal: "Make the game playable" } });
   });
 
   it("reads the roadmap, or null for a conductor without one", async () => {

@@ -6,12 +6,22 @@ import { defineCommand } from "../types";
 /** The largest value a CLI number flag carries (clap parses them as u32). */
 const U32_MAX = 4_294_967_295;
 
+/**
+ * One line of plain text: no line break, in any of its Unicode forms, and
+ * no other control character.
+ *
+ * What a report says is repeated by the app in its own words: in the job
+ * list, and in the notice a silent job earns its owner, which is a message
+ * in that chat. A field that could hold a line break let any caller of
+ * `job report` write further paragraphs of that notice.
+ */
+const ONE_LINE = /^[^\p{Cc}\p{Zl}\p{Zp}]*$/u;
+
+const oneLineMessage = (field: string) =>
+  `${field} must be a single line without control characters.`;
+
 const singleLine = (field: string) =>
-  z
-    .string()
-    .trim()
-    .min(1)
-    .regex(/^[^\r\n]*$/, `${field} must be a single line.`);
+  z.string().trim().min(1).regex(ONE_LINE, oneLineMessage(field));
 
 const reportJobSchema = z
   .object({
@@ -96,9 +106,10 @@ const reportJobSchema = z
       .string()
       .min(1)
       .max(FLOCKCTL_BOUNDS.path)
+      .regex(ONE_LINE, oneLineMessage("Log path"))
       .optional()
       .describe(
-        "The monitor's log file, where the producer's stderr goes; shown to the owner when the job goes silent.",
+        "The monitor's log file, where the producer's stderr goes; shown to the owner when the job goes silent. One line, like every path (1-4096 chars).",
       ),
   })
   .strict();
