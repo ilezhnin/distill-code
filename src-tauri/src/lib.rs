@@ -368,6 +368,7 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 renderer_recovery::reload_when_renderer_dies(&window);
+                services::navigation_guard::refuse_unreadable_addresses(&window);
             }
 
             Ok(())
