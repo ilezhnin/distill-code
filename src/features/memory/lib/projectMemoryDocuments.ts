@@ -291,6 +291,20 @@ export function mergeProjectMemories<T extends MemoryEntry>(
 }
 
 /**
+ * The most lines one project folder brings into the store, live and
+ * archived together, counted over every read of it.
+ *
+ * The store has no bound of its own per project, only the whole list's, so
+ * a folder had none: a file of three hundred lines took every place there
+ * was. Lines past this stay in the file — the mirror writes them back
+ * untouched — and are said in the log, not taken in.
+ */
+export const MAX_ADOPTED_LINES_PER_FOLDER = 200;
+
+/** What each folder had left out when it was last said, so it is said once. */
+const leftOutSaid = new Map<string, number>();
+
+/**
  * Both lists with the folders' folded in, by id across the two.
  *
  * `mergeProjectMemories` for a store that has an archive: an id the store
@@ -299,27 +313,78 @@ export function mergeProjectMemories<T extends MemoryEntry>(
  * folder lagging behind the store, not a second memory — merging the lists
  * one at a time put such a line in both. `excluded` are the ids the operator
  * deleted this run, which no copy on disk may bring back.
+ *
+ * A line taken in is the file's word, not the operator's: it is marked
+ * `fromProjectFolder`, a date later than `nowMs` is brought back to it (a
+ * date in the future used to put a planted line above everything the
+ * operator kept, for good), and one folder brings at most
+ * `MAX_ADOPTED_LINES_PER_FOLDER`. What it holds past that is returned as
+ * `leftOut`, for the caller that writes the file to keep there.
  */
 export function foldProjectMemories(
   base: ProjectMemories,
   fromFolders: ProjectMemories,
   excluded: ReadonlySet<string> = new Set(),
-): ProjectMemories & { added: number } {
+  nowMs: number = Date.now(),
+): ProjectMemories & { added: number; leftOut: ProjectMemories } {
   const known = new Set<string>();
-  for (const entry of base.entries) known.add(entry.id);
-  for (const entry of base.archived) known.add(entry.id);
-  const fresh = <T extends MemoryEntry>(entry: T): boolean => {
-    if (known.has(entry.id) || excluded.has(entry.id)) return false;
+  // A folder's lines are counted by the project they were filed under, which
+  // is the folder they were read from (`readProjectMemoryFolder`).
+  const broughtBy = new Map<string, number>();
+  for (const entry of [...base.entries, ...base.archived]) {
     known.add(entry.id);
-    return true;
+    if (entry.fromProjectFolder && entry.projectId) {
+      broughtBy.set(entry.projectId, (broughtBy.get(entry.projectId) ?? 0) + 1);
+    }
+  }
+  const leftOut: ProjectMemories = { entries: [], archived: [] };
+  const take = <T extends MemoryEntry>(entry: T, overflow: T[]): T | null => {
+    if (known.has(entry.id) || excluded.has(entry.id)) return null;
+    known.add(entry.id);
+    const folder = entry.projectId ?? "";
+    const brought = broughtBy.get(folder) ?? 0;
+    if (brought >= MAX_ADOPTED_LINES_PER_FOLDER) {
+      overflow.push(entry);
+      return null;
+    }
+    broughtBy.set(folder, brought + 1);
+    return {
+      ...entry,
+      createdAt: Math.min(entry.createdAt, nowMs),
+      ...(entry.reinforcedAt !== undefined
+        ? { reinforcedAt: Math.min(entry.reinforcedAt, nowMs) }
+        : {}),
+      fromProjectFolder: true,
+    };
   };
-  const entries = fromFolders.entries.filter(fresh);
-  const archived = fromFolders.archived.filter(fresh);
+  const taken = <T extends MemoryEntry>(list: readonly T[], overflow: T[]) =>
+    list
+      .map((entry) => take(entry, overflow))
+      .filter((entry): entry is T => entry !== null);
+  const entries = taken(fromFolders.entries, leftOut.entries);
+  const archived = taken(fromFolders.archived, leftOut.archived);
+  sayLeftOut(leftOut);
   return {
     entries:
       entries.length === 0 ? base.entries : [...base.entries, ...entries],
     archived:
       archived.length === 0 ? base.archived : [...base.archived, ...archived],
     added: entries.length + archived.length,
+    leftOut,
   };
+}
+
+function sayLeftOut(leftOut: ProjectMemories): void {
+  const byFolder = new Map<string, number>();
+  for (const entry of [...leftOut.entries, ...leftOut.archived]) {
+    const folder = entry.projectId ?? "";
+    byFolder.set(folder, (byFolder.get(folder) ?? 0) + 1);
+  }
+  for (const [projectId, count] of byFolder) {
+    if (leftOutSaid.get(projectId) === count) continue;
+    leftOutSaid.set(projectId, count);
+    console.warn(
+      `[memory] ${count} line(s) of project ${projectId}'s folder memory.json were not taken in: one folder brings at most ${MAX_ADOPTED_LINES_PER_FOLDER}. They stay in the file.`,
+    );
+  }
 }

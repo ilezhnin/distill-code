@@ -257,6 +257,9 @@ function parseEntry(value: unknown): MemoryEntry | null {
     ...(typeof raw.reinforcedAt === "number"
       ? { reinforcedAt: raw.reinforcedAt }
       : {}),
+    ...(raw.fromProjectFolder === true
+      ? { fromProjectFolder: true as const }
+      : {}),
   };
 }
 
@@ -379,12 +382,53 @@ export function capWithArchive(entries: MemoryEntry[]): {
 } {
   if (entries.length <= MAX_MEMORY_ENTRIES)
     return { kept: entries, evicted: [] };
+  const byRecency = (left: MemoryEntry, right: MemoryEntry) =>
+    memoryRecency(right) - memoryRecency(left);
+  // The operator's and the agents' lines are capped among themselves first,
+  // exactly as if no folder had brought anything.
   const keep = new Set(
-    [...entries]
-      .sort((left, right) => memoryRecency(right) - memoryRecency(left))
+    entries
+      .filter((entry) => !entry.fromProjectFolder)
+      .sort(byRecency)
       .slice(0, MAX_MEMORY_ENTRIES)
       .map((entry) => entry.id),
   );
+  // A line a project folder brought in takes a place that is free, or else
+  // one held by a less recent line of its own project. A file of three
+  // hundred lines dated in the future used to push every memory the
+  // operator had into the archive, global ones and other projects' with
+  // them; it can now only crowd its own project.
+  const waiting = new Map<string, MemoryEntry[]>();
+  for (const guest of entries
+    .filter((entry) => entry.fromProjectFolder)
+    .sort(byRecency)) {
+    if (keep.size < MAX_MEMORY_ENTRIES) {
+      keep.add(guest.id);
+      continue;
+    }
+    const projectId = guest.projectId ?? "";
+    waiting.set(projectId, [...(waiting.get(projectId) ?? []), guest]);
+  }
+  for (const [projectId, guests] of waiting) {
+    const held = entries.filter(
+      (entry) =>
+        !entry.fromProjectFolder &&
+        entry.scope === "project" &&
+        entry.projectId === projectId &&
+        keep.has(entry.id),
+    );
+    if (held.length === 0) continue;
+    const seated = new Set(
+      [...held, ...guests]
+        .sort(byRecency)
+        .slice(0, held.length)
+        .map((entry) => entry.id),
+    );
+    for (const entry of [...held, ...guests]) {
+      if (seated.has(entry.id)) keep.add(entry.id);
+      else keep.delete(entry.id);
+    }
+  }
   const kept: MemoryEntry[] = [];
   const evicted: MemoryEntry[] = [];
   for (const entry of entries) {
@@ -583,12 +627,15 @@ function markProjectsRead(
  * own; the mirror is not queued, because the caller is either the mirror
  * itself, about to write, or a read whose only source was the folder that
  * already has them.
+ *
+ * Returns the lines a folder held past its bound, which were not taken in
+ * and which a caller writing the folder must write back.
  */
-function adoptProjectMemories(fromFolders: ProjectMemories): void {
+function adoptProjectMemories(fromFolders: ProjectMemories): ProjectMemories {
   const current = useMemoryStore.getState();
-  if (!current.hydrated) return;
+  if (!current.hydrated) return { entries: [], archived: [] };
   const folded = foldProjectMemories(current, fromFolders, forgottenIds);
-  if (folded.added === 0) return;
+  if (folded.added === 0) return folded.leftOut;
   const capped = capWithArchive(folded.entries);
   const next: MemoryState = {
     entries: capped.kept,
@@ -605,6 +652,7 @@ function adoptProjectMemories(fromFolders: ProjectMemories): void {
   };
   useMemoryStore.setState(next);
   document.write(next);
+  return folded.leftOut;
 }
 
 /**
@@ -667,9 +715,17 @@ async function mirrorProjectMemories(): Promise<void> {
       fromFolders.archived.push(...folder.archived);
     }),
   );
-  adoptProjectMemories(fromFolders);
+  // What a folder holds past its bound goes back into it as it was: those
+  // lines are the file's, not the store's, and writing the store's alone
+  // would delete them.
+  const leftOut = adoptProjectMemories(fromFolders);
   const state = useMemoryStore.getState();
-  await writeProjectMemories(readable, state.entries, state.archived, hasFile);
+  await writeProjectMemories(
+    readable,
+    [...state.entries, ...leftOut.entries],
+    [...state.archived, ...leftOut.archived],
+    hasFile,
+  );
 }
 
 let stopWatchingProjects: (() => void) | null = null;
@@ -1164,6 +1220,10 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
     // reads. Without that a restore into a full store would be undone by the
     // very next commit — the operator clicks, and the row returns to the
     // archive it came from.
+    // Rebuilt field by field, so a line a project folder brought comes back
+    // without `fromProjectFolder`: asking for it back is the operator taking
+    // it as their own, and a mark that kept it a guest would let the cap send
+    // it straight back to the archive.
     const entries = duplicate
       ? state.entries.map((entry) =>
           entry.id === duplicate.id ? { ...entry, reinforcedAt: nowMs } : entry,

@@ -4,6 +4,7 @@ import type { ProjectInfo } from "@/features/projects/api/projects";
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "./memoryEntry";
 import {
+  MAX_ADOPTED_LINES_PER_FOLDER,
   foldProjectMemories,
   mergeProjectMemories,
   readProjectMemories,
@@ -182,5 +183,42 @@ describe("foldProjectMemories", () => {
       new Set(["gone"]),
     );
     expect(folded.entries.map((memory) => memory.id)).toEqual(["kept"]);
+  });
+
+  it("takes a folder's lines as the file's word: marked, dated no later than now, bounded", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const now = 1_700_000_000_000;
+    const far = 9_000_000_000_000_000;
+    const file = Array.from(
+      { length: MAX_ADOPTED_LINES_PER_FOLDER + 50 },
+      (_, index) =>
+        entry({ id: `m${index}`, createdAt: far, reinforcedAt: far }),
+    );
+    // Lines this folder brought in an earlier read count toward its bound.
+    const earlier = entry({ id: "before", fromProjectFolder: true });
+    const folded = foldProjectMemories(
+      { entries: [earlier], archived: [] },
+      { entries: file, archived: [archived({ id: "old", createdAt: far })] },
+      new Set(),
+      now,
+    );
+    const taken = folded.entries.slice(1);
+    expect(taken).toHaveLength(MAX_ADOPTED_LINES_PER_FOLDER - 1);
+    expect(folded.added).toBe(MAX_ADOPTED_LINES_PER_FOLDER - 1);
+    for (const line of taken) {
+      expect(line.fromProjectFolder).toBe(true);
+      expect(line.createdAt).toBe(now);
+      expect(line.reinforcedAt).toBe(now);
+    }
+    // The rest is handed back untouched, for the file to keep.
+    expect(folded.leftOut.entries.map((line) => line.id)).toEqual(
+      file.slice(MAX_ADOPTED_LINES_PER_FOLDER - 1).map((line) => line.id),
+    );
+    expect(folded.leftOut.entries[0].createdAt).toBe(far);
+    expect(folded.leftOut.archived.map((line) => line.id)).toEqual(["old"]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("52 line(s) of project p1's folder"),
+    );
+    warn.mockRestore();
   });
 });

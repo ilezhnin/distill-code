@@ -286,4 +286,91 @@ describe("the project memory mirror and a project that joins late", () => {
 
     expect(ids(useMemoryStore.getState().entries).sort()).toEqual(["c1", "s1"]);
   });
+
+  it("lets a planted folder crowd only its own project, and keeps what it did not take in the file", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await hydrateMemoryStore();
+    // The operator's own list: global lines, another project's, and a few
+    // of this project's, all written long ago.
+    const own: MemoryEntry[] = [
+      ...Array.from({ length: 200 }, (_, index) =>
+        entry({ id: `g${index}`, scope: "global", projectId: null }),
+      ),
+      ...Array.from({ length: 30 }, (_, index) =>
+        entry({ id: `o${index}`, projectId: "p2" }),
+      ),
+      ...Array.from({ length: 20 }, (_, index) =>
+        entry({ id: `mine${index}`, projectId: "p1" }),
+      ),
+    ];
+    useMemoryStore.setState({ entries: own });
+    // Three hundred lines dated far in the future, none of them marked.
+    const planted = Array.from({ length: 300 }, (_, index) =>
+      entry({ id: `x${index}`, createdAt: 9e15, reinforcedAt: 9e15 }),
+    );
+    putFile("/work/sample-project", planted);
+
+    useProjectStore.setState({ projects: [project()] });
+    await flushMemoryWrites();
+
+    const state = useMemoryStore.getState();
+    const live = new Set(ids(state.entries));
+    // Every global and every other project's line is still live.
+    for (const line of own.slice(0, 230)) expect(live.has(line.id)).toBe(true);
+    // Only this project's own lines made room, into the archive.
+    expect(
+      state.archived
+        .filter((line) => line.id.startsWith("mine"))
+        .map((line) => line.archiveReason),
+    ).toEqual(Array(20).fill("capacity"));
+    // Two hundred taken in, live or archived, each marked and dated now.
+    const taken = [...state.entries, ...state.archived].filter((line) =>
+      line.id.startsWith("x"),
+    );
+    expect(taken).toHaveLength(200);
+    for (const line of taken) {
+      expect(line.fromProjectFolder).toBe(true);
+      expect(line.createdAt).toBeLessThanOrEqual(Date.now());
+    }
+    expect(state.entries).toHaveLength(300);
+
+    // The next mirror writes the file back with the hundred it did not take.
+    useMemoryStore
+      .getState()
+      .remember({ text: "The operator pushes", scope: "global" }, NOW);
+    await flushMemoryWrites();
+    const file = readFile("/work/sample-project");
+    const inFile = new Set([
+      ...ids(file?.entries ?? []),
+      ...ids(file?.archived ?? []),
+    ]);
+    for (const line of planted) expect(inFile.has(line.id)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("100 line(s) of project p1's folder"),
+    );
+    // And the operator's new global line took a planted line's place, not
+    // one of their own.
+    expect(
+      ids(useMemoryStore.getState().entries).filter((id) => id.startsWith("g")),
+    ).toHaveLength(200);
+    warn.mockRestore();
+  });
+
+  it("shows a restored folder line as the operator's own", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    putFile("/work/sample-project", [entry({ id: "c1" })]);
+    useProjectStore.setState({ projects: [project()] });
+    await hydrateMemoryStore();
+    expect(useMemoryStore.getState().entries[0].fromProjectFolder).toBe(true);
+
+    const [line] = useMemoryStore.getState().entries;
+    useMemoryStore.setState({
+      entries: [],
+      archived: [{ ...line, archivedAt: NOW, archiveReason: "capacity" }],
+    });
+    expect(useMemoryStore.getState().restoreArchived("c1", NOW)).toBeNull();
+    expect(useMemoryStore.getState().entries[0].fromProjectFolder).toBe(
+      undefined,
+    );
+  });
 });

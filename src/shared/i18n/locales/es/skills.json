@@ -43,6 +43,7 @@
     "exportError": "Error al exportar la skill",
     "exportedTo": "Exportado a {{filename}}",
     "filePath": "Ruta del archivo",
+    "fromProjectFolder": "De la carpeta de {{project}}",
     "importError": "Error al importar la skill",
     "importRefused": {
       "agent": "Este archivo contiene un agente, no una skill. Impórtalo desde Agentes.",

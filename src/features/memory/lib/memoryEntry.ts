@@ -27,6 +27,14 @@ export interface MemoryEntry {
   createdBySessionId?: string;
   /** Last time an agent asked to remember this same statement again. */
   reinforcedAt?: number;
+  /**
+   * Set on a line taken in from a project folder's `.distill/memory.json`
+   * that this app had never seen. Nobody here wrote it — a cloned repository,
+   * a colleague or another machine did — so it is shown as such, and it may
+   * only ever take a place from its own project's lines (`capWithArchive`).
+   * Restoring it from the archive is the operator taking it as their own.
+   */
+  fromProjectFolder?: true;
 }
 
 /**

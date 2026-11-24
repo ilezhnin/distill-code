@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { IconDots, IconPencil, IconTrash } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { isHexColor } from "@/features/projects/lib/customPillColor";
 import { isPillTone } from "@/features/projects/lib/pillTones";
@@ -82,6 +83,16 @@ export function SkillCard({
       >
         {skill.name}
       </span>
+      {skill.sourceKind === "project" ? (
+        // A project's own skill may carry the name of one of the operator's
+        // and takes its place in that project's chats; without this the two
+        // cards read the same.
+        <Badge variant="secondary" data-testid="skill-from-project-folder">
+          {t("view.fromProjectFolder", {
+            project: skill.projectLinks[0]?.name ?? skill.sourceLabel,
+          })}
+        </Badge>
+      ) : null}
       {skill.description ? (
         // Full card width with long words broken: as a flex item the text
         // would otherwise be as wide as its longest word and push past a

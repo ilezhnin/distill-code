@@ -43,6 +43,7 @@
     "exportError": "Failed to export skill",
     "exportedTo": "Exported to {{filename}}",
     "filePath": "File path",
+    "fromProjectFolder": "From the folder of {{project}}",
     "importError": "Failed to import skill",
     "importRefused": {
       "agent": "This file holds an agent, not a skill. Import it from Agents.",

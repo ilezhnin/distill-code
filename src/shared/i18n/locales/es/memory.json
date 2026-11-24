@@ -65,6 +65,7 @@
     "forgetConfirmTitle": "¿Olvidar esta memoria?",
     "forgetConfirmDescription": "«{{text}}» ya no se llevará a sesiones futuras. Esto no se puede deshacer.",
     "fromAgent": "de un agente",
+    "fromProjectFolder": "de la carpeta de este proyecto",
     "inPrompt": "en el bloque",
     "crowdedOut": "desplazada: se sigue encontrando con la búsqueda y con recall",
     "meta": "{{scope}} · creada el {{created}}",

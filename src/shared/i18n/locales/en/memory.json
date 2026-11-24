@@ -65,6 +65,7 @@
     "forgetConfirmTitle": "Forget this memory?",
     "forgetConfirmDescription": "\"{{text}}\" will no longer be carried into future sessions. This cannot be undone.",
     "fromAgent": "from an agent",
+    "fromProjectFolder": "from this project's folder",
     "inPrompt": "in the prompt",
     "crowdedOut": "crowded out — still found by search and recall",
     "meta": "{{scope}} · created {{created}}",

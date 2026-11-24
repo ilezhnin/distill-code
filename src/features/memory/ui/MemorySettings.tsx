@@ -573,6 +573,7 @@ export function MemorySettings() {
                           ).toLocaleDateString(),
                         })}
                       </p>
+                      <ProjectFolderBadge entry={hit.entry} />
                       <AgentProvenanceBadge
                         sessionId={hit.entry.createdBySessionId}
                       />
@@ -1247,6 +1248,7 @@ function MemoryRow({
           }}
           aria-label={t("row.edit")}
         />
+        <ProjectFolderBadge entry={entry} />
         <AgentProvenanceBadge sessionId={entry.createdBySessionId} />
         <Button
           type="button"
@@ -1341,6 +1343,23 @@ function MemoryRow({
  * a badge that only the live list carried would make the archive the one place
  * the operator cannot tell their own words from an agent's.
  */
+/**
+ * Says that a line came in from a project folder's file. Nobody in this app
+ * wrote it, so without the mark it read as the operator's own words.
+ */
+function ProjectFolderBadge({ entry }: { entry: MemoryEntry }) {
+  const { t } = useTranslation("memory");
+  if (!entry.fromProjectFolder) return null;
+  return (
+    <span
+      className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[10px] text-muted-foreground"
+      data-testid="memory-from-project-folder"
+    >
+      {t("row.fromProjectFolder")}
+    </span>
+  );
+}
+
 function AgentProvenanceBadge({
   sessionId,
 }: {
@@ -1437,6 +1456,7 @@ function ArchivedMemoryRow({
         <p className="min-w-0 flex-1 text-sm text-muted-foreground">
           {entry.text}
         </p>
+        <ProjectFolderBadge entry={entry} />
         <AgentProvenanceBadge sessionId={entry.createdBySessionId} />
         <Button
           type="button"
