@@ -8,6 +8,7 @@ import {
 } from "@/shared/ui/tooltip";
 import { parseSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
 import { isExternalHref } from "@/shared/lib/isExternalHref";
+import { mermaidWithoutLinks } from "@/shared/ui/ai-elements/diagram-links";
 import { useLinkSafetyGate } from "@/shared/ui/ai-elements/link-safety-modal";
 import { useOpenLocalMarkdownLink } from "@/shared/ui/ai-elements/local-link-context";
 import { cn } from "@/shared/lib/cn";
@@ -16,7 +17,6 @@ import { useStreamdownTableScrollbarSizing } from "@/shared/ui/ai-elements/strea
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import { toast } from "sonner";
 import type { ComponentProps, ErrorInfo, MouseEvent, ReactNode } from "react";
 import {
@@ -94,7 +94,7 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
   imageRenderer?: MarkdownImageRenderer;
 };
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+const streamdownPlugins = { cjk, code, math, mermaid: mermaidWithoutLinks };
 
 /**
  * Fence renderers a surface supplies to every `MessageResponse` beneath it.
