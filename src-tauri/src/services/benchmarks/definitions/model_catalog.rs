@@ -72,6 +72,11 @@ pub const CODEX_WINDOW_RAISED_AT: i64 = 1_793_577_600_000;
 /// 2026-11-09T00:00:00Z: the day Fable 5.2 was released and its price and
 /// window were read.
 const FABLE_5_2_CHECKED_AT: i64 = 1_794_182_400_000;
+/// 2026-11-23T12:00:00Z: the day every vendor's price page and model list
+/// were read again, beside the window each CLI reported in the runs' records.
+const RECHECKED_AT: i64 = 1_795_435_200_000;
+pub const ZAI_GLM_5_3: &str = "https://docs.z.ai/guides/llm/glm-5.3";
+pub const ZAI_GLM_5_4: &str = "https://docs.z.ai/guides/llm/glm-5.4";
 /// What every OpenAI model takes on the API, where a prompt over 272K input
 /// tokens is billed at 2x input and 1.5x output for the whole request.
 const OPENAI_API_CONTEXT: u64 = 1_050_000;
@@ -172,7 +177,364 @@ pub fn seed_sets() -> Vec<(&'static str, Vec<CatalogEntry>)> {
         ("moonshot-2026-10-23", moonshot_seeds_2026_10_23()),
         ("contexts-2026-11-01", context_seeds_2026_11_01()),
         ("anthropic-2026-11-09", anthropic_seeds_2026_11_09()),
+        ("recheck-2026-11-23", recheck_seeds_2026_11_23()),
     ]
+}
+
+/// Every vendor's price page and model list read again on 2026-11-23, beside
+/// the window each CLI reported in the runs' own records (the session's
+/// `usage_update` size; for Codex, its model list). What that adds and
+/// corrects:
+///
+/// - Anthropic: the models a run can name that had no row, so the board
+///   showed them without a price or a window and priced them by the
+///   provider's own figure (Fable 5, Opus 5, Opus 4.8, 4.7 and 4.6, Sonnet
+///   4.6, Haiku 5.5, Mythos 5.1 and 5.2), and Sonnet 5.5's cache read, $0.10
+///   where the seed carried Sonnet 5's $0.20. Claude Code runs Opus 4.6 and
+///   Sonnet 4.6 at 200K against the API's 1M, the measured others at 1M.
+///   Fable 5.1 and Opus 5.5 are restated after Fable 5 and Opus 5, whose
+///   needles their names contain, so each keeps resolving to its own row.
+/// - OpenAI: GPT-6.1 Sol at the window it runs at, and the three models the
+///   Codex CLI lists since (GPT-6.1 Terra, GPT-6.2 Sol, GPT-6.2 Astra). A
+///   benchmark run raises every one of them to the CLI's ceiling, 872,000,
+///   from the 500,000 (GPT-6.2 Astra: 272,000) the CLI serves by default.
+/// - Moonshot: the K3 window is 1,048,576, as the price page gives it for
+///   the whole K3 series, not the rounded 1M; K3-256k is restated after K3
+///   to keep winning their shared needle.
+/// - Z.ai: GLM-5.3, and GLM-5.4 as a labelled estimate at GLM-5.3's price,
+///   since the price page does not list it; GLM-5.3-Flash is restated after
+///   GLM-5.3, whose needle its id contains.
+///
+/// Corrections of the seeds, not changes at the vendors, so each applies from
+/// its seed's date to every measurement; a model released later can match no
+/// earlier one. Mythos 5.2 applies from its release, like Fable 5.2, and the
+/// OpenAI rows from the policy that raises the window.
+///
+/// A store seeded on 2026-10-22 holds that day's context corrections
+/// effective from that day: they were dated back to the seeds' dates only
+/// afterwards, and a store adds a set once. There a row dated at the seed
+/// would lose to them from 10-22 on, so the rows that correct one of them
+/// (Sonnet 5.5, K3 and K3-256k) are stated twice, from the seed's date and
+/// from 10-22, and win in either store.
+fn recheck_seeds_2026_11_23() -> Vec<CatalogEntry> {
+    let anthropic = format!("{ANTHROPIC_PRICING} ; {ANTHROPIC_MODELS}");
+    let claude_code_200k = format!(
+        "{anthropic} ; Claude Code runs it at 200K (the window its sessions report), the API takes 1M"
+    );
+    let haiku_5_5 = format!(
+        "{anthropic} ; prompts over 100,000 tokens are billed at $0.50 input and $2.50 output"
+    );
+    let openai_note = "prompts over 272K input tokens are billed at 2x input and 1.5x output for the whole request";
+    let openai = |needle: &str, served: &str| {
+        format!(
+            "{OPENAI_PRICING} ; https://developers.openai.com/api/docs/models/{needle} ; {openai_note} ; the Codex CLI serves {served} by default, raised to its ceiling by the benchmark policy (model_context_window)"
+        )
+    };
+    let glm_5_4 = format!(
+        "estimate: Z.ai lists no price for GLM-5.4 ({ZAI_PRICING}), so it is priced as GLM-5.3, as GLM-5.1 and GLM-5.2 are, until a published price appears; 1M context per {ZAI_GLM_5_4}"
+    );
+    struct Row {
+        id: &'static str,
+        provider: Option<&'static str>,
+        vendor: &'static str,
+        needle: &'static str,
+        name: &'static str,
+        prices: [Option<f64>; 4],
+        context: u64,
+        max_context: Option<u64>,
+        effective_from: i64,
+        source: String,
+    }
+    let claude = |id, needle, name, prices: [f64; 4], context, max_context, source: &str| Row {
+        id,
+        provider: None,
+        vendor: "Anthropic",
+        needle,
+        name,
+        prices: prices.map(Some),
+        context,
+        max_context,
+        effective_from: SEED_CHECKED_AT,
+        source: source.into(),
+    };
+    let codex = |id, needle, name, prices: [f64; 4], served: &str| Row {
+        id,
+        provider: Some("codex-acp"),
+        vendor: "OpenAI",
+        needle,
+        name,
+        prices: prices.map(Some),
+        context: 872_000,
+        max_context: Some(OPENAI_API_CONTEXT),
+        effective_from: CODEX_WINDOW_RAISED_AT,
+        source: openai(needle, served),
+    };
+    let listed = |id, provider, vendor, needle, name, prices, context, source: String| Row {
+        id,
+        provider: Some(provider),
+        vendor,
+        needle,
+        name,
+        prices,
+        context,
+        max_context: None,
+        effective_from: VENDOR_SEEDS_CHECKED_AT,
+        source,
+    };
+    let opus_4 = [5.0, 25.0, 0.50, 6.25];
+    let k3 = [Some(3.0), Some(15.0), Some(0.3), Some(3.0)];
+    let glm_5_3 = [Some(1.4), Some(4.4), Some(0.26), None];
+    let rows = vec![
+        claude(
+            "anthropic-fable-5",
+            "fable 5",
+            "Claude Fable 5",
+            [10.0, 50.0, 1.0, 12.5],
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        claude(
+            "anthropic-fable-5-1",
+            "fable 5.1",
+            "Claude Fable 5.1",
+            [10.0, 50.0, 0.25, 12.5],
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        claude(
+            "anthropic-opus-5",
+            "opus 5",
+            "Claude Opus 5",
+            opus_4,
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        claude(
+            "anthropic-opus-5-5",
+            "opus 5.5",
+            "Claude Opus 5.5",
+            [4.0, 20.0, 0.20, 5.0],
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        claude(
+            "anthropic-opus-4-8",
+            "opus 4.8",
+            "Claude Opus 4.8",
+            opus_4,
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        claude(
+            "anthropic-opus-4-7",
+            "opus 4.7",
+            "Claude Opus 4.7",
+            opus_4,
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        claude(
+            "anthropic-opus-4-6",
+            "opus 4.6",
+            "Claude Opus 4.6",
+            opus_4,
+            200_000,
+            Some(1_000_000),
+            &claude_code_200k,
+        ),
+        claude(
+            "anthropic-sonnet-4-6",
+            "sonnet 4.6",
+            "Claude Sonnet 4.6",
+            [3.0, 15.0, 0.30, 3.75],
+            200_000,
+            Some(1_000_000),
+            &claude_code_200k,
+        ),
+        claude(
+            "anthropic-sonnet-5-5",
+            "sonnet 5.5",
+            "Claude Sonnet 5.5",
+            [2.0, 10.0, 0.10, 2.5],
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        claude(
+            "anthropic-haiku-5-5",
+            "haiku 5.5",
+            "Claude Haiku 5.5",
+            [0.10, 0.50, 0.01, 0.125],
+            1_000_000,
+            None,
+            &haiku_5_5,
+        ),
+        claude(
+            "anthropic-mythos-5-1",
+            "mythos 5.1",
+            "Claude Mythos 5.1",
+            [10.0, 50.0, 0.25, 12.5],
+            1_000_000,
+            None,
+            &anthropic,
+        ),
+        Row {
+            effective_from: FABLE_5_2_CHECKED_AT,
+            ..claude(
+                "anthropic-mythos-5-2",
+                "mythos 5.2",
+                "Claude Mythos 5.2",
+                [8.0, 40.0, 0.20, 10.0],
+                1_000_000,
+                None,
+                &anthropic,
+            )
+        },
+        codex(
+            "openai-gpt-6-1-sol-raised",
+            "gpt-6.1-sol",
+            "GPT-6.1 Sol",
+            [2.0, 10.0, 0.1, 2.5],
+            "500,000",
+        ),
+        codex(
+            "openai-gpt-6-1-terra-raised",
+            "gpt-6.1-terra",
+            "GPT-6.1 Terra",
+            [1.0, 5.0, 0.05, 1.25],
+            "500,000",
+        ),
+        codex(
+            "openai-gpt-6-2-sol-raised",
+            "gpt-6.2-sol",
+            "GPT-6.2 Sol",
+            [2.0, 10.0, 0.1, 2.5],
+            "500,000",
+        ),
+        codex(
+            "openai-gpt-6-2-astra-raised",
+            "gpt-6.2-astra",
+            "GPT-6.2 Astra",
+            [8.0, 40.0, 0.4, 10.0],
+            "272,000",
+        ),
+        listed(
+            "moonshot-k3",
+            "kimi-acp",
+            "Moonshot AI",
+            "kimi-code/k3",
+            "Kimi K3",
+            k3,
+            1_048_576,
+            MOONSHOT_PRICING.into(),
+        ),
+        listed(
+            "moonshot-k3-256k",
+            "kimi-acp",
+            "Moonshot AI",
+            "kimi-code/k3-256k",
+            "Kimi K3 (256K)",
+            k3,
+            262_144,
+            MOONSHOT_PRICING.into(),
+        ),
+        listed(
+            "zai-glm-5-3",
+            "zai-acp",
+            "Z.ai",
+            "glm-5.3",
+            "GLM-5.3",
+            glm_5_3,
+            1_000_000,
+            format!("{ZAI_GLM_5_3} ; {ZAI_PRICING}"),
+        ),
+        listed(
+            "zai-glm-5-3-flash",
+            "zai-acp",
+            "Z.ai",
+            "glm-5.3-flash",
+            "GLM-5.3-Flash",
+            [Some(0.15), Some(0.50), Some(0.03), None],
+            1_000_000,
+            format!("{ZAI_GLM_5_3_FLASH} ; {ZAI_PRICING}"),
+        ),
+        listed(
+            "zai-glm-5-4",
+            "zai-acp",
+            "Z.ai",
+            "glm-5.4",
+            "GLM-5.4",
+            glm_5_3,
+            1_000_000,
+            glm_5_4,
+        ),
+        // Again from 10-22, for a store that holds that day's rows from then.
+        Row {
+            effective_from: ANTHROPIC_CONTEXT_CHECKED_AT,
+            ..claude(
+                "anthropic-sonnet-5-5-since-10-22",
+                "sonnet 5.5",
+                "Claude Sonnet 5.5",
+                [2.0, 10.0, 0.10, 2.5],
+                1_000_000,
+                None,
+                &anthropic,
+            )
+        },
+        Row {
+            effective_from: ANTHROPIC_CONTEXT_CHECKED_AT,
+            ..listed(
+                "moonshot-k3-since-10-22",
+                "kimi-acp",
+                "Moonshot AI",
+                "kimi-code/k3",
+                "Kimi K3",
+                k3,
+                1_048_576,
+                MOONSHOT_PRICING.into(),
+            )
+        },
+        Row {
+            effective_from: ANTHROPIC_CONTEXT_CHECKED_AT,
+            ..listed(
+                "moonshot-k3-256k-since-10-22",
+                "kimi-acp",
+                "Moonshot AI",
+                "kimi-code/k3-256k",
+                "Kimi K3 (256K)",
+                k3,
+                262_144,
+                MOONSHOT_PRICING.into(),
+            )
+        },
+    ];
+    rows.into_iter()
+        .zip(0i64..)
+        .map(|(row, position)| CatalogEntry {
+            id: format!("seed-{}-2026-11-23", row.id),
+            kind: "model".into(),
+            provider_id: row.provider.map(Into::into),
+            needle: row.needle.into(),
+            display_name: Some(row.name.into()),
+            vendor: Some(row.vendor.into()),
+            input_per_million: row.prices[0],
+            output_per_million: row.prices[1],
+            cache_read_per_million: row.prices[2],
+            cache_write_per_million: row.prices[3],
+            context_tokens: Some(row.context),
+            max_context_tokens: row.max_context,
+            effective_from: row.effective_from,
+            checked_at: RECHECKED_AT,
+            source: row.source,
+            created_at: RECHECKED_AT + position,
+        })
+        .collect()
 }
 
 /// Fable 5.2, released on 2026-11-09 below Fable 5.1's price: a new model,
@@ -906,9 +1268,24 @@ mod tests {
                 "contexts-2026-10-22",
                 "moonshot-2026-10-23",
                 "contexts-2026-11-01",
-                "anthropic-2026-11-09"
+                "anthropic-2026-11-09",
+                "recheck-2026-11-23"
             ]
         );
+        let mut recheck_ids = std::collections::HashSet::new();
+        for seed in recheck_seeds_2026_11_23() {
+            validate(&seed).unwrap();
+            assert!(recheck_ids.insert(seed.id.clone()), "{}", seed.id);
+            assert!(
+                seed.source.starts_with("https://") || seed.source.starts_with("estimate:"),
+                "{}",
+                seed.id
+            );
+            assert_eq!(seed.checked_at, RECHECKED_AT, "{}", seed.id);
+            assert!(seed.effective_from < seed.checked_at, "{}", seed.id);
+            assert!(seed.context_tokens.is_some(), "{}", seed.id);
+            assert!(seed.input_per_million.is_some(), "{}", seed.id);
+        }
         for seed in anthropic_seeds_2026_11_09() {
             validate(&seed).unwrap();
             assert!(seed.source.contains("platform.claude.com"));
@@ -997,11 +1374,14 @@ mod tests {
         assert_eq!(entry.cache_read_per_million, Some(0.20));
         assert_eq!(entry.cache_write_per_million, Some(10.0));
         assert_eq!(entry.context_tokens, Some(1_000_000));
-        assert!(resolve(&entries, &current, FABLE_5_2_CHECKED_AT - 1).is_none());
+        // Before its release its own row applies to nothing.
+        assert!(resolve(&entries, &current, FABLE_5_2_CHECKED_AT - 1)
+            .is_none_or(|earlier| earlier.needle != "fable 5.2"));
         let previous = fable("claude-fable-5-1[1m]", "Fable 5.1");
         let entry = resolve(&entries, &previous, FABLE_5_2_CHECKED_AT).unwrap();
-        assert_eq!(entry.id, "seed-anthropic-fable-5-1");
+        assert_eq!(entry.id, "seed-anthropic-fable-5-1-2026-11-23");
         assert_eq!(entry.input_per_million, Some(10.0));
+        assert_eq!(entry.cache_read_per_million, Some(0.25));
     }
 
     /// Every OpenAI row reads with both windows: the 272K the Codex CLI
@@ -1034,10 +1414,15 @@ mod tests {
         let five = model("codex-acp", "gpt-5.5");
         let five = resolve(&entries, &five, CODEX_WINDOW_RAISED_AT).unwrap();
         assert_eq!(windows(five), (Some(272_000), Some(1_050_000)));
-        // Not served: no window, the API's beside it.
+        // Not served before the policy: no window, the API's beside it. It
+        // has run since at the raised one.
         let sol = model("codex-acp", "gpt-6.1-sol");
+        let unserved = resolve(&entries, &sol, CODEX_WINDOW_RAISED_AT - 1).unwrap();
+        assert_eq!(windows(unserved), (None, Some(1_050_000)));
         let sol = resolve(&entries, &sol, CODEX_WINDOW_RAISED_AT).unwrap();
-        assert_eq!(windows(sol), (None, Some(1_050_000)));
+        assert_eq!(sol.id, "seed-openai-gpt-6-1-sol-raised-2026-11-23");
+        assert_eq!(windows(sol), (Some(872_000), Some(1_050_000)));
+        assert_eq!(sol.input_per_million, unserved.input_per_million);
         let fast = model("grok-acp", "grok-4.7-build-fast");
         let fast = resolve(&entries, &fast, CODEX_WINDOW_RAISED_AT).unwrap();
         assert_eq!(fast.id, "seed-xai-grok-4-7-build-fast-2026-11-01");
@@ -1262,8 +1647,9 @@ mod tests {
             ..sonnet_5
         };
         let entry = resolve(&entries, &sonnet_5_5, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
-        assert_eq!(entry.id, "seed-anthropic-sonnet-5-5-2026-10-22");
+        assert_eq!(entry.id, "seed-anthropic-sonnet-5-5-since-10-22-2026-11-23");
         assert_eq!(entry.display_name.as_deref(), Some("Claude Sonnet 5.5"));
+        assert_eq!(entry.context_tokens, Some(1_000_000));
     }
 
     #[test]
@@ -1295,19 +1681,18 @@ mod tests {
             assert_eq!(list_cost(entry, &usage), Some(input * 2.0 + output + 0.20));
         }
         let old = resolve(&entries, &k3(), KIMI_K3_1_CHECKED_AT).unwrap();
-        assert_eq!(old.id, "seed-moonshot-k3-2026-10-22");
+        assert_eq!(old.id, "seed-moonshot-k3-since-10-22-2026-11-23");
         assert_eq!(old.input_per_million, Some(3.0));
         assert_eq!(old.output_per_million, Some(15.0));
-        assert_eq!(
-            old.id,
-            resolve(&entries, &k3(), VENDOR_SEEDS_CHECKED_AT)
-                .unwrap()
-                .id
-        );
+        let first = resolve(&entries, &k3(), VENDOR_SEEDS_CHECKED_AT).unwrap();
+        assert_eq!(first.id, "seed-moonshot-k3-2026-11-23");
+        assert_eq!(first.input_per_million, old.input_per_million);
+        assert_eq!(first.context_tokens, old.context_tokens);
     }
 
     /// The K3 rows share a needle: the 256K window resolves to its own row,
-    /// the plain K3 to the 1M one, and GLM-5.3-Flash gets a priced row.
+    /// the plain K3 to the series' 1,048,576, and GLM-5.3-Flash gets a priced
+    /// row.
     #[test]
     fn the_context_correction_resolves_k3_windows_and_glm_flash() {
         let entries: Vec<CatalogEntry> = seed_sets()
@@ -1319,15 +1704,16 @@ mod tests {
             ..k3()
         };
         let entry = resolve(&entries, &k3, VENDOR_SEEDS_CHECKED_AT).unwrap();
-        assert_eq!(entry.id, "seed-moonshot-k3-2026-10-22");
-        assert_eq!(entry.context_tokens, Some(1_000_000));
+        assert_eq!(entry.id, "seed-moonshot-k3-2026-11-23");
+        assert_eq!(entry.context_tokens, Some(1_048_576));
+        assert_eq!(entry.input_per_million, Some(3.0));
         let window = Configuration {
             model_id: "kimi-code/k3-256k".into(),
             model_name: Some("K3-256k".into()),
             ..k3.clone()
         };
         let entry = resolve(&entries, &window, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
-        assert_eq!(entry.id, "seed-moonshot-k3-256k-2026-10-22");
+        assert_eq!(entry.id, "seed-moonshot-k3-256k-since-10-22-2026-11-23");
         assert_eq!(entry.context_tokens, Some(262_144));
         let flash = Configuration {
             provider_id: "zai-acp".into(),
@@ -1336,8 +1722,368 @@ mod tests {
             ..k3
         };
         let entry = resolve(&entries, &flash, ANTHROPIC_CONTEXT_CHECKED_AT).unwrap();
-        assert_eq!(entry.id, "seed-zai-glm-5-3-flash-2026-10-22");
+        assert_eq!(entry.id, "seed-zai-glm-5-3-flash-2026-11-23");
         assert_eq!(entry.context_tokens, Some(1_000_000));
         assert_eq!(entry.output_per_million, Some(0.5));
+    }
+
+    /// The 2026-11-23 check: every model a run can name resolves to a priced
+    /// row with a window, and a name that contains another's needle (Fable
+    /// 5.1, Opus 5.5, Sonnet 5.5, K3-256k, GLM-5.3-Flash) keeps its own row.
+    #[test]
+    fn the_recheck_prices_every_listed_model_by_its_own_row() {
+        let entries: Vec<CatalogEntry> = seed_sets()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        let model = |provider: &str, id: &str, name: &str| Configuration {
+            provider_id: provider.into(),
+            model_id: id.into(),
+            model_name: Some(name.into()),
+            ..k3()
+        };
+        let p = |input: f64, output: f64, read: f64, write: f64| {
+            [Some(input), Some(output), Some(read), Some(write)]
+        };
+        let no_write =
+            |input: f64, output: f64, read: f64| [Some(input), Some(output), Some(read), None];
+        let api = Some(1_000_000);
+        let openai = Some(1_050_000);
+        // Provider, model id, name, the row, its prices, run and API windows.
+        let cases = [
+            (
+                "claude-acp",
+                "claude-fable-5[1m]",
+                "Fable 5",
+                "seed-anthropic-fable-5-2026-11-23",
+                p(10.0, 50.0, 1.0, 12.5),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-fable-5-1[1m]",
+                "Fable 5.1",
+                "seed-anthropic-fable-5-1-2026-11-23",
+                p(10.0, 50.0, 0.25, 12.5),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-fable-5-2[1m]",
+                "Fable 5.2",
+                "seed-anthropic-fable-5-2-2026-11-09",
+                p(8.0, 40.0, 0.2, 10.0),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "default",
+                "Mythos 5.2",
+                "seed-anthropic-mythos-5-2-2026-11-23",
+                p(8.0, 40.0, 0.2, 10.0),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-mythos-5-1",
+                "Mythos 5.1",
+                "seed-anthropic-mythos-5-1-2026-11-23",
+                p(10.0, 50.0, 0.25, 12.5),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-opus-5",
+                "Opus 5",
+                "seed-anthropic-opus-5-2026-11-23",
+                p(5.0, 25.0, 0.5, 6.25),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "opus[1m]",
+                "Opus 5.5",
+                "seed-anthropic-opus-5-5-2026-11-23",
+                p(4.0, 20.0, 0.2, 5.0),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-opus-4-8",
+                "Opus 4.8",
+                "seed-anthropic-opus-4-8-2026-11-23",
+                p(5.0, 25.0, 0.5, 6.25),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-opus-4-7",
+                "Opus 4.7",
+                "seed-anthropic-opus-4-7-2026-11-23",
+                p(5.0, 25.0, 0.5, 6.25),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-opus-4-6",
+                "Opus 4.6",
+                "seed-anthropic-opus-4-6-2026-11-23",
+                p(5.0, 25.0, 0.5, 6.25),
+                200_000,
+                api,
+            ),
+            (
+                "claude-acp",
+                "claude-sonnet-4-6",
+                "Sonnet 4.6",
+                "seed-anthropic-sonnet-4-6-2026-11-23",
+                p(3.0, 15.0, 0.3, 3.75),
+                200_000,
+                api,
+            ),
+            (
+                "claude-acp",
+                "claude-sonnet-5",
+                "Sonnet 5",
+                "seed-anthropic-sonnet-5-2026-10-22",
+                p(2.0, 10.0, 0.2, 2.5),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "sonnet",
+                "Sonnet 5.5",
+                "seed-anthropic-sonnet-5-5-since-10-22-2026-11-23",
+                p(2.0, 10.0, 0.1, 2.5),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "haiku",
+                "Haiku 5.5",
+                "seed-anthropic-haiku-5-5-2026-11-23",
+                p(0.1, 0.5, 0.01, 0.125),
+                1_000_000,
+                None,
+            ),
+            (
+                "claude-acp",
+                "claude-haiku-4-5-20251001",
+                "Haiku 4.5",
+                "seed-anthropic-haiku-4-5",
+                p(1.0, 5.0, 0.1, 1.25),
+                200_000,
+                None,
+            ),
+            (
+                "codex-acp",
+                "gpt-6.1-sol",
+                "6.1 Sol",
+                "seed-openai-gpt-6-1-sol-raised-2026-11-23",
+                p(2.0, 10.0, 0.1, 2.5),
+                872_000,
+                openai,
+            ),
+            (
+                "codex-acp",
+                "gpt-6.1-terra",
+                "6.1 Terra",
+                "seed-openai-gpt-6-1-terra-raised-2026-11-23",
+                p(1.0, 5.0, 0.05, 1.25),
+                872_000,
+                openai,
+            ),
+            (
+                "codex-acp",
+                "gpt-6.2-sol",
+                "6.2 Sol",
+                "seed-openai-gpt-6-2-sol-raised-2026-11-23",
+                p(2.0, 10.0, 0.1, 2.5),
+                872_000,
+                openai,
+            ),
+            (
+                "codex-acp",
+                "gpt-6.2-astra",
+                "6.2 Astra",
+                "seed-openai-gpt-6-2-astra-raised-2026-11-23",
+                p(8.0, 40.0, 0.4, 10.0),
+                872_000,
+                openai,
+            ),
+            (
+                "codex-acp",
+                "gpt-6-sol",
+                "6 Sol",
+                "seed-openai-gpt-6-sol-raised-2026-11-01",
+                p(2.0, 10.0, 0.2, 2.5),
+                872_000,
+                openai,
+            ),
+            (
+                "kimi-acp",
+                "kimi-code/k3.1-pro",
+                "K3.1 Pro",
+                "seed-moonshot-k3.1-pro-2026-10-23",
+                p(2.0, 10.0, 0.2, 2.0),
+                1_048_576,
+                None,
+            ),
+            (
+                "kimi-acp",
+                "kimi-code/k3",
+                "K3",
+                "seed-moonshot-k3-since-10-22-2026-11-23",
+                p(3.0, 15.0, 0.3, 3.0),
+                1_048_576,
+                None,
+            ),
+            (
+                "kimi-acp",
+                "kimi-code/k3-256k",
+                "K3-256k",
+                "seed-moonshot-k3-256k-since-10-22-2026-11-23",
+                p(3.0, 15.0, 0.3, 3.0),
+                262_144,
+                None,
+            ),
+            (
+                "zai-acp",
+                "zai-coding-plan/glm-5.3",
+                "GLM-5.3",
+                "seed-zai-glm-5-3-2026-11-23",
+                no_write(1.4, 4.4, 0.26),
+                1_000_000,
+                None,
+            ),
+            (
+                "zai-acp",
+                "zai-coding-plan/glm-5.3-flash",
+                "GLM-5.3-Flash",
+                "seed-zai-glm-5-3-flash-2026-11-23",
+                no_write(0.15, 0.5, 0.03),
+                1_000_000,
+                None,
+            ),
+            (
+                "zai-acp",
+                "zai-coding-plan/glm-5.4",
+                "GLM-5.4",
+                "seed-zai-glm-5-4-2026-11-23",
+                no_write(1.4, 4.4, 0.26),
+                1_000_000,
+                None,
+            ),
+        ];
+        for (provider, id, name, row, prices, context, max_context) in cases {
+            let entry = resolve(&entries, &model(provider, id, name), RECHECKED_AT)
+                .unwrap_or_else(|| panic!("{name} resolves to no row"));
+            assert_eq!(entry.id, row, "{name}");
+            assert_eq!(
+                [
+                    entry.input_per_million,
+                    entry.output_per_million,
+                    entry.cache_read_per_million,
+                    entry.cache_write_per_million
+                ],
+                prices,
+                "{name}"
+            );
+            assert_eq!(entry.context_tokens, Some(context), "{name}");
+            assert_eq!(entry.max_context_tokens, max_context, "{name}");
+        }
+        // The corrections reach the first measurement of a model the seeds
+        // left out or mispriced; Mythos 5.2 starts with its release.
+        let sonnet = model("claude-acp", "claude-sonnet-4-6", "Sonnet 4.6");
+        let first = resolve(&entries, &sonnet, SEED_CHECKED_AT).unwrap();
+        assert_eq!(first.id, "seed-anthropic-sonnet-4-6-2026-11-23");
+        let sonnet_5_5 = model("claude-acp", "sonnet", "Sonnet 5.5");
+        let first = resolve(&entries, &sonnet_5_5, SEED_CHECKED_AT).unwrap();
+        assert_eq!(first.cache_read_per_million, Some(0.10));
+        let mythos = model("claude-acp", "default", "Mythos 5.2");
+        assert!(resolve(&entries, &mythos, FABLE_5_2_CHECKED_AT - 1).is_none());
+        // GLM-5.4 has no published price: a labelled estimate.
+        let glm = model("zai-acp", "zai-coding-plan/glm-5.4", "GLM-5.4");
+        let glm = resolve(&entries, &glm, RECHECKED_AT).unwrap();
+        assert!(glm.source.starts_with("estimate:"), "{}", glm.source);
+        // 1M input, 1M output, 1M cached and 1M written on Sonnet 4.6.
+        let spent = usage(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        let cost = attempt_cost(&entries, &sonnet, &spent, Some(RECHECKED_AT)).unwrap();
+        assert!((cost - (3.0 + 15.0 + 0.30 + 3.75)).abs() < 1e-9, "{cost}");
+    }
+
+    /// A store seeded on 2026-10-22 holds that day's context corrections
+    /// effective from that day, not from the seeds' dates. The recheck reads
+    /// the same there: every correction of one of those rows wins at every
+    /// date, and the rows it leaves alone keep resolving.
+    #[test]
+    fn the_recheck_wins_in_a_store_seeded_before_corrections_were_dated_back() {
+        let entries: Vec<CatalogEntry> = seed_sets()
+            .into_iter()
+            .flat_map(|(set, mut entries)| {
+                if matches!(set, "anthropic-2026-10-22" | "contexts-2026-10-22") {
+                    for entry in &mut entries {
+                        entry.effective_from = ANTHROPIC_CONTEXT_CHECKED_AT;
+                    }
+                }
+                entries
+            })
+            .collect();
+        let model = |provider: &str, id: &str, name: &str| Configuration {
+            provider_id: provider.into(),
+            model_id: id.into(),
+            model_name: Some(name.into()),
+            ..k3()
+        };
+        let sonnet_5_5 = model("claude-acp", "sonnet", "Sonnet 5.5");
+        let sonnet_5 = model("claude-acp", "claude-sonnet-5", "Sonnet 5");
+        let k3 = model("kimi-acp", "kimi-code/k3", "K3");
+        let window = model("kimi-acp", "kimi-code/k3-256k", "K3-256k");
+        let pro = model("kimi-acp", "kimi-code/k3.1-pro", "K3.1 Pro");
+        let flash = model("zai-acp", "zai-coding-plan/glm-5.3-flash", "GLM-5.3-Flash");
+        let glm = model("zai-acp", "zai-coding-plan/glm-5.3", "GLM-5.3");
+        for at in [
+            SEED_CHECKED_AT,
+            VENDOR_SEEDS_CHECKED_AT,
+            ANTHROPIC_CONTEXT_CHECKED_AT - 1,
+            ANTHROPIC_CONTEXT_CHECKED_AT,
+            KIMI_K3_1_CHECKED_AT,
+            RECHECKED_AT,
+        ] {
+            let entry = resolve(&entries, &sonnet_5_5, at).unwrap();
+            assert_eq!(entry.needle, "sonnet 5.5", "{at}");
+            assert_eq!(entry.cache_read_per_million, Some(0.10), "{at}");
+            let entry = resolve(&entries, &sonnet_5, at).unwrap();
+            assert_eq!(entry.needle, "sonnet 5", "{at}");
+            assert_eq!(entry.cache_read_per_million, Some(0.20), "{at}");
+            if at < VENDOR_SEEDS_CHECKED_AT {
+                continue;
+            }
+            let entry = resolve(&entries, &k3, at).unwrap();
+            assert_eq!(entry.needle, "kimi-code/k3", "{at}");
+            assert_eq!(entry.context_tokens, Some(1_048_576), "{at}");
+            let entry = resolve(&entries, &window, at).unwrap();
+            assert_eq!(entry.context_tokens, Some(262_144), "{at}");
+            let entry = resolve(&entries, &flash, at).unwrap();
+            assert_eq!(entry.needle, "glm-5.3-flash", "{at}");
+            assert_eq!(entry.output_per_million, Some(0.5), "{at}");
+            let entry = resolve(&entries, &glm, at).unwrap();
+            assert_eq!(entry.needle, "glm-5.3", "{at}");
+            assert_eq!(entry.output_per_million, Some(4.4), "{at}");
+        }
+        // K3.1 Pro keeps its own row from its release on.
+        let entry = resolve(&entries, &pro, RECHECKED_AT).unwrap();
+        assert_eq!(entry.id, "seed-moonshot-k3.1-pro-2026-10-23");
     }
 }
