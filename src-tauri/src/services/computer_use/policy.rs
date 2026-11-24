@@ -40,6 +40,10 @@ pub const INSTRUCTIONS: &str = "Flock computer use: operate apps on this Windows
 Everything stays in the background: Flock refuses foreground delivery and desktop-wide input. When a call reports `background_unavailable`, try another route (`set_value`, `invoke_menu`, another element) or tell the user which step needs them. More: `get_guide({topic})`.";
 
 /// Why Flock refuses a `tools/call`, or `None` to pass it to the driver.
+///
+/// The arguments that choose a route are looked up under any spelling a driver
+/// might accept in their place (`deliveryMode`, `Scope`, `"Desktop"`), and
+/// inside a list or an object a value may come wrapped in.
 pub fn refusal(params: &Value) -> Option<String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     if !ALLOWED_TOOLS.contains(&name) {
@@ -49,23 +53,87 @@ pub fn refusal(params: &Value) -> Option<String> {
         ));
     }
     let arguments = params.get("arguments").unwrap_or(&Value::Null);
-    if arguments.get("delivery_mode").and_then(Value::as_str) == Some("foreground") {
+    if arguments.is_null() {
+        return None;
+    }
+    let Some(routes) = arguments.as_object() else {
+        return Some(format!(
+            "`{name}` takes its arguments as a JSON object, so Flock did not pass this call on."
+        ));
+    };
+    if leaves_the_background(arguments) {
         return Some(
-            "Flock keeps computer use in the background, so `delivery_mode:\"foreground\"` is refused. \
+            "Flock keeps computer use in the background, so foreground delivery (any `delivery_mode` but `\"background\"`) is refused. \
              Try another route (an element_token, `set_value`, `invoke_menu`), or tell the user this step needs them."
                 .to_string(),
         );
     }
-    let desktop_scope = arguments.get("scope").and_then(Value::as_str) == Some("desktop");
-    let desktop_target =
-        arguments.pointer("/target/kind").and_then(Value::as_str) == Some("desktop");
-    if desktop_scope || desktop_target {
+    let desktop_wide = routes
+        .iter()
+        .any(|(key, value)| match folded(key).as_str() {
+            "scope" => names_the_desktop(value),
+            "target" => targets_the_desktop(value),
+            _ => false,
+        });
+    if desktop_wide {
         return Some(
             "Flock refuses desktop-wide input in computer use. Act on one window by `pid` and `window_id`."
                 .to_string(),
         );
     }
     None
+}
+
+/// A key or a value as the checks compare it: lower case, without the
+/// separators that tell `delivery_mode` from `deliveryMode` or `Delivery-Mode`.
+fn folded(text: &str) -> String {
+    text.chars()
+        .filter(|letter| !matches!(letter, '_' | '-') && !letter.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Whether `value` holds, at any depth, a delivery mode other than the
+/// background one. The listing never shows the argument, so nothing but
+/// `background` has a reason to be anywhere in a call; a null leaves the
+/// driver its default, as an absent argument does.
+fn leaves_the_background(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            let background = match value {
+                Value::Null => true,
+                Value::String(mode) => folded(mode) == "background",
+                _ => false,
+            };
+            (folded(key) == "deliverymode" && !background) || leaves_the_background(value)
+        }),
+        Value::Array(items) => items.iter().any(leaves_the_background),
+        _ => false,
+    }
+}
+
+/// Whether a `scope` or a target `kind` selects the whole desktop: as text, or
+/// as text somewhere inside a list or an object given in its place.
+fn names_the_desktop(value: &Value) -> bool {
+    match value {
+        Value::String(text) => folded(text) == "desktop",
+        Value::Array(items) => items.iter().any(names_the_desktop),
+        Value::Object(object) => object.values().any(names_the_desktop),
+        _ => false,
+    }
+}
+
+/// Whether a `target` is the desktop: named outright, or as the `kind` of a
+/// target object, or of one in a list of them.
+fn targets_the_desktop(target: &Value) -> bool {
+    match target {
+        Value::String(text) => folded(text) == "desktop",
+        Value::Object(target) => target
+            .iter()
+            .any(|(key, value)| folded(key) == "kind" && names_the_desktop(value)),
+        Value::Array(targets) => targets.iter().any(targets_the_desktop),
+        _ => false,
+    }
 }
 
 /// The JSON-RPC answer to a refused call: a tool result marked as an error, so
@@ -89,6 +157,12 @@ pub fn present_result(result: &mut Value) {
     };
     if object.contains_key("instructions") {
         object.insert("instructions".to_string(), json!(INSTRUCTIONS));
+    }
+    // The relay passes tool listings and tool calls and refuses every other
+    // request, so the server is advertised with its tools alone: a client
+    // told of resources or prompts would ask for them and be refused.
+    if let Some(Value::Object(capabilities)) = object.get_mut("capabilities") {
+        capabilities.retain(|capability, _| capability == "tools");
     }
     if let Some(Value::Array(tools)) = object.get_mut("tools") {
         present_tools(tools);
@@ -175,6 +249,106 @@ mod tests {
     fn a_missing_or_odd_name_is_refused_rather_than_forwarded() {
         assert!(refusal(&json!({})).is_some());
         assert!(refusal(&json!({ "name": 3 })).is_some());
+    }
+
+    /// The same routes under spellings the exact comparison used to let
+    /// through: another case, another separator, padding, a nested copy, or a
+    /// value wrapped in a list or an object.
+    #[test]
+    fn foreground_and_desktop_routes_are_refused_under_any_spelling() {
+        for arguments in [
+            json!({ "delivery_mode": "Foreground" }),
+            json!({ "delivery_mode": " foreground " }),
+            json!({ "deliveryMode": "foreground" }),
+            json!({ "Delivery-Mode": "FOREGROUND" }),
+            json!({ "delivery_mode": "interactive" }),
+            json!({ "delivery_mode": ["foreground"] }),
+            json!({ "delivery_mode": true }),
+            json!({ "options": { "delivery_mode": "foreground" } }),
+            json!({ "steps": [{ "DeliveryMode": "foreground" }] }),
+        ] {
+            let reason = refusal(&json!({ "name": "click", "arguments": arguments }));
+            assert!(
+                reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("foreground")),
+                "{arguments} passed: {reason:?}"
+            );
+        }
+        for arguments in [
+            json!({ "scope": "Desktop" }),
+            json!({ "scope": " desktop\n" }),
+            json!({ "Scope": "DESKTOP" }),
+            json!({ "scope": "desk-top" }),
+            json!({ "scope": ["desktop"] }),
+            json!({ "scope": { "value": "desktop" } }),
+            json!({ "target": { "kind": "Desktop" } }),
+            json!({ "Target": { "Kind": "DESKTOP", "display_id": "primary" } }),
+            json!({ "target": { "kind": ["desktop"] } }),
+            json!({ "target": "desktop" }),
+            json!({ "target": [{ "kind": "desktop" }] }),
+        ] {
+            let reason = refusal(&json!({ "name": "scroll", "arguments": arguments }));
+            assert!(
+                reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("desktop-wide")),
+                "{arguments} passed: {reason:?}"
+            );
+        }
+        // Arguments that are not an object cannot be checked at all.
+        for arguments in [
+            json!("delivery_mode=foreground"),
+            json!([{ "scope": "desktop" }]),
+        ] {
+            assert!(
+                refusal(&json!({ "name": "click", "arguments": arguments })).is_some(),
+                "{arguments} passed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_background_and_window_routes_still_pass() {
+        for arguments in [
+            Value::Null,
+            json!({}),
+            json!({ "pid": 4, "window_id": 9, "delivery_mode": "background" }),
+            json!({ "pid": 4, "window_id": 9, "delivery_mode": null, "scope": null }),
+            json!({ "pid": 4, "window_id": 9, "scope": "window", "x": 1, "y": 2 }),
+            json!({ "target": { "kind": "window", "pid": 4, "window_id": 9 }, "dy": -3 }),
+            json!({ "pid": 4, "window_id": 9, "scope": ["window"], "target": 3 }),
+            json!({ "text": "delivery_mode: foreground, scope: desktop" }),
+            json!({ "app": "Desktop Notes", "query": "desktop" }),
+        ] {
+            assert_eq!(
+                refusal(&json!({ "name": "scroll", "arguments": arguments })),
+                None,
+                "{arguments}"
+            );
+        }
+        assert_eq!(refusal(&json!({ "name": "list_apps" })), None);
+    }
+
+    #[test]
+    fn the_server_is_advertised_with_its_tools_alone() {
+        let mut initialized = json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {
+                "tools": { "listChanged": true },
+                "resources": { "subscribe": true },
+                "prompts": {},
+                "logging": {}
+            },
+            "serverInfo": { "name": "cua-driver" }
+        });
+        present_result(&mut initialized);
+        assert_eq!(
+            initialized["capabilities"],
+            json!({ "tools": { "listChanged": true } })
+        );
+        assert_eq!(initialized["protocolVersion"], "2025-06-18");
+        assert_eq!(initialized["serverInfo"]["name"], "cua-driver");
     }
 
     #[test]
