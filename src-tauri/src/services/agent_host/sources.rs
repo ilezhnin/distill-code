@@ -747,6 +747,13 @@ pub fn project_working_dirs(roots: &SourceRoots, project_id: &str) -> Vec<String
 }
 
 pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
+    create_source(params, roots, false)
+}
+
+/// `create`, and what `import` does once it has checked the file: an
+/// `imported` source is refused when its name is already taken (see
+/// [`refuse_a_taken_name`]), where a source the operator creates is not.
+fn create_source(params: &Value, roots: &SourceRoots, imported: bool) -> Result<Value, Value> {
     let source_type = source_type_param(params)?;
     let name = string_param(params, "name")?;
     let description = params
@@ -763,6 +770,9 @@ pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
     let (global, project_dir) = target_scope(params, &|id| {
         project_working_dirs(roots, id).into_iter().next()
     })?;
+    if imported {
+        refuse_a_taken_name(source_type, &name, project_dir.as_deref(), roots)?;
+    }
     let source = match source_type {
         SourceType::Skill => {
             validate_skill_name(&name)?;
@@ -1079,6 +1089,167 @@ pub fn export(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
     Ok(json!({ "json": json, "filename": filename }))
 }
 
+/// Frontmatter keys an agent file carries for the agent builder's own use: a
+/// draft is left out of the Agents list and belongs to one builder chat.
+const BUILDER_STATE_KEYS: &[&str] = &["draft", "builderSessionId"];
+
+/// The longest name a refusal repeats.
+const SHOWN_NAME_CHARS: usize = 80;
+
+/// Why an import was refused, for the screen that asked for it. The message
+/// says it in English; `data.importRefused` names the reason and what it is
+/// about, so the screen can say it in the operator's language.
+fn import_refused(message: String, detail: Value) -> Value {
+    protocol::error_with_data(
+        protocol::INVALID_PARAMS,
+        message,
+        json!({ "importRefused": detail }),
+    )
+}
+
+/// A kind as a refusal names it. A kind the file made up is not repeated.
+fn kind_words(kind: Option<SourceType>) -> &'static str {
+    match kind {
+        Some(SourceType::Skill) => "a skill",
+        Some(SourceType::BuiltinSkill) => "a built-in skill",
+        Some(SourceType::Agent) => "an agent",
+        Some(SourceType::Project) => "a project",
+        None => "a kind of source Flock does not know",
+    }
+}
+
+/// A name as a refusal repeats it: on one line and no longer than a name has
+/// any reason to be. The file chose it, and the operator reads the refusal.
+fn shown_name(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(SHOWN_NAME_CHARS)
+        .collect()
+}
+
+/// Whether a frontmatter `metadata` key is the app's to write: the bundled
+/// ownership marker, and the note of which bundled agent a file was made
+/// from, under every name builds have written them by.
+fn is_app_reserved_metadata_key(key: &str) -> bool {
+    use crate::services::upstream_names::is_bundled_marker_key;
+    is_bundled_marker_key(key)
+        || key
+            .strip_suffix("Source")
+            .is_some_and(is_bundled_marker_key)
+}
+
+/// Take the app's own keys out of what an imported file brought, wherever in
+/// it they sit. A skill that carries the marker is listed as built in, with
+/// no way to edit or delete it, and is offered to every chat as one of the
+/// app's; an agent that names a bundled agent as its origin is taken for that
+/// role by the conductor.
+fn drop_app_reserved_keys(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.retain(|key, _| !is_app_reserved_metadata_key(key));
+            object.values_mut().for_each(drop_app_reserved_keys);
+        }
+        Value::Array(items) => items.iter_mut().for_each(drop_app_reserved_keys),
+        _ => {}
+    }
+}
+
+/// An agent's name as agents are matched by name (`normalizeAgentRef` in the
+/// renderer): lower case, with spaces and underscores as hyphens. Characters
+/// that take no room are left out, so a name cannot differ from another only
+/// in what nobody can see.
+fn agent_ref(name: &str) -> String {
+    let mut folded = String::new();
+    let mut in_a_gap = false;
+    for letter in name.trim().chars() {
+        if letter.is_whitespace() || letter == '_' {
+            if !in_a_gap {
+                folded.push('-');
+            }
+            in_a_gap = true;
+        } else if !super::transcript_import::is_invisible(letter) {
+            folded.extend(letter.to_lowercase());
+            in_a_gap = false;
+        }
+    }
+    folded
+}
+
+/// Refuse to import a skill or an agent under a name one already answers to
+/// where the import would land: in the target folder, and for a project's
+/// folder in the Flock root behind it.
+///
+/// The listing keeps one source per name, the first in file order, and an
+/// agent whose file name is taken is written as `<slug>-2.md`, which sorts
+/// ahead of `<slug>.md`. So an imported agent named after one the operator
+/// trusts used to replace it in every list, under the same name and with
+/// instructions nobody had read.
+fn refuse_a_taken_name(
+    kind: SourceType,
+    name: &str,
+    project_dir: Option<&Path>,
+    roots: &SourceRoots,
+) -> Result<(), Value> {
+    let mut existing = Vec::new();
+    let taken_by = match kind {
+        SourceType::Skill => {
+            for root in skill_roots(project_dir, roots) {
+                scan_skill_root(&root, &mut existing);
+            }
+            let wanted = name.trim().to_lowercase();
+            existing.iter().find(|skill| {
+                skill["name"]
+                    .as_str()
+                    .is_some_and(|taken| taken.trim().to_lowercase() == wanted)
+            })
+        }
+        SourceType::Agent => {
+            for root in agent_roots(project_dir, roots) {
+                scan_agent_root(&root, &mut existing);
+            }
+            let wanted = agent_ref(name);
+            existing.iter().find(|agent| {
+                let display_name = agent["name"].as_str().map(agent_ref);
+                // An agent also answers to the name of its file.
+                let file_name = agent["path"]
+                    .as_str()
+                    .and_then(|path| Path::new(path).file_stem())
+                    .map(|stem| agent_ref(&stem.to_string_lossy()));
+                display_name.as_deref() == Some(wanted.as_str())
+                    || file_name.as_deref() == Some(wanted.as_str())
+            })
+        }
+        SourceType::BuiltinSkill | SourceType::Project => None,
+    };
+    let Some(taken_by) = taken_by else {
+        return Ok(());
+    };
+    let name = shown_name(name);
+    let taken_by = shown_name(taken_by["name"].as_str().unwrap_or_default());
+    Err(import_refused(
+        format!(
+            "The name \"{name}\" is already taken by the {} \"{taken_by}\". Nothing was imported: rename or remove that one first, or change the name in the file.",
+            kind.wire()
+        ),
+        json!({
+            "reason": "nameTaken",
+            "kind": kind.wire(),
+            "name": name,
+            "existing": taken_by,
+        }),
+    ))
+}
+
+/// Create a skill or an agent from an exported file (`data`).
+///
+/// The file may come from anyone, so it decides nothing but its own content.
+/// The request says which kind is being imported (`type`: `skill` from the
+/// Skills screen, `agent` from Agents) and a file of another kind is refused;
+/// a project is imported from neither. The app's own metadata keys are not
+/// taken from the file, and a name that is already taken refuses the import
+/// instead of the file being written beside the source it names.
 pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
     let data = string_param(params, "data")?;
     let value: Value = serde_json::from_str(&data)
@@ -1092,11 +1263,34 @@ pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             "Unsupported source export version: {version}"
         )));
     }
-    let kind = value.get("type").and_then(Value::as_str).unwrap_or("skill");
-    if !matches!(kind, "skill" | "agent" | "project") {
-        return Err(invalid_params(format!(
-            "Source type '{kind}' import is not supported."
-        )));
+    let expected = match params.get("type") {
+        // The Agents import (`importPersonas` in the renderer) does not name
+        // its kind: a request without one is held to an agent, the only kind
+        // that caller sends.
+        None | Some(Value::Null) => SourceType::Agent,
+        Some(requested) => match requested.as_str().and_then(SourceType::parse) {
+            Some(kind @ (SourceType::Skill | SourceType::Agent)) => kind,
+            _ => return Err(invalid_params("Only a skill or an agent can be imported")),
+        },
+    };
+    // A file that names no kind is a skill, as it always was.
+    let found = match value.get("type") {
+        None => Some(SourceType::Skill),
+        Some(kind) => kind.as_str().and_then(SourceType::parse),
+    };
+    if found != Some(expected) {
+        return Err(import_refused(
+            format!(
+                "This file holds {}, and this import takes {}. Nothing was imported.",
+                kind_words(found),
+                kind_words(Some(expected))
+            ),
+            json!({
+                "reason": "otherKind",
+                "expected": expected.wire(),
+                "found": found.map_or("unknown", SourceType::wire),
+            }),
+        ));
     }
     let name = value
         .get("name")
@@ -1111,7 +1305,7 @@ pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    if kind == "skill" && description.is_empty() {
+    if expected == SourceType::Skill && description.is_empty() {
         return Err(invalid_params("Source description must not be empty"));
     }
     let content = value
@@ -1120,23 +1314,24 @@ pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let mut properties: Map<String, Value> = value
+    let mut properties = value
         .get("properties")
-        .and_then(Value::as_object)
+        .filter(|properties| properties.is_object())
         .cloned()
-        .unwrap_or_default();
-    if kind == "project" {
-        if let Some(title) = value.get("title").and_then(Value::as_str) {
-            properties.insert("title".to_string(), json!(title));
+        .unwrap_or_else(|| json!({}));
+    drop_app_reserved_keys(&mut properties);
+    if expected == SourceType::Agent {
+        if let Some(properties) = properties.as_object_mut() {
+            properties.retain(|key, _| !BUILDER_STATE_KEYS.contains(&key.as_str()));
         }
     }
     let target = params
         .get("target")
         .cloned()
         .unwrap_or_else(|| json!({ "scope": "global" }));
-    let created = create(
+    let created = create_source(
         &json!({
-            "type": kind,
+            "type": expected.wire(),
             "name": name,
             "description": description,
             "content": content,
@@ -1144,6 +1339,7 @@ pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             "properties": properties,
         }),
         roots,
+        true,
     )?;
     Ok(json!({ "sources": [created["source"]] }))
 }
@@ -1439,5 +1635,404 @@ mod tests {
         let missing = dir.path().join("absent").join("SKILL.md");
         assert!(write_source_file(&missing, "never lands").is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "keep me");
+    }
+
+    /// Import `file` the way a screen does: `kind` is what the Skills screen
+    /// (`skill`) or a caller that names its kind sends; `None` is the request
+    /// the Agents screen sends.
+    fn import_file(roots: &SourceRoots, kind: Option<&str>, file: Value) -> Result<Value, Value> {
+        let mut params = json!({ "data": file.to_string(), "target": { "scope": "global" } });
+        if let Some(kind) = kind {
+            params["type"] = json!(kind);
+        }
+        import(&params, roots)
+    }
+
+    /// What the screen is told when an import is refused.
+    fn refusal(result: Result<Value, Value>) -> Value {
+        let error = result.expect_err("the import was accepted");
+        assert!(
+            error["data"]["importRefused"].is_object(),
+            "refused for another reason: {error}"
+        );
+        error["data"]["importRefused"].clone()
+    }
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// The audit's file: an agent, dropped on Skills > Import. It used to be
+    /// written as `agents/reviewer-2.md` under a "skill imported" message,
+    /// and from then on answered to the operator's own agent's name.
+    #[test]
+    fn an_import_creates_only_the_kind_its_screen_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = SourceRoots::new(dir.path().join("root"), None);
+        let agents = roots.root.join("agents");
+        write_agent(&agents, "reviewer", "TRUSTED");
+        let agent_file = json!({
+            "version": 1, "type": "agent", "name": "Reviewer",
+            "description": "d", "content": "MARKER-PERSONA"
+        });
+        let refused = import_file(&roots, Some("skill"), agent_file).unwrap_err();
+        assert_eq!(
+            refused["data"]["importRefused"],
+            json!({ "reason": "otherKind", "expected": "skill", "found": "agent" })
+        );
+        let message = refused["message"].as_str().unwrap();
+        assert!(
+            message.contains("an agent") && message.contains("a skill"),
+            "{message}"
+        );
+
+        let skill_file = json!({
+            "version": 1, "type": "skill", "name": "notes", "description": "d", "content": "c"
+        });
+        for agents_request in [Some("agent"), None] {
+            assert_eq!(
+                refusal(import_file(&roots, agents_request, skill_file.clone())),
+                json!({ "reason": "otherKind", "expected": "agent", "found": "skill" })
+            );
+        }
+
+        // A project is imported from neither screen: every folder it names
+        // as a working directory would be probed and given a `.distill` on
+        // each listing, a network path as readily as this local one.
+        let named_folder = dir.path().join("elsewhere");
+        fs::create_dir_all(&named_folder).unwrap();
+        let project_file = json!({
+            "version": 1, "type": "project", "name": "p1",
+            "properties": { "workingDirs": [named_folder], "archivedAt": "2026-01-01" }
+        });
+        for request in [Some("skill"), Some("agent"), None] {
+            assert_eq!(
+                refusal(import_file(&roots, request, project_file.clone()))["found"],
+                "project"
+            );
+        }
+        for request in ["project", "builtinSkill", "recipe", ""] {
+            assert!(import_file(&roots, Some(request), project_file.clone()).is_err());
+            assert!(import_file(&roots, Some(request), skill_file.clone()).is_err());
+        }
+
+        // A kind the file made up is refused without being repeated.
+        for made_up in [
+            json!("<b>agent</b>"),
+            json!(7),
+            json!(["skill"]),
+            json!(null),
+        ] {
+            let refused = import_file(
+                &roots,
+                Some("skill"),
+                json!({ "version": 1, "type": made_up, "name": "n", "description": "d" }),
+            )
+            .unwrap_err();
+            assert_eq!(refused["data"]["importRefused"]["found"], "unknown");
+            assert!(!refused["message"].as_str().unwrap().contains("<b>"));
+        }
+
+        // None of it wrote anything.
+        assert_eq!(file_names(&agents), ["reviewer.md"]);
+        assert!(!roots.root.join("skills").exists());
+        assert!(!roots.projects_dir.exists());
+        assert_eq!(file_names(&named_folder), Vec::<String>::new());
+        let listed = list(&json!({ "type": "agent" }), &roots).unwrap();
+        assert_eq!(listed["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["sources"][0]["content"], "TRUSTED");
+    }
+
+    /// A skill whose file said `flockBundled: true` used to be listed as one
+    /// of the app's own: read-only, with no way to delete it, and offered to
+    /// every chat.
+    #[test]
+    fn an_imported_file_cannot_claim_to_be_the_apps_own() {
+        use crate::services::upstream_names::{BUNDLED_KEY, OLD_BUNDLED_KEYS};
+        let dir = tempfile::tempdir().unwrap();
+        let roots = SourceRoots::new(dir.path().join("root"), None);
+        let markers: Vec<&str> = std::iter::once(BUNDLED_KEY)
+            .chain(OLD_BUNDLED_KEYS.iter().copied())
+            .collect();
+        for (index, marker) in markers.iter().enumerate() {
+            let name = format!("claimed-{index}");
+            let origin = format!("{marker}Source");
+            let created = import_file(
+                &roots,
+                Some("skill"),
+                json!({
+                    "version": 1, "type": "skill", "name": name,
+                    "description": "d", "content": "body",
+                    "properties": {
+                        *marker: true,
+                        origin.as_str(): "flock-help",
+                        "color": "blue",
+                        "nested": [{ *marker: true, "kept": 1 }]
+                    }
+                }),
+            )
+            .expect("the skill itself is imported");
+            assert_eq!(created["sources"][0]["type"], "skill");
+            assert_eq!(
+                created["sources"][0]["properties"],
+                json!({ "color": "blue", "nested": [{ "kept": 1 }] })
+            );
+            let written =
+                fs::read_to_string(roots.root.join("skills").join(&name).join("SKILL.md")).unwrap();
+            assert!(!written.contains("Bundled"), "{written}");
+        }
+        let listed = list(&json!({}), &roots).unwrap();
+        let kinds: Vec<(&str, &str)> = listed["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|source| {
+                (
+                    source["name"].as_str().unwrap(),
+                    source["type"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("claimed-0", "skill"),
+                ("claimed-1", "skill"),
+                ("claimed-2", "skill")
+            ]
+        );
+
+        // An agent that named a bundled agent as its origin was taken for
+        // that role; one marked as a builder draft was hidden from the list.
+        let created = import_file(
+            &roots,
+            Some("agent"),
+            json!({
+                "version": 1, "type": "agent", "name": "Scout",
+                "description": "d", "content": "prompt",
+                "properties": {
+                    "provider": "example",
+                    "draft": true,
+                    "builderSessionId": "s-1",
+                    "metadata": {
+                        "flockBundled": true,
+                        "flockBundledSource": "acceptor",
+                        "distillBundledSource": "conductor",
+                        "tone": "direct"
+                    },
+                    "sprout": { "frontmatter": { "metadata": { "berdBundled": true, "kept": 1 } } }
+                }
+            }),
+        )
+        .expect("the agent itself is imported");
+        assert_eq!(
+            created["sources"][0]["properties"],
+            json!({
+                "provider": "example",
+                "metadata": { "tone": "direct" },
+                "sprout": { "frontmatter": { "metadata": { "kept": 1 } } }
+            })
+        );
+    }
+
+    /// An agent imported under a name that was taken used to be written as
+    /// `<slug>-2.md`, which the listing reads first: the operator's own agent
+    /// dropped out of every list and the imported one answered to its name.
+    #[test]
+    fn an_import_never_takes_a_name_that_is_already_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = SourceRoots::new(dir.path().join("root"), None);
+        let agents = roots.root.join("agents");
+        fs::create_dir_all(&agents).unwrap();
+        for (file, name) in [
+            ("reviewer.md", "Reviewer"),
+            ("acceptor.md", "Acceptance Check"),
+        ] {
+            fs::write(
+                agents.join(file),
+                format!("---\nname: {name}\ndescription: Example\n---\nTRUSTED"),
+            )
+            .unwrap();
+        }
+        for (name, taken_by) in [
+            ("Reviewer", "Reviewer"),
+            ("reviewer", "Reviewer"),
+            ("REVIEWER", "Reviewer"),
+            ("  Reviewer ", "Reviewer"),
+            ("Re\u{200b}viewer", "Reviewer"),
+            ("Acceptance_Check", "Acceptance Check"),
+            ("acceptance  check", "Acceptance Check"),
+            // The name of its file is a name an agent answers to as well.
+            ("acceptor", "Acceptance Check"),
+        ] {
+            for agents_request in [Some("agent"), None] {
+                let refused = import_file(
+                    &roots,
+                    agents_request,
+                    json!({
+                        "version": 1, "type": "agent", "name": name,
+                        "description": "d", "content": "MARKER-PERSONA"
+                    }),
+                )
+                .unwrap_err();
+                assert_eq!(
+                    refused["data"]["importRefused"],
+                    json!({
+                        "reason": "nameTaken", "kind": "agent",
+                        "name": shown_name(name), "existing": taken_by
+                    }),
+                    "{name:?}"
+                );
+                let message = refused["message"].as_str().unwrap();
+                assert!(
+                    message.contains(&format!("the agent \"{taken_by}\"")),
+                    "{message}"
+                );
+            }
+        }
+        assert_eq!(file_names(&agents), ["acceptor.md", "reviewer.md"]);
+        let listed = list(&json!({ "type": "agent" }), &roots).unwrap();
+        let listed = listed["sources"].as_array().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|agent| agent["content"] == "TRUSTED"));
+
+        // A skill the operator has, and one the app installed.
+        let skills = roots.root.join("skills");
+        write_skill(&skills, "release-notes");
+        fs::create_dir_all(skills.join("flock-help")).unwrap();
+        fs::write(
+            skills.join("flock-help").join("SKILL.md"),
+            "---\nname: flock-help\ndescription: Example\nmetadata:\n  flockBundled: true\n---\nbody",
+        )
+        .unwrap();
+        for (name, taken_by) in [
+            ("release-notes", "release-notes"),
+            ("Release-Notes", "release-notes"),
+            ("FLOCK-HELP", "flock-help"),
+        ] {
+            assert_eq!(
+                refusal(import_file(
+                    &roots,
+                    Some("skill"),
+                    json!({
+                        "version": 1, "type": "skill", "name": name,
+                        "description": "d", "content": "MARKER"
+                    }),
+                )),
+                json!({
+                    "reason": "nameTaken", "kind": "skill", "name": name, "existing": taken_by
+                })
+            );
+        }
+        assert_eq!(file_names(&skills), ["flock-help", "release-notes"]);
+
+        // A name nobody has is imported as before.
+        let created = import_file(
+            &roots,
+            Some("agent"),
+            json!({
+                "version": 1, "type": "agent", "name": "Reviewer of docs",
+                "description": "d", "content": "new"
+            }),
+        )
+        .expect("a free name");
+        assert_eq!(created["sources"][0]["name"], "Reviewer of docs");
+        assert_eq!(
+            file_names(&agents),
+            ["acceptor.md", "reviewer-of-docs.md", "reviewer.md"]
+        );
+    }
+
+    /// What the app itself exports is imported back as it was, by the request
+    /// each screen sends.
+    #[test]
+    fn the_apps_own_exports_are_imported_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = SourceRoots::new(dir.path().join("root"), None);
+        let created = create(
+            &json!({
+                "type": "skill", "name": "release-notes", "description": "Writes notes",
+                "content": "Do it.", "target": { "scope": "global" },
+                "properties": { "color": "blue" }
+            }),
+            &roots,
+        )
+        .unwrap();
+        let path = created["source"]["path"].as_str().unwrap().to_string();
+        let exported = export(&json!({ "type": "skill", "path": path }), &roots).unwrap();
+        assert_eq!(exported["filename"], "release-notes.skill.json");
+        let request = json!({
+            "data": exported["json"], "target": { "scope": "global" }, "type": "skill"
+        });
+        // Beside the original it is the clash the operator is told about.
+        assert_eq!(refusal(import(&request, &roots))["reason"], "nameTaken");
+        delete(&json!({ "type": "skill", "path": path }), &roots).unwrap();
+        let imported = import(&request, &roots).unwrap();
+        let skill = &imported["sources"][0];
+        assert_eq!(skill["type"], "skill");
+        assert_eq!(skill["name"], "release-notes");
+        assert_eq!(skill["description"], "Writes notes");
+        assert_eq!(skill["content"], "Do it.");
+        assert_eq!(skill["path"].as_str(), Some(path.as_str()));
+
+        let created = create(
+            &json!({
+                "type": "agent", "name": "Release Manager", "description": "Ships",
+                "content": "Ship it.", "target": { "scope": "global" }
+            }),
+            &roots,
+        )
+        .unwrap();
+        let path = created["source"]["path"].as_str().unwrap().to_string();
+        let exported = export(&json!({ "type": "agent", "path": path }), &roots).unwrap();
+        assert_eq!(exported["filename"], "release-manager.agent.json");
+        delete(&json!({ "type": "agent", "path": path }), &roots).unwrap();
+        // The Agents screen's request names no kind.
+        let imported = import(
+            &json!({ "data": exported["json"], "target": { "scope": "global" } }),
+            &roots,
+        )
+        .unwrap();
+        let agent = &imported["sources"][0];
+        assert_eq!(agent["type"], "agent");
+        assert_eq!(agent["name"], "Release Manager");
+        assert_eq!(agent["content"], "Ship it.");
+        assert_eq!(agent["path"].as_str(), Some(path.as_str()));
+
+        // A file that names no kind is still a skill.
+        let plain = import_file(
+            &roots,
+            Some("skill"),
+            json!({ "version": 1, "name": "plain", "description": "d", "content": "c" }),
+        )
+        .unwrap();
+        assert_eq!(plain["sources"][0]["type"], "skill");
+    }
+
+    /// Creating a source in the app is not an import: the agent builder
+    /// promotes a draft by creating the agent under the draft's own name.
+    #[test]
+    fn creating_an_agent_under_a_taken_name_is_still_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = SourceRoots::new(dir.path().join("root"), None);
+        let request = json!({
+            "type": "agent", "name": "Scout", "description": "d", "content": "c",
+            "target": { "scope": "global" }, "properties": { "draft": true }
+        });
+        create(&request, &roots).unwrap();
+        create(&request, &roots).unwrap();
+        assert_eq!(
+            file_names(&roots.root.join("agents")),
+            ["scout-2.md", "scout.md"]
+        );
     }
 }

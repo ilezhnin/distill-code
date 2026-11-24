@@ -143,6 +143,121 @@ describe("skill mutation events", () => {
   });
 });
 
+describe("importSkills", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  const importedSkill = {
+    type: "skill",
+    name: "imported",
+    description: "Imported skill",
+    content: "Imported instructions",
+    path: "/Users/test/.distill/skills/imported",
+    global: true,
+  };
+
+  function fileBytes(contents: unknown): number[] {
+    return Array.from(new TextEncoder().encode(JSON.stringify(contents)));
+  }
+
+  it("tells the host that it imports a skill", async () => {
+    mockGooseSourcesImport.mockResolvedValue({ sources: [importedSkill] });
+    const file = { version: 1, type: "skill", name: "imported" };
+
+    const { importSkills } = await import("./skills");
+    const skills = await importSkills(fileBytes(file), "imported.skill.json");
+
+    expect(mockGooseSourcesImport).toHaveBeenCalledWith({
+      data: JSON.stringify(file),
+      target: { scope: "global" },
+      type: "skill",
+    });
+    expect(skills.map((skill) => skill.name)).toEqual(["imported"]);
+  });
+
+  it("does not report a source of another kind as an imported skill", async () => {
+    // What the host answered before it checked the kind: the agent the file
+    // held, created under a "skill imported" message.
+    mockGooseSourcesImport.mockResolvedValue({
+      sources: [
+        {
+          type: "agent",
+          name: "Reviewer",
+          description: "d",
+          content: "MARKER-PERSONA",
+          path: "/Users/test/.distill/agents/reviewer-2.md",
+          global: true,
+        },
+      ],
+    });
+    const listener = vi.fn();
+    window.addEventListener(SKILLS_CHANGED_EVENT, listener);
+
+    try {
+      const { importSkills } = await import("./skills");
+      await expect(
+        importSkills(fileBytes({ version: 1, type: "agent" }), "x.skill.json"),
+      ).rejects.toThrow("did not create a skill");
+      mockGooseSourcesImport.mockResolvedValue({ sources: [] });
+      await expect(
+        importSkills(fileBytes({ version: 1 }), "x.skill.json"),
+      ).rejects.toThrow("did not create a skill");
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(SKILLS_CHANGED_EVENT, listener);
+    }
+  });
+
+  it("reads why the host refused an import", async () => {
+    const { readSkillImportRefusal } = await import("./skills");
+
+    expect(
+      readSkillImportRefusal({
+        code: -32602,
+        message: "This file holds an agent, and this import takes a skill.",
+        data: {
+          importRefused: {
+            reason: "otherKind",
+            expected: "skill",
+            found: "agent",
+          },
+        },
+      }),
+    ).toEqual({ reason: "otherKind", found: "agent" });
+    expect(
+      readSkillImportRefusal({
+        code: -32602,
+        message: "The name is taken.",
+        data: {
+          importRefused: {
+            reason: "nameTaken",
+            kind: "skill",
+            name: "Release-Notes",
+            existing: "release-notes",
+          },
+        },
+      }),
+    ).toEqual({
+      reason: "nameTaken",
+      name: "Release-Notes",
+      existing: "release-notes",
+    });
+    // Any other failure is not a refusal with a reason.
+    for (const error of [
+      new Error("permission denied"),
+      { code: -32603, message: "failed to write SKILL.md" },
+      { code: -32602, message: "x", data: "detail" },
+      { code: -32602, message: "x", data: { importRefused: "otherKind" } },
+      { code: -32602, message: "x", data: { importRefused: { reason: 7 } } },
+      null,
+    ]) {
+      expect(readSkillImportRefusal(error)).toBeNull();
+    }
+  });
+});
+
 describe("bundled skill markers", () => {
   beforeEach(() => {
     vi.clearAllMocks();

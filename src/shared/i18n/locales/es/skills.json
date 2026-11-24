@@ -44,7 +44,13 @@
     "exportedTo": "Exportado a {{filename}}",
     "filePath": "Ruta del archivo",
     "importError": "Error al importar la skill",
-    "importSuccess": "Skill importada",
+    "importRefused": {
+      "agent": "Este archivo contiene un agente, no una skill. Impórtalo desde Agentes.",
+      "project": "Este archivo contiene un proyecto, no una skill. No se importó nada.",
+      "other": "Este archivo no contiene una skill. No se importó nada.",
+      "nameTaken": "El nombre \"{{name}}\" ya lo usa la skill \"{{existing}}\". Cambia el nombre de esa skill o elimínala, o cambia el nombre en el archivo."
+    },
+    "importSuccess": "Skill \"{{name}}\" importada",
     "instructions": "Instrucciones",
     "loadError": "Error al cargar las skills",
     "location": "Ubicación",

@@ -26,6 +26,7 @@ import { AgentShareDialog } from "@/features/agents/ui/share-card";
 import {
   exportPersona,
   importPersonas,
+  listPersonaSources,
   previewPersonaImport,
 } from "@/shared/api/agents";
 import { saveExportedAgentFile } from "@/shared/api/system";
@@ -40,6 +41,8 @@ import { AgentImportDialog } from "@/features/agents/ui/AgentImportDialog";
 import { usePersonas } from "@/features/agents/hooks/usePersonas";
 import type { Persona } from "@/shared/types/agents";
 import {
+  findAgentNameClash,
+  foreignSourceKind,
   formatAgentError,
   formatImportSuccessMessage,
   formatPersonaImportFileSize,
@@ -390,22 +393,42 @@ export function AgentsView({
     [t],
   );
 
+  // An imported agent may not take a name an agent here already answers to.
+  // The host lists one agent per name and reads the newer file first, so the
+  // import would stand in for the operator's own agent in every list. Asked
+  // of the host each time: the list in the store leaves builder drafts out.
+  const refuseTakenAgentName = useCallback(
+    async (displayName: string) => {
+      const taken = findAgentNameClash(displayName, await listPersonaSources());
+      if (taken) {
+        throw new Error(
+          t("view.importNameTaken", {
+            name: displayName.trim(),
+            existing: taken.name,
+          }),
+        );
+      }
+    },
+    [t],
+  );
+
   const handleConfirmImageImport = useCallback(
     async (request: Parameters<typeof createPersona>[0]) => {
       try {
+        await refuseTakenAgentName(request.displayName);
         // The configuration dialog owns provider/model validation and only
         // submits the reviewed selection. Do not independently reinterpret it
         // here or the persisted request can drift from what the user saw.
         const created = await createPersona(request);
         setImageImport(null);
         setActivePersona(created.id);
-        toast.success(t("imageImport.added"));
+        toast.success(t("imageImport.added", { name: created.displayName }));
       } catch (error) {
         toast.error(formatAgentError(error, t("editor.saveFailed")));
         throw error;
       }
     },
-    [createPersona, setActivePersona, t],
+    [createPersona, refuseTakenAgentName, setActivePersona, t],
   );
 
   const handleImportError = useCallback((message: string) => {
@@ -438,15 +461,23 @@ export function AgentsView({
   const handleImportContents = useCallback(
     async (fileContents: string, fileName: string) => {
       try {
+        // Checked again at the moment of import: the preview was read from
+        // the same file, but the agents may have changed since it was shown.
+        await refuseTakenAgentName(
+          previewPersonaImport(fileContents, fileName).displayName,
+        );
         const imported = await importPersonas(fileContents, fileName);
+        if (imported.length === 0) {
+          throw new Error(t("view.importFailed"));
+        }
         await refreshFromDisk();
-        const message = formatImportSuccessMessage(imported.length);
+        const message = formatImportSuccessMessage(imported);
         toast.success(t(message.key, message.options));
       } catch (err) {
         toast.error(formatAgentError(err, t("view.importFailed")));
       }
     },
-    [refreshFromDisk, t],
+    [refreshFromDisk, refuseTakenAgentName, t],
   );
 
   const handleImportFileBytes = useCallback(
@@ -523,13 +554,20 @@ export function AgentsView({
         };
         return { ...extracted, preview };
       }
-      const preview = previewPersonaImport(
-        decodeImportFileBytes(extracted.bytes),
-        extracted.name,
-      );
+      const fileContents = decodeImportFileBytes(extracted.bytes);
+      // A skill or a project the app exported is refused as what it is,
+      // before it is read as a persona whose fields are missing.
+      const foreignKind = foreignSourceKind(fileContents, extracted.name);
+      if (foreignKind) {
+        throw new Error(t(`view.importOtherKind.${foreignKind}`));
+      }
+      const preview = previewPersonaImport(fileContents, extracted.name);
+      // A text file's name cannot be changed here, so a taken one is said
+      // before the preview offers an import that would be refused.
+      await refuseTakenAgentName(preview.displayName);
       return { ...extracted, preview };
     },
-    [t],
+    [refuseTakenAgentName, t],
   );
 
   const dialogs = (

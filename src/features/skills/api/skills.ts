@@ -530,6 +530,47 @@ export function isSkillImportFileName(fileName: string): boolean {
   );
 }
 
+/**
+ * Why the host refused an import, when its error says why
+ * (`data.importRefused`): the file holds another kind of source, or the name
+ * it brings is already taken.
+ */
+export type SkillImportRefusal =
+  | { reason: "otherKind"; found: string }
+  | { reason: "nameTaken"; name: string; existing: string };
+
+export function readSkillImportRefusal(
+  error: unknown,
+): SkillImportRefusal | null {
+  if (typeof error !== "object" || error === null || !("data" in error)) {
+    return null;
+  }
+  const data = error.data;
+  if (typeof data !== "object" || data === null || !("importRefused" in data)) {
+    return null;
+  }
+  const refused = data.importRefused;
+  if (typeof refused !== "object" || refused === null) {
+    return null;
+  }
+  const detail = refused as Record<string, unknown>;
+  if (detail.reason === "otherKind" && typeof detail.found === "string") {
+    return { reason: "otherKind", found: detail.found };
+  }
+  if (
+    detail.reason === "nameTaken" &&
+    typeof detail.name === "string" &&
+    typeof detail.existing === "string"
+  ) {
+    return {
+      reason: "nameTaken",
+      name: detail.name,
+      existing: detail.existing,
+    };
+  }
+  return null;
+}
+
 export async function importSkills(
   fileBytes: number[],
   fileName: string,
@@ -540,12 +581,23 @@ export async function importSkills(
 
   const data = new TextDecoder().decode(new Uint8Array(fileBytes));
   const client = await getClient();
-  const response = await client.host.sourcesImport({
+  // The file says what it holds, and it may come from anyone: an agent or a
+  // project dropped here was created under a "skill imported" message. The
+  // request names the kind this screen imports and the host refuses any
+  // other. (Built first because `sourcesImport` does not declare `type` yet.)
+  const request = {
     data,
-    target: { scope: "global" },
-  });
+    target: { scope: "global" as const },
+    type: SKILL_SOURCE_TYPE,
+  };
+  const response = await client.host.sourcesImport(request);
+
+  const imported = response.sources.filter(isFilesystemSkillSource);
+  if (imported.length === 0 || imported.length !== response.sources.length) {
+    throw new Error("The import did not create a skill");
+  }
 
   emitSkillsChanged();
 
-  return response.sources.filter(isFilesystemSkillSource).map(toSkillInfo);
+  return imported.map(toSkillInfo);
 }
