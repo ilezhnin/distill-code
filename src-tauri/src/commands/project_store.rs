@@ -282,18 +282,43 @@ fn write_project_run_closeout_blocking(
 ///
 /// Idempotent, and additive: an entry already present is left alone, and
 /// nothing that was in the file is removed or reordered.
+///
+/// Refuses, writing nothing, when `.git`, `.git/info` or the file itself is a
+/// link, a junction or any other reparse point, and when the file is there
+/// but cannot be read. The callers treat this as best effort and drop the
+/// result, so a refusal is logged as well.
 pub fn exclude_agent_folders(project_root: &Path) -> Result<bool, String> {
     let git_dir = project_root.join(".git");
+    let info = git_dir.join("info");
+    let exclude = info.join("exclude");
+    let refused = |reason: String| {
+        let refusal = format!("Leaving '{}' as it is: {reason}", exclude.display());
+        log::warn!("{refusal}");
+        refusal
+    };
+    // A folder that came with its own `.git` (an archive, a shared or synced
+    // folder) can make any of the three a link, and everything below follows
+    // one: the lines would be added to, or replace, whatever file it names.
+    // `.git` is looked at before `is_dir` follows it.
+    let reject_links = |target: &Path| {
+        crate::services::flock_root::reject_document_links(project_root, target).map_err(&refused)
+    };
+    reject_links(&git_dir)?;
     if !git_dir.is_dir() {
         // A worktree's `.git` is a file pointing elsewhere, and a plain folder
         // is not a repository at all. Both are "nothing to exclude here".
         return Ok(false);
     }
-    let info = git_dir.join("info");
+    reject_links(&exclude)?;
     fs::create_dir_all(&info)
         .map_err(|error| format!("Cannot create '{}': {error}", info.display()))?;
-    let exclude = info.join("exclude");
-    let existing = fs::read_to_string(&exclude).unwrap_or_default();
+    // A file that cannot be read is not an empty one: written back as if it
+    // were, an `exclude` in another encoding would lose all it held.
+    let existing = match fs::read_to_string(&exclude) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(refused(format!("it cannot be read ({error})"))),
+    };
     let already: Vec<&str> = existing.lines().map(|line| line.trim()).collect();
     let missing: Vec<&str> = AGENT_FOLDERS
         .iter()
@@ -357,6 +382,149 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// A directory link any user may create: a junction on Windows, where a
+    /// symbolic link needs a privilege most accounts lack.
+    fn link_folder(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .expect("cmd runs");
+            assert!(
+                made.status.success(),
+                "mklink /J: {}",
+                String::from_utf8_lossy(&made.stderr)
+            );
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// A file link, or `false` where this account may not create one
+    /// (Windows without Developer Mode or the symbolic link privilege).
+    fn link_file(link: &Path, target: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            const PRIVILEGE_NOT_HELD: i32 = 1314;
+            match std::os::windows::fs::symlink_file(target, link) {
+                Ok(()) => true,
+                Err(error) if error.raw_os_error() == Some(PRIVILEGE_NOT_HELD) => false,
+                Err(error) => panic!("symlink_file: {error}"),
+            }
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).unwrap();
+            true
+        }
+    }
+
+    #[test]
+    fn creates_the_exclude_file_a_repository_does_not_have_yet() {
+        let dir = temp();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".git")).unwrap();
+
+        assert!(exclude_agent_folders(root).unwrap());
+        let written = fs::read_to_string(root.join(".git").join("info").join("exclude")).unwrap();
+        for folder in AGENT_FOLDERS {
+            assert!(written.lines().any(|line| line == folder), "{folder}");
+        }
+    }
+
+    #[test]
+    fn leaves_a_worktree_and_a_plain_folder_alone() {
+        let dir = temp();
+        let plain = dir.path().join("plain");
+        let worktree = dir.path().join("worktree");
+        fs::create_dir_all(&plain).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        let pointer = "gitdir: ../elsewhere/.git/worktrees/worktree\n";
+        fs::write(worktree.join(".git"), pointer).unwrap();
+
+        assert_eq!(exclude_agent_folders(&plain), Ok(false));
+        assert_eq!(exclude_agent_folders(&worktree), Ok(false));
+        assert!(!plain.join(".git").exists());
+        assert_eq!(fs::read_to_string(worktree.join(".git")).unwrap(), pointer);
+    }
+
+    /// A folder that came with its own `.git` can make that `.git` a link to
+    /// another folder. The lines must not land in the `info/exclude` found
+    /// there.
+    #[test]
+    fn does_not_write_the_exclude_file_through_a_linked_git_folder() {
+        let dir = temp();
+        let root = dir.path().join("project");
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(elsewhere.join("info")).unwrap();
+        fs::write(elsewhere.join("info").join("exclude"), "# theirs\n").unwrap();
+        link_folder(&root.join(".git"), &elsewhere);
+
+        let refusal = exclude_agent_folders(&root).unwrap_err();
+        assert!(refusal.contains("link or junction"), "{refusal}");
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("info").join("exclude")).unwrap(),
+            "# theirs\n"
+        );
+    }
+
+    /// With `.git/info` a link, the old code created a file named `exclude`
+    /// in whatever folder the link named.
+    #[test]
+    fn does_not_create_the_exclude_file_through_a_linked_info_folder() {
+        let dir = temp();
+        let root = dir.path().join("project");
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        link_folder(&root.join(".git").join("info"), &elsewhere);
+
+        let refusal = exclude_agent_folders(&root).unwrap_err();
+        assert!(refusal.contains("link or junction"), "{refusal}");
+        assert!(!elsewhere.join("exclude").exists());
+    }
+
+    /// With `exclude` itself a link to a file that is not text, the old code
+    /// read nothing and replaced that file with its own lines.
+    #[test]
+    fn does_not_write_through_a_linked_exclude_file() {
+        let dir = temp();
+        let root = dir.path().join("project");
+        let info = root.join(".git").join("info");
+        fs::create_dir_all(&info).unwrap();
+        let theirs = dir.path().join("theirs.bin");
+        let bytes = [0xff, 0xfe, 0x00, 0x9f, 0x92, 0x96];
+        fs::write(&theirs, bytes).unwrap();
+        if !link_file(&info.join("exclude"), &theirs) {
+            eprintln!("skipped: this account may not create a file link");
+            return;
+        }
+
+        let refusal = exclude_agent_folders(&root).unwrap_err();
+        assert!(refusal.contains("link or junction"), "{refusal}");
+        assert_eq!(fs::read(&theirs).unwrap(), bytes);
+    }
+
+    /// The operator's own `exclude` in another encoding (PowerShell writes
+    /// UTF-16) cannot be read as text. It is not an empty file.
+    #[test]
+    fn does_not_replace_an_exclude_file_it_cannot_read() {
+        let dir = temp();
+        let root = dir.path();
+        let info = root.join(".git").join("info");
+        fs::create_dir_all(&info).unwrap();
+        let bytes = [0xff, 0xfe, b'b', 0x00, b'i', 0x00, b'n', 0x00, 0x00, 0xd8];
+        fs::write(info.join("exclude"), bytes).unwrap();
+
+        let refusal = exclude_agent_folders(root).unwrap_err();
+        assert!(refusal.contains("cannot be read"), "{refusal}");
+        assert_eq!(fs::read(info.join("exclude")).unwrap(), bytes);
     }
 
     #[test]
