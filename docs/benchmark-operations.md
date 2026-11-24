@@ -401,12 +401,16 @@ naming the line that holds it, while it does not:
   matched by its name, and the record's leaf by the tail of its path, since
   WSL 3 names it from the kernel's own cgroup root
   (`/wsl-user/distro-N/distill-bench/session-ID`): when every process of that name in the last poll ran
-  below a shell under the agent CLI, the broker keeps a verdict by the
+  below a shell under the agent CLI, or in a session Codex started for one
+  command (Codex runs each command as `bash -lc` in a session of its own,
+  and bash replaces itself with the line's last command, so no shell is left
+  above it), the broker keeps a verdict by the
   session's job id (`bench-budget verdict ID`, for two days), and the attempt
   the bridge's exit ended as an infrastructure failure settles
   `budget_reached` instead, the verdict sealed in its evidence. The agent CLI
-  itself, its other children, the confinement, a name the agent's own process
-  shares, a victim the last poll did not see, or no kernel record stay the
+  itself, its own children other than a shell (Codex keeps those in the
+  CLI's session), the confinement, a name the agent's own process shares, a
+  victim the last poll did not see, or no kernel record stay the
   infrastructure's. The app logs `sandbox job session-ID = attempt ATTEMPT
   (PROFILE)` once per try, so a cgroup name maps to its attempt.
 - Windows and the guest. The controller preserves at least 2 GiB of Windows

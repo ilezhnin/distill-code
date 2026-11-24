@@ -1770,13 +1770,22 @@ CANDIDATE_MEMORY = 'candidate_limit: the job reached its own memory ceiling whil
 # A session runs the agent CLI and, through its shell tool, the commands it
 # runs for the candidate, in one leaf. Its own memory.max firing is the
 # candidate's only when the kernel's victim is such a command: a process
-# below a shell under the agent CLI, never the CLI itself or the confinement
-# that starts it (whose scripts' processes carry their names). The kernel
-# names its victim by the kernel's pid, and every WSL distro has its own pid
-# namespace, so the victim is matched by its name (comm).
+# below a shell under the agent CLI, or in a session an agent CLI of
+# SESSION_LAUNCHERS started for one command, never the CLI itself or the
+# confinement that starts it (whose scripts' processes carry their names).
+# The kernel names its victim by the kernel's pid, and every WSL distro has
+# its own pid namespace, so the victim is matched by its name (comm).
 SESSION_KINDS = ('repository', 'text')
 CONFINEMENT = frozenset({'bench-run-inner', 'unshare', 'bench-enter', 'setpriv', 'env'})
 SHELLS = frozenset({'sh', 'bash', 'dash', 'zsh'})
+# Agent CLIs that start every command in a session of its own, while their
+# own helpers stay in the CLI's session. Codex runs `bash -lc LINE` that way,
+# and bash 5.2 replaces itself with the line's last command, so no shell is
+# left above a command such as `python3 fuzz.py` (11-24: such sessions past
+# their own ceiling stayed infrastructure failures). Seen in the sandbox with
+# the Codex that acp-tools.lock.json pins (0.166.0): the code-mode host keeps
+# the CLI's session. Recheck when a Codex bump changes how it spawns.
+SESSION_LAUNCHERS = frozenset({'codex'})
 KMSG = Path('/dev/kmsg')
 PROC = Path('/proc')
 # Session verdicts by job id, for the host to read after a bridge died.
@@ -1826,20 +1835,21 @@ def candidate_victim(name, processes):
     `name`, when it is a command the agent ran for the candidate: some
     process of that name is in the last snapshot `processes`, and every one
     of them is such a command. None otherwise: no record, no such process,
-    or one of them is the agent CLI, its own non-shell child or the
-    confinement, so a name the candidate shares with the agent never scores
-    it 0."""
+    or one of them is the agent CLI, its own non-shell child in its session
+    or the confinement, so a name the candidate shares with the agent never
+    scores it 0."""
     victim = oom_victim(name)
     if victim is None:
         return None
-    named = [pid for pid, (_, comm) in processes.items() if comm == victim]
+    named = [pid for pid, process in processes.items() if process[1] == victim]
     return victim if named and all(candidate_command(pid, processes) for pid in named) else None
 
 
 def leaf_processes(name):
-    """The processes of leaf `name` now, as {pid: (ppid, comm)}; empty when
-    it cannot be read. Read by root in the initial namespaces, so the pids
-    are the ones the kernel's OOM records name."""
+    """The processes of leaf `name` now, as {pid: (ppid, comm, session)};
+    empty when it cannot be read. Read by root through this distro's /proc,
+    so pid, ppid and session share one namespace; the kernel's OOM records
+    use another (see oom_victim)."""
     processes = {}
     try:
         pids = [int(value) for value in (ROOT / name / 'cgroup.procs').read_text().split()]
@@ -1847,28 +1857,36 @@ def leaf_processes(name):
         return processes
     for pid in pids:
         try:
-            text = (PROC / str(pid) / 'stat').read_text()
+            # A comm is any bytes a process gave itself, not always UTF-8; a
+            # strict decode would end the broker's poll and the session.
+            text = (PROC / str(pid) / 'stat').read_bytes().decode('utf-8', 'replace')
         except OSError:
             continue
         # comm sits in parentheses and may hold spaces or parentheses itself.
         opened, closed = text.find('('), text.rfind(')')
         fields = text[closed + 2:].split() if 0 <= opened < closed else []
-        if len(fields) > 1 and fields[1].isdigit():
-            processes[pid] = (int(fields[1]), text[opened + 1:closed])
+        if len(fields) > 3 and fields[1].isdigit() and fields[3].isdigit():
+            processes[pid] = (int(fields[1]), text[opened + 1:closed], int(fields[3]))
     return processes
 
 
 def candidate_command(victim, processes):
     """Whether `victim` is a command the agent ran for the candidate: some
     shell between it and the agent CLI, the topmost process of its chain in
-    the leaf that is not part of the confinement."""
+    the leaf that is not part of the confinement, or a process of its chain
+    that a SESSION_LAUNCHERS CLI of the chain started in a session of its
+    own (the CLI's own helpers share its session)."""
     chain, pid = [], victim
     while pid in processes and pid not in chain:
         chain.append(pid)
         pid = processes[pid][0]
     names = [processes[pid][1] for pid in chain]
     agent = max((index for index, name in enumerate(names) if name not in CONFINEMENT), default=None)
-    return bool(agent) and any(name in SHELLS for name in names[:agent])
+    if not agent:
+        return False
+    return any(name in SHELLS for name in names[:agent]) or any(
+        names[index + 1] in SESSION_LAUNCHERS and processes[chain[index]][2] == chain[index]
+        for index in range(agent))
 
 
 def oom_victim(name):

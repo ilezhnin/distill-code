@@ -2081,15 +2081,20 @@ class BudgetTests(unittest.TestCase):
             budget.os.O_NONBLOCK = 0
         leaf = budget.ROOT / 'session-fictional-oom'
         leaf.mkdir()
-        tree = {700: (1, 'unshare'), 701: (700, 'grok-native'), 702: (701, 'bash'),
-                703: (702, 'python3'), 704: (701, 'rg'), 705: (702, 'fictional (worker) x'),
-                706: (702, 'x,oom_memcg=/x'), 707: (702, 'node'), 708: (701, 'node')}
-        for pid, (parent, comm) in tree.items():
-            (budget.PROC / str(pid)).mkdir(parents=True)
-            (budget.PROC / str(pid) / 'stat').write_text(f'{pid} ({comm}) S {parent} {pid} {pid} 0 -1 4194560\n')
-        # A pid gone between the two reads is left out.
-        (leaf / 'cgroup.procs').write_text('\n'.join(map(str, [*tree, 709])) + '\n')
-        processes = budget.leaf_processes('session-fictional-oom')
+
+        def snapshot(tree):
+            for pid, (parent, comm, session) in tree.items():
+                (budget.PROC / str(pid)).mkdir(parents=True)
+                (budget.PROC / str(pid) / 'stat').write_text(
+                    f'{pid} ({comm}) S {parent} {session} {session} 0 -1 4194560\n')
+            # A pid gone between the two reads is left out.
+            (leaf / 'cgroup.procs').write_text('\n'.join(map(str, [*tree, 709])) + '\n')
+            return budget.leaf_processes('session-fictional-oom')
+
+        tree = {700: (1, 'unshare', 699), 701: (700, 'grok-native', 699), 702: (701, 'bash', 699),
+                703: (702, 'python3', 699), 704: (701, 'rg', 699), 705: (702, 'fictional (worker) x', 699),
+                706: (702, 'x,oom_memcg=/x', 699), 707: (702, 'node', 699), 708: (701, 'node', 699)}
+        processes = snapshot(tree)
         self.assertEqual(processes, tree)
         self.assertEqual(budget.leaf_processes('session-fictional-gone'), {})
         (leaf / 'memory.events').write_text('oom 1\noom_kill 3\n')
@@ -2134,6 +2139,41 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(killed('grok-native', group=nested), (budget.MEMORY_CEILING, None))
         self.assertEqual(killed('python3', group=nested + '-other')[0], budget.MEMORY_CEILING)
         self.assertEqual(killed('python3', group=memcg + '/wsl-user')[0], budget.MEMORY_CEILING)
+        # A Codex session (11-24): Codex starts every command as `bash -lc` in
+        # a session of its own, and bash replaces itself with the line's last
+        # command, so the candidate's python3 runs right below the CLI with no
+        # shell left. The CLI, its code-mode host and its other children share
+        # the CLI's session and stay ours.
+        codex = {800: (799, 'unshare', 799), 801: (800, 'MainThread', 799), 802: (801, 'codex', 799),
+                 803: (802, 'codex-code-mode', 799), 804: (802, 'python3', 804),
+                 805: (804, 'fictional-fuzz', 804), 806: (802, 'node', 799)}
+        processes = snapshot(codex)
+        self.assertEqual(processes, codex)
+        self.assertEqual(killed('python3'), (budget.CANDIDATE_MEMORY, 'python3'))
+        self.assertEqual(killed('fictional-fuzz'), (budget.CANDIDATE_MEMORY, 'fictional-fuzz'))
+        for victim in ('codex', 'codex-code-mode', 'MainThread', 'node', 'unshare'):
+            self.assertEqual(killed(victim), (budget.MEMORY_CEILING, None), victim)
+        # A candidate's command that shares a name with the CLI's own child
+        # in the CLI's session stays ours.
+        processes = {**codex, 807: (802, 'node', 807)}
+        self.assertTrue(budget.candidate_command(807, processes))
+        self.assertEqual(killed('node'), (budget.MEMORY_CEILING, None))
+        # Codex as the topmost process, with no bridge above it.
+        processes = {810: (809, 'unshare', 809), 811: (810, 'codex', 809), 812: (811, 'python3', 812),
+                     813: (811, 'codex-code-mode', 809)}
+        self.assertEqual(killed('python3'), (budget.CANDIDATE_MEMORY, 'python3'))
+        for victim in ('codex', 'codex-code-mode'):
+            self.assertEqual(killed(victim), (budget.MEMORY_CEILING, None), victim)
+        # Only a CLI known to start commands that way vouches for a session.
+        processes = {pid: (parent, 'fictional-cli' if comm == 'codex' else comm, session)
+                     for pid, (parent, comm, session) in codex.items()}
+        self.assertEqual(killed('python3'), (budget.MEMORY_CEILING, None))
+        # A comm that is not UTF-8 (a process names itself with any bytes)
+        # neither ends the poll nor reads as another name.
+        (budget.PROC / '900').mkdir()
+        (budget.PROC / '900' / 'stat').write_bytes(b'900 (fictional\xff) S 802 900 900 0 -1 4194560\n')
+        (leaf / 'cgroup.procs').write_text('900\n')
+        self.assertEqual(budget.leaf_processes('session-fictional-oom'), {900: (802, 'fictional\ufffd', 900)})
         # No kernel record or no snapshot: doubt never scores the candidate.
         budget.KMSG.write_text('6,1,1,-;fictional unrelated line\n')
         self.assertEqual(budget.memory_verdict('repository', 'fictional-oom', ['session-fictional-oom'], processes),
