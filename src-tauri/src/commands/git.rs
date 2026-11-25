@@ -543,38 +543,11 @@ async fn run_git_output_with_env_source_async(
     match env_source {
         EnvSource::Smart => {
             warm_dir_env_async(path, command_timeout);
-            match run_git_once_async(path, args, command_timeout, EnvSource::Lite).await {
-                Ok(output)
-                    if output.status.success() || !should_retry_with_captured_output(&output) =>
-                {
-                    Ok(output)
-                }
-                Ok(_) => {
-                    log::info!(
-                        "Retrying git {} with captured env after lite-env failure in {}",
-                        rendered_args,
-                        path.display()
-                    );
-                    run_git_once_async(path, args, command_timeout, EnvSource::Captured)
-                        .await
-                        .map_err(|error| {
-                            format_git_run_error(error, &rendered_args, command_timeout)
-                        })
-                }
-                Err(error) if should_retry_with_captured_error(&error) => {
-                    log::info!(
-                        "Retrying git {} with captured env after lite-env spawn failure in {}",
-                        rendered_args,
-                        path.display()
-                    );
-                    run_git_once_async(path, args, command_timeout, EnvSource::Captured)
-                        .await
-                        .map_err(|error| {
-                            format_git_run_error(error, &rendered_args, command_timeout)
-                        })
-                }
-                Err(error) => Err(format_git_run_error(error, &rendered_args, command_timeout)),
-            }
+            run_with_smart_env(path, &rendered_args, |env_source| {
+                run_git_once_async(path, args, command_timeout, env_source)
+            })
+            .await
+            .map_err(|error| format_git_run_error(error, &rendered_args, command_timeout))
         }
         EnvSource::Lite | EnvSource::Captured => {
             run_git_once_async(path, args, command_timeout, env_source)
@@ -582,6 +555,103 @@ async fn run_git_output_with_env_source_async(
                 .map_err(|error| format_git_run_error(error, &rendered_args, command_timeout))
         }
     }
+}
+
+/// The `Smart` order: the lite environment first, and the captured one when
+/// the lite run fails in a way the user's own environment may mend. A folder
+/// where the lite run failed so once goes straight to the captured
+/// environment for the rest of the session: the sidebar reads a project's
+/// status on every window focus, and each read ran git twice there and
+/// logged the retry without saying why the lite run failed (bug hunt of
+/// 2026-11-25, D-9). `run` runs git once with the environment it is given.
+async fn run_with_smart_env<Run, Ran>(
+    path: &Path,
+    rendered_args: &str,
+    run: Run,
+) -> Result<Output, GitRunError>
+where
+    Run: Fn(EnvSource) -> Ran,
+    Ran: std::future::Future<Output = Result<Output, GitRunError>>,
+{
+    if lite_env_failed_in(path) {
+        return run(EnvSource::Captured).await;
+    }
+    match run(EnvSource::Lite).await {
+        Ok(output) if output.status.success() || !should_retry_with_captured_output(&output) => {
+            Ok(output)
+        }
+        Ok(output) => {
+            remember_lite_env_failure(path, rendered_args, &output);
+            run(EnvSource::Captured).await
+        }
+        Err(error) if should_retry_with_captured_error(&error) => {
+            log::info!(
+                "Retrying git {} with captured env after lite-env spawn failure in {}",
+                rendered_args,
+                path.display()
+            );
+            run(EnvSource::Captured).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// The folders where git failed with the lite environment this session, as
+/// the app names them to git.
+fn lite_env_failures() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static FAILED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    FAILED.get_or_init(Default::default)
+}
+
+fn lite_env_failed_in(path: &Path) -> bool {
+    lite_env_failures()
+        .lock()
+        .is_ok_and(|failed| failed.contains(path))
+}
+
+/// Remembers that git failed with the lite environment in `path`, and logs
+/// why the first time: the exit code and what git wrote on stderr.
+fn remember_lite_env_failure(path: &Path, rendered_args: &str, output: &Output) {
+    let first_time = lite_env_failures()
+        .lock()
+        .is_ok_and(|mut failed| failed.insert(path.to_path_buf()));
+    if first_time {
+        log::warn!("{}", lite_env_failure_note(path, rendered_args, output));
+    }
+}
+
+/// How much of the lite run's stderr reaches the log: git's own message and
+/// a hint fit; a hook's or a helper's full output does not.
+const LITE_ENV_STDERR_LOG_CHARS: usize = 300;
+
+fn lite_env_failure_note(path: &Path, rendered_args: &str, output: &Output) -> String {
+    // Redacted line by line before it is cut: a credential a helper printed
+    // must not survive as a fragment the redactor no longer recognizes.
+    let stderr = String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(crate::services::log_redaction::redact_log_line)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let stderr = if stderr.is_empty() {
+        "nothing on stderr".to_string()
+    } else if stderr.chars().count() > LITE_ENV_STDERR_LOG_CHARS {
+        let cut: String = stderr.chars().take(LITE_ENV_STDERR_LOG_CHARS).collect();
+        format!("{cut}…")
+    } else {
+        stderr
+    };
+    let exit_code = output
+        .status
+        .code()
+        .map_or_else(|| "none".to_string(), |code| code.to_string());
+    format!(
+        "git {rendered_args} failed with the lite env in {} (exit code {exit_code}): {stderr}. \
+         Git in this folder runs with the captured env for the rest of this session",
+        path.display()
+    )
 }
 
 /// A folder the user opens may carry a `.git/config` and `.git/hooks` written
@@ -1425,10 +1495,17 @@ fn worktrees_of_this_repository(
             )),
         }
     }
+    // Under one spelling a prefix of the path says it; a worktree reached
+    // through the other spelling of its disk (a drive letter and its share)
+    // is found by the folders themselves.
     let asked_from_a_worktree = dunce::canonicalize(asked_from).is_ok_and(|asked_from| {
         confirmed
             .iter()
             .any(|(root, _)| asked_from.starts_with(root))
+            || lies_in_one_of(
+                &asked_from,
+                confirmed.iter().map(|(root, _)| root.as_path()),
+            )
     });
     if !asked_from_a_worktree {
         warn_once_about_worktrees(format!(
@@ -1462,15 +1539,22 @@ fn confirmed_worktree_root(
         return Some(root);
     }
     // A linked worktree's `.git` is a file that names its entry in the
-    // registry, from the worktree when the path is relative. The name is
-    // compared as written and never opened: whoever owns the folder chose
-    // it, and it may as well name another machine.
+    // registry, from the worktree when the path is relative. Git writes the
+    // spelling the worktree was added through: a drive letter, or the share
+    // the same disk is reached by. So a name spelled otherwise is compared
+    // as the folder it opens, but only on a volume this question already
+    // opened: whoever owns the folder chose the name, and it may as well
+    // name another machine, which the app must not contact for it.
     let entry = lexically_normalized(&root.join(gitfile_target(&dot_git)?));
     let registry = entry.parent()?;
-    registries
+    let named_here = registries
         .iter()
         .any(|known| same_spelling(registry, known))
-        .then_some(root)
+        || (on_a_reached_volume(registry, &[root.as_path(), common_dir])
+            && registries
+                .first()
+                .is_some_and(|known| same_folder_on_disk(registry, known)));
+    named_here.then_some(root)
 }
 
 /// No path is this long; a `.git` file that is, is not read to its end.
@@ -1516,6 +1600,108 @@ fn same_spelling(a: &Path, b: &Path) -> bool {
     } else {
         a == b
     }
+}
+
+/// What tells one folder from every other on this machine, whichever
+/// spelling reached it: the volume serial number and the file index on
+/// Windows (the same through `E:\`, `\\localhost\E$\`, a mapped drive letter
+/// and its UNC path), the device and inode elsewhere.
+type FolderIdentity = (u64, u64);
+
+/// The identity of the folder at `path`, or `None` when it cannot be opened;
+/// then the caller has only the spelling to go by.
+#[cfg(windows)]
+fn folder_identity(path: &Path) -> Option<FolderIdentity> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_READ_ATTRIBUTES,
+    };
+    // A folder opens only with backup semantics; reading its identity needs
+    // no right beyond its attributes.
+    let folder = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle stays open for the call and `info` is writable.
+    if unsafe { GetFileInformationByHandle(folder.as_raw_handle(), &mut info) } == 0 {
+        return None;
+    }
+    Some((
+        u64::from(info.dwVolumeSerialNumber),
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
+#[cfg(unix)]
+fn folder_identity(path: &Path) -> Option<FolderIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn folder_identity(_path: &Path) -> Option<FolderIdentity> {
+    None
+}
+
+/// Whether two paths are the same folder on disk. `false` when either
+/// cannot be opened.
+fn same_folder_on_disk(a: &Path, b: &Path) -> bool {
+    folder_identity(a).is_some_and(|a| folder_identity(b) == Some(a))
+}
+
+/// Whether `path`, or a folder it lies in, is one of `roots` on disk.
+fn lies_in_one_of<'a>(path: &Path, roots: impl Iterator<Item = &'a Path>) -> bool {
+    let roots: Vec<FolderIdentity> = roots.filter_map(folder_identity).collect();
+    !roots.is_empty()
+        && path
+            .ancestors()
+            .filter_map(folder_identity)
+            .any(|folder| roots.contains(&folder))
+}
+
+/// Whether `path` lies on the volume of one of `reached`: the same drive
+/// letter, or the same server and share, however spelled (`/` or `\`,
+/// `\\?\`, any case). A name in a `.git` file is opened only there, so it
+/// never makes the app reach a machine the question did not already reach.
+#[cfg(windows)]
+fn on_a_reached_volume(path: &Path, reached: &[&Path]) -> bool {
+    fn volume(path: &Path) -> Option<String> {
+        use std::path::{Component, Prefix};
+        let Some(Component::Prefix(prefix)) = path.components().next() else {
+            return None;
+        };
+        match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                Some(format!("{}:", char::from(letter.to_ascii_uppercase())))
+            }
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => Some(
+                format!(
+                    r"\\{}\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                )
+                .to_uppercase(),
+            ),
+            _ => None,
+        }
+    }
+    volume(path).is_some_and(|wanted| {
+        reached
+            .iter()
+            .any(|reached| volume(reached).as_deref() == Some(wanted.as_str()))
+    })
+}
+
+/// One tree of folders with no machine in its names: every path is on a
+/// volume already reached.
+#[cfg(not(windows))]
+fn on_a_reached_volume(_path: &Path, _reached: &[&Path]) -> bool {
+    true
 }
 
 /// Logs a worktree left out of the list once per run. The git state is read
@@ -2802,6 +2988,290 @@ mod tests {
             folders_kept(&[&store, &linked], &store, &outside),
             Vec::<PathBuf>::new()
         );
+    }
+
+    /// `path` as the admin share of its own drive spells it
+    /// (`\\localhost\C$\...`): the same folder reached as a share, as a mapped
+    /// drive letter and its UNC path are. `None` where no such share can be
+    /// reached (not Windows, admin shares off); the tests that need it say
+    /// they were skipped.
+    fn share_spelling(path: &Path) -> Option<PathBuf> {
+        let real = real(path);
+        let (drive, rest) = real.to_str()?.split_once(":\\")?;
+        if !cfg!(windows) || drive.len() != 1 {
+            return None;
+        }
+        let shared = PathBuf::from(format!(r"\\localhost\{drive}$\{rest}"));
+        shared.is_dir().then_some(shared)
+    }
+
+    /// A drive and the share it is reached by are two spellings of one disk
+    /// (bug hunt of 2026-11-25, C-4). A worktree whose `.git` file git wrote
+    /// through either of them points back at this repository all the same,
+    /// and a question asked through the other spelling of a worktree is asked
+    /// from inside it. A folder that points at another repository gains
+    /// nothing under either spelling.
+    #[test]
+    fn a_worktree_is_confirmed_under_either_spelling_of_its_disk() {
+        let temp = tempfile::tempdir().expect("scratch folder");
+        let scratch = real(temp.path());
+        let Some(shared) = share_spelling(&scratch) else {
+            eprintln!("skipped: no share spelling of {}", scratch.display());
+            return;
+        };
+        let spelled = scratch.to_string_lossy().replace('\\', "/");
+        let shared_spelled = shared.to_string_lossy().replace('\\', "/");
+        let folder_with_git_file = |name: &str, contents: String| {
+            let folder = scratch.join(name);
+            std::fs::create_dir_all(&folder).expect("folder");
+            std::fs::write(folder.join(".git"), contents).expect("write");
+            folder
+        };
+        let repo = scratch.join("repo");
+        let common_dir = repo.join(".git");
+        std::fs::create_dir_all(common_dir.join("worktrees")).expect("registry");
+        std::fs::create_dir_all(scratch.join("other").join(".git").join("worktrees"))
+            .expect("another repository");
+        let by_drive = folder_with_git_file(
+            "by-drive",
+            format!("gitdir: {spelled}/repo/.git/worktrees/by-drive\n"),
+        );
+        folder_with_git_file(
+            "by-share",
+            format!("gitdir: {shared_spelled}/repo/.git/worktrees/by-share\n"),
+        );
+        // Git lists a worktree as its `gitdir` entry spells it.
+        let by_share = shared.join("by-share");
+        // The control: through the share, a worktree of another repository.
+        let of_another = folder_with_git_file(
+            "of-another",
+            format!("gitdir: {shared_spelled}/other/.git/worktrees/of-another\n"),
+        );
+
+        // The repository opened through the drive letter.
+        let listed: [&Path; 4] = [&repo, &by_drive, &by_share, &of_another];
+        let confirmed = sorted(vec![by_drive.clone(), real(&by_share), repo.clone()]);
+        for asked_from in [
+            repo.clone(),
+            by_drive.clone(),
+            shared.join("by-drive"),
+            scratch.join("by-share"),
+        ] {
+            assert_eq!(
+                folders_kept(&listed, &common_dir, &asked_from),
+                confirmed,
+                "asked from {}",
+                asked_from.display()
+            );
+        }
+        // The repository opened through the share: git spells its folder
+        // and the main worktree that way, the rest as their entries say.
+        let shared_repo = shared.join("repo");
+        let listed: [&Path; 4] = [&shared_repo, &by_drive, &by_share, &of_another];
+        let confirmed = sorted(vec![real(&shared_repo), by_drive.clone(), real(&by_share)]);
+        for asked_from in [shared_repo.clone(), by_drive.clone(), by_share.clone()] {
+            assert_eq!(
+                folders_kept(&listed, &shared_repo.join(".git"), &asked_from),
+                confirmed,
+                "asked from {}",
+                asked_from.display()
+            );
+        }
+        // Listed is not enough under either spelling.
+        for asked_from in [of_another.clone(), shared.join("of-another")] {
+            assert_eq!(
+                folders_kept(&listed, &common_dir, &asked_from),
+                Vec::<PathBuf>::new(),
+                "asked from {}",
+                asked_from.display()
+            );
+        }
+    }
+
+    /// The same made by git: a worktree added through the share of the
+    /// repository's disk is offered when the repository is opened through
+    /// its drive letter (C-4).
+    #[tokio::test]
+    async fn a_worktree_git_added_through_the_share_of_its_disk_is_offered() {
+        let Some(git) = dir_env::resolve_control_executable("git") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let scratch = tempfile::tempdir().expect("scratch folder");
+        let (repo, linked) = repository_with_a_linked_worktree(&git, scratch.path());
+        let Some(shared) = share_spelling(scratch.path()) else {
+            eprintln!("skipped: no share spelling of {}", scratch.path().display());
+            return;
+        };
+        let via_share = shared.join("via-share");
+        // Through the share as its user would run git there, who trusts the
+        // share in their own config.
+        let output = std::process::Command::new(&git)
+            .args(["-c", "safe.directory=*", "-C"])
+            .arg(shared.join("repo"))
+            .args(["worktree", "add", "-q", "-b", "via-share"])
+            .arg(&via_share)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // The control: git lists it, under the spelling it was added with.
+        assert!(
+            folders_git_lists(&repo).await.contains(&real(&via_share)),
+            "git does not list the worktree added through the share"
+        );
+        assert_eq!(
+            folders_the_app_offers(&repo).await,
+            sorted(vec![real(&repo), real(&linked), real(&via_share)])
+        );
+    }
+
+    /// A name in a `.git` file is opened only on a volume the question
+    /// already reached: never on a machine it alone names.
+    #[cfg(windows)]
+    #[test]
+    fn a_name_on_another_volume_is_never_opened() {
+        let reached = [
+            Path::new(r"E:\work\repo\.git"),
+            Path::new(r"\\localhost\E$\work\linked"),
+        ];
+        for same in [
+            r"e:\work\other",
+            r"\\?\E:\work",
+            "//localhost/E$/work/repo/.git/worktrees",
+            r"\\?\UNC\LOCALHOST\e$\work",
+        ] {
+            assert!(on_a_reached_volume(Path::new(same), &reached), "{same}");
+        }
+        for elsewhere in [
+            "//192.0.2.10/share/repo/.git/worktrees",
+            r"\\server\E$\work",
+            r"D:\work",
+            "relative/work",
+        ] {
+            assert!(
+                !on_a_reached_volume(Path::new(elsewhere), &reached),
+                "{elsewhere}"
+            );
+        }
+    }
+
+    fn git_output(code: i32, stderr: &str) -> Output {
+        #[cfg(windows)]
+        let status =
+            <std::process::ExitStatus as std::os::windows::process::ExitStatusExt>::from_raw(
+                code as u32,
+            );
+        #[cfg(unix)]
+        let status = <std::process::ExitStatus as std::os::unix::process::ExitStatusExt>::from_raw(
+            code << 8,
+        );
+        Output {
+            status,
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    /// Reads `folder`'s status `polls` times in the `Smart` order, with a git
+    /// whose lite run ends as `lite` and whose captured run succeeds, and
+    /// says which environments git ran with, in order.
+    async fn smart_polls(folder: &Path, polls: usize, lite: &Output) -> Vec<EnvSource> {
+        let ran = std::sync::Mutex::new(Vec::new());
+        for _ in 0..polls {
+            let read = run_with_smart_env(folder, "status --porcelain", |env_source| {
+                ran.lock().expect("record").push(env_source);
+                let output = match env_source {
+                    EnvSource::Lite => lite.clone(),
+                    _ => git_output(0, ""),
+                };
+                async move { Ok(output) }
+            })
+            .await;
+            assert!(read.is_ok(), "git ran");
+        }
+        ran.into_inner().expect("record")
+    }
+
+    /// A folder where git failed with the lite environment goes straight to
+    /// the captured one on every later read (bug hunt of 2026-11-25, D-9).
+    #[tokio::test]
+    async fn a_folder_where_the_lite_env_failed_goes_straight_to_the_captured_env() {
+        let failing = tempfile::tempdir().expect("folder");
+        let other = tempfile::tempdir().expect("folder");
+        let lite_failure = git_output(
+            128,
+            "fatal: bad config line 1 in file C:/Users/example/.gitconfig",
+        );
+        assert_eq!(
+            smart_polls(failing.path(), 3, &lite_failure).await,
+            [
+                EnvSource::Lite,
+                EnvSource::Captured,
+                EnvSource::Captured,
+                EnvSource::Captured
+            ]
+        );
+        assert!(lite_env_failed_in(failing.path()));
+
+        // The controls: a folder where the lite run succeeds stays on it, and
+        // a failure the captured environment cannot mend is neither retried
+        // nor remembered.
+        assert_eq!(
+            smart_polls(other.path(), 2, &git_output(0, "")).await,
+            [EnvSource::Lite, EnvSource::Lite]
+        );
+        let not_a_repository = git_output(
+            128,
+            "fatal: not a git repository (or any of the parent directories): .git",
+        );
+        assert_eq!(
+            smart_polls(other.path(), 2, &not_a_repository).await,
+            [EnvSource::Lite, EnvSource::Lite]
+        );
+        assert!(!lite_env_failed_in(other.path()));
+    }
+
+    /// The one line a folder's lite-env failure gets in the log: the exit
+    /// code and git's stderr, credentials masked, a long stderr cut.
+    #[test]
+    fn a_lite_env_failure_is_logged_with_its_exit_code_and_stderr() {
+        let folder = Path::new("E:/projects/example");
+        let note = lite_env_failure_note(
+            folder,
+            "status --porcelain",
+            &git_output(
+                128,
+                "fatal: unable to access 'https://example.test/': token=invented-1\nhint: check the helper\n",
+            ),
+        );
+        assert!(note.contains("exit code 128"), "{note}");
+        assert!(
+            note.contains(
+                "fatal: unable to access 'https://example.test/': token=[redacted] | hint: check the helper"
+            ),
+            "{note}"
+        );
+        assert!(!note.contains("invented-1"), "{note}");
+
+        let long = lite_env_failure_note(
+            folder,
+            "status --porcelain",
+            &git_output(1, &"x".repeat(5_000)),
+        );
+        assert!(
+            long.contains(&format!("{}…", "x".repeat(LITE_ENV_STDERR_LOG_CHARS))),
+            "{long}"
+        );
+        assert!(!long.contains(&"x".repeat(LITE_ENV_STDERR_LOG_CHARS + 1)));
+        assert!(lite_env_failure_note(folder, "status", &git_output(1, ""))
+            .contains("nothing on stderr"));
     }
 
     #[test]

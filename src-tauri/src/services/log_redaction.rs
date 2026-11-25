@@ -225,7 +225,7 @@ fn redact_url_parameters(line: String) -> String {
         {
             value_end += 1;
         }
-        if value_end > value_start {
+        if value_end > value_start && !is_flag_value(&line[value_start..value_end]) {
             redacted.push_str(&line[copied..value_start]);
             redacted.push_str(REDACTED);
             copied = value_end;
@@ -254,13 +254,35 @@ fn url_parameter_start(line: &str, index: usize) -> Option<usize> {
     }
 }
 
+/// Words that, in front of `key`, name a lookup key rather than a
+/// credential: npm's `cache-key`, an `Idempotency-Key`, a `public_key`.
+const LOOKUP_KEY_WORDS: &[&str] = &["cache", "idempotency", "public"];
+
 fn is_secret_url_parameter(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     SECRET_URL_PARAMETERS.contains(&name.as_str())
         || SECRET_URL_PARAMETER_ENDINGS.iter().any(|ending| {
-            name.strip_suffix(ending)
-                .is_some_and(|head| head.is_empty() || head.ends_with(['_', '-', '.']))
+            name.strip_suffix(ending).is_some_and(|head| {
+                head.is_empty()
+                    || head
+                        .strip_suffix(['_', '-', '.'])
+                        .is_some_and(|words| !names_a_lookup_key(ending, words))
+            })
         })
+}
+
+/// Whether `<words>-<ending>` names a key that finds something instead of
+/// opening it (`cache-key`, `x-cache-key`).
+fn names_a_lookup_key(ending: &str, words: &str) -> bool {
+    let last_word = words.rsplit(['_', '-', '.']).next().unwrap_or(words);
+    ending == "key" && LOOKUP_KEY_WORDS.contains(&last_word)
+}
+
+/// A flag a URL passes under a secret parameter's name: Claude's sign-in URL
+/// asks `?code=true` to have the code shown on the page. No credential is
+/// spelled `true` or `false`.
+fn is_flag_value(value: &str) -> bool {
+    value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false")
 }
 
 fn ends_url_value(byte: u8) -> bool {
@@ -350,6 +372,42 @@ const BARE_CREDENTIAL_PREFIXES: &[&str] = &[
 /// merely starts the same way.
 const BARE_CREDENTIAL_MIN_CHARS: usize = 20;
 
+/// Whether what follows a prefix is shaped like the keys of the families
+/// above. Each of them is a random base62 or hex string of 32 characters or
+/// more, so it holds a digit or a capital letter: a random body of 32 lacks
+/// both with odds below 1e-13. A run of lowercase words joined by `-` (a
+/// package such as `xai-grok-cli-extensions-helper`) holds neither.
+fn is_shaped_like_a_key(body: &[u8]) -> bool {
+    body.len() >= BARE_CREDENTIAL_MIN_CHARS
+        && body
+            .iter()
+            .any(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase())
+}
+
+/// Whether the run `start..end` is one segment of a file path or a URL path:
+/// right behind a `/` or `\`, or right in front of one. A folder may be
+/// named `sk-learn-experiments-2026`; a key does not stand there. Two
+/// slashes open a URL's authority, where `https://<token>@host` carries a
+/// credential, so they do not count. Nor does a backslash behind the run
+/// that escapes a character in JSON carried inside a string (`\"`, `\n`).
+fn is_path_segment(bytes: &[u8], start: usize, end: usize) -> bool {
+    let opens_authority = start >= 2 && &bytes[start - 2..start] == b"//";
+    let behind_a_separator = match start.checked_sub(1).map(|index| bytes[index]) {
+        Some(b'/') => !opens_authority,
+        Some(b'\\') => true,
+        _ => false,
+    };
+    let in_front_of_a_separator = match bytes.get(end) {
+        Some(b'/') => true,
+        Some(b'\\') => !matches!(
+            bytes.get(end + 1),
+            Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u')
+        ),
+        _ => false,
+    };
+    behind_a_separator || in_front_of_a_separator
+}
+
 /// Mask a provider key that stands alone. The prefix stays: it says whose key
 /// was printed, and nothing else about it.
 fn redact_bare_credentials(line: String) -> String {
@@ -374,7 +432,9 @@ fn redact_bare_credentials(line: String) -> String {
         while bytes.get(secret_end).is_some_and(|byte| is_key_byte(*byte)) {
             secret_end += 1;
         }
-        if secret_end - secret_start >= BARE_CREDENTIAL_MIN_CHARS {
+        if is_shaped_like_a_key(&bytes[secret_start..secret_end])
+            && !is_path_segment(bytes, index, secret_end)
+        {
             redacted.push_str(&line[copied..secret_start]);
             redacted.push_str(REDACTED);
             copied = secret_end;
@@ -560,6 +620,54 @@ mod tests {
         ] {
             assert_eq!(redact_log_line(line), line);
         }
+    }
+
+    /// Lines a bridge or a setup command printed that the redactor masked
+    /// though they carry no secret (bug hunt of 2026-11-25): a folder whose
+    /// name starts like a key, a package named with lowercase words, the
+    /// `code=true` flag of Claude's sign-in URL and an npm cache key.
+    #[test]
+    fn leaves_key_like_folder_names_and_url_flags_unchanged() {
+        for line in [
+            r"[claude] Reading C:\Users\op\projects\sk-learn-experiments-2026-notebook\run.py",
+            r"[codex] cwd=E:\work\ghs_tools-for-unity-builds-2026\Assets",
+            "GET https://registry.npmjs.org/xai-sdk-tools-for-grok-2026-build/-/x.tgz 200",
+            "python sk-learn-experiments-2026-notebook/run.py",
+            "npm warn deprecated xai-grok-cli-extensions-helper: use xai-grok-cli",
+            "[setup] Open https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code",
+            "https://example.test/cb?code=FALSE&state=st-1",
+            "[npm] GET https://registry.npmjs.org/@scope/pkg/-/pkg-1.2.3.tgz?cache-key=abc123",
+            "POST https://example.test/v1/orders?idempotency_key=ord-77&public-key=pk1",
+        ] {
+            assert_eq!(redact_log_line(line), line, "{line}");
+        }
+    }
+
+    /// Keys still masked under the shape rules: next to a slash that starts a
+    /// URL's authority or a quote escaped in JSON, a key of lowercase hex, and
+    /// a key that ends a sentence.
+    #[test]
+    fn redacts_keys_that_only_sit_next_to_a_slash() {
+        assert_eq!(
+            redact_log_line("remote: https://ghp_InventedInventedInvented0000@example.test/repo"),
+            "remote: https://ghp_[redacted]@example.test/repo"
+        );
+        assert_eq!(
+            redact_log_line(r#"{"body":"{\"auth\":\"sk-proj-InventedInventedInvented0000\"}"}"#),
+            r#"{"body":"{\"auth\":\"sk-[redacted]\"}"}"#
+        );
+        assert_eq!(
+            redact_log_line(r#"{"stderr":"using xai-InventedInventedInvented0000\nretrying"}"#),
+            r#"{"stderr":"using xai-[redacted]\nretrying"}"#
+        );
+        assert_eq!(
+            redact_log_line("key sk-0123456789abcdef0123456789abcdef."),
+            "key sk-[redacted]."
+        );
+        assert_eq!(
+            redact_log_line("https://example.test/cb?code=AbCdEf0123456789&state=st-1"),
+            "https://example.test/cb?code=[redacted]&state=st-1"
+        );
     }
 
     /// What a bridge and a provider CLI ordinarily print carries no secret
