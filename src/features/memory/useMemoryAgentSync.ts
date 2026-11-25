@@ -9,6 +9,7 @@
 
 import { useEffect } from "react";
 import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
+import { announceUnreadProtocolBlock } from "@/features/chat/lib/unreadProtocolBlockNotice";
 
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -113,6 +114,19 @@ function drainMemoryFences(): void {
       messagesBySession: useChatStore.getState().messagesBySession,
       isApplied: (messageId) => applied.has(messageId),
       isFirstScan: takeFirstScan,
+      // A request the session could have made, and the reader did not take:
+      // said in that chat, once, like every other unanswered fence.
+      onUnread: (sessionId, message, reason) => {
+        if (isBenchmarkSession(sessionId)) return;
+        if (!sessionMemoryWriteAccess(sessionId).allowed) return;
+        announceUnreadProtocolBlock({
+          sessionId,
+          messageId: message.id,
+          created: message.created,
+          kind: "memory",
+          reason,
+        });
+      },
     });
     if (candidates.length === 0) return;
     const sessions = useChatSessionStore.getState();

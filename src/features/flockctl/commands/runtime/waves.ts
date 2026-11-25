@@ -15,7 +15,6 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import type { ConductorRoadmap } from "@/features/conductor/flockRoadmap";
 import {
   DEFAULT_WAVE_PARALLEL,
-  openingFencePattern,
   parseFlockWave,
   parseWavePlanBody,
   WAVE_FENCE_TAG,
@@ -51,6 +50,11 @@ import {
 } from "@/features/conductor/waveStore";
 import { isWaveLive } from "@/features/conductor/waveVerdict";
 import { resetPersonaHandoff } from "@/shared/api/acpPersonaHandoff";
+import {
+  protocolBlocks,
+  unreadProtocolBlockPlace,
+  unreadProtocolBlocks,
+} from "@/shared/lib/protocolFences";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { truncate } from "../helpers";
@@ -419,11 +423,27 @@ export function skipWaveStep(
 export function validateWavePlan(text: string, conductorSessionId?: string) {
   const body = text.trim();
   const bare = parseWavePlanBody(body);
-  const parse: FlockWaveParse = openingFencePattern(WAVE_FENCE_TAG).test(text)
-    ? parseFlockWave(text)
-    : bare.kind === "plan"
-      ? { ...bare, planText: body, prose: "" }
-      : bare;
+  // A whole message is read by the reader the engine reads it with, so a
+  // block the engine would not run is not validated as one it would.
+  const blocks = protocolBlocks(text, WAVE_FENCE_TAG);
+  const unread =
+    blocks.length === 0 && bare.kind !== "plan"
+      ? unreadProtocolBlocks(text, WAVE_FENCE_TAG)[0]
+      : undefined;
+  if (unread) {
+    return {
+      ok: false as const,
+      reason: "not-top-level",
+      detail: `The ${WAVE_FENCE_TAG} block in this text is ${unreadProtocolBlockPlace(unread.reason)}, so the app would not run it. A plan runs only from a ${WAVE_FENCE_TAG} block that stands at the top level of the reply.`,
+      step: null,
+    };
+  }
+  const parse: FlockWaveParse =
+    blocks.length > 0
+      ? parseFlockWave(text)
+      : bare.kind === "plan"
+        ? { ...bare, planText: body, prose: "" }
+        : bare;
   if (parse.kind === "none") {
     return {
       ok: false as const,

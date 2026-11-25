@@ -5,6 +5,7 @@ export {
   goalPrompt,
 } from "./automationProtocol";
 import { automationCopy as copy } from "./automationCopy";
+import { protocolBlocks } from "@/shared/lib/protocolFences";
 import type { MessageMetadata } from "@/shared/types/messages";
 
 export const GOAL_DEFAULT_TURNS = 30;
@@ -142,16 +143,25 @@ export function goalReply(
     : null;
 }
 
+/**
+ * The JSON of the `tag` block that ends the reply, as the protocol asks
+ * ("End your reply with a fenced ... JSON object").
+ *
+ * The block is found by the shared reader, like every other protocol block:
+ * the last one the reply shows as its own, closed, with nothing but blank
+ * space after it. It used to be the reply's last lines, spelled exactly, so
+ * a state block written with tildes, indented or with trailing blanks was
+ * shown and not read, and one inside an unclosed four-backtick block was
+ * read though the transcript showed only that block.
+ */
 export function finalStateFence(
   text: string,
   tag: string,
 ): Record<string, unknown> | null {
-  const lines = text.trimEnd().split(/\r?\n/);
-  if (lines.pop() !== "```") return null;
-  const start = lines.lastIndexOf(`\`\`\`${tag}`);
-  if (start < 0) return null;
+  const block = protocolBlocks(text, tag).at(-1);
+  if (!block?.closed || text.slice(block.end).trim()) return null;
   try {
-    const value = JSON.parse(lines.slice(start + 1).join("\n"));
+    const value = JSON.parse(text.slice(block.bodyStart, block.bodyEnd));
     return value && typeof value === "object" && !Array.isArray(value)
       ? value
       : null;

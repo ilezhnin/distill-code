@@ -5,7 +5,7 @@ import { protocolBlocks, topLevelFencedBlocks } from "./protocolFences";
 const PLAN = ["```distill-wave", '{"steps":[]}', "```"];
 
 function exactPlans(lines: readonly string[]) {
-  return protocolBlocks(lines.join("\n"), "distill-wave", "exact");
+  return protocolBlocks(lines.join("\n"), "distill-wave");
 }
 
 describe("protocolBlocks", () => {
@@ -78,7 +78,7 @@ describe("protocolBlocks", () => {
     expect(blocks).toHaveLength(1);
   });
 
-  it("keeps each protocol's own spelling of the opening line", () => {
+  it("reads any fence whose language is the tag, as the transcript draws it", () => {
     const text = [
       "~~~distill-memory",
       "{}",
@@ -87,15 +87,36 @@ describe("protocolBlocks", () => {
       "{}",
       "````",
     ].join("\n");
-    expect(protocolBlocks(text, "distill-memory", "info")).toHaveLength(2);
-    // The plan fence has only ever been three backticks and the tag alone.
+    expect(protocolBlocks(text, "distill-memory")).toHaveLength(2);
+    // The plan fence used to be three backticks and the tag alone, so these
+    // were drawn as plan cards and never run.
     expect(
       protocolBlocks(
-        "````distill-wave\n{}\n````\n```distill-wave note\n{}\n```",
+        "````distill-wave\n{}\n````\n~~~distill-wave\n{}\n~~~\n```distill-wave note\n{}\n```",
         "distill-wave",
-        "exact",
       ),
-    ).toEqual([]);
+    ).toHaveLength(3);
+    // A word that only starts with the tag is another language.
+    expect(protocolBlocks("```distill-waves\n{}\n```", "distill-wave")).toEqual(
+      [],
+    );
+  });
+
+  it("reads a block under a tag-like line Markdown keeps as text (C-1)", () => {
+    for (const above of [
+      "<status>ready</status>",
+      "Tracking issue:\n<https://example.com/issues/12>",
+      "Two workers, one wave.\n<br>",
+      'Notes:\n<span class="x">',
+    ]) {
+      const blocks = exactPlans([above, ...PLAN]);
+      expect(blocks, above).toHaveLength(1);
+      expect(blocks[0].closed).toBe(true);
+    }
+    // A lone tag that opens an HTML block, where no text precedes it, still
+    // hides what follows it until a blank line, in the transcript too.
+    expect(exactPlans(["<span>", ...PLAN])).toEqual([]);
+    expect(exactPlans(["Done.", "", "<br>", ...PLAN])).toEqual([]);
   });
 
   it("reports offsets that cut the block out of the text exactly", () => {

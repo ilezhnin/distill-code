@@ -7,6 +7,10 @@
 
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import {
+  type UnreadProtocolBlockReason,
+  unreadProtocolBlocks,
+} from "@/shared/lib/protocolFences";
+import {
   getTextContent,
   isMessageKnownAs,
   type Message,
@@ -43,6 +47,9 @@ export const MEMORY_SCAN_TAIL = 40;
  */
 export const MEMORY_DEEP_SCAN_LIMIT = 1000;
 
+/** Settled messages already looked at for a memory block left unread. */
+const checkedForUnread = new WeakSet<Message>();
+
 function isSettledAssistantMessage(message: Message): boolean {
   return (
     message.role === "assistant" &&
@@ -62,6 +69,16 @@ export function detectMemoryFenceCandidates(args: {
    * omit it get the tail for every session, which is the old behaviour.
    */
   isFirstScan?: (sessionId: string) => boolean;
+  /**
+   * Called for a settled message that asks to remember nothing the reader
+   * takes but holds a memory block's opening line: in a quote, a list,
+   * another code block. Such a request used to vanish without a word.
+   */
+  onUnread?: (
+    sessionId: string,
+    message: Message,
+    reason: UnreadProtocolBlockReason,
+  ) => void;
 }): MemoryFenceCandidate[] {
   const candidates: MemoryFenceCandidate[] = [];
   for (const [sessionId, messages] of Object.entries(args.messagesBySession)) {
@@ -75,8 +92,18 @@ export function detectMemoryFenceCandidates(args: {
       // The tag test rejects nearly every message, so it runs on the parts
       // as they are; the text is only joined for the ones it lets through.
       if (!messageMentions(message, MEMORY_FENCE_TAG)) continue;
-      const request = parseMemoryFences(getTextContent(message));
-      if (!request) continue;
+      const text = getTextContent(message);
+      const request = parseMemoryFences(text);
+      if (!request) {
+        // Once per message: this runs on every streamed token, and an
+        // unread block stays unread.
+        if (args.onUnread && !checkedForUnread.has(message)) {
+          checkedForUnread.add(message);
+          const unread = unreadProtocolBlocks(text, MEMORY_FENCE_TAG)[0];
+          if (unread) args.onUnread(sessionId, message, unread.reason);
+        }
+        continue;
+      }
       candidates.push({ sessionId, messageId: message.id, request });
     }
   }

@@ -14,6 +14,7 @@ import type { MemoryScope } from "./memoryEntry";
 import { normalizeMemoryText } from "./memoryEntry";
 
 export const MEMORY_FENCE_TAG = "distill-memory";
+const MENTIONS_MEMORY_TAG = /distill-memory/i;
 
 /**
  * The bodies of the `distill-memory` blocks that stand in `text` as blocks
@@ -33,7 +34,7 @@ export const MEMORY_FENCE_TAG = "distill-memory";
  * whose contents are text. A block that never closes asks for nothing.
  */
 export function memoryFenceBodies(text: string): string[] {
-  return protocolBlocks(text, MEMORY_FENCE_TAG, "info")
+  return protocolBlocks(text, MEMORY_FENCE_TAG)
     .filter((block) => block.closed)
     .map((block) =>
       text.slice(block.bodyStart, block.bodyEnd).replace(/\r?\n$|\r$/, ""),
@@ -122,7 +123,8 @@ export function parseMemoryFenceBody(body: string): MemoryFenceRequest | null {
 
 /** Every `distill-memory` block in one message, merged and bounded. */
 export function parseMemoryFences(text: string): MemoryFenceRequest | null {
-  if (!text.includes(MEMORY_FENCE_TAG)) return null;
+  // The reader matches the tag in any case, so the cheap reject does too.
+  if (!MENTIONS_MEMORY_TAG.test(text)) return null;
   const remember: MemoryFenceRemember[] = [];
   const forget: string[] = [];
   for (const body of memoryFenceBodies(text)) {

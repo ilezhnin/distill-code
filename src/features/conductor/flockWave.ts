@@ -26,10 +26,6 @@ import {
 import { resolveRoleInLayer, workerLayerRoleIds } from "./roleLayers";
 
 import { protocolBlocks } from "@/shared/lib/protocolFences";
-export {
-  openingFencePattern,
-  closingFencePattern,
-} from "@/shared/lib/protocolFences";
 
 /** Fence info-string that carries a wave plan. */
 export const WAVE_FENCE_TAG = "distill-wave";
@@ -224,7 +220,7 @@ export type FencedBlockScan =
  * or a comment, is text and neither starts a wave nor makes a second plan.
  */
 export function scanFencedBlock(text: string, tag: string): FencedBlockScan {
-  const blocks = protocolBlocks(text, tag, "exact");
+  const blocks = protocolBlocks(text, tag);
   if (blocks.length === 0) return { kind: "none" };
   if (blocks.length > 1) {
     return { kind: "multiple", count: blocks.length };

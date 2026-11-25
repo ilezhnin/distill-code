@@ -1346,5 +1346,28 @@
     "promptTooLarge": "Las instrucciones usan {{bytes}} bytes UTF-8; el límite nativo es {{maxBytes}}. Acorta las instrucciones antes de iniciar.",
     "oversizedSaved": "Las instrucciones guardadas superan el límite nativo y no pudieron admitirse. Edítalas explícitamente para conservar el texto y el modelo fijado exacto sin reintentar la solicitud inválida.",
     "editOversized": "Editar instrucciones guardadas"
+  },
+  "protocolBlock": {
+    "unread": "{{kind}} de esta respuesta no se leyó: {{reason}}.",
+    "kind": {
+      "plan": "Un plan de ola",
+      "roadmap": "Una hoja de ruta",
+      "memory": "Una petición de recordar",
+      "recall": "Una pregunta sobre las memorias guardadas"
+    },
+    "reason": {
+      "quote": "está dentro de una cita",
+      "list": "está dentro de una lista",
+      "footnote": "está dentro de una nota al pie",
+      "code": "está dentro de otro bloque de código",
+      "math": "está dentro de un bloque matemático",
+      "html": "está dentro de un bloque HTML o un comentario",
+      "text": "está escrito como texto, no como un bloque propio",
+      "unclosed": "nunca se cerró"
+    },
+    "planAsked": "Se pidió una vez al conductor que lo vuelva a enviar como un bloque propio.",
+    "planAskedBefore": "Ya se pidió al conductor que lo vuelva a enviar después de su respuesta anterior, así que no se le pide una segunda vez.",
+    "planOnHold": "El trabajo nuevo del conductor está en pausa, así que no se le pidió que vuelva a enviar el plan.",
+    "planAskFailed": "No se pudo entregar la petición de volver a enviar el plan: {{detail}}"
   }
 }

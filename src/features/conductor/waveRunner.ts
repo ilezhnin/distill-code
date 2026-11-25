@@ -57,6 +57,7 @@ import { roleDisplayName, waveStepDisplayName } from "./roleLayers";
 import { SpawnAclDeniedError } from "./spawnAcl";
 import { spawnConductorChildSession } from "./spawnOrchestrator";
 import type { SessionNode } from "./types";
+import { handleUnreadPlan } from "./unreadPlanBlock";
 import { detectWavePlanCandidates } from "./waveDetection";
 import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 import {
@@ -767,6 +768,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       // directly. The telemetry store deduplicates re-scans after restarts.
       countPlanlessConductorTurn(context.conductorSessionId, context.createdAt);
     },
+    // A plan the reply holds but does not show as its own: said, and asked
+    // for once, instead of read as an answer with no plan in silence.
+    onUnreadPlan: (messageId, context, reason) =>
+      handleUnreadPlan({
+        conductorSessionId: context.conductorSessionId,
+        messageId,
+        createdAt: context.createdAt,
+        reason,
+        held: isConductorHeld(state, context.conductorSessionId),
+      }),
   });
 
   let next = state;

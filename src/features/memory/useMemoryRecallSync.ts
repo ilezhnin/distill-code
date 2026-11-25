@@ -28,6 +28,7 @@
 import { useEffect } from "react";
 import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 
+import { announceUnreadProtocolBlock } from "@/features/chat/lib/unreadProtocolBlockNotice";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
@@ -104,6 +105,20 @@ function drainRecallFences(): void {
     const candidates = detectRecallFenceCandidates({
       messagesBySession: useChatStore.getState().messagesBySession,
       isAnswered: (messageId) => answered.has(messageId),
+      // A question the session could have asked, and the reader did not
+      // take: said in that chat, once, where an answer would have come.
+      onUnread: (sessionId, message, reason) => {
+        if (isBenchmarkSession(sessionId)) return;
+        if (!getMemoryPreferences().read) return;
+        if (isWaveExecutorSession(sessionId)) return;
+        announceUnreadProtocolBlock({
+          sessionId,
+          messageId: message.id,
+          created: message.created,
+          kind: "recall",
+          reason,
+        });
+      },
     });
     for (const candidate of candidates) {
       if (isBenchmarkSession(candidate.sessionId)) continue;

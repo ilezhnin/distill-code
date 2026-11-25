@@ -16,7 +16,7 @@ function reportBlock(
   text: string,
 ): { body: string; start: number; end: number } | null {
   if (!text.toLowerCase().includes(REPORT_FENCE_TAG)) return null;
-  const block = protocolBlocks(text, REPORT_FENCE_TAG, "info").find(
+  const block = protocolBlocks(text, REPORT_FENCE_TAG).find(
     (candidate) => candidate.closed,
   );
   return block

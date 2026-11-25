@@ -10,8 +10,10 @@
  * nothing it has seen.
  */
 
+import { announceUnreadProtocolBlock } from "@/features/chat/lib/unreadProtocolBlockNotice";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
+import { unreadProtocolBlocks } from "@/shared/lib/protocolFences";
 import {
   getTextContent,
   isMessageKnownAs,
@@ -34,6 +36,8 @@ import { withRoadmap, type WaveEngineState } from "./waveStore";
 
 /** Messages this process already read for a roadmap fence, or found without one. */
 const scanned = new BoundedSet(5_000);
+
+const MENTIONS_ROADMAP_TAG = new RegExp(ROADMAP_FENCE_TAG, "i");
 
 /** The notice a conductor chat gets about one of its roadmap changes. */
 export type RoadmapNoticeSink = (
@@ -120,13 +124,29 @@ export function processRoadmaps(
         continue;
       }
       const text = getTextContent(message);
-      if (!text.includes(ROADMAP_FENCE_TAG)) {
+      // Without regard to case, as the reader matches the tag.
+      if (!MENTIONS_ROADMAP_TAG.test(text)) {
         scanned.add(message.id);
         continue;
       }
       const parse = parseFlockRoadmap(text);
       scanned.add(message.id);
-      if (parse.kind === "none") continue;
+      if (parse.kind === "none") {
+        // A roadmap the reply holds but does not show as its own: said once,
+        // not dropped in silence. Informational, so the relay hands it to
+        // the conductor with its next turn instead of waking it.
+        const unread = unreadProtocolBlocks(text, ROADMAP_FENCE_TAG)[0];
+        if (unread) {
+          announceUnreadProtocolBlock({
+            sessionId: node.sessionId,
+            messageId: message.id,
+            created: message.created,
+            kind: "roadmap",
+            reason: unread.reason,
+          });
+        }
+        continue;
+      }
       if (parse.kind === "invalid") {
         notify(
           node.sessionId,

@@ -12,16 +12,25 @@
 
 import { isTextContent, type Message } from "@/shared/types/messages";
 
+const mentionPatterns = new Map<string, RegExp>();
+
 /**
- * True when any text part of the message contains `needle`.
+ * True when any text part of the message contains `needle`, in any case:
+ * the needle is a fence tag, and the reader matches tags without regard to
+ * case.
  *
- * The same answer `getTextContent(message).includes(needle)` gives for a
- * needle with no newline in it — the parts are joined with one — without
+ * The same answer a case-blind search of `getTextContent(message)` gives for
+ * a needle with no newline in it — the parts are joined with one — without
  * building the joined string for every message that does not mention it.
  */
 export function messageMentions(message: Message, needle: string): boolean {
+  let pattern = mentionPatterns.get(needle);
+  if (!pattern) {
+    pattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    mentionPatterns.set(needle, pattern);
+  }
   for (const part of message.content) {
-    if (isTextContent(part) && part.text.includes(needle)) return true;
+    if (isTextContent(part) && pattern.test(part.text)) return true;
   }
   return false;
 }

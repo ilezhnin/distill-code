@@ -8,6 +8,10 @@
 
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import {
+  type UnreadProtocolBlockReason,
+  unreadProtocolBlocks,
+} from "@/shared/lib/protocolFences";
+import {
   getTextContent,
   isMessageKnownAs,
   type Message,
@@ -19,6 +23,8 @@ import {
   type WaveInvalid,
   type WavePlan,
 } from "./flockWave";
+
+const MENTIONS_WAVE_TAG = new RegExp(WAVE_FENCE_TAG, "i");
 
 export interface WavePlanCandidate {
   conductorSessionId: string;
@@ -75,6 +81,17 @@ export function detectWavePlanCandidates(args: {
     messageId: string,
     context: { conductorSessionId: string; createdAt: number },
   ) => void;
+  /**
+   * Called for a settled message that carries no plan the reader takes but
+   * does hold a plan's opening line: inside a quote, a list, another code
+   * block. Such a reply used to be marked scanned in silence, and a
+   * conductor that meant the plan waited for a wave that never started.
+   */
+  onUnreadPlan?: (
+    messageId: string,
+    context: { conductorSessionId: string; createdAt: number },
+    reason: UnreadProtocolBlockReason,
+  ) => void;
 }): WavePlanCandidate[] {
   const candidates: WavePlanCandidate[] = [];
   for (const conductorSessionId of args.conductorSessionIds) {
@@ -87,7 +104,8 @@ export function detectWavePlanCandidates(args: {
         continue;
       const text = getTextContent(message);
       // Cheap reject before the real parse: most conductor turns are prose.
-      if (!text.includes(WAVE_FENCE_TAG)) {
+      // Without regard to case, as the reader matches the tag.
+      if (!MENTIONS_WAVE_TAG.test(text)) {
         args.markScanned?.(message.id, {
           conductorSessionId,
           createdAt: message.created,
@@ -96,6 +114,10 @@ export function detectWavePlanCandidates(args: {
       }
       const parse = parseFlockWave(text);
       if (parse.kind === "none") {
+        const unread = args.onUnreadPlan
+          ? unreadProtocolBlocks(text, WAVE_FENCE_TAG)[0]
+          : undefined;
+        if (unread) args.onUnreadPlan?.(message.id, context, unread.reason);
         args.markScanned?.(message.id, {
           conductorSessionId,
           createdAt: message.created,

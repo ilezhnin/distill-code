@@ -16,7 +16,11 @@
  */
 
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
-import { protocolBlocks } from "@/shared/lib/protocolFences";
+import {
+  protocolBlocks,
+  type UnreadProtocolBlockReason,
+  unreadProtocolBlocks,
+} from "@/shared/lib/protocolFences";
 import {
   getTextContent,
   isMessageKnownAs,
@@ -111,8 +115,9 @@ function parseBody(body: string): MemoryRecallRequest | null {
  * backticks, a quoted one and one in the middle of a sentence included.
  */
 export function parseRecallFence(text: string): MemoryRecallRequest | null {
-  if (!text.includes(RECALL_FENCE_TAG)) return null;
-  for (const block of protocolBlocks(text, RECALL_FENCE_TAG, "info")) {
+  // The reader matches the tag in any case, so the cheap reject does too.
+  if (!/distill-recall/i.test(text)) return null;
+  for (const block of protocolBlocks(text, RECALL_FENCE_TAG)) {
     if (!block.closed) continue;
     const parsed = parseBody(text.slice(block.bodyStart, block.bodyEnd));
     if (parsed) return parsed;
@@ -285,6 +290,9 @@ function isSettledAssistantMessage(message: Message): boolean {
   );
 }
 
+/** Settled messages already looked at for a recall block left unread. */
+const checkedForUnread = new WeakSet<Message>();
+
 /**
  * The messages asking a question nobody has answered yet.
  *
@@ -296,6 +304,16 @@ export function detectRecallFenceCandidates(args: {
   messagesBySession: Readonly<Record<string, readonly Message[] | undefined>>;
   /** Expected to be cheap — a set lookup, not a search through a list. */
   isAnswered: (messageId: string) => boolean;
+  /**
+   * Called for a settled message that asks nothing the reader takes but
+   * holds a recall block's opening line: in a quote, a list, another code
+   * block. Such a question used to go unanswered without a word.
+   */
+  onUnread?: (
+    sessionId: string,
+    message: Message,
+    reason: UnreadProtocolBlockReason,
+  ) => void;
 }): MemoryRecallCandidate[] {
   const candidates: MemoryRecallCandidate[] = [];
   for (const [sessionId, messages] of Object.entries(args.messagesBySession)) {
@@ -309,8 +327,18 @@ export function detectRecallFenceCandidates(args: {
       // The tag test rejects nearly every message, so it runs on the parts
       // as they are; the text is only joined for the ones it lets through.
       if (!messageMentions(message, RECALL_FENCE_TAG)) continue;
-      const request = parseRecallFence(getTextContent(message));
-      if (!request) continue;
+      const text = getTextContent(message);
+      const request = parseRecallFence(text);
+      if (!request) {
+        // Once per message: this runs on every streamed token, and an
+        // unread block stays unread.
+        if (args.onUnread && !checkedForUnread.has(message)) {
+          checkedForUnread.add(message);
+          const unread = unreadProtocolBlocks(text, RECALL_FENCE_TAG)[0];
+          if (unread) args.onUnread(sessionId, message, unread.reason);
+        }
+        continue;
+      }
       recentTexts ??= messages
         .slice(-RECALL_LOOP_WINDOW)
         .map((entry) => getTextContent(entry));

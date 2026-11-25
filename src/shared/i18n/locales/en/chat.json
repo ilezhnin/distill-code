@@ -1346,5 +1346,28 @@
     "promptTooLarge": "Task instructions use {{bytes}} UTF-8 bytes; the native limit is {{maxBytes}}. Shorten the instructions before starting.",
     "oversizedSaved": "These saved instructions exceed the native limit and cannot have been admitted. Explicitly edit them to preserve the text and exact pin without retrying the invalid request.",
     "editOversized": "Edit saved instructions"
+  },
+  "protocolBlock": {
+    "unread": "{{kind}} in this reply was not read: {{reason}}.",
+    "kind": {
+      "plan": "A wave plan",
+      "roadmap": "A roadmap",
+      "memory": "A request to remember",
+      "recall": "A question about stored memories"
+    },
+    "reason": {
+      "quote": "it is inside a quote",
+      "list": "it is inside a list",
+      "footnote": "it is inside a footnote",
+      "code": "it is inside another code block",
+      "math": "it is inside a math block",
+      "html": "it is inside an HTML block or comment",
+      "text": "it is written as text, not as a block of its own",
+      "unclosed": "it was never closed"
+    },
+    "planAsked": "The conductor was asked once to send it again as a block of its own.",
+    "planAskedBefore": "The conductor was already asked to send it again after its previous reply, so it is not asked a second time.",
+    "planOnHold": "The conductor's new work is on hold, so it was not asked to send the plan again.",
+    "planAskFailed": "The request to send the plan again could not be delivered: {{detail}}"
   }
 }
