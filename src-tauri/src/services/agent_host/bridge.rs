@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -339,6 +339,160 @@ fn received_run(pending: &Pending, params: &Value) -> Option<String> {
     })
 }
 
+/// Prompts the host stopped waiting for (see [`Bridge::abandon_turn`]) whose
+/// answer the agent still owes, by request id, with their bridge session and
+/// run.
+type Abandoned = Mutex<HashMap<u64, (String, String)>>;
+
+/// The run an update read off the bridge now belongs to. An abandoned turn
+/// of its session comes first: the agent was told to stop and did not
+/// answer, so it is still at work on that turn, and what it says about the
+/// session until it answers belongs to that turn. A prompt sent after it is
+/// only started once the agent has answered the old one, yet its pending
+/// entry used to claim that output, and the old turn's reply was stored as
+/// the reply to the next message (2026-11-25 hunt, D-2). The router drops a
+/// turn update whose run is not the one running.
+fn update_run(pending: &Pending, abandoned: &Abandoned, params: &Value) -> Option<String> {
+    let session_id = protocol::session_id(params)?;
+    let owed = abandoned.lock().ok().and_then(|abandoned| {
+        abandoned
+            .values()
+            .find_map(|(session, run)| (session == &session_id).then(|| run.clone()))
+    });
+    owed.or_else(|| received_run(pending, params))
+}
+
+/// Whether response `id` answers an abandoned prompt, which is forgotten if
+/// so: the agent has finished that turn, and what it says next is the next
+/// turn's.
+fn answered_abandoned(abandoned: &Abandoned, id: &Value) -> bool {
+    id.as_u64().is_some_and(|key| {
+        abandoned
+            .lock()
+            .ok()
+            .and_then(|mut abandoned| abandoned.remove(&key))
+            .is_some()
+    })
+}
+
+/// Where the prompt of every turn the host has claimed and not yet ended
+/// stands, by run id. A Stop decides here under the same lock a turn's prompt
+/// is written under (see [`Bridge::cancel_turn`]), so it can no longer reach
+/// the agent ahead of the prompt it cancels: one pressed before the prompt is
+/// written ends the turn without writing it, one pressed later is sent behind
+/// it. A cancel that went first found an idle agent, which then ran the whole
+/// turn while the host ended it as cancelled after the grace and showed the
+/// chat idle (2026-11-25 hunt, D-2). The ledger also tells a Stop that a run
+/// has no turn behind it any more (D-1).
+///
+/// One ledger for the process, keyed by run id rather than kept per bridge:
+/// a Stop reaches a chat through its current route, and a run id names one
+/// turn whatever process it was started on.
+static TURNS: LazyLock<Mutex<HashMap<String, TurnPhase>>> = LazyLock::new(Default::default);
+
+fn turn_ledger() -> std::sync::MutexGuard<'static, HashMap<String, TurnPhase>> {
+    TURNS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TurnPhase {
+    /// Claimed; its prompt has not been written.
+    Preparing,
+    /// Stopped before its prompt was written. The prompt is never written.
+    Stopped,
+    /// Its prompt is in the bridge's writer queue, ahead of any later cancel.
+    Written,
+}
+
+/// A claimed turn's entry in the turn ledger, held by whoever runs the turn
+/// for as long as it runs. However the owner ends (an answer, an error, a
+/// panic, a dropped task), dropping this closes the entry.
+pub struct OpenTurn {
+    run_id: String,
+}
+
+impl OpenTurn {
+    pub fn open(run_id: &str) -> Self {
+        turn_ledger().insert(run_id.to_string(), TurnPhase::Preparing);
+        Self {
+            run_id: run_id.to_string(),
+        }
+    }
+
+    /// Moves the hold to the next turn the same owner runs (a steered one).
+    pub fn reopen(&mut self, run_id: &str) {
+        let mut ledger = turn_ledger();
+        ledger.remove(&self.run_id);
+        ledger.insert(run_id.to_string(), TurnPhase::Preparing);
+        self.run_id = run_id.to_string();
+    }
+
+    /// Whether a live turn owns `run_id`.
+    pub fn is_open(run_id: &str) -> bool {
+        turn_ledger().contains_key(run_id)
+    }
+
+    /// Stops this turn before its prompt is written, for a Stop that came
+    /// before the turn was claimed and so found nothing to stop.
+    pub fn stop(&self) {
+        let mut ledger = turn_ledger();
+        if ledger.get(&self.run_id) == Some(&TurnPhase::Preparing) {
+            ledger.insert(self.run_id.clone(), TurnPhase::Stopped);
+        }
+    }
+}
+
+impl Drop for OpenTurn {
+    fn drop(&mut self) {
+        turn_ledger().remove(&self.run_id);
+    }
+}
+
+/// What a Stop did to a chat's turn; see [`Bridge::cancel_turn`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// `session/cancel` was sent; where the turn had a prompt, behind it.
+    Sent,
+    /// The turn's prompt was not written yet. It never will be, and nothing
+    /// was sent: nothing of this turn is in the agent to cancel.
+    Withheld,
+    /// `session/cancel` was sent, but no live turn owns the run the chat
+    /// still names. Nothing ends that run unless the caller does.
+    Unowned,
+}
+
+/// The answer to a prompt a Stop kept from being written. The agent never
+/// saw it; `promptWithheld` tells the host so (a transcript the prompt was to
+/// carry over is still owed) and means nothing to the renderer.
+fn withheld_answer() -> Value {
+    json!({"stopReason": "cancelled", "_meta": {"distill": {"promptWithheld": true}}})
+}
+
+/// Whether a prompt's answer is the one a Stop gave it before it was written.
+pub fn prompt_withheld(answer: &Value) -> bool {
+    answer.pointer("/_meta/distill/promptWithheld") == Some(&Value::Bool(true))
+}
+
+/// Whether a bridge's output ended because the host stopped it: `kill`
+/// clears `alive` before it ends the process, and `stop_sandbox` sets
+/// `stop_requested` before it waits for `bench-kill` to end it from outside.
+fn ended_by_host(alive: &AtomicBool, stop_requested: &AtomicBool) -> bool {
+    !alive.load(Ordering::SeqCst) || stop_requested.load(Ordering::SeqCst)
+}
+
+/// What [`Bridge::spawn_scoped`] says when the process started but did not
+/// answer `initialize`; see [`failed_to_initialize`].
+const INITIALIZE_FAILED: &str = "bridge failed to initialize: ";
+
+/// Whether a [`Bridge::spawn_scoped`] error is a process that started and
+/// then failed `initialize`, rather than a CLI that was not found or could
+/// not be started at all.
+pub fn failed_to_initialize(error: &str) -> bool {
+    error.contains(INITIALIZE_FAILED)
+}
+
 /// The bridge's stdout has ended: mark it dead and fail every request still
 /// waiting for an answer that will never come.
 ///
@@ -428,8 +582,13 @@ pub struct Bridge {
     transport_cancelled: watch::Sender<bool>,
     startup_failure: Arc<Mutex<Option<Value>>>,
     pending: Arc<Pending>,
+    /// See [`Abandoned`].
+    abandoned: Arc<Abandoned>,
     next_id: AtomicU64,
     alive: Arc<AtomicBool>,
+    /// Set while the host waits for a stop it asked for (`stop_sandbox`);
+    /// see [`ended_by_host`].
+    stop_requested: Arc<AtomicBool>,
     /// When the host last used this process: handed it out for work (see
     /// [`Bridge::touch`]), or sent it a request or got an answer back. What the
     /// host measures an idle bridge by before shutting it down.
@@ -801,7 +960,9 @@ impl Bridge {
         let startup_failure = Arc::new(Mutex::new(None));
         let (transport_cancelled, mut writer_cancelled) = watch::channel(false);
         let pending: Arc<Pending> = Arc::new(Mutex::new(HashMap::new()));
+        let abandoned: Arc<Abandoned> = Arc::new(Mutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
+        let stop_requested = Arc::new(AtomicBool::new(false));
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
         let zai = (spec.id == "zai-acp")
             .then(|| Arc::new(Mutex::new(super::zai::ConfigAdapter::default())));
@@ -937,7 +1098,9 @@ impl Bridge {
         {
             let harness = route_key.to_string();
             let pending = Arc::clone(&pending);
+            let abandoned = Arc::clone(&abandoned);
             let alive = Arc::clone(&alive);
+            let stop_requested = Arc::clone(&stop_requested);
             let zai = zai.clone();
             let failed = transport_cancelled.clone();
             let mut cancelled = failed.subscribe();
@@ -991,6 +1154,12 @@ impl Bridge {
                                     }
                                     let _ = request.reply.send(result);
                                 }
+                                // The late answer of a turn the host ended
+                                // when the agent would not: expected, and
+                                // the agent is free for the next prompt now.
+                                None if answered_abandoned(&abandoned, &id) => log::info!(
+                                    "[{harness}] the agent answered a turn the host had already ended"
+                                ),
                                 // Every id the host issues is a number, so a
                                 // response under any other id answers a request
                                 // the bridge made of itself and let out on its
@@ -1037,7 +1206,7 @@ impl Bridge {
                             let event = BridgeEvent::Notification {
                                 harness: harness.clone(),
                                 generation,
-                                run_id: received_run(&pending, &params),
+                                run_id: update_run(&pending, &abandoned, &params),
                                 method,
                                 params,
                             };
@@ -1068,9 +1237,10 @@ impl Bridge {
                         ),
                     }
                 }
-                // `kill` marks the bridge dead before it ends the process, so
-                // one still marked alive here ended on its own.
-                let stopped = !alive.load(Ordering::SeqCst);
+                // `kill` marks the bridge dead before it ends the process, and
+                // `stop_sandbox` marks the stop it waits for, so one still
+                // marked alive and not stopping here ended on its own.
+                let stopped = ended_by_host(&alive, &stop_requested);
                 fail_pending_on_exit(&pending, &alive);
                 let _ = events.send(BridgeEvent::Exited {
                     harness,
@@ -1091,8 +1261,10 @@ impl Bridge {
             transport_cancelled,
             startup_failure,
             pending,
+            abandoned,
             next_id: AtomicU64::new(1),
             alive,
+            stop_requested,
             last_used: Mutex::new(Instant::now()),
             child: Mutex::new(Some(child)),
             tree,
@@ -1143,7 +1315,7 @@ impl Bridge {
                     return error_text(&error);
                 }
                 format!(
-                    "{} bridge failed to initialize: {}",
+                    "{} {INITIALIZE_FAILED}{}",
                     spec.label,
                     error_text(&error)
                 )
@@ -1369,70 +1541,90 @@ impl Bridge {
         admission: Option<tokio::sync::OwnedMutexGuard<()>>,
         owned_deadline: Option<tokio::time::Instant>,
     ) -> Result<Value, Value> {
-        if !self.is_alive() {
-            if let Ok(failure) = self.startup_failure.lock() {
-                if let Some(failure) = failure.as_ref() {
-                    return Err(failure.clone());
+        let run_id = turn.as_ref().map(|(_, run_id)| run_id.clone());
+        let (id, rx) = {
+            // A turn's prompt is checked and written under the turn ledger's
+            // lock, which a Stop takes as well (`cancel_turn`): a Stop that
+            // came first keeps the prompt from being written at all, and one
+            // that comes later finds it written and is queued behind it. No
+            // await happens while the lock is held.
+            let mut ledger = run_id.as_ref().map(|_| turn_ledger());
+            if let (Some(ledger), Some(run_id)) = (&ledger, &run_id) {
+                if ledger.get(run_id) == Some(&TurnPhase::Stopped) {
+                    return Ok(withheld_answer());
                 }
             }
-            return Err(protocol::internal(format!(
-                "{} bridge is not running",
-                self.harness
-            )));
-        }
-        if let Some(refusal) = self.oversized(&params) {
-            return Err(refusal);
-        }
-        self.touch();
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-        let config_context = self
-            .zai
-            .as_ref()
-            .map(|_| (method.to_string(), protocol::session_id(&params)));
-        if !self.register_owned(id, tx, turn, config_context) {
-            if let Ok(failure) = self.startup_failure.lock() {
-                if let Some(failure) = failure.as_ref() {
-                    return Err(failure.clone());
+            if !self.is_alive() {
+                if let Ok(failure) = self.startup_failure.lock() {
+                    if let Some(failure) = failure.as_ref() {
+                        return Err(failure.clone());
+                    }
                 }
+                return Err(protocol::internal(format!(
+                    "{} bridge is not running",
+                    self.harness
+                )));
             }
-            return Err(protocol::internal(format!(
-                "{} bridge is not running",
-                self.harness
-            )));
-        }
-        if owned_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-            self.forget(id);
-            return Err(protocol::error_with_data(
-                -32000,
-                "Native root budget expired before provider submission",
-                json!({"kind":"budget_timeout"}),
-            ));
-        }
-        if let Err(reason) =
-            self.enqueue(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-        {
-            self.forget(id);
-            if self.is_sandbox() {
-                transport_failed(
-                    &self.pending,
-                    &self.alive,
-                    &self.transport_cancelled,
-                    reason,
-                );
-                self.kill();
+            if let Some(refusal) = self.oversized(&params) {
+                return Err(refusal);
             }
-            let message = format!("{} {reason}", self.harness);
-            return Err(if self.is_sandbox() {
-                protocol::error_with_data(
+            self.touch();
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            let (tx, rx) = oneshot::channel();
+            let config_context = self
+                .zai
+                .as_ref()
+                .map(|_| (method.to_string(), protocol::session_id(&params)));
+            if !self.register_owned(id, tx, turn, config_context) {
+                if let Ok(failure) = self.startup_failure.lock() {
+                    if let Some(failure) = failure.as_ref() {
+                        return Err(failure.clone());
+                    }
+                }
+                return Err(protocol::internal(format!(
+                    "{} bridge is not running",
+                    self.harness
+                )));
+            }
+            if owned_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                self.forget(id);
+                return Err(protocol::error_with_data(
                     -32000,
-                    message,
-                    json!({"kind":"transport_budget_exceeded"}),
-                )
-            } else {
-                protocol::internal(message)
-            });
-        }
+                    "Native root budget expired before provider submission",
+                    json!({"kind":"budget_timeout"}),
+                ));
+            }
+            if let Err(reason) =
+                self.enqueue(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+            {
+                self.forget(id);
+                if self.is_sandbox() {
+                    transport_failed(
+                        &self.pending,
+                        &self.alive,
+                        &self.transport_cancelled,
+                        reason,
+                    );
+                    self.kill();
+                }
+                let message = format!("{} {reason}", self.harness);
+                return Err(if self.is_sandbox() {
+                    protocol::error_with_data(
+                        -32000,
+                        message,
+                        json!({"kind":"transport_budget_exceeded"}),
+                    )
+                } else {
+                    protocol::internal(message)
+                });
+            }
+            if let (Some(ledger), Some(run_id)) = (ledger.as_mut(), &run_id) {
+                if let Some(phase) = ledger.get_mut(run_id) {
+                    *phase = TurnPhase::Written;
+                }
+            }
+            (id, rx)
+        };
         // Revocation linearizes against this synchronous native RPC submission,
         // after the receipt claim and every awaited host preparation step.
         // Already submitted work retains its durable identity; no lock is held
@@ -1516,13 +1708,43 @@ impl Bridge {
                 let (_, run) = request.turn.as_ref()?;
                 (run == run_id).then_some(*key)
             })?;
-            pending.remove(&key)
+            let request = pending.remove(&key)?;
+            // The agent never ended the turn, so it is still at work on it:
+            // until it answers, what it says about the session is this
+            // turn's (see `update_run`), and its answer is expected.
+            if let (Some(turn), Ok(mut abandoned)) = (request.turn.clone(), self.abandoned.lock()) {
+                abandoned.insert(key, turn);
+            }
+            Some(request)
         });
         let Some(request) = request else {
             return false;
         };
         let _ = request.reply.send(Ok(json!({ "stopReason": "cancelled" })));
         true
+    }
+
+    /// Stops turn `run_id` of the chat whose bridge session `params` names,
+    /// as the operator's Stop does; `None` for a chat whose own prompt runs
+    /// no turn. Decided under the lock a turn's prompt is written under (see
+    /// [`TURNS`]), so the agent never receives the cancel ahead of the prompt
+    /// it cancels: a prompt not written yet never will be, and nothing is
+    /// sent; a prompt written already is followed by `session/cancel`.
+    pub fn cancel_turn(&self, run_id: Option<&str>, params: Value) -> CancelOutcome {
+        let mut ledger = turn_ledger();
+        let outcome = match run_id {
+            None => CancelOutcome::Sent,
+            Some(run_id) => match ledger.get_mut(run_id) {
+                None => CancelOutcome::Unowned,
+                Some(TurnPhase::Written) => CancelOutcome::Sent,
+                Some(phase) => {
+                    *phase = TurnPhase::Stopped;
+                    return CancelOutcome::Withheld;
+                }
+            },
+        };
+        self.notify("session/cancel", params);
+        outcome
     }
 
     pub fn notify(&self, method: &str, params: Value) {
@@ -1597,9 +1819,16 @@ impl Bridge {
 
     pub async fn stop_sandbox(&self) -> Result<(), String> {
         if let Some(id) = &self.sandbox_id {
-            crate::services::benchmark_sandbox::kill("session", id)
-                .await
-                .map_err(|error| error.to_string())?;
+            // `bench-kill` ends the processes from outside, so the bridge's
+            // output closes while this still waits for it: the stop is marked
+            // as asked for first, or that end reads as the bridge dying on its
+            // own (2026-11-25 hunt, D-5: 294 WARN lines for normal ends).
+            self.stop_requested.store(true, Ordering::SeqCst);
+            if let Err(error) = crate::services::benchmark_sandbox::kill("session", id).await {
+                // The stop failed, so an end that comes later was not this one.
+                self.stop_requested.store(false, Ordering::SeqCst);
+                return Err(error.to_string());
+            }
             self.sandbox_stopped.store(true, Ordering::SeqCst);
             self.kill();
         }
@@ -1971,8 +2200,10 @@ pub(super) mod tests {
             transport_cancelled: watch::channel(false).0,
             startup_failure: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            abandoned: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
+            stop_requested: Arc::new(AtomicBool::new(false)),
             last_used: Mutex::new(Instant::now()),
             child: Mutex::new(None),
             tree: None,
@@ -2026,6 +2257,189 @@ pub(super) mod tests {
         assert!(!bridge.abandon_turn("stuck"));
         assert!(other_rx.try_recv().is_err());
         assert_eq!(pending_count(&bridge), 1);
+    }
+
+    // 2026-11-25 hunt, D-2: a Stop pressed before the prompt was written
+    // reached the agent first, and the agent then ran the whole turn.
+    #[tokio::test]
+    async fn a_stop_before_the_prompt_is_written_keeps_the_prompt_from_the_agent() {
+        let (bridge, mut written) = silent_bridge();
+        let _turn = OpenTurn::open("h2-stopped-before-write");
+        assert_eq!(
+            bridge.cancel_turn(Some("h2-stopped-before-write"), json!({"sessionId": "s"})),
+            CancelOutcome::Withheld
+        );
+        // No cancel for an agent that has nothing of this turn to cancel.
+        assert!(written.try_recv().is_err());
+        let answer = bridge
+            .prompt(
+                json!({"sessionId": "s", "prompt": []}),
+                "h2-stopped-before-write".into(),
+            )
+            .await
+            .expect("a turn stopped before its prompt ends as cancelled");
+        assert_eq!(answer["stopReason"], "cancelled");
+        assert!(prompt_withheld(&answer));
+        // And no prompt either: the agent never starts the turn.
+        assert!(written.try_recv().is_err());
+        assert_eq!(pending_count(&bridge), 0);
+    }
+
+    #[tokio::test]
+    async fn a_stop_after_the_prompt_is_written_is_sent_behind_it() {
+        let (bridge, mut written) = silent_bridge();
+        let bridge = Arc::new(bridge);
+        let _turn = OpenTurn::open("h2-stopped-after-write");
+        let prompting = Arc::clone(&bridge);
+        let prompt = tokio::spawn(async move {
+            prompting
+                .prompt(
+                    json!({"sessionId": "s", "prompt": []}),
+                    "h2-stopped-after-write".into(),
+                )
+                .await
+        });
+        let first = written.recv().await.expect("the prompt is written");
+        assert!(first.contains("\"method\":\"session/prompt\""), "{first}");
+        assert_eq!(
+            bridge.cancel_turn(Some("h2-stopped-after-write"), json!({"sessionId": "s"})),
+            CancelOutcome::Sent
+        );
+        let second = written.recv().await.expect("the cancel is written");
+        assert!(second.contains("\"method\":\"session/cancel\""), "{second}");
+        // An answer the agent never gives is still ended by the host.
+        assert!(bridge.abandon_turn("h2-stopped-after-write"));
+        let answer = prompt.await.unwrap().expect("ended as cancelled");
+        assert_eq!(answer["stopReason"], "cancelled");
+        assert!(!prompt_withheld(&answer));
+    }
+
+    // 2026-11-25 hunt, D-1: a run whose turn ended without letting go of it
+    // was refused every prompt, and Stop could not clear it.
+    #[test]
+    fn a_stop_of_a_run_no_live_turn_owns_says_so() {
+        let (bridge, mut written) = silent_bridge();
+        let turn = OpenTurn::open("h1-orphaned-run");
+        assert!(OpenTurn::is_open("h1-orphaned-run"));
+        // Its owner is gone (it returned, failed or was dropped).
+        drop(turn);
+        assert!(!OpenTurn::is_open("h1-orphaned-run"));
+        assert_eq!(
+            bridge.cancel_turn(Some("h1-orphaned-run"), json!({"sessionId": "s"})),
+            CancelOutcome::Unowned
+        );
+        assert!(written.try_recv().unwrap().contains("session/cancel"));
+        // A Stop of a chat with no run of its own still reaches the agent:
+        // a turn the agent began by itself is stopped that way.
+        assert_eq!(
+            bridge.cancel_turn(None, json!({"sessionId": "s"})),
+            CancelOutcome::Sent
+        );
+        assert!(written.try_recv().unwrap().contains("session/cancel"));
+    }
+
+    // 2026-11-25 hunt, D-2: a Stop that reached the host before the turn was
+    // claimed went to the idle agent, and the whole turn ran.
+    #[tokio::test]
+    async fn a_turn_stopped_before_its_claim_never_writes_its_prompt() {
+        let (bridge, mut written) = silent_bridge();
+        let turn = OpenTurn::open("h2-stopped-before-claim");
+        turn.stop();
+        let answer = bridge
+            .prompt(
+                json!({"sessionId": "s", "prompt": []}),
+                "h2-stopped-before-claim".into(),
+            )
+            .await
+            .expect("ends as cancelled");
+        assert!(prompt_withheld(&answer));
+        assert!(written.try_recv().is_err());
+        // A turn whose prompt is written already is not stopped this way: its
+        // Stop sends a cancel behind the prompt.
+        let (bridge, mut written) = silent_bridge();
+        let bridge = Arc::new(bridge);
+        let turn = OpenTurn::open("h2-written-before-stop");
+        let prompting = Arc::clone(&bridge);
+        let prompt = tokio::spawn(async move {
+            prompting
+                .prompt(
+                    json!({"sessionId": "s", "prompt": []}),
+                    "h2-written-before-stop".into(),
+                )
+                .await
+        });
+        assert!(written.recv().await.unwrap().contains("session/prompt"));
+        turn.stop();
+        assert_eq!(
+            bridge.cancel_turn(Some("h2-written-before-stop"), json!({"sessionId": "s"})),
+            CancelOutcome::Sent
+        );
+        assert!(bridge.abandon_turn("h2-written-before-stop"));
+        assert!(!prompt_withheld(&prompt.await.unwrap().unwrap()));
+    }
+
+    #[test]
+    fn a_steered_turn_takes_over_its_owners_hold() {
+        let mut turn = OpenTurn::open("h1-first-run");
+        turn.reopen("h1-steered-run");
+        assert!(!OpenTurn::is_open("h1-first-run"));
+        assert!(OpenTurn::is_open("h1-steered-run"));
+        drop(turn);
+        assert!(!OpenTurn::is_open("h1-steered-run"));
+    }
+
+    // 2026-11-25 hunt, D-2: what an agent still said about a turn the host had
+    // ended was stored under the run of the next prompt.
+    #[test]
+    fn what_the_agent_says_after_an_abandoned_turn_stays_that_turns() {
+        let (bridge, _written) = silent_bridge();
+        let params = json!({"sessionId": "s"});
+        let (tx, _rx) = oneshot::channel();
+        assert!(bridge.register_owned(1, tx, Some(("s".into(), "old".into())), None));
+        assert!(bridge.abandon_turn("old"));
+        let (tx, _rx) = oneshot::channel();
+        assert!(bridge.register_owned(2, tx, Some(("s".into(), "new".into())), None));
+        assert_eq!(
+            update_run(&bridge.pending, &bridge.abandoned, &params).as_deref(),
+            Some("old")
+        );
+        assert!(update_run(
+            &bridge.pending,
+            &bridge.abandoned,
+            &json!({"sessionId": "t"})
+        )
+        .is_none());
+        // The agent answers the old prompt at last: what follows is the new turn's.
+        assert!(!answered_abandoned(&bridge.abandoned, &json!(2)));
+        assert!(answered_abandoned(&bridge.abandoned, &json!(1)));
+        assert_eq!(
+            update_run(&bridge.pending, &bridge.abandoned, &params).as_deref(),
+            Some("new")
+        );
+    }
+
+    // 2026-11-25 hunt, D-5: a benchmark bridge the host stopped was logged as
+    // having exited on its own, because `bench-kill` ends it before `kill`.
+    #[test]
+    fn an_end_the_host_waits_for_reads_as_a_stop() {
+        let (bridge, _written) = silent_bridge();
+        assert!(!ended_by_host(&bridge.alive, &bridge.stop_requested));
+        bridge.stop_requested.store(true, Ordering::SeqCst);
+        assert!(bridge.is_alive());
+        assert!(ended_by_host(&bridge.alive, &bridge.stop_requested));
+        bridge.stop_requested.store(false, Ordering::SeqCst);
+        bridge.kill();
+        assert!(ended_by_host(&bridge.alive, &bridge.stop_requested));
+    }
+
+    #[test]
+    fn a_failed_initialize_is_told_apart_from_a_cli_that_never_started() {
+        assert!(failed_to_initialize(&format!(
+            "GitHub Copilot {INITIALIZE_FAILED}The agent's bridge exited before this turn finished"
+        )));
+        assert!(!failed_to_initialize(
+            "failed to start the GitHub Copilot bridge (copilot.exe): not found"
+        ));
     }
 
     #[test]
@@ -2395,8 +2809,10 @@ pub(super) mod tests {
             transport_cancelled: watch::channel(false).0,
             startup_failure: Arc::new(Mutex::new(None)),
             pending: Arc::clone(&pending),
+            abandoned: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             alive: Arc::clone(&alive),
+            stop_requested: Arc::new(AtomicBool::new(false)),
             last_used: Mutex::new(Instant::now()),
             child: Mutex::new(None),
             tree: None,

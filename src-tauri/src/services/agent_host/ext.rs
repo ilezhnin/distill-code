@@ -480,6 +480,12 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 &provider_id,
                 params.get("accountId").and_then(Value::as_str),
             )?;
+            // The operator asked for this provider again: a bridge that
+            // failed `initialize` earlier in this run gets another start.
+            Inner::forget_failed_start(&super::router::account_route_key(
+                &provider_id,
+                account_id.as_deref(),
+            ));
             chat_model_inventory(host, &provider_id, account_id.as_deref(), true).await
         }
 

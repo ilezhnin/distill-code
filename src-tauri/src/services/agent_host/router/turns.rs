@@ -1,5 +1,6 @@
 //! Starting a turn and running a prompt through it.
 use super::*;
+use crate::services::agent_host::bridge::{prompt_withheld, OpenTurn};
 
 impl Inner {
     /// Run one user turn and then every message steered into it, in order.
@@ -18,11 +19,14 @@ impl Inner {
 
     pub(super) async fn start_turn_with_admission(
         self: &Arc<Self>,
-        params: Value,
+        mut params: Value,
         ids: TurnIds,
         steer: bool,
         task_admission: Option<tokio::sync::OwnedMutexGuard<()>>,
     ) -> Result<Value, Value> {
+        // When the renderer's prompt reached the host (see `stopped_after`);
+        // taken out before the prompt's `_meta` is recorded or sent.
+        let arrival = Self::take_arrival(&mut params);
         check_owned_deadline(ids.owned_deadline)?;
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
@@ -127,7 +131,12 @@ impl Inner {
         // finished first is answered here with its new id, and one still in
         // flight left no runtime at all, which fails the prompt cleanly
         // instead of sending it into a session the bridge has already closed.
-        let bridge_session_id = {
+        //
+        // The claimed turn is held open in the turn ledger, under the same
+        // lock the claim is made in, for as long as this call runs it: a Stop
+        // reads from there whether the prompt was written, and whether anyone
+        // still owns the run (see `OpenTurn`).
+        let (bridge_session_id, mut turn) = {
             let mut sessions = self.sessions.lock().await;
             let runtime = sessions
                 .get_mut(&session_id)
@@ -141,7 +150,13 @@ impl Inner {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .record(&runtime.harness, runtime.account_id.as_deref());
-                    bridge_session_id
+                    let turn = OpenTurn::open(&ids.run_id);
+                    // A Stop sent after this prompt, while it was on its way
+                    // here, found no turn to stop: it stops this one.
+                    if Self::stopped_after(&session_id, arrival) {
+                        turn.stop();
+                    }
+                    (bridge_session_id, turn)
                 }
                 Err(active) if runtime.background.active_run_id().is_some() => {
                     return Err(protocol::error_with_data(
@@ -169,16 +184,19 @@ impl Inner {
         // cannot go stale: it catches a chat that changed agents between the
         // first look and the claim. Both come before the prompt is recorded,
         // so the transcript handed over ends where this message begins.
+        //
+        // From the claim on, every return before the prompt is sent lets go
+        // of the turn first (`release_turn`). The store read below used to
+        // return through `?` with the run still claimed, and the chat refused
+        // every prompt until its bridge died or Flock restarted (2026-11-25
+        // hunt, D-1).
         let recorded = match self
             .record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
             .await
         {
             Ok(recorded) => recorded,
             Err(error) => {
-                if let Some(runtime) = self.sessions.lock().await.get_mut(&session_id) {
-                    runtime.run = None;
-                    runtime.background.cancel();
-                }
+                self.release_turn(&session_id, &ids.run_id).await;
                 return Err(error);
             }
         };
@@ -186,15 +204,15 @@ impl Inner {
             .as_ref()
             .and_then(|recorded| recorded.event_ids.first().copied());
         drop(admission);
-        if self
-            .store
-            .session_execution_cancelled(&session_id)
-            .await
-            .map_err(protocol::internal)?
-        {
-            if let Some(runtime) = self.sessions.lock().await.get_mut(&session_id) {
-                runtime.run = None;
+        let cancelled = match self.store.session_execution_cancelled(&session_id).await {
+            Ok(cancelled) => cancelled,
+            Err(error) => {
+                self.release_turn(&session_id, &ids.run_id).await;
+                return Err(protocol::internal(error));
             }
+        };
+        if cancelled {
+            self.release_turn(&session_id, &ids.run_id).await;
             return Err(protocol::error_with_data(
                 -32000,
                 "Benchmark was cancelled before provider dispatch",
@@ -266,15 +284,16 @@ impl Inner {
             // Only a turn the bridge saw through proves the agent has the
             // transcript. A failed one proves nothing either way — a bridge
             // that died took the prompt with it — and an agent told the same
-            // history twice is a far smaller harm than one never told it.
-            Ok(_) if carryover.is_some() => {
+            // history twice is a far smaller harm than one never told it. A
+            // prompt a Stop kept from being written told the agent nothing.
+            Ok(answer) if carryover.is_some() && !prompt_withheld(answer) => {
                 if let Err(error) = self.store.clear_carryover(&session_id).await {
                     log::warn!(
                         "[agent-host] failed to settle the carry-over of {session_id}: {error}"
                     );
                 }
             }
-            Ok(_) if import_handoff.is_some() => {
+            Ok(answer) if import_handoff.is_some() && !prompt_withheld(answer) => {
                 if let Err(error) = self
                     .store
                     .kv_delete(
@@ -404,6 +423,7 @@ impl Inner {
                     runtime.background.allow(&queued.ids.message_id);
                 }
                 runtime.run = Some(RunState::start(&queued.ids));
+                turn.reopen(&queued.ids.run_id);
                 queued
             };
             let recorded = match self
@@ -496,6 +516,78 @@ impl Inner {
             }
         }
         None
+    }
+
+    /// Lets go of turn `run_id` of a chat, claimed by `claim_turn`, that ends
+    /// before its prompt was sent; see [`Self::release_claim`].
+    pub(super) async fn release_turn(&self, session_id: &str, run_id: &str) {
+        let dropped = self
+            .sessions
+            .lock()
+            .await
+            .get_mut(session_id)
+            .and_then(|runtime| Self::release_claim(runtime, run_id));
+        if let Some(dropped) = dropped.filter(|dropped| *dropped > 0) {
+            log::warn!(
+                "[agent-host] session {session_id} turn ended before its prompt was sent: dropped {dropped} queued steer(s)"
+            );
+        }
+    }
+
+    /// Lets go of turn `run_id` the way a turn that failed does: the chat
+    /// takes the next prompt, no reply continues under the turn's message,
+    /// and messages steered into it are dropped rather than sent as turns
+    /// nobody asked for. Only that run: one the chat no longer names is
+    /// someone else's, and it is left alone. Answers how many queued steers
+    /// were dropped, or `None` when the chat was not on `run_id`.
+    pub(super) fn release_claim(runtime: &mut SessionRuntime, run_id: &str) -> Option<usize> {
+        if runtime.run.as_ref().is_none_or(|run| run.run_id != run_id) {
+            return None;
+        }
+        runtime.run = None;
+        runtime.background.cancel();
+        Some(runtime.drop_queued_steers())
+    }
+
+    /// Stores what the provider answered an owned (benchmark or task) turn,
+    /// its `benchmark_turn_result`; nothing for an ordinary chat. Retried
+    /// every `pause` until it commits, the policy of the executor receipt
+    /// beside it, so there is no error a caller could put in place of the
+    /// provider's answer.
+    pub(super) async fn commit_turn_result(
+        store: &SessionStore,
+        session_id: &str,
+        raw_result: &Result<Value, Value>,
+        pause: std::time::Duration,
+    ) {
+        while let Err(error) = Self::record_turn_result(store, session_id, raw_result).await {
+            log::error!(
+                "[agent-host] benchmark turn result of {session_id} not committed: {error}"
+            );
+            tokio::time::sleep(pause).await;
+        }
+    }
+
+    async fn record_turn_result(
+        store: &SessionStore,
+        session_id: &str,
+        raw_result: &Result<Value, Value>,
+    ) -> Result<(), String> {
+        let Some((owner, _)) = store.execution_owner(session_id).await? else {
+            return Ok(());
+        };
+        let raw = match raw_result {
+            Ok(value) => {
+                json!({"usage":value.get("usage"),"quota":value.pointer("/_meta/quota"),"stopReason":value.get("stopReason")})
+            }
+            Err(error) => json!({"error":error}),
+        };
+        let purpose = store
+            .owned_session_purpose(session_id)
+            .await?
+            .unwrap_or_else(|| "benchmark".into());
+        store.append_events(session_id,&[json!({"sessionId":session_id,"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"executionOwner":{"kind":purpose,"id":owner.owner_id},"benchmarkRawResult":raw}}})]).await?;
+        Ok(())
     }
 
     /// Register a turn on an idle session and answer with the bridge session
@@ -680,26 +772,17 @@ impl Inner {
                 None => bridge.prompt(request, run_id.clone()).await,
             },
         };
-        if let Some((owner, _)) = self
-            .store
-            .execution_owner(session_id)
-            .await
-            .map_err(protocol::internal)?
-        {
-            let raw = match &raw_result {
-                Ok(value) => {
-                    json!({"usage":value.get("usage"),"quota":value.pointer("/_meta/quota"),"stopReason":value.get("stopReason")})
-                }
-                Err(error) => json!({"error":error}),
-            };
-            let purpose = self
-                .store
-                .owned_session_purpose(session_id)
-                .await
-                .map_err(protocol::internal)?
-                .unwrap_or_else(|| "benchmark".into());
-            self.store.append_events(session_id,&[json!({"sessionId":session_id,"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"executionOwner":{"kind":purpose,"id":owner.owner_id},"benchmarkRawResult":raw}}})]).await.map_err(protocol::internal)?;
-        }
+        // The provider has answered, and an owned turn is billed by now. Like
+        // the receipt write below, a failed local write must never turn that
+        // answer into an error: the turn was reported failed and a runner
+        // that retries pays for the task again (2026-11-25 hunt, D-4).
+        Self::commit_turn_result(
+            &self.store,
+            session_id,
+            &raw_result,
+            std::time::Duration::from_secs(1),
+        )
+        .await;
         let mut result = Self::prompt_response(raw_result);
         // The bridge writes every update of the turn before it answers the
         // prompt, but the two do not travel together: its reader hands the

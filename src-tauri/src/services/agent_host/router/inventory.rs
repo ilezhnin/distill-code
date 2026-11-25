@@ -344,7 +344,9 @@ impl Inner {
         harness_id: &str,
         account_id: Option<&str>,
     ) -> Result<(Vec<Value>, Value), Value> {
-        let bridge = self.ensure_account_bridge(harness_id, account_id).await?;
+        // A probe: a CLI that failed to start for one is left alone for a
+        // while (see `ensure_probe_bridge`).
+        let bridge = self.ensure_probe_bridge(harness_id, account_id).await?;
         let probed_on = bridge.executable();
         let mut params = json!({ "cwd": self.probe_cwd(), "mcpServers": [] });
         if let Some(meta) = harness::probe_session_meta(harness_id) {

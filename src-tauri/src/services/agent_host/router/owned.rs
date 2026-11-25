@@ -849,7 +849,9 @@ impl Inner {
         owner: &OwnedSessionRequest,
         record: &SessionRecord,
     ) -> Result<(), String> {
-        if self.store.execution_policy_violation(&record.id).await? {
+        // Also a violation this run saw whose evidence never reached the
+        // store: such a session fails closed (see `policy_violated`).
+        if Self::policy_violated(&self.store, &record.id).await? {
             return Err(
                 "execution_violation: native execution violated the declared no-tool policy".into(),
             );

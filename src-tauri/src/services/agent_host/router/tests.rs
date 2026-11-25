@@ -3889,3 +3889,282 @@ fn a_request_nobody_can_answer_is_cancelled_or_failed() {
     );
     assert!(Inner::unanswered_client_request("fs/read_text_file").is_err());
 }
+
+// 2026-11-25 hunt, D-1: a turn that failed between its claim and its prompt
+// kept the run claimed, and the chat refused every prompt after it.
+#[test]
+fn a_turn_that_ends_before_its_prompt_lets_go_of_the_chat() {
+    let mut chat = runtime("claude-acp", "a", 1);
+    Inner::claim_turn(&mut chat, &ids()).expect("an idle chat takes the turn");
+    chat.steer_queue.push_back(QueuedPrompt {
+        prompt: json!([{ "type": "text", "text": "also this" }]),
+        meta: json!({}),
+        ids: TurnIds::new(),
+    });
+    // Another run is not this turn's to let go of.
+    assert_eq!(Inner::release_claim(&mut chat, "another-run"), None);
+    assert_eq!(chat.active_run_id(), Some("run-1"));
+    assert_eq!(Inner::release_claim(&mut chat, "run-1"), Some(1));
+    assert_eq!(chat.active_run_id(), None);
+    assert!(chat.steer_queue.is_empty());
+    let mut next = ids();
+    next.run_id = "run-2".into();
+    assert!(
+        Inner::claim_turn(&mut chat, &next).is_ok(),
+        "the next prompt is taken, not refused as already running"
+    );
+}
+
+// 2026-11-25 hunt, D-2: a Stop pressed while a dormant chat's prompt was still
+// on its way to its claim found no turn, and the whole turn ran.
+#[test]
+fn a_stop_that_finds_no_turn_stops_only_a_prompt_sent_before_it() {
+    let mut prompt = json!({"sessionId": "h2-dormant-chat", "prompt": []});
+    Inner::stamp_arrival(&mut prompt, 10);
+    let arrival = Inner::take_arrival(&mut prompt);
+    assert_eq!(arrival, Some(10));
+    // Taken out again: never recorded with the prompt or sent to a bridge.
+    assert_eq!(prompt["_meta"], json!({}));
+    assert!(!Inner::stopped_after("h2-dormant-chat", arrival));
+    Inner::note_stop_without_turn("h2-dormant-chat", 11);
+    assert!(Inner::stopped_after("h2-dormant-chat", arrival));
+    // Not a prompt sent after that Stop, whichever the host handles first;
+    // not another chat's; not one the host sends itself.
+    assert!(!Inner::stopped_after("h2-dormant-chat", Some(12)));
+    assert!(!Inner::stopped_after("h2-other-chat", arrival));
+    assert!(!Inner::stopped_after("h2-dormant-chat", None));
+    // An earlier Stop handled late does not move the mark back.
+    Inner::note_stop_without_turn("h2-dormant-chat", 5);
+    assert!(Inner::stopped_after("h2-dormant-chat", arrival));
+}
+
+fn invented_store_session(id: &str, harness: &str) -> SessionRecord {
+    serde_json::from_value(json!({
+        "id": id, "harness": harness, "cwd": "/workspace", "user_set_name": false,
+        "hidden": true, "created_at": now_iso(), "updated_at": now_iso(), "message_count": 0
+    }))
+    .unwrap()
+}
+
+// 2026-11-25 hunt, D-4: a failed evidence write after the provider answered
+// turned a completed, paid benchmark turn into a failed one.
+#[tokio::test]
+async fn a_provider_answer_outlasts_a_failed_turn_result_write() {
+    let dir = crate::test_support::TempRoot::new();
+    let path = dir.path().join("host.db");
+    let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
+    let owner = OwnedSessionRequest {
+        owner_id: "invented-owner".into(),
+        provider_id: "codex-acp".into(),
+        account_id: "invented-account".into(),
+        model_id: "invented-model".into(),
+        reasoning_effort: None,
+        fast_mode: None,
+        cwd: "/workspace".into(),
+        title: "Invented task".into(),
+        profile: ExecutionProfile::NativeTextV1,
+    };
+    store
+        .insert_owned_session(
+            &invented_store_session("h4-owned", "codex-acp"),
+            &owner,
+            "invented-hash",
+        )
+        .await
+        .unwrap();
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    dir.register(&pool);
+    sqlx::query("CREATE TRIGGER fail_turn_result BEFORE INSERT ON session_events WHEN NEW.payload_json LIKE '%benchmark_turn_result%' BEGIN SELECT RAISE(FAIL, 'simulated locked store'); END")
+        .execute(&pool).await.unwrap();
+    let answered =
+        Ok(json!({"stopReason": "end_turn", "usage": {"inputTokens": 3, "outputTokens": 5}}));
+    let writer = store.clone();
+    let commit = tokio::spawn(async move {
+        Inner::commit_turn_result(
+            &writer,
+            "h4-owned",
+            &answered,
+            std::time::Duration::from_millis(5),
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Still retrying: nothing it could return would stand in for the answer.
+    assert!(!commit.is_finished());
+    assert!(store.list_events("h4-owned").await.unwrap().is_empty());
+    sqlx::query("DROP TRIGGER fail_turn_result")
+        .execute(&pool)
+        .await
+        .unwrap();
+    commit.await.unwrap();
+    let saved = store.list_events("h4-owned").await.unwrap();
+    assert_eq!(saved.len(), 1, "written once: {saved:?}");
+    assert_eq!(saved[0]["update"]["sessionUpdate"], "benchmark_turn_result");
+    assert_eq!(
+        saved[0]["update"]["_meta"]["benchmarkRawResult"]["stopReason"],
+        "end_turn"
+    );
+    assert_eq!(
+        saved[0]["update"]["_meta"]["executionOwner"]["id"],
+        "invented-owner"
+    );
+    // An ordinary chat has no evidence to write and is not held up.
+    store
+        .insert_session(&invented_store_session("h4-chat", "codex-acp"))
+        .await
+        .unwrap();
+    Inner::commit_turn_result(
+        &store,
+        "h4-chat",
+        &Ok(json!({"stopReason": "end_turn"})),
+        std::time::Duration::from_millis(5),
+    )
+    .await;
+    assert!(store.list_events("h4-chat").await.unwrap().is_empty());
+    dir.close().await;
+}
+
+// 2026-11-25 hunt, D-8: a forbidden client request whose evidence could not
+// be written left the benchmark session counting as clean.
+#[tokio::test]
+async fn a_policy_violation_counts_even_when_its_evidence_cannot_be_written() {
+    let dir = crate::test_support::TempRoot::new();
+    let path = dir.path().join("host.db");
+    let store = SessionStore::open(&path).await.unwrap();
+    dir.register(&store.pool);
+    for id in ["h5-violated", "h5-clean"] {
+        store
+            .insert_session(&invented_store_session(id, "grok-acp"))
+            .await
+            .unwrap();
+    }
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    dir.register(&pool);
+    sqlx::query("CREATE TRIGGER fail_violation BEFORE INSERT ON session_events WHEN NEW.payload_json LIKE '%executionViolation%' BEGIN SELECT RAISE(FAIL, 'simulated locked store'); END")
+        .execute(&pool).await.unwrap();
+    let event = json!({"sessionId": "h5-violated", "update": {"sessionUpdate": "notice",
+        "_meta": {"executionViolation": "Unexpected native client request: fs/read_text_file"}}});
+    assert!(!Inner::policy_violated(&store, "h5-violated").await.unwrap());
+    Inner::hold_violation("h5-violated");
+    assert!(
+        !Inner::write_violation(
+            &store,
+            "h5-violated",
+            &event,
+            2,
+            std::time::Duration::from_millis(1)
+        )
+        .await
+    );
+    // The store has no evidence of it, and the session counts as violated.
+    assert!(!store
+        .execution_policy_violation("h5-violated")
+        .await
+        .unwrap());
+    assert!(Inner::policy_violated(&store, "h5-violated").await.unwrap());
+    sqlx::query("DROP TRIGGER fail_violation")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        Inner::write_violation(
+            &store,
+            "h5-violated",
+            &event,
+            2,
+            std::time::Duration::from_millis(1)
+        )
+        .await
+    );
+    assert!(store
+        .execution_policy_violation("h5-violated")
+        .await
+        .unwrap());
+    assert!(Inner::policy_violated(&store, "h5-violated").await.unwrap());
+    assert!(!Inner::policy_violated(&store, "h5-clean").await.unwrap());
+    dir.close().await;
+}
+
+// 2026-11-25 hunt, D-3: every turn start, dispatch and settlement of a
+// benchmark session scanned all its stored payloads for a violation.
+#[tokio::test]
+async fn the_policy_verdict_is_read_from_the_store_once_per_session() {
+    let dir = crate::test_support::TempRoot::new();
+    let store = SessionStore::open(&dir.path().join("host.db"))
+        .await
+        .unwrap();
+    dir.register(&store.pool);
+    for id in ["h8-violated-earlier", "h8-clean"] {
+        store
+            .insert_session(&invented_store_session(id, "grok-acp"))
+            .await
+            .unwrap();
+    }
+    let violation = |id: &str| {
+        json!({"sessionId": id, "update": {"sessionUpdate": "tool_call",
+            "_meta": {"executionViolation": "native tool activity"}}})
+    };
+    // Written by an earlier run: read from the store the first time.
+    store
+        .append_events("h8-violated-earlier", &[violation("h8-violated-earlier")])
+        .await
+        .unwrap();
+    assert!(Inner::policy_violated(&store, "h8-violated-earlier")
+        .await
+        .unwrap());
+    assert!(!Inner::policy_violated(&store, "h8-clean").await.unwrap());
+    // The store is not scanned again for a session already asked about: a
+    // row this run did not stamp is not seen.
+    store
+        .append_events("h8-clean", &[violation("h8-clean")])
+        .await
+        .unwrap();
+    assert!(!Inner::policy_violated(&store, "h8-clean").await.unwrap());
+    // What this run stamps counts at once.
+    Inner::hold_violation("h8-clean");
+    assert!(Inner::policy_violated(&store, "h8-clean").await.unwrap());
+    dir.close().await;
+}
+
+// 2026-11-25 hunt, D-6: a CLI that cannot speak ACP was started again for
+// every model list the renderer asked for. A chat start never consults this
+// memory (`ensure_bridge` with `probe` false), so only probes are held back,
+// and only for a while.
+#[test]
+fn a_bridge_that_failed_to_initialize_is_not_probed_again_for_a_while() {
+    let route = "h6-invented-acp";
+    let shim = json!({"path": "C:\\invented\\bin\\agent.bat", "len": 120, "modified": 1});
+    let now = std::time::Instant::now();
+    assert!(Inner::refused_start(route, &shim, now).is_none());
+    Inner::remember_failed_start(
+        route,
+        shim.clone(),
+        "Invented Agent bridge failed to initialize: The agent's bridge exited before this turn finished",
+    );
+    let refusal = Inner::refused_start(route, &shim, std::time::Instant::now())
+        .expect("a probe does not start the same CLI again at once");
+    assert!(
+        refusal.starts_with("Invented Agent bridge failed to initialize"),
+        "{refusal}"
+    );
+    let later =
+        |minutes: u64| std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60);
+    assert!(Inner::refused_start(route, &shim, later(9)).is_some());
+    // The memory runs out.
+    assert!(Inner::refused_start(route, &shim, later(11)).is_none());
+    // Another account of the harness is its own route.
+    assert!(Inner::refused_start("h6-invented-acp\u{1f}other-account", &shim, now).is_none());
+    // A changed executable (installed, updated, another first on PATH) is tried.
+    let installed = json!({"path": "C:\\invented\\bin\\agent.exe", "len": 9000, "modified": 2});
+    assert!(Inner::refused_start(route, &installed, std::time::Instant::now()).is_none());
+    // So is the same one once it started (for a chat) or was refreshed.
+    Inner::forget_failed_start(route);
+    assert!(Inner::refused_start(route, &shim, std::time::Instant::now()).is_none());
+}

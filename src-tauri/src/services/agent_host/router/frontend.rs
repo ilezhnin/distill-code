@@ -1,7 +1,77 @@
 //! The host as the app sees it: the socket, requests and notifications from the frontend, and what a closing app leaves.
 use super::*;
+use crate::services::agent_host::bridge::{CancelOutcome, OpenTurn};
+
+/// The order frames reach the host in, over every renderer socket. A prompt
+/// and a Stop of one chat are handled by tasks of their own, which run in any
+/// order; their arrivals tell which the operator sent first.
+static ARRIVALS: AtomicU64 = AtomicU64::new(1);
+
+/// The `_meta` key a frame's arrival travels under from the socket to the
+/// prompt or Stop it belongs to. Taken out before anything else reads
+/// `_meta`, so it is never recorded or sent to a bridge.
+const ARRIVAL_KEY: &str = "distillArrival";
+
+/// Where each chat's latest Stop that found no claimed turn arrived. A Stop
+/// pressed while a prompt is still on its way to its claim (a dormant chat's
+/// bridge starting, its session loading) finds no turn to stop, and its
+/// cancel went to an idle agent that then ran the whole turn (2026-11-25
+/// hunt, D-2). The turn of a prompt that arrived before such a Stop is
+/// stopped at its claim, before its prompt is written (`stopped_after`); a
+/// prompt sent after the Stop is not, whichever task gets there first.
+static STOPS_WITHOUT_TURN: std::sync::LazyLock<StdMutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn stops_without_turn() -> std::sync::MutexGuard<'static, HashMap<String, u64>> {
+    STOPS_WITHOUT_TURN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 impl Inner {
+    /// Stamps a renderer frame with its arrival; see [`ARRIVAL_KEY`].
+    pub(super) fn stamp_arrival(params: &mut Value, arrival: u64) {
+        let Some(params) = params.as_object_mut() else {
+            return;
+        };
+        if let Some(meta) = params
+            .entry("_meta")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+        {
+            meta.insert(ARRIVAL_KEY.into(), json!(arrival));
+        }
+    }
+
+    /// Takes a frame's arrival back out of its params.
+    pub(super) fn take_arrival(params: &mut Value) -> Option<u64> {
+        params
+            .get_mut("_meta")
+            .and_then(Value::as_object_mut)
+            .and_then(|meta| meta.remove(ARRIVAL_KEY))
+            .and_then(|arrival| arrival.as_u64())
+    }
+
+    /// Records a Stop of chat `session_id`, arrived at `arrival`, that found
+    /// no claimed turn; see [`STOPS_WITHOUT_TURN`].
+    pub(super) fn note_stop_without_turn(session_id: &str, arrival: u64) {
+        let mut stops = stops_without_turn();
+        let latest = stops.entry(session_id.to_string()).or_default();
+        *latest = (*latest).max(arrival);
+    }
+
+    /// Whether a Stop that found no claimed turn of chat `session_id` came
+    /// after its prompt that arrived at `arrival`: that Stop was meant for
+    /// this prompt, which was still on its way to its claim. Never for a
+    /// prompt with no arrival (one the host sends itself).
+    pub(super) fn stopped_after(session_id: &str, arrival: Option<u64>) -> bool {
+        arrival.is_some_and(|arrival| {
+            stops_without_turn()
+                .get(session_id)
+                .is_some_and(|stop| *stop > arrival)
+        })
+    }
+
     pub(super) async fn start(app: tauri::AppHandle) -> Result<Arc<Inner>, String> {
         // Migration and seeding finish before opening any source or database.
         app.state::<crate::services::bundled_skills::BundledSkillsState>()
@@ -215,10 +285,13 @@ impl Inner {
                     // (`serializeSessionMutation`), and a cancel that loses the
                     // race is a no-op. Sequencing per *session* inside the host
                     // is the real fix and a design change.
+                    let arrival = ARRIVALS.fetch_add(1, Ordering::SeqCst);
                     let host = Arc::clone(&self);
                     let line = text.to_string();
                     let reply_to = tx.clone();
-                    tokio::spawn(async move { host.handle_frontend_line(line, reply_to).await });
+                    tokio::spawn(async move {
+                        host.handle_frontend_line(line, reply_to, arrival).await
+                    });
                 }
                 Ok(WsMessage::Close(_)) | Err(_) => break,
                 Ok(_) => {}
@@ -292,13 +365,25 @@ impl Inner {
         self.notify_frontend("session/update", protocol::run_settled_update(session_id));
     }
 
-    pub(super) async fn handle_frontend_line(self: Arc<Self>, line: String, reply_to: ReplyTo) {
+    pub(super) async fn handle_frontend_line(
+        self: Arc<Self>,
+        line: String,
+        reply_to: ReplyTo,
+        arrival: u64,
+    ) {
         let Some(message) = protocol::parse(&line) else {
             log::warn!("[agent-host] unparseable frontend message");
             return;
         };
         match message {
-            Message::Request { id, method, params } => {
+            Message::Request {
+                id,
+                method,
+                mut params,
+            } => {
+                if method == "session/prompt" {
+                    Self::stamp_arrival(&mut params, arrival);
+                }
                 let turn_of = Self::turn_request_session(&method, &params);
                 let result = self.handle_request(&method, params).await;
                 let reply = match result {
@@ -311,7 +396,10 @@ impl Inner {
                     }
                 }
             }
-            Message::Notification { method, params } => {
+            Message::Notification { method, mut params } => {
+                if method == "session/cancel" {
+                    Self::stamp_arrival(&mut params, arrival);
+                }
                 self.handle_client_notification(&method, params).await;
             }
             Message::Response { id, result } => {
@@ -320,13 +408,20 @@ impl Inner {
         }
     }
 
-    pub(super) async fn handle_client_notification(self: &Arc<Self>, method: &str, params: Value) {
+    pub(super) async fn handle_client_notification(
+        self: &Arc<Self>,
+        method: &str,
+        mut params: Value,
+    ) {
         if let Some(id) = protocol::session_id(&params) {
             if !matches!(self.store.execution_owner(&id).await, Ok(None)) {
                 return;
             }
         }
         if method == "session/cancel" {
+            // A Stop the host makes itself (a close) arrives now.
+            let arrival = Self::take_arrival(&mut params)
+                .unwrap_or_else(|| ARRIVALS.fetch_add(1, Ordering::SeqCst));
             if let Some(session_id) = protocol::session_id(&params) {
                 // Do not let the next prompt claim the released chat before
                 // its predecessor's cancel has gone to the bridge.
@@ -349,6 +444,11 @@ impl Inner {
                         (dropped, run, runtime.harness == "kimi-acp")
                     })
                     .unwrap_or((0, None, false));
+                // No turn to stop yet: a prompt sent before this Stop and
+                // still on its way to its claim is stopped when it gets there.
+                if cancelled_run.is_none() {
+                    Self::note_stop_without_turn(&session_id, arrival);
+                }
                 if kimi && cancelled_run.is_none() {
                     drop(admission.take()); // The Kimi relay takes the attach lock to close its session.
                     self.stop_kimi_own_turn(&session_id).await;
@@ -361,9 +461,26 @@ impl Inner {
                 if let Some((bridge, bridge_session_id)) = self.attached_route(&session_id).await {
                     let mut params = params.clone();
                     params["sessionId"] = json!(bridge_session_id);
-                    bridge.notify(method, params);
-                    if let Some(run_id) = cancelled_run {
-                        self.end_cancelled_turn_if_unanswered(session_id, run_id, bridge);
+                    // Decided where the turn's prompt is written: a cancel
+                    // sent ahead of the prompt found an idle agent, which
+                    // then ran the whole turn (2026-11-25 hunt, D-2).
+                    match bridge.cancel_turn(cancelled_run.as_deref(), params) {
+                        CancelOutcome::Sent => {
+                            if let Some(run_id) = cancelled_run {
+                                self.end_cancelled_turn_if_unanswered(session_id, run_id, bridge);
+                            }
+                        }
+                        // The turn ends as cancelled where its prompt would
+                        // have been written; nothing reached the agent, so
+                        // there is no answer to wait for.
+                        CancelOutcome::Withheld => log::info!(
+                            "[agent-host] session {session_id} stopped before its prompt reached the agent; the prompt is not sent"
+                        ),
+                        CancelOutcome::Unowned => {
+                            if let Some(run_id) = cancelled_run {
+                                self.clear_unowned_run(&session_id, &run_id).await;
+                            }
+                        }
                     }
                 }
             }
@@ -468,8 +585,32 @@ impl Inner {
                     bridge.harness,
                     CANCEL_ANSWER_GRACE.as_secs()
                 );
+            } else if still_running && !OpenTurn::is_open(&run_id) {
+                host.clear_unowned_run(&session_id, &run_id).await;
             }
         });
+    }
+
+    /// Ends run `run_id` of a chat when no live turn owns it any more: no
+    /// prompt of it waits in the bridge, and nothing that started it is still
+    /// running to let go of it. Such a run refused every prompt, and Stop
+    /// could not end it, until the bridge died or Flock restarted (2026-11-25
+    /// hunt, D-1). The renderer is told the run is over, as for a turn whose
+    /// answer it never got.
+    pub(super) async fn clear_unowned_run(&self, session_id: &str, run_id: &str) {
+        let released = self
+            .sessions
+            .lock()
+            .await
+            .get_mut(session_id)
+            .and_then(|runtime| Self::release_claim(runtime, run_id));
+        let Some(dropped) = released else {
+            return;
+        };
+        log::warn!(
+            "[agent-host] run {run_id} of {session_id} had no turn behind it; Stop ended it (dropped {dropped} queued steer(s))"
+        );
+        self.notify_frontend("session/update", protocol::run_settled_update(session_id));
     }
 
     pub(super) async fn handle_client_response(&self, id: Value, result: Result<Value, Value>) {

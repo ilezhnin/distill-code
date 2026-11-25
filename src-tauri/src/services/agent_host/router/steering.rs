@@ -168,6 +168,12 @@ impl Inner {
             .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
         meta["nativeSteering"] = json!(true);
+        // `record_user_prompt` writes past the event loop, so the loop is
+        // drained first, as `start_turn` does: what the agent wrote before
+        // this message and the loop still held was committed after the
+        // message's rows and stamped as its reply, and showed below it
+        // (2026-11-25 hunt, D-7).
+        self.drain_bridge_events().await?;
         // Save before dispatch. A crash or uncertain transport outcome must
         // leave inspectable input, not silently retry a possibly executed steer.
         let recorded = self

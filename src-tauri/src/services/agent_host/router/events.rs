@@ -8,6 +8,29 @@ pub(super) enum UpdateDelivery {
     Store,
 }
 
+/// Whether each owned session has broken its no-tool policy, as this run
+/// knows it: read from the store the first time the policy check asks (the
+/// verdict of earlier runs), and set the moment this run stamps a violation
+/// on an update or a notice. The check read the store only, so a violation
+/// whose write failed left the session's later turns counting as clean
+/// (2026-11-25 hunt, D-8), and it scanned every payload of the session with
+/// `json_extract` on every turn start, dispatch and settlement (D-3). It now
+/// fails closed and reads the store at most once per session per run. Kept
+/// until Flock restarts.
+static POLICY_VIOLATIONS: std::sync::LazyLock<StdMutex<HashMap<String, bool>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn policy_violations() -> std::sync::MutexGuard<'static, HashMap<String, bool>> {
+    POLICY_VIOLATIONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// How many times a violation's evidence is written before only memory
+/// keeps it, and the pause between the attempts.
+const VIOLATION_WRITE_ATTEMPTS: u32 = 5;
+const VIOLATION_WRITE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl Inner {
     /// The one loop that handles every bridge's events, in the order they
     /// arrived. Writing each streamed chunk to SQLite from here is what used to
@@ -404,6 +427,7 @@ impl Inner {
                             )
                     }) {
                         params["update"]["_meta"]["executionViolation"] = json!(violation);
+                        Self::hold_violation(&session_id);
                     }
                     if params
                         .pointer("/update/sessionUpdate")
@@ -459,6 +483,7 @@ impl Inner {
                     {
                         params["update"]["_meta"]["executionViolation"] =
                             json!(violation::SELECTION);
+                        Self::hold_violation(&session_id);
                     }
                     Self::capture_reported(
                         &mut runtime.snapshot,
@@ -1025,11 +1050,7 @@ impl Inner {
                         .flatten()
                         .unwrap_or_else(|| "benchmark".into());
                     let event = json!({"sessionId":session_id,"update":{"sessionUpdate":"notice","_meta":{"executionOwner":{"kind":purpose,"id":owner},"executionViolation":format!("Unexpected native client request: {method}")}}});
-                    if let Err(error) = self.store.append_events(&session_id, &[event]).await {
-                        log::error!(
-                            "[agent-host] cannot retain execution policy violation: {error}"
-                        );
-                    }
+                    Self::retain_violation(&self.store, &session_id, event);
                     origin.respond(id, Self::unanswered_client_request(method));
                     return;
                 }
@@ -1064,6 +1085,81 @@ impl Inner {
             return;
         }
         self.send_to_frontend(protocol::request(json!(request_id), method, params));
+    }
+
+    /// Keeps the evidence that owned session `session_id` broke its policy:
+    /// the session counts as violated from now on (see
+    /// [`POLICY_VIOLATIONS`]), and `event` is written in the background.
+    /// Not here: this loop carries every chat's updates, and a write held up
+    /// by the store would stall all of them for its retries.
+    pub(super) fn retain_violation(store: &SessionStore, session_id: &str, event: Value) {
+        Self::hold_violation(session_id);
+        let (store, session_id) = (store.clone(), session_id.to_string());
+        tokio::spawn(async move {
+            Self::write_violation(
+                &store,
+                &session_id,
+                &event,
+                VIOLATION_WRITE_ATTEMPTS,
+                VIOLATION_WRITE_PAUSE,
+            )
+            .await;
+        });
+    }
+
+    /// Counts owned session `session_id` as violated for the rest of the run.
+    pub(super) fn hold_violation(session_id: &str) {
+        policy_violations().insert(session_id.to_string(), true);
+    }
+
+    /// Writes a violation's evidence, `attempts` times at most, `pause`
+    /// apart. Answers whether it is in the store; the session counts as
+    /// violated either way, and the log says so when the attempts run out.
+    pub(super) async fn write_violation(
+        store: &SessionStore,
+        session_id: &str,
+        event: &Value,
+        attempts: u32,
+        pause: std::time::Duration,
+    ) -> bool {
+        for attempt in 1..=attempts {
+            match store
+                .append_events(session_id, std::slice::from_ref(event))
+                .await
+            {
+                Ok(_) => return true,
+                Err(error) => {
+                    log::error!(
+                        "[agent-host] cannot retain execution policy violation of {session_id} (attempt {attempt} of {attempts}): {error}"
+                    );
+                    if attempt < attempts {
+                        tokio::time::sleep(pause).await;
+                    }
+                }
+            }
+        }
+        log::error!(
+            "[agent-host] execution policy violation of {session_id} was not written after {attempts} attempts; the session counts as violated for scoring until Flock restarts"
+        );
+        false
+    }
+
+    /// Whether owned session `session_id` broke its policy (see
+    /// [`POLICY_VIOLATIONS`]). The store is read only the first time a
+    /// session is asked about; a violation this run stamps meanwhile wins
+    /// over what that read found.
+    pub(super) async fn policy_violated(
+        store: &SessionStore,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        let known = policy_violations().get(session_id).copied();
+        if let Some(violated) = known {
+            return Ok(violated);
+        }
+        let stored = store.execution_policy_violation(session_id).await?;
+        Ok(*policy_violations()
+            .entry(session_id.to_string())
+            .or_insert(stored))
     }
 
     // -----------------------------------------------------------------------

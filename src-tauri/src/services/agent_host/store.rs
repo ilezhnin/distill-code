@@ -607,6 +607,29 @@ impl CompactionStats {
     }
 }
 
+/// How many rows one compaction transaction reads (see
+/// [`SessionStore::compact_events`]). SQLite's write lock is held for the
+/// read, the rewrite and the re-insert of these rows, and every other
+/// chat's history write waits for it: at a pessimistic half millisecond a
+/// row (JSON parsed, the prompt index evaluated on delete and insert) a
+/// window holds it for about 64 ms. One streamed message longer than this
+/// is still read whole, since splitting it would store it differently.
+const COMPACTION_WINDOW_ROWS: i64 = 128;
+
+/// The pause after a compaction window that rewrote rows, long enough for a
+/// writer sleeping in SQLite's busy handler to wake and take the lock.
+const COMPACTION_WINDOW_PAUSE: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// What one window of a compaction did.
+#[derive(Default)]
+struct CompactedWindow {
+    stats: CompactionStats,
+    /// Where the next window starts; `None` once the range is done.
+    next: Option<i64>,
+    /// Whether the window rewrote rows (and so held the lock for a while).
+    wrote: bool,
+}
+
 #[derive(Clone)]
 pub struct SessionStore {
     pub(super) pool: SqlitePool,
@@ -1997,9 +2020,228 @@ impl SessionStore {
     /// of the last event it stands for, so `MAX(id)`, the history page
     /// cursors and an owned session's event cursor stay valid. Evidence-only
     /// rows and rows that are not JSON keep their id and bytes. The rewrite
-    /// covers only the rows it read: anything appended meanwhile is left for
-    /// the next turn's compaction.
+    /// covers the rows up to the last one there when it starts: anything
+    /// appended meanwhile is left for the next turn's compaction.
+    ///
+    /// The rows are rewritten a window at a time, each window in a
+    /// transaction of its own, with a pause between them (see
+    /// [`COMPACTION_WINDOW_ROWS`]). One transaction over a whole turn held
+    /// SQLite's write lock for as long as the rewrite took, and every other
+    /// chat's history write, and so its live output, waited behind it
+    /// (2026-11-25 hunt, D-3). The result is the one a single pass gives:
+    /// a window never writes its last entry, which the rows after it might
+    /// still join; the next window starts at that entry's first row.
+    /// Stopped between windows (an error, a shutdown), the session holds the
+    /// rewritten rows of the windows done and the raw rows after them, and a
+    /// later compaction from `from_id` gives the same result again.
     pub async fn compact_events(
+        &self,
+        session_id: &str,
+        from_id: i64,
+    ) -> Result<CompactionStats, String> {
+        self.compact_events_in_windows(
+            session_id,
+            from_id,
+            COMPACTION_WINDOW_ROWS,
+            COMPACTION_WINDOW_PAUSE,
+            usize::MAX,
+        )
+        .await
+    }
+
+    /// [`Self::compact_events`] with windows of `window_rows`, `pause` after
+    /// each window that rewrote rows, ending after `max_windows` windows
+    /// that moved on (a test of a pass cut short sets it).
+    async fn compact_events_in_windows(
+        &self,
+        session_id: &str,
+        from_id: i64,
+        window_rows: i64,
+        pause: std::time::Duration,
+        max_windows: usize,
+    ) -> Result<CompactionStats, String> {
+        let mut stats = CompactionStats::default();
+        let last: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(id) FROM session_events WHERE session_id = ? AND id >= ?",
+        )
+        .bind(session_id)
+        .bind(from_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to read history for compaction", error))?;
+        let Some(to_id) = last else {
+            return Ok(stats);
+        };
+        let mut from = from_id;
+        let mut rows = window_rows;
+        let mut windows = 0;
+        while windows < max_windows {
+            let window = self.compact_window(session_id, from, to_id, rows).await?;
+            stats.add(&window.stats);
+            match window.next {
+                None => break,
+                // The window held one entry only, which the rows after it
+                // might still join: nothing was written, and the next read
+                // takes more rows.
+                Some(next) if next == from => rows = rows.saturating_mul(2),
+                Some(next) => {
+                    windows += 1;
+                    from = next;
+                    rows = window_rows;
+                    // Let a writer waiting for the lock in: SQLite's busy
+                    // handler retries within 25 ms during its first 100 ms.
+                    if window.wrote {
+                        tokio::time::sleep(pause).await;
+                    }
+                }
+            }
+        }
+        Ok(stats)
+    }
+
+    /// One window of [`Self::compact_events`]: the session's rows from
+    /// `from_id` to `to_id`, `limit` at most, rewritten in one transaction,
+    /// except the last entry when rows of the range follow the window.
+    async fn compact_window(
+        &self,
+        session_id: &str,
+        from_id: i64,
+        to_id: i64,
+        limit: i64,
+    ) -> Result<CompactedWindow, String> {
+        // Immediate: the rewrite reads and then writes, and a deferred
+        // transaction that read while another connection committed cannot
+        // turn into a writer (SQLITE_BUSY_SNAPSHOT).
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|error| db_error("failed to start history compaction", error))?;
+        let rows = sqlx::query(
+            "SELECT id, created_at, payload_json FROM session_events WHERE session_id = ? AND id >= ? AND id <= ? ORDER BY id ASC LIMIT ?",
+        )
+        .bind(session_id)
+        .bind(from_id)
+        .bind(to_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| db_error("failed to read history for compaction", error))?;
+        let Some(last_read) = rows.last().map(|row| row.get::<i64, _>("id")) else {
+            return Ok(CompactedWindow::default());
+        };
+        let complete = last_read >= to_id || (rows.len() as i64) < limit;
+        let mut compactor = super::replay::Compactor::default();
+        // Every row read, with its size; the rows the compactor read, in
+        // order; and the rows it leaves alone.
+        let mut sizes: Vec<(i64, usize)> = Vec::with_capacity(rows.len());
+        let mut joined: Vec<(i64, String)> = Vec::new();
+        let mut kept: Vec<(i64, String, String)> = Vec::new();
+        for row in &rows {
+            let id: i64 = row.get("id");
+            let created_at: String = row.get("created_at");
+            let payload: String = row.get("payload_json");
+            sizes.push((id, payload.len()));
+            if payload.contains("\"evidenceOnly\":true") {
+                kept.push((id, created_at, payload));
+            } else if compactor.push(payload) {
+                joined.push((id, created_at));
+            } else {
+                kept.push((id, created_at, row.get("payload_json")));
+            }
+        }
+        // Each entry with the first and last row it stands for.
+        let mut entries: Vec<(i64, i64, String, String)> = Vec::new();
+        let mut cursor = 0;
+        for (payload, pieces) in compactor.finish_with_counts() {
+            let (Some((first, _)), Some((last, created_at))) = (
+                joined.get(cursor),
+                pieces
+                    .checked_sub(1)
+                    .and_then(|last| joined.get(cursor + last)),
+            ) else {
+                return Err(
+                    "history compaction lost track of the rows it joined; nothing was changed"
+                        .into(),
+                );
+            };
+            entries.push((*first, *last, created_at.clone(), payload));
+            cursor += pieces;
+        }
+        if cursor != joined.len() {
+            return Err(
+                "history compaction did not account for every row; nothing was changed".into(),
+            );
+        }
+        // Where this window's rewrite ends (exclusive): before its last
+        // entry while rows of the range follow, since they might join it.
+        let end = match entries.last() {
+            Some((first, ..)) if !complete => *first,
+            _ => last_read + 1,
+        };
+        let next = (!complete).then_some(end);
+        if end == from_id {
+            return Ok(CompactedWindow {
+                next,
+                ..CompactedWindow::default()
+            });
+        }
+        let mut stats = CompactionStats::default();
+        for (_, bytes) in sizes.iter().filter(|(id, _)| *id < end) {
+            stats.rows_before += 1;
+            stats.bytes_before += bytes;
+        }
+        let mut rewritten: Vec<(i64, String, String)> =
+            kept.into_iter().filter(|(id, ..)| *id < end).collect();
+        rewritten.extend(
+            entries
+                .into_iter()
+                .filter(|(first, ..)| *first < end)
+                .map(|(_, last, created_at, payload)| (last, created_at, payload)),
+        );
+        rewritten.sort_by_key(|(id, _, _)| *id);
+        stats.rows_after = rewritten.len();
+        stats.bytes_after = rewritten.iter().map(|(_, _, payload)| payload.len()).sum();
+        if stats.rows_after == stats.rows_before && stats.bytes_after == stats.bytes_before {
+            return Ok(CompactedWindow {
+                stats,
+                next,
+                wrote: false,
+            });
+        }
+        sqlx::query("DELETE FROM session_events WHERE session_id = ? AND id >= ? AND id < ?")
+            .bind(session_id)
+            .bind(from_id)
+            .bind(end)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to remove history rows for compaction", error))?;
+        for (id, created_at, payload) in &rewritten {
+            sqlx::query(
+                "INSERT INTO session_events (id, session_id, created_at, payload_json) VALUES (?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(session_id)
+            .bind(created_at)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to write compacted history", error))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit history compaction", error))?;
+        Ok(CompactedWindow {
+            stats,
+            next,
+            wrote: true,
+        })
+    }
+
+    /// The single-transaction compaction this replaced, kept as the reference
+    /// the windowed one must match (see the compaction tests).
+    #[cfg(test)]
+    async fn compact_events_single_pass(
         &self,
         session_id: &str,
         from_id: i64,
@@ -2097,7 +2339,10 @@ impl SessionStore {
     /// [`Self::compact_events`], oldest session first, resuming where an
     /// earlier pass stopped. `skip` names the sessions to leave for a later
     /// pass (a chat with a running turn); `progress` sees each compacted
-    /// session. A pass that skipped nothing is recorded as complete, with a
+    /// session. Each session is rewritten a window at a time, so the pass
+    /// never holds the write lock for a whole long session (58 000 rows on
+    /// this machine), which every chat's writes waited behind (2026-11-25
+    /// hunt, D-3). A pass that skipped nothing is recorded as complete, with a
     /// VACUUM left pending for [`Self::vacuum_if_pending`], which is what
     /// gives the freed pages back to the file system.
     pub async fn compact_history<Skip, Pending>(
@@ -2941,6 +3186,269 @@ mod tests {
             event_ids(&store, "chat").await,
             vec![ids[0], ids[3], ids[4], ids[5], ids[7], max_before]
         );
+        dir.close().await;
+    }
+
+    fn compaction_chunk(
+        session: &str,
+        kind: &str,
+        message: &str,
+        text: &str,
+        created: &str,
+    ) -> Value {
+        json!({
+            "sessionId": session,
+            "update": {
+                "_meta": { "distill": { "assistantMessageId": message, "created": created, "runId": "r" } },
+                "content": { "type": "text", "text": text },
+                "sessionUpdate": kind,
+            }
+        })
+    }
+
+    /// A long turn in every shape compaction joins, trims or leaves alone,
+    /// written the way the host writes it. The same calls give the same ids
+    /// in every store, so stores compacted differently compare row for row.
+    async fn write_synthetic_turn(store: &SessionStore, session: &str) {
+        let mut seed: u64 = 0x5eed_1234;
+        let mut random = move |bound: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % bound
+        };
+        let words = [
+            "Hel",
+            "lo",
+            " world",
+            ", ",
+            "\u{e9}",
+            "\"quoted\"",
+            "back\\slash",
+            "line\n",
+            "\u{65e5}\u{672c}",
+            "x",
+        ];
+        let evidence = json!({"sessionId": session, "update": {"sessionUpdate": "provider_note", "_meta": {"distill": {"evidenceOnly": true}}}});
+        let mut events: Vec<Value> = Vec::new();
+        let mut tick = 0u64;
+        for segment in 0..200u64 {
+            let message = format!("m{segment}");
+            match random(8) {
+                0 => events.push(json!({"sessionId": session, "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Go on"}, "_meta": {"distill": {"messageId": message, "created": tick.to_string()}}}})),
+                1 | 2 | 3 => {
+                    let kind = if random(4) == 0 { "agent_thought_chunk" } else { "agent_message_chunk" };
+                    for _ in 0..1 + random(60) {
+                        tick += 1;
+                        let word = words[random(words.len() as u64) as usize];
+                        let mut piece = compaction_chunk(session, kind, &message, word, &tick.to_string());
+                        // A bridge that numbers its chunks (grok's `chunkId`).
+                        if random(5) == 0 {
+                            piece["_meta"] = json!({"chunkId": tick});
+                        }
+                        events.push(piece);
+                        // Evidence rows inside a run do not end it.
+                        if random(20) == 0 {
+                            events.push(evidence.clone());
+                        }
+                    }
+                }
+                4 => {
+                    let call = format!("c{segment}");
+                    events.push(json!({"sessionId": session, "update": {"sessionUpdate": "tool_call", "toolCallId": call, "title": "Run", "status": "pending"}}));
+                    let mut output = String::new();
+                    for step in 0..random(12) {
+                        output.push_str(&format!("step {step}\n"));
+                        events.push(json!({"sessionId": session, "update": {"sessionUpdate": "tool_call_update", "toolCallId": call, "status": "in_progress", "content": [{"type": "content", "content": {"type": "text", "text": output}}], "rawOutput": {"stdout": output}}}));
+                    }
+                    events.push(json!({"sessionId": session, "update": {"sessionUpdate": "tool_call_update", "toolCallId": call, "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": output}}]}}));
+                }
+                5 => {
+                    let call = format!("t{segment}");
+                    for _ in 0..1 + random(40) {
+                        let word = words[random(words.len() as u64) as usize];
+                        events.push(json!({"sessionId": session, "update": {"sessionUpdate": "tool_call_update", "toolCallId": call, "_meta": {"terminal_output_delta": {"data": word, "terminal_id": call}}}}));
+                    }
+                }
+                _ => events.push(json!({"sessionId": session, "update": {"sessionUpdate": "usage_update", "used": segment * 100, "size": 200_000}})),
+            }
+            // A message longer than a joined piece may grow, in the middle.
+            if segment == 100 {
+                for _ in 0..2_200 {
+                    tick += 1;
+                    events.push(compaction_chunk(
+                        session,
+                        "agent_message_chunk",
+                        "long",
+                        "0123456789abcdef0123456789abcdef",
+                        &tick.to_string(),
+                    ));
+                }
+            }
+        }
+        for (index, batch) in events.chunks(250).enumerate() {
+            store.append_events(session, batch).await.unwrap();
+            // A row that is not JSON, among the others.
+            if index == 3 {
+                sqlx::query("INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, 't', 'not json')")
+                    .bind(session)
+                    .execute(&store.pool)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    async fn synthetic_store(dir: &crate::test_support::TempRoot, name: &str) -> SessionStore {
+        let store = SessionStore::open(&dir.path().join(name)).await.unwrap();
+        dir.register(&store.pool);
+        store.insert_session(&record("chat")).await.unwrap();
+        write_synthetic_turn(&store, "chat").await;
+        // Rows are stamped with the wall clock as they are written, so two
+        // stores seeded a moment apart differ in every created_at. A stamp
+        // fixed per row id makes them equal, and still shows which row's
+        // stamp a merged row keeps.
+        sqlx::query(
+            "UPDATE session_events SET created_at = printf('2026-01-01T00:00:00.%06dZ', id) WHERE session_id = ?",
+        )
+        .bind("chat")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        store
+    }
+
+    async fn stored_rows(store: &SessionStore, session: &str) -> Vec<(i64, String, String)> {
+        sqlx::query_as(
+            "SELECT id, created_at, payload_json FROM session_events WHERE session_id = ? ORDER BY id",
+        )
+        .bind(session)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap()
+    }
+
+    // 2026-11-25 hunt, D-3: one transaction over a whole turn held the write
+    // lock for every chat. The windows must store exactly what it stored.
+    #[tokio::test]
+    async fn windowed_compaction_stores_exactly_what_a_single_pass_does() {
+        let dir = crate::test_support::TempRoot::new();
+        let reference = synthetic_store(&dir, "single.db").await;
+        let raw = stored_rows(&reference, "chat").await;
+        let single = reference
+            .compact_events_single_pass("chat", 0)
+            .await
+            .unwrap();
+        let expected = stored_rows(&reference, "chat").await;
+        assert!(
+            expected.len() * 2 < raw.len(),
+            "the synthetic turn compacts: {} -> {} rows",
+            raw.len(),
+            expected.len()
+        );
+        for (name, window) in [("w2.db", 2), ("w7.db", 7), ("w64.db", 64)] {
+            let store = synthetic_store(&dir, name).await;
+            assert_eq!(stored_rows(&store, "chat").await, raw);
+            let stats = store
+                .compact_events_in_windows("chat", 0, window, std::time::Duration::ZERO, usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                stored_rows(&store, "chat").await,
+                expected,
+                "windows of {window} rows"
+            );
+            assert_eq!(stats, single, "windows of {window} rows");
+        }
+        // The default windows and pause.
+        let store = synthetic_store(&dir, "default.db").await;
+        assert_eq!(store.compact_events("chat", 0).await.unwrap(), single);
+        assert_eq!(stored_rows(&store, "chat").await, expected);
+        // The startup pass compacts through the same windows.
+        let store = synthetic_store(&dir, "pass.db").await;
+        store
+            .compact_history(|_| std::future::ready(false), |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(stored_rows(&store, "chat").await, expected);
+        // A turn's compaction starts at its first row, in the middle of a run.
+        let from = raw[raw.len() / 3].0;
+        let reference = synthetic_store(&dir, "single-from.db").await;
+        let single = reference
+            .compact_events_single_pass("chat", from)
+            .await
+            .unwrap();
+        let store = synthetic_store(&dir, "w7-from.db").await;
+        let stats = store
+            .compact_events_in_windows("chat", from, 7, std::time::Duration::ZERO, usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(stats, single);
+        assert_eq!(
+            stored_rows(&store, "chat").await,
+            stored_rows(&reference, "chat").await
+        );
+        dir.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_compaction_cut_short_is_completed_by_the_next_one() {
+        let dir = crate::test_support::TempRoot::new();
+        let reference = synthetic_store(&dir, "single.db").await;
+        let raw = stored_rows(&reference, "chat").await;
+        reference
+            .compact_events_single_pass("chat", 0)
+            .await
+            .unwrap();
+        let expected = stored_rows(&reference, "chat").await;
+
+        // Stopped after one window (a shutdown): its rows are rewritten, the
+        // rest are the raw rows, untouched.
+        let store = synthetic_store(&dir, "cut.db").await;
+        let first = store
+            .compact_events_in_windows("chat", 0, 64, std::time::Duration::ZERO, 1)
+            .await
+            .unwrap();
+        let cut = stored_rows(&store, "chat").await;
+        assert!((1..raw.len()).contains(&first.rows_before));
+        assert_ne!(cut, raw);
+        assert_ne!(cut, expected);
+        assert_eq!(
+            cut[cut.len() - (raw.len() - first.rows_before)..],
+            raw[first.rows_before..]
+        );
+        store.compact_events("chat", 0).await.unwrap();
+        assert_eq!(stored_rows(&store, "chat").await, expected);
+
+        // A window that fails halfway (a full disk) keeps nothing of its own
+        // work; the windows before it stay, and the next compaction completes.
+        let path = dir.path().join("failed.db");
+        let store = synthetic_store(&dir, "failed.db").await;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+        dir.register(&pool);
+        // Past the long message: a window inside it reads the whole message,
+        // so a failure there would leave nothing written before it.
+        let threshold = raw[raw.len() * 9 / 10].0;
+        sqlx::query(&format!("CREATE TRIGGER fail_late_rows BEFORE INSERT ON session_events WHEN NEW.id >= {threshold} BEGIN SELECT RAISE(FAIL, 'simulated full disk'); END"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(store
+            .compact_events_in_windows("chat", 0, 64, std::time::Duration::ZERO, usize::MAX)
+            .await
+            .is_err());
+        let failed = stored_rows(&store, "chat").await;
+        assert_ne!(failed, raw);
+        assert_ne!(failed, expected);
+        sqlx::query("DROP TRIGGER fail_late_rows")
+            .execute(&pool)
+            .await
+            .unwrap();
+        store.compact_events("chat", 0).await.unwrap();
+        assert_eq!(stored_rows(&store, "chat").await, expected);
         dir.close().await;
     }
 

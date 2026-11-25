@@ -1,7 +1,84 @@
 //! Bridges to the agent CLIs: starting one for an account or an execution, reusing it, and letting idle ones and idle sessions go.
 use super::*;
 
+/// Chat bridge routes whose process started for a model-list probe and then
+/// failed `initialize`. A CLI that cannot speak ACP was started for every
+/// model list the renderer asked for: the VS Code Copilot shim on PATH, which
+/// says "GitHub Copilot CLI was not found" and exits, twice per renderer boot
+/// and 12 times in 41 h (2026-11-25 hunt, D-6). Probes do not start such a
+/// route again on that executable for [`FAILED_START_MEMORY`]; a chat the
+/// operator opens or sends to always starts it, and one that starts proves
+/// the CLI works again.
+static FAILED_STARTS: std::sync::LazyLock<StdMutex<HashMap<String, FailedStart>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A probe start that failed `initialize`.
+struct FailedStart {
+    /// The executable it ran, as `executable_fingerprint` describes it.
+    executable: Value,
+    error: String,
+    at: std::time::Instant,
+}
+
+/// How long a failed probe start keeps probes from starting the route again.
+/// The renderer asks for model lists at boot (twice) and whenever a picker or
+/// settings screen opens; ten minutes turns that into at most six starts an
+/// hour for a CLI that never works, while a CLI fixed without changing its
+/// file (a sign-in, an environment change) shows its models again within ten
+/// minutes, or at once when the operator opens a chat on it.
+const FAILED_START_MEMORY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn failed_starts() -> std::sync::MutexGuard<'static, HashMap<String, FailedStart>> {
+    FAILED_STARTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl Inner {
+    /// Why a probe does not start `route_key` on `executable` at `now`: its
+    /// bridge failed `initialize` on that same executable for a probe less
+    /// than [`FAILED_START_MEMORY`] before.
+    pub(super) fn refused_start(
+        route_key: &str,
+        executable: &Value,
+        now: std::time::Instant,
+    ) -> Option<String> {
+        let starts = failed_starts();
+        let failed = starts.get(route_key)?;
+        (failed.executable == *executable
+            && now.saturating_duration_since(failed.at) < FAILED_START_MEMORY)
+            .then(|| {
+                format!(
+                    "{} (model lists do not start it again for {} minutes unless its CLI changes; opening a chat on it tries again)",
+                    failed.error,
+                    FAILED_START_MEMORY.as_secs() / 60
+                )
+            })
+    }
+
+    /// Remembers that a probe start of `route_key` failed `initialize` on
+    /// `executable`.
+    pub(super) fn remember_failed_start(route_key: &str, executable: Value, error: &str) {
+        log::warn!(
+            "[agent-host] {route_key} failed to initialize; model lists do not start it again for {} minutes unless its CLI changes",
+            FAILED_START_MEMORY.as_secs() / 60
+        );
+        failed_starts().insert(
+            route_key.to_string(),
+            FailedStart {
+                executable,
+                error: error.to_string(),
+                at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    /// The route started, or the operator asked for its provider again: the
+    /// next probe tries it whatever failed before.
+    pub(in crate::services::agent_host) fn forget_failed_start(route_key: &str) {
+        failed_starts().remove(route_key);
+    }
+
     pub(super) async fn spawn_env(&self) -> Arc<SpawnEnv> {
         let mut cached = self.spawn_env.lock().await;
         if let Some(env) = cached.as_ref() {
@@ -56,18 +133,41 @@ impl Inner {
             .await
     }
 
+    /// The bridge a background model-list probe uses: like
+    /// [`Self::ensure_account_bridge`], except that a route whose last probe
+    /// start failed `initialize` is not started again for a while (see
+    /// [`FAILED_STARTS`]).
+    pub(super) async fn ensure_probe_bridge(
+        &self,
+        harness_id: &str,
+        account_id: Option<&str>,
+    ) -> Result<Arc<Bridge>, Value> {
+        self.ensure_bridge(harness_id, account_id, None, true).await
+    }
+
     /// The bridge for `harness_id` and `account_id`, or with `profile` a
     /// separate host-owned benchmark bridge.
-    ///
-    /// Boxed: its sandbox admission and process start would otherwise sit
-    /// inline in every awaiting future, and an unoptimized build gives each
-    /// awaiting poll a stack slot that size. A benchmark attempt reaches this
-    /// under the runner's own deep futures on a 2 MiB worker stack.
     pub(super) fn ensure_execution_bridge<'a>(
         &'a self,
         harness_id: &'a str,
         account_id: Option<&'a str>,
         profile: Option<OwnedBridge<'a>>,
+    ) -> BoxFuture<'a, Result<Arc<Bridge>, Value>> {
+        self.ensure_bridge(harness_id, account_id, profile, false)
+    }
+
+    /// [`Self::ensure_execution_bridge`], for a background probe when `probe`.
+    ///
+    /// Boxed: its sandbox admission and process start would otherwise sit
+    /// inline in every awaiting future, and an unoptimized build gives each
+    /// awaiting poll a stack slot that size. A benchmark attempt reaches this
+    /// under the runner's own deep futures on a 2 MiB worker stack.
+    fn ensure_bridge<'a>(
+        &'a self,
+        harness_id: &'a str,
+        account_id: Option<&'a str>,
+        profile: Option<OwnedBridge<'a>>,
+        probe: bool,
     ) -> BoxFuture<'a, Result<Arc<Bridge>, Value>> {
         Box::pin(async move {
             let spec: &HarnessSpec = harness::harness(harness_id)
@@ -313,9 +413,36 @@ impl Inner {
             } else {
                 None
             };
-            let bridge = Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route_key, None)
-                .await
-                .map_err(protocol::internal)?;
+            // Read after the managed install above, which may have replaced
+            // the executable: a new one is always tried (see `FAILED_STARTS`).
+            // Only a probe consults or fills that memory; a chat the operator
+            // opens or sends to always tries the bridge.
+            let executable =
+                crate::services::agent_host::bridge::executable_fingerprint(spec, &env)
+                    .unwrap_or(Value::Null);
+            if probe {
+                if let Some(refusal) =
+                    Self::refused_start(&route_key, &executable, std::time::Instant::now())
+                {
+                    log::debug!("[agent-host] {route_key} not started: {refusal}");
+                    return Err(protocol::internal(refusal));
+                }
+            }
+            let bridge =
+                match Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route_key, None)
+                    .await
+                {
+                    Ok(bridge) => bridge,
+                    Err(error) => {
+                        if probe
+                            && crate::services::agent_host::bridge::failed_to_initialize(&error)
+                        {
+                            Self::remember_failed_start(&route_key, executable, &error);
+                        }
+                        return Err(protocol::internal(error));
+                    }
+                };
+            Self::forget_failed_start(&route_key);
             if let Ok(mut expiries) = self.owned_sign_in_expiry.lock() {
                 expiries.remove(&route_key);
             }
