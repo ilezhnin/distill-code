@@ -1,6 +1,7 @@
 import { automationTurn } from "@/features/chat-automation/automationProtocol";
 import { automationCopy } from "@/features/chat-automation/automationCopy";
 import {
+  type AutomationCommandOrigin,
   automationCommand,
   loadAutomationHandler,
 } from "@/features/chat-automation/commands";
@@ -25,6 +26,12 @@ import {
 } from "@/features/chat-automation/loopRuntime";
 import { getChatLoop } from "@/features/chat-automation/loopStore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import {
+  holdForRefusingHostRun,
+  isHostRunActiveRefusal,
+  SessionRunActiveError,
+  sessionRunSignalMark,
+} from "@/features/chat/lib/hostRunAdoption";
 import { prepareChatExecutorDispatch } from "./chatExecutorDispatch";
 import { chatWorkClass } from "./chatExecutorSuggestion";
 import { dispatchOwnedTaskInChat } from "./ownedTaskDispatch";
@@ -113,6 +120,8 @@ export interface SendCoreOptions {
   userMessageMetadata?: Partial<MessageMetadata>;
   /** Extra metadata persisted through ACP under `_meta`. */
   acpPromptMetadata?: Record<string, unknown>;
+  /** The operator's origin that lets /goal and /loop run; see ChatSendOptions. */
+  commandOrigin?: AutomationCommandOrigin;
   /** Pending-assistant provider; defaults to the active agent's provider. */
   providerId?: string;
   /**
@@ -252,7 +261,7 @@ export async function dispatchPrompt(
   text: string,
   opts: SendCoreOptions,
 ): Promise<void> {
-  const command = automationCommand(text, opts.userMessageMetadata);
+  const command = automationCommand(text, opts.commandOrigin);
   if (command) {
     throwIfAborted(opts.signal);
     const handle = await loadAutomationHandler(command.name);
@@ -325,6 +334,10 @@ export async function dispatchPrompt(
 
   const promptOwner = claimSessionPrompt(sessionId);
   const isCurrent = () => ownsSessionPrompt(sessionId, promptOwner);
+  // What the renderer had heard of this chat's run when the dispatch began;
+  // see `holdForRefusingHostRun`.
+  const runSignalMark = sessionRunSignalMark();
+  let hostRunRefused = false;
   let userMessageCommitted = false;
   let preCommitRejected = false;
   let messageCountBeforePrompt: number | undefined;
@@ -441,8 +454,12 @@ export async function dispatchPrompt(
     // whose answer may carry the wave plan the engine executes.
     if (isLegacyOrchestratorShellSession(sessionId)) {
       commitUserMessage();
+      // The committed user turn is this send's whole dispatch. Saying so
+      // settles the caller: the queue lets the record go and releases its
+      // dispatch leases only then, and a send left pending held every later
+      // message, goal and loop of the chat for good.
+      onPromptDispatched?.();
       if (loopId) {
-        onPromptDispatched?.();
         settleLoopTurn(
           sessionId,
           userMessageId,
@@ -581,7 +598,13 @@ export async function dispatchPrompt(
       if (loopId) settleLoopTurn(sessionId, userMessageId, failure);
       else settleGoalTurn(sessionId, userMessageId, failure);
     }
-  } catch (err) {
+  } catch (caught) {
+    // The host still runs a turn of this chat and took nothing: the session
+    // is not ready, which is no failure (LAWS/CHAT.md). Every owner of the
+    // send keeps the message first, and it goes out when the host settles
+    // that turn; nothing in the chat says the send failed.
+    hostRunRefused = !userMessageCommitted && isHostRunActiveRefusal(caught);
+    const err = hostRunRefused ? new SessionRunActiveError() : caught;
     preCommitRejected = err instanceof PreCommitSendRejectedError;
     const quotaWait = accountQuotaWaitData(err);
     const quotaDeferred =
@@ -799,6 +822,10 @@ export async function dispatchPrompt(
       // `_meta.activeRunId: null` for a steer the host ran as its own
       // background turn remains handled separately.
       useChatStore.getState().settleActiveRun(sessionId);
+    }
+    if (hostRunRefused) {
+      if (stillOwnedSession) setPendingAssistantProvider(sessionId, null);
+      holdForRefusingHostRun(sessionId, runSignalMark);
     }
   }
 }

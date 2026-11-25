@@ -34,10 +34,13 @@ type LoopCommand =
 
 export function parseLoopCommand(input: string): LoopCommand {
   const args = input.trim();
-  if (!args || args === "list") return { action: "list" };
-  const control = /^(pause|resume|stop|list)(?:\s+([\s\S]*))?$/.exec(args);
+  // Control words are read whatever their case (`/loop Stop 1`), so a
+  // capitalised stop never starts a new loop named "Stop 1".
+  if (!args || args.toLowerCase() === "list") return { action: "list" };
+  const control = /^(pause|resume|stop|list)(?:\s+([\s\S]*))?$/i.exec(args);
   if (control) {
-    const [, action, target] = control;
+    const action = control[1].toLowerCase();
+    const target = control[2]?.toLowerCase();
     if (action === "stop" && target === "all") return { action };
     if (action === "pause" || action === "resume" || action === "stop") {
       if (!target && action !== "stop") return { action };

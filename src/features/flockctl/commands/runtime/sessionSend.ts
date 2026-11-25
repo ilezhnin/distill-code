@@ -40,13 +40,20 @@ export {
  * for it. The app dispatching the same command itself (the memory review
  * chat) is the app speaking, and its message names none, like every other
  * message the app sends into a chat.
+ *
+ * A broker call without the agent mark or an actor is the operator's own
+ * terminal, the one caller besides the composer whose /goal and /loop run
+ * as commands; an agent's reach its chat as text.
  */
 export function sendOptionsForCall(
-  ctx: Pick<CommandContext, "viaBroker">,
+  ctx: Pick<CommandContext, "viaBroker" | "fromAgent" | "actor">,
   options: { senderLabel?: string; deliveryId?: string },
 ): ChatSendOptions {
   return ctx.viaBroker
-    ? flockctlCommandSendOptions(options)
+    ? flockctlCommandSendOptions({
+        ...options,
+        caller: ctx.fromAgent || ctx.actor ? "agent" : "operator",
+      })
     : flockctlCrossSessionSendOptions(options);
 }
 

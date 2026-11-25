@@ -884,9 +884,9 @@ export function GlobalComposerPill({
             selectedProviderForPicker,
         },
       );
-      if (sendOptions) {
-        options.sendOptions = sendOptions;
-      }
+      // Typed here, so it is the operator's: a new chat's first message may
+      // be /goal or /loop, like one typed in the chat's own composer.
+      options.sendOptions = { ...sendOptions, commandOrigin: "composer" };
 
       if (placement === "centered") {
         const rect = containerRef.current?.getBoundingClientRect();

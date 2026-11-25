@@ -44,14 +44,31 @@ export function flockctlCrossSessionSendOptions(
  */
 export const FLOCKCTL_COMMAND_SENDER = "flockctl";
 
-/** Send options for a message a flockctl command delivers for its caller. */
+/**
+ * Send options for a message a flockctl command delivers for its caller.
+ *
+ * `caller` is who made the call as the broker saw it: `"operator"` for a call
+ * without the agent mark (the operator's own terminal), `"agent"` for one
+ * from an agent's shell. Only the operator's /goal and /loop run as commands;
+ * an agent's, or a call whose caller is not said, reach the agent as text.
+ */
 export function flockctlCommandSendOptions(
-  options: { senderLabel?: string; deliveryId?: string } = {},
+  options: {
+    senderLabel?: string;
+    deliveryId?: string;
+    caller?: "operator" | "agent";
+  } = {},
 ): ChatSendOptions {
-  return flockctlCrossSessionSendOptions({
-    ...options,
-    senderLabel: options.senderLabel ?? FLOCKCTL_COMMAND_SENDER,
-  });
+  const { caller, ...delivery } = options;
+  return {
+    ...flockctlCrossSessionSendOptions({
+      ...delivery,
+      senderLabel: delivery.senderLabel ?? FLOCKCTL_COMMAND_SENDER,
+    }),
+    ...(caller === "operator"
+      ? { commandOrigin: "operator-terminal" as const }
+      : {}),
+  };
 }
 
 /**

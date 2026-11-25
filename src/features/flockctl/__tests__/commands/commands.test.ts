@@ -771,7 +771,9 @@ describe("sessions.create", () => {
         expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1),
       );
       // The operator starts the loop where one is started: in the composer.
-      await dispatchPrompt(id, "/loop 1m Inspect", {});
+      await dispatchPrompt(id, "/loop 1m Inspect", {
+        commandOrigin: "composer",
+      });
       expect(getChatLoops(id)).toHaveLength(1);
       expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
       stop = startChatAutomation();
@@ -834,7 +836,9 @@ describe("sessions.create", () => {
         expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1),
       );
       // The operator sets the goal where one is set: in the composer.
-      await dispatchPrompt("session-new", "/goal Review fixtures", {});
+      await dispatchPrompt("session-new", "/goal Review fixtures", {
+        commandOrigin: "composer",
+      });
       expect(getChatGoal("session-new")?.objective).toBe("Review fixtures");
       expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
       expect(
@@ -1520,6 +1524,43 @@ describe("sessions.send", () => {
         message.content.filter((block) => block.type === "systemNotification"),
       ),
     ).toEqual([]);
+  });
+
+  it("runs /goal sent from the operator's terminal as the command, and an agent's as text", async () => {
+    const { getChatGoal, useChatGoalStore } = await import(
+      "@/features/chat-automation/goalStore"
+    );
+    mockSessionFound({ providerId: "codex-acp" });
+    try {
+      // An agent's shell: the broker saw the agent mark.
+      await dispatchCommand(
+        "sessions",
+        {
+          action: "send",
+          session_id: "session-1",
+          prompt: "/goal Check the sample",
+        },
+        { viaBroker: true, fromAgent: true },
+      );
+      expect(getChatGoal("session-1")).toBeUndefined();
+      expect(mocks.acpSendMessage.mock.calls.map((call) => call[1])).toEqual([
+        "/goal Check the sample",
+      ]);
+
+      // The operator's own terminal: a broker call without the mark.
+      await dispatchCommand(
+        "sessions",
+        {
+          action: "send",
+          session_id: "session-1",
+          prompt: "/goal Check the sample",
+        },
+        { viaBroker: true },
+      );
+      expect(getChatGoal("session-1")?.objective).toBe("Check the sample");
+    } finally {
+      useChatGoalStore.getState().clear("session-1");
+    }
   });
 
   it("refuses a delivery id in the namespace of the app's own goal and loop messages", async () => {

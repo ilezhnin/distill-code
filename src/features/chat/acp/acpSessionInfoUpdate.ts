@@ -16,6 +16,7 @@ import {
 import { reconcileOwnedTaskSession } from "../lib/ownedTaskDispatch";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 import { isSessionRunning } from "../lib/sessionActivity";
+import { noteSessionRunSignal } from "../lib/hostRunAdoption";
 import {
   adoptSessionRun,
   adoptedSessionRun,
@@ -85,6 +86,9 @@ export function handleSessionInfoUpdate(
     store.setError(sessionId, turnFailure);
   }
   if ("activeRunId" in meta) {
+    // The host's own word on the run, even when the chat shows nothing to
+    // change: an older answer (a refusal, the session list) must not undo it.
+    noteSessionRunSignal(sessionId);
     const activeRunId =
       typeof meta.activeRunId === "string" ? meta.activeRunId : null;
     const chatStore = useChatStore.getState();

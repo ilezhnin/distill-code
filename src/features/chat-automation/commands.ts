@@ -35,19 +35,37 @@ export type CommandName = keyof typeof handlers;
 export const automationCommandNames = Object.keys(handlers) as CommandName[];
 export const loadAutomationHandler = (name: CommandName) => handlers[name]();
 /**
+ * Where a message that may be a chat command came from, when it is the
+ * operator's: typed into the chat's composer, or sent with flockctl from the
+ * operator's own terminal (a call without the agent mark). Every other
+ * message has none.
+ */
+export type AutomationCommandOrigin = "composer" | "operator-terminal";
+
+/**
  * The chat command a message is, or `null` for an ordinary message.
  *
- * A command is the operator's: text typed into this chat's composer. What
- * another session or `flockctl session send` delivered is text for the
- * agent, even when it opens with a command's name. Read as a command, one
- * call from any agent set a goal of two hundred turns in another chat, or
- * paused the operator's own.
+ * A command is the operator's, so only the origins above make one. Anything
+ * else is text for the agent even when it opens with a command's name:
+ * another session's message, an agent's flockctl call, the app's own text,
+ * a hand-over block, a wave prompt. Read as a command, one call from any
+ * agent set a goal of two hundred turns in another chat, or paused the
+ * operator's own.
  */
 export function automationCommand(
   text: string,
-  metadata?: Pick<MessageMetadata, "origin">,
+  origin?: AutomationCommandOrigin,
 ) {
-  if (metadata?.origin === "distillctl_cross_session") return null;
+  if (origin !== "composer" && origin !== "operator-terminal") return null;
+  return automationCommandSyntax(text);
+}
+
+/**
+ * The command a message is written as, whoever sent it. Only for a reader
+ * that must keep such text from being taken for a command; whether a
+ * message runs as one is {@link automationCommand}'s answer.
+ */
+export function automationCommandSyntax(text: string) {
   if (!text.trimStart().startsWith("/")) return null;
   const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   const name = match?.[1].toLowerCase();
@@ -61,9 +79,14 @@ export type GoalCommand =
   | { action: "invalid"; reason: string };
 
 export function parseGoalCommand(args: string): GoalCommand {
-  if (!args || args === "status") return { action: "status" };
-  if (args === "pause" || args === "resume" || args === "clear")
-    return { action: args };
+  // A control word is the whole argument, whatever its case or the spaces
+  // around it: `/goal Pause` from an autocorrecting keyboard pauses the goal
+  // instead of replacing it with a new one named "Pause". An objective that
+  // only starts with such a word stays an objective.
+  const control = args.trim().toLowerCase();
+  if (!control || control === "status") return { action: "status" };
+  if (control === "pause" || control === "resume" || control === "clear")
+    return { action: control };
   const flags = /(?:^|\s)--(?:max-turns|budget)(?=\s|$)/.exec(args);
   const objective = args.slice(0, flags?.index ?? args.length).trim();
   if (!objective)

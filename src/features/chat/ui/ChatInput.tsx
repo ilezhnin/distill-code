@@ -104,6 +104,8 @@ function getManualEditQueuedSendOptions(
     ...(nextAcpGooseMetadata
       ? { acpPromptMetadata: nextAcpGooseMetadata }
       : {}),
+    // Sent again from the composer, the edited text is the operator's.
+    commandOrigin: "composer",
   };
 }
 
@@ -1615,6 +1617,19 @@ export function ChatInput({
                           data-slot="queued-message-no-steering"
                         >
                           {t("queue.noSteeringHere", {
+                            agent: agentDisplayName,
+                          })}
+                        </p>
+                      ) : isStreaming ? (
+                        // The same wait where the agent can steer: the line
+                        // names it (a wait names its cause), also for a turn
+                        // the host started without this window, which the
+                        // chat shows as running until the host ends it.
+                        <p
+                          className="px-2 pb-0.5 text-[11px] opacity-80"
+                          data-slot="queued-message-waits-for-turn"
+                        >
+                          {t("queue.waitsForCurrentTurn", {
                             agent: agentDisplayName,
                           })}
                         </p>

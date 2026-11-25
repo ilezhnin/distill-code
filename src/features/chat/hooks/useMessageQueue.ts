@@ -63,6 +63,8 @@ const MAX_AUTO_RETRY_DELAY_MS = 30_000;
 // per failure, and the failure itself sets the session back to idle, which
 // reads as a readiness edge and re-triggers the drain. Without a ceiling that
 // spins as fast as compaction can fail, growing the transcript every pass.
+// The ceiling holds until the session becomes ready by itself (a run ends),
+// which the law answers with a new attempt.
 const MAX_CONSECUTIVE_REJECTIONS = 5;
 
 function getQueuedMessageKey(
@@ -129,8 +131,9 @@ export function useMessageQueue(
     payload: QueuedMessageRecord["payload"];
     attempts: number;
   } | null>(null);
-  // Deliberately survives readiness transitions, unlike autoRetryRef: the
-  // transition a failed send causes must not hand it a fresh retry budget.
+  // Survives the readiness transitions a failed send causes itself, unlike
+  // autoRetryRef: those must not hand it a fresh retry budget. A session that
+  // becomes ready while no attempt is in flight resets it.
   const consecutiveRejectionsRef = useRef<{
     payload: QueuedMessageRecord["payload"];
     count: number;
@@ -390,6 +393,25 @@ export function useMessageQueue(
           return;
         }
 
+        if (
+          accepted === false &&
+          !isQueuedSessionReady(
+            useChatStore.getState().getSessionRuntime(sessionId),
+          )
+        ) {
+          // Refused because the session is not ready, which the store now
+          // says (the host still runs a turn, `SessionRunActiveError`). Its
+          // readiness edge in the store sends the message (LAWS/CHAT.md), so
+          // this costs no rejection and arms no timer.
+          lastAttemptRef.current = null;
+          autoRetryRef.current = null;
+          if (retryTimerRef.current !== null) {
+            clearTimeout(retryTimerRef.current);
+            retryTimerRef.current = null;
+          }
+          return;
+        }
+
         if (accepted === false) {
           let retryPayload = latestQueuedMessage.payload;
           if (retryPayload.showInComposer === false) {
@@ -557,8 +579,8 @@ export function useMessageQueue(
 
       if (editedCurrentRecord || advancedToNextRecord) {
         // A user edit or a new head is a materially different send, so the
-        // rejection budget resets here. Readiness edges below deliberately do
-        // not reset it.
+        // rejection budget resets here. Readiness edges below reset it only
+        // when no attempt of this queue caused them.
         autoRetryRef.current = null;
         consecutiveRejectionsRef.current = null;
         if (retryTimerRef.current !== null) {
@@ -572,6 +594,15 @@ export function useMessageQueue(
         if (retryTimerRef.current !== null) {
           clearTimeout(retryTimerRef.current);
           retryTimerRef.current = null;
+        }
+        if (
+          inFlightAttemptKeyRef.current === null &&
+          !queueAttemptLeaseBySession.has(sessionId)
+        ) {
+          // The session became ready by itself (a run ended), not as the
+          // fallout of this queue's own failed attempt: LAWS/CHAT.md has the
+          // queue resume with its first message, so the budget starts over.
+          consecutiveRejectionsRef.current = null;
         }
         idleCycleRef.current += 1;
         suppressNextRenderIdleCycleRef.current = true;

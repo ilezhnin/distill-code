@@ -420,6 +420,7 @@ describe("ChatInput", () => {
           { label: "code-review", type: "skill" },
         ],
         displayText: "@Reviewer check this diff",
+        commandOrigin: "composer",
       },
     );
   });
@@ -472,6 +473,8 @@ describe("ChatInput", () => {
       acpPromptMetadata: {
         threadId: "thread-1",
       },
+      // The edited text is the operator's own now, like its origin.
+      commandOrigin: "composer",
     });
   });
 
@@ -518,7 +521,9 @@ describe("ChatInput", () => {
 
     expect(onSteerMessage).not.toHaveBeenCalled();
     expect(onSteerQueuedMessage).not.toHaveBeenCalled();
-    expect(onSend).toHaveBeenCalledWith("new queued draft", null, undefined);
+    expect(onSend).toHaveBeenCalledWith("new queued draft", null, undefined, {
+      commandOrigin: "composer",
+    });
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
@@ -592,8 +597,11 @@ describe("ChatInput", () => {
     await user.type(screen.getByRole("textbox"), "look at this");
     await user.keyboard("{Enter}");
 
-    expect(onSteerMessage).toHaveBeenCalledWith("look at this", undefined, [
-      screenshot,
-    ]);
+    expect(onSteerMessage).toHaveBeenCalledWith(
+      "look at this",
+      undefined,
+      [screenshot],
+      { commandOrigin: "composer" },
+    );
   });
 });

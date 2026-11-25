@@ -604,6 +604,7 @@
     "preparingWorkspaceTitle": "Preparando el espacio de trabajo del proyecto.",
     "preparingWorkspaceBody": "Tu mensaje se enviará cuando esté listo.",
     "noSteeringHere": "{{agent}} recibirá este mensaje cuando termine su turno actual. Pulsa Esc para detener el turno y enviarlo ahora.",
+    "waitsForCurrentTurn": "{{agent}} recibirá este mensaje cuando termine su turno actual. Guiar se lo entrega ahora, dentro del turno.",
     "quotaWaitRecheck": "{{subject}} ha agotado su cuota. Se volverá a comprobar a las {{time}} ({{countdown}}).",
     "quotaWaitReset": "{{subject}} ha agotado su cuota hasta el reinicio a las {{time}} ({{countdown}}).",
     "quotaWaitSubjectAccount": "La cuenta {{account}} de {{provider}}",

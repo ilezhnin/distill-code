@@ -76,7 +76,9 @@ const chat = () => useChatStore.getState();
 const queue = (sid = id) => chat().queuedMessageBySession[sid] ?? [];
 const list = () => getChatLoops(id);
 const loop = () => list()[0];
-const command = (args = "") => dispatchPrompt(id, `/loop ${args}`, {});
+// The operator's command, as the composer sends it.
+const typed = { commandOrigin: "composer" } as const;
+const command = (args = "") => dispatchPrompt(id, `/loop ${args}`, typed);
 const advance = (delay = 0) => vi.advanceTimersByTimeAsync(delay);
 const notices = () =>
   chat().messagesBySession[id]?.flatMap((m) =>
@@ -243,7 +245,9 @@ describe("local loop commands", () => {
           onSend: hook.result.current.enqueue,
         });
       });
-      expect(await steerPromptInSession(id, "/loop 5m /review")).toBe(false);
+      expect(
+        await steerPromptInSession(id, "/loop 5m /review", undefined, typed),
+      ).toBe(false);
       expect(acpSteerMessage).not.toHaveBeenCalled();
       expect(list()).toEqual([]);
       await act(async () => {
@@ -309,7 +313,7 @@ it("coalesces deadlines mid-turn and waits behind the operator queue, then retur
 });
 
 it("withdraws a tick when operator input arrives during preparation, then schedules the due tick before a goal", async () => {
-  await dispatchPrompt(id, "/goal Review", {});
+  await dispatchPrompt(id, "/goal Review", typed);
   expect(
     queue()[0].payload.sendOptions?.acpPromptMetadata?.flockGoalId,
   ).toBeTruthy();
@@ -663,12 +667,12 @@ it.each([
   registerChild();
   try {
     await i18n.changeLanguage("es");
-    await dispatchPrompt(id, `/${kind} Review`, {});
+    await dispatchPrompt(id, `/${kind} Review`, typed);
     await advance();
     expect(
       queue()[0].payload.sendOptions?.userMessageMetadata?.distillSenderLabel,
     ).toBe(label);
-    await dispatchPrompt(id, `/${kind} pause`, {});
+    await dispatchPrompt(id, `/${kind} pause`, typed);
     expect(
       queue("parent")[0].payload.sendOptions?.userMessageMetadata
         ?.distillSenderLabel,

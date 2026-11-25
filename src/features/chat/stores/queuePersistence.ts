@@ -214,9 +214,71 @@ export function withQueuedRunSettings<T extends QueuedMessagePayload>(
   };
 }
 
+// Set in the window's sessionStorage once a document has read the queues.
+// sessionStorage belongs to the window's browsing session: a reload keeps it,
+// also the one `renderer_recovery.rs` makes after the WebView2 renderer
+// exited (the browser process holds it), and it is gone when the app process
+// ends. The startup retry in `startupFailure.ts` relies on the same.
+const RENDERER_STARTED_KEY = "flock:renderer-started";
+let rendererReloaded: boolean | undefined;
+
+/**
+ * Whether this document replaced one of the same app window that had already
+ * read the queues: a renderer reload, not an app launch. Decided once per
+ * document, on the first read.
+ */
+function isRendererReloadInSameApp(): boolean {
+  if (rendererReloaded === undefined) {
+    try {
+      rendererReloaded =
+        window.sessionStorage.getItem(RENDERER_STARTED_KEY) === "1";
+      window.sessionStorage.setItem(RENDERER_STARTED_KEY, "1");
+    } catch (error) {
+      // Read as a launch: queued messages then wait for their chat to be
+      // opened, as before, instead of being sent on a guess.
+      console.warn(
+        "Cannot tell a renderer reload from an app launch; restored queues wait for their chats:",
+        error,
+      );
+      rendererReloaded = false;
+    }
+  }
+  return rendererReloaded;
+}
+
+export function resetRendererReloadStateForTesting(): void {
+  rendererReloaded = undefined;
+}
+
+/**
+ * A renderer reload inside the running app (a crash recovery, a manual
+ * reload) is not a relaunch: the agents kept working and the operator's
+ * queued messages are still live, so each queue resumes when its session is
+ * ready (LAWS/CHAT.md), whether or not the chat is open. Only an app launch
+ * restores them parked until their chat is opened. Deferred records keep
+ * their restored state: what they waited on was interrupted either way.
+ */
+function liveAfterRendererReload(queues: PersistedQueues): PersistedQueues {
+  if (!isRendererReloadInSameApp()) return queues;
+  return Object.fromEntries(
+    Object.entries(queues).map(([sessionId, records]) => [
+      sessionId,
+      records.map((record) => {
+        if (record.kind !== "transport-ready") return record;
+        const { restored: _restored, ...live } = record;
+        return live;
+      }),
+    ]),
+  );
+}
+
 export async function loadPersistedMessageQueues(): Promise<PersistedQueues> {
-  if (typeof window === "undefined" || !window.__TAURI_INTERNALS__) {
-    return loadCachedMessageQueues();
+  if (typeof window === "undefined") return {};
+  // Decided before the read, so the mark is set even when there is nothing
+  // to read yet: the next document of this window is a reload either way.
+  isRendererReloadInSameApp();
+  if (!window.__TAURI_INTERNALS__) {
+    return liveAfterRendererReload(loadCachedMessageQueues());
   }
   // Missing native data is an empty queue. Keep any legacy browser copy as
   // recovery data, but never turn potentially completed sends into new turns.
@@ -263,7 +325,7 @@ export async function loadPersistedMessageQueues(): Promise<PersistedQueues> {
   } catch {
     // Native persistence remains authoritative for oversized queues.
   }
-  return queues;
+  return liveAfterRendererReload(queues);
 }
 
 function parseMessageQueues(stored: string): PersistedQueues {

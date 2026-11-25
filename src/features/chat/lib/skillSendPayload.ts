@@ -3,7 +3,7 @@ import {
   type SkillCommandMatch,
 } from "@/features/skills/lib/skillChatPrompt";
 import type { ChatSendOptions, ChatSkillDraft } from "../types";
-import { automationCommand } from "@/features/chat-automation/commands";
+import { automationCommandSyntax } from "@/features/chat-automation/commands";
 
 interface SkillSendPayload {
   messageText: string;
@@ -48,7 +48,7 @@ export function buildSkillSendPayload(
     // A skill's argument can itself start with a command. Keep that
     // argument in the skill task when removing its leading skill name.
     messageText:
-      slashSkillCommand && automationCommand(displayText)
+      slashSkillCommand && automationCommandSyntax(displayText)
         ? `Skill task:\n${displayText}`
         : displayText || " ",
     sendOptions: {

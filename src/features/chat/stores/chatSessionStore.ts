@@ -30,6 +30,10 @@ import {
 } from "@/features/chat/lib/acpSessionMapping";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
+  applyListedHostRuns,
+  sessionRunSignalMark,
+} from "@/features/chat/lib/hostRunAdoption";
+import {
   logReasoningEffortInfo,
   reasoningEffortConfigLogFields,
   shortLogId,
@@ -971,6 +975,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     const loadEpoch = ++sessionLoadEpoch;
     set({ isLoading: true });
     try {
+      const runSignalMark = sessionRunSignalMark();
       const page = await acpListSessionsPage();
       if (sessionLoadEpoch !== loadEpoch) return;
       set((state) =>
@@ -984,6 +989,9 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
               hasStartedSessionPaging: true,
             },
       );
+      // Before the sessions read as hydrated: a queue drain that wakes on
+      // that must already see the chats the host is still running a turn in.
+      applyListedHostRuns(page.sessions, runSignalMark);
       const { sessions, hasMoreSessions } = get();
       if (!hasMoreSessions) {
         // With the whole list in hand, an unread flag for an id the host does
@@ -1017,8 +1025,10 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     try {
       // A refresh that starts meanwhile leaves the cursor alone, so this page
       // is still the next one when it lands.
+      const runSignalMark = sessionRunSignalMark();
       const page = await acpListSessionsPage({ cursor: sessionPageCursor });
       set((state) => mergeAcpSessionPage(state, page, sessionPageCursor));
+      applyListedHostRuns(page.sessions, runSignalMark);
     } catch (error) {
       console.error("Failed to load more sessions from ACP:", error);
     } finally {

@@ -604,6 +604,7 @@
     "preparingWorkspaceTitle": "Preparing your project workspace.",
     "preparingWorkspaceBody": "Your messages will send when it’s ready.",
     "noSteeringHere": "{{agent}} gets this message when its current turn ends. Press Esc to stop the turn and send it now.",
+    "waitsForCurrentTurn": "{{agent}} gets this message when its current turn ends. Steer sends it into the turn now.",
     "quotaWaitRecheck": "{{subject}} is out of quota. Checking again at {{time}} ({{countdown}}).",
     "quotaWaitReset": "{{subject}} is out of quota until the reset at {{time}} ({{countdown}}).",
     "quotaWaitSubjectAccount": "{{provider}} account {{account}}",

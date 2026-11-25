@@ -52,7 +52,16 @@ export function reportRendererError(
   });
 }
 
+// Chromium dispatches this as a window `error` (no error object, only the
+// message) when it defers a ResizeObserver notification to the next frame.
+// Nothing is lost and nothing failed, so it is not an app error; logged as one
+// it buried the real renderer errors (97 of them in 41 h of one install).
+const RESIZE_OBSERVER_DEFERRED_NOTICE =
+  "ResizeObserver loop completed with undelivered notifications.";
+
 function handleWindowError(event: ErrorEvent) {
+  if (event.error == null && event.message === RESIZE_OBSERVER_DEFERRED_NOTICE)
+    return;
   reportRendererError("window_error", event.error ?? event.message, {
     filename: event.filename,
     lineNumber: event.lineno,

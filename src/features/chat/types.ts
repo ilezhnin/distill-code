@@ -18,6 +18,7 @@ import type {
 import type { QueuedMessagePayload } from "./stores/chatStore";
 import type { SessionExecutionTarget } from "./lib/sessionExecutionTarget";
 import type { SessionRunSettingsNotice } from "./lib/sessionRunSettings";
+import type { AutomationCommandOrigin } from "@/features/chat-automation/commands";
 
 /** Which page of the model picker a row belongs on. Presentation only. */
 export type ModelPickerGroup = "main" | "more";
@@ -130,6 +131,13 @@ export interface ChatSendOptions {
   chips?: MessageChip[];
   userMessageMetadata?: Partial<MessageMetadata>;
   acpPromptMetadata?: Record<string, unknown>;
+  /**
+   * Set only on the operator's own messages (typed in the composer, or sent
+   * from the operator's terminal with flockctl): the one thing that lets a
+   * message starting with /goal or /loop run as that command. Kept with the
+   * queued record, so a command waits its turn like any message.
+   */
+  commandOrigin?: AutomationCommandOrigin;
 }
 
 export type ChatInputSendHandler = (

@@ -39,20 +39,21 @@ export async function submitComposerMessage({
     sendOptions?.chips && sendOptions.chips.length > 0
       ? [...chips, ...sendOptions.chips]
       : chips;
-  const mergedSendOptions =
-    mergedChips.length > 0
-      ? { ...sendOptions, chips: mergedChips }
-      : sendOptions;
+  // Typed here, so it is the operator's: the one origin besides their own
+  // terminal whose /goal or /loop runs as the command (`automationCommand`).
+  const mergedSendOptions = {
+    ...sendOptions,
+    ...(mergedChips.length > 0 ? { chips: mergedChips } : {}),
+    commandOrigin: "composer" as const,
+  };
   const submittedText = sendOptions ? messageText : messageText.trim();
   const submittedAttachments = attachments.length > 0 ? attachments : undefined;
-  const sendResult = mergedSendOptions
-    ? onSend(
-        submittedText,
-        selectedPersonaId,
-        submittedAttachments,
-        mergedSendOptions,
-      )
-    : onSend(submittedText, selectedPersonaId, submittedAttachments);
+  const sendResult = onSend(
+    submittedText,
+    selectedPersonaId,
+    submittedAttachments,
+    mergedSendOptions,
+  );
   const accepted = isPromiseLike<boolean>(sendResult)
     ? await sendResult
     : sendResult;

@@ -828,13 +828,19 @@ describe("useMessageQueue", () => {
     vi.useRealTimers();
   });
 
-  it("stops automatic retries for a persistently rejected payload despite readiness churn", async () => {
+  it("stops automatic retries for a persistently rejected payload despite the readiness churn its own attempts cause", async () => {
     // A failed auto-compaction returns false, appends an error notification,
-    // and sets the session back to idle. That idle edge re-triggers the drain,
-    // so without a ceiling the send loops as fast as compaction can fail and
-    // grows the transcript every pass.
+    // and sets the session back to idle, all inside the attempt. That idle
+    // edge re-triggers the drain, so without a ceiling the send loops as fast
+    // as compaction can fail and grows the transcript every pass. A session
+    // that becomes ready by itself (a run ends) is a different edge: the law
+    // has the queue resume then (queueWaitsForHostTurn.test.tsx).
     vi.useFakeTimers();
-    const sendMessage = vi.fn().mockResolvedValue(false);
+    const sendMessage = vi.fn(async () => {
+      useChatStore.getState().setChatState("s1", "compacting");
+      useChatStore.getState().setChatState("s1", "idle");
+      return false;
+    });
     useChatStore.getState().enqueueTransportReadyMessage("s1", {
       persona: { kind: "inherit" },
       text: "queued",
@@ -845,8 +851,6 @@ describe("useMessageQueue", () => {
 
     for (let pass = 0; pass < 12; pass += 1) {
       await act(async () => {
-        useChatStore.getState().setChatState("s1", "compacting");
-        useChatStore.getState().setChatState("s1", "idle");
         await vi.advanceTimersByTimeAsync(60_000);
       });
     }

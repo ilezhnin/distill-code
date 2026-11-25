@@ -7,6 +7,8 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { submitComposerMessage } from "@/features/chat/lib/submitComposerMessage";
 import { buildSkillSendPayload } from "@/features/chat/lib/skillSendPayload";
 import { dispatchPrompt } from "@/features/chat/lib/sendCore";
+import { sendPromptInBackground } from "@/features/chat/lib/backgroundSend";
+import { flockctlCommandSendOptions } from "@/features/chat/lib/queuedMessageOrigin";
 import { steerPromptInSession } from "@/features/chat/lib/steerCore";
 import { clearAccountQuotaWait } from "@/features/chat/lib/accountQuotaWait";
 import { resolveSkillSlashCommand } from "@/features/skills/lib/skillChatPrompt";
@@ -78,8 +80,10 @@ const queue = (sid = id) =>
   useChatStore.getState().queuedMessageBySession[sid] ?? [];
 const chat = () => useChatStore.getState();
 const goal = () => getChatGoal(id);
+// The operator's command, as the composer sends it.
+const typed = { commandOrigin: "composer" } as const;
 const command = (text: string) =>
-  dispatchPrompt(id, `/goal${text ? ` ${text}` : ""}`, {});
+  dispatchPrompt(id, `/goal${text ? ` ${text}` : ""}`, typed);
 const fence = (status: string, note = "progress") =>
   `\`\`\`flock-goal-state\n${JSON.stringify({ status, note })}\n\`\`\``;
 const notices = () =>
@@ -135,9 +139,9 @@ afterEach(() => {
 });
 
 it("recognizes only a leading command, reserves both skill names, and validates limits", () => {
-  expect(automationCommand("say /goal status")).toBeNull();
-  expect(automationCommand("/goalkeeper x")).toBeNull();
-  expect(automationCommand("/GOAL\nwork")).toEqual({
+  expect(automationCommand("say /goal status", "composer")).toBeNull();
+  expect(automationCommand("/goalkeeper x", "composer")).toBeNull();
+  expect(automationCommand("/GOAL\nwork", "composer")).toEqual({
     name: "goal",
     args: "work",
   });
@@ -158,7 +162,7 @@ it("recognizes only a leading command, reserves both skill names, and validates 
     [],
     resolveSkillSlashCommand("/sample /goal nested", [skill]),
   );
-  expect(automationCommand(nested.messageText)).toBeNull();
+  expect(automationCommand(nested.messageText, "composer")).toBeNull();
   expect(nested.messageText).toContain("/goal nested");
   expect(parseGoalCommand("do work")).toMatchObject({ maxTurns: 30 });
   expect(parseGoalCommand("do work --budget 90 --max-turns 200")).toMatchObject(
@@ -200,7 +204,9 @@ it("drains a composer command in FIFO order without sending or steering it to AC
     "First input",
     "/goal Second input",
   ]);
-  expect(await steerPromptInSession(id, "/goal Second input")).toBe(false);
+  expect(
+    await steerPromptInSession(id, "/goal Second input", undefined, typed),
+  ).toBe(false);
   expect(acpSteerMessage).not.toHaveBeenCalled();
   act(() => chat().setChatState(id, "idle"));
   await waitFor(() => expect(goal()?.objective).toBe("Second input"));
@@ -210,36 +216,64 @@ it("drains a composer command in FIFO order without sending or steering it to AC
   hook.unmount();
 });
 
+it("runs /goal and /loop only for the operator: typed in the composer or sent from the operator's terminal", async () => {
+  try {
+    // Text the app made itself (a wave prompt, a hand-over block, a
+    // continuation) carries no origin of the operator's.
+    respond("noted");
+    await dispatchPrompt(id, "/goal Take over the build", {});
+    // An agent's flockctl call (the agent mark is set).
+    respond("noted");
+    await sendPromptInBackground(
+      id,
+      "/loop 1m Print the current time",
+      "codex-acp",
+      undefined,
+      flockctlCommandSendOptions({ caller: "agent" }),
+    );
+    expect(vi.mocked(acpSendMessage).mock.calls.map((call) => call[1])).toEqual(
+      ["/goal Take over the build", "/loop 1m Print the current time"],
+    );
+    expect(goal()).toBeUndefined();
+    expect(getChatLoops(id)).toEqual([]);
+
+    // The operator's own terminal: flockctl without the agent mark.
+    await sendPromptInBackground(
+      id,
+      "/goal Check the sample --max-turns 5",
+      "codex-acp",
+      undefined,
+      flockctlCommandSendOptions({ caller: "operator" }),
+    );
+    expect(goal()).toMatchObject({
+      objective: "Check the sample",
+      maxTurns: 5,
+    });
+    expect(vi.mocked(acpSendMessage)).toHaveBeenCalledTimes(2);
+  } finally {
+    useChatLoopStore.getState().clear(id);
+  }
+});
+
 it("reads a command only from the operator: what another session sent is text for the agent", async () => {
   const fromAnotherSession = {
     userMessageMetadata: { origin: "distillctl_cross_session" as const },
     acpPromptMetadata: { origin: "distillctl_cross_session" },
   };
-  expect(
-    automationCommand(
-      "/goal take over",
-      fromAnotherSession.userMessageMetadata,
-    ),
-  ).toBeNull();
-  expect(
-    automationCommand("/loop 1m take over", {
-      origin: "distillctl_cross_session",
-    }),
-  ).toBeNull();
-  // What the operator typed, or said, is still a command.
-  for (const metadata of [
-    undefined,
-    {},
-    { origin: "voice_conversation" },
-  ] as const)
-    expect(automationCommand("/goal take over", metadata)).toEqual({
+  // A message with no origin of the operator's is text, whatever it says.
+  expect(automationCommand("/goal take over")).toBeNull();
+  expect(automationCommand("/loop 1m take over")).toBeNull();
+  // What the operator typed in the composer, or sent from their own
+  // terminal, is a command.
+  for (const origin of ["composer", "operator-terminal"] as const)
+    expect(automationCommand("/goal take over", origin)).toEqual({
       name: "goal",
       args: "take over",
     });
 
   // The operator's own goal and loop, set in the composer.
   await command("review");
-  await dispatchPrompt(id, "/loop 5m Check the build", {});
+  await dispatchPrompt(id, "/loop 5m Check the build", typed);
   try {
     const mine = goal();
     expect(getChatLoops(id)).toHaveLength(1);
