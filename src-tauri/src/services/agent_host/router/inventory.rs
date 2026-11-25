@@ -4,16 +4,19 @@ use super::*;
 impl Inner {
     /// Boxed for the same stack reason as [`Self::ensure_execution_bridge`]:
     /// a benchmark attempt checks its inventory deep inside the runner.
+    /// `unattended` for a listing nobody waits on (see
+    /// [`Self::probe_refusal`]).
     pub fn benchmark_inventory<'a>(
         self: &'a Arc<Self>,
         provider: &'a str,
         account: &'a str,
         refresh: bool,
+        unattended: bool,
     ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             let native = NativeProvider::for_harness(provider)
                 .ok_or("capability_missing: provider has no isolated benchmark runtime")?;
-            let catalog = ext::model_inventory(self, provider, Some(account), refresh)
+            let catalog = ext::model_inventory(self, provider, Some(account), refresh, unattended)
                 .await
                 .map_err(|error| error_text(&error))?;
             // The listing runs on a lease of the account's Flock sign-in:
@@ -343,10 +346,13 @@ impl Inner {
         self: &Arc<Self>,
         harness_id: &str,
         account_id: Option<&str>,
+        unattended: bool,
     ) -> Result<(Vec<Value>, Value), Value> {
         // A probe: a CLI that failed to start for one is left alone for a
-        // while (see `ensure_probe_bridge`).
-        let bridge = self.ensure_probe_bridge(harness_id, account_id).await?;
+        // while by `unattended` ones (see `ensure_probe_bridge`).
+        let bridge = self
+            .ensure_probe_bridge(harness_id, account_id, unattended)
+            .await?;
         let probed_on = bridge.executable();
         let mut params = json!({ "cwd": self.probe_cwd(), "mcpServers": [] });
         if let Some(meta) = harness::probe_session_meta(harness_id) {

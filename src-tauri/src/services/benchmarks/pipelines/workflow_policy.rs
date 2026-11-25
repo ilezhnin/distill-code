@@ -224,7 +224,7 @@ impl WorkflowPolicy {
             if !inventories.contains_key(&inventory_key) {
                 let inventory = service
                     .backend
-                    .inventory(
+                    .unattended_inventory(
                         &configuration.provider_id,
                         configuration.account_id.as_deref(),
                         false,

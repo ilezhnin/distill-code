@@ -186,6 +186,9 @@ export class HostExt {
   providersSupportedModelsList(params: {
     providerId: string;
     accountId?: string;
+    /** Forget a CLI that failed to start earlier in this run and start it
+     *  again; sent once after news from the operator (a sign-in, a setup). */
+    retryFailedStart?: boolean;
   }) {
     return this.call<ProviderSupportedModelsResponse>(
       "providers/supported_models/list",

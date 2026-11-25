@@ -232,7 +232,7 @@ impl ExecutionBackend for NativeBackend {
                 )
             })?;
             let rows = self
-                .inventory(&chosen.provider_id, Some(account), false)
+                .unattended_inventory(&chosen.provider_id, Some(account), false)
                 .await?;
             if !rows.iter().any(|row| {
                 crate::services::benchmarks::task_execution::inventory_acknowledges(row, chosen)
@@ -334,7 +334,7 @@ impl ExecutionBackend for NativeBackend {
             // has occupied a persistent bridge: concurrent tasks could hold
             // every light slot while each waits for an inventory process.
             let rows = self
-                .inventory(&chosen.provider_id, Some(account), false)
+                .unattended_inventory(&chosen.provider_id, Some(account), false)
                 .await?;
             let mut owned = host
                 .create_task_owned_session(
@@ -453,7 +453,7 @@ impl ExecutionBackend for NativeBackend {
                 ));
             }
             let rows = self
-                .inventory(
+                .unattended_inventory(
                     &session.observed.provider_id,
                     session.observed.account_id.as_deref(),
                     false,
@@ -823,24 +823,15 @@ impl ExecutionBackend for NativeBackend {
         account: Option<&'a str>,
         refresh: bool,
     ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
-        Box::pin(async move {
-            let account = account.ok_or_else(|| {
-                BenchmarkError::new("capability_missing", account_refusal(provider))
-            })?;
-            let host = self
-                .app
-                .state::<AgentHost>()
-                .get_or_start(&self.app)
-                .await
-                .map_err(host_error)?;
-            let result = host
-                .benchmark_inventory(provider, account, refresh)
-                .await
-                .map_err(host_error)?;
-            // The probe candidates are checked against seats judges too.
-            self.inventories.observe(provider, account, result.clone());
-            self.inventory_rows(provider, account, &result).await
-        })
+        Box::pin(self.listed_inventory(provider, account, refresh, false))
+    }
+    fn unattended_inventory<'a>(
+        &'a self,
+        provider: &'a str,
+        account: Option<&'a str>,
+        refresh: bool,
+    ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
+        Box::pin(self.listed_inventory(provider, account, refresh, true))
     }
     fn execute<'a>(
         &'a self,
@@ -1341,10 +1332,9 @@ impl ExecutionBackend for NativeBackend {
             }
             record_sandbox_admission(&mut attempt, &mut evidence, cleanup.0.as_deref());
             mark_phase(&mut attempt, "collected");
-            attempt.evidence_hash = Some(fixtures::seal(&store.root, &attempt, &evidence).await?);
             // Persist the patch before removing its only working copy. Recovery
             // can repeat cleanup if the process exits between these operations.
-            store.save_attempt(&attempt).await?;
+            keep_sealed(store, &mut attempt, &evidence).await?;
             clean_sealed(&mut cleanup, |id| async move { sandbox::clean(&id).await }).await;
             Ok(Some(attempt))
         })
@@ -1369,6 +1359,32 @@ struct Admitted {
 }
 
 impl NativeBackend {
+    /// `inventory` and `unattended_inventory`: a probe of an `unattended`
+    /// one waits out a CLI whose model listing failed to start.
+    async fn listed_inventory(
+        &self,
+        provider: &str,
+        account: Option<&str>,
+        refresh: bool,
+        unattended: bool,
+    ) -> Result<Vec<InventoryModel>> {
+        let account = account
+            .ok_or_else(|| BenchmarkError::new("capability_missing", account_refusal(provider)))?;
+        let host = self
+            .app
+            .state::<AgentHost>()
+            .get_or_start(&self.app)
+            .await
+            .map_err(host_error)?;
+        let result = host
+            .benchmark_inventory(provider, account, refresh, unattended)
+            .await
+            .map_err(host_error)?;
+        // The probe candidates are checked against seats judges too.
+        self.inventories.observe(provider, account, result.clone());
+        self.inventory_rows(provider, account, &result).await
+    }
+
     /// Admits a try: its run still goes on, its account and provider are
     /// known, its turn may be paid for, its budget and sign-in are in hand,
     /// and the runtime is the one its configuration was selected on.
@@ -1572,8 +1588,7 @@ impl NativeBackend {
         drop(credit);
         record_sandbox_admission(attempt, &mut evidence, cleanup.0.as_deref());
         mark_phase(attempt, "collected");
-        attempt.evidence_hash = Some(fixtures::seal(&store.root, attempt, &evidence).await?);
-        store.save_attempt(attempt).await?;
+        keep_sealed(store, attempt, &evidence).await?;
         clean_sealed(cleanup, |id| async move { sandbox::clean(&id).await }).await;
         Ok(())
     }

@@ -552,3 +552,206 @@ async fn a_replacement_the_store_refuses_leaves_the_failed_try_standing() {
     assert_eq!(after.attempts[1].repetition, after.attempts[0].repetition);
     dir.close().await;
 }
+
+/// A finished turn as the native backend holds it right before it seals the
+/// answer: dispatched, answered and saved as running, nothing sealed yet.
+async fn answered_turn(service: &BenchmarkService, run: &BenchmarkRun) -> Attempt {
+    let mut running = run.attempts[0].clone();
+    running.phase = "running".into();
+    running.started_at = Some(now());
+    running.session_id = Some(format!("invented-session-{}", running.id));
+    running.host_run_id = Some(format!("invented-turn-{}", running.id));
+    running.observed = Some(running.configuration.clone());
+    service.store.save_attempt(&running).await.unwrap();
+    let version = service.store.version(&running.version_id).await.unwrap();
+    let mut answered = running;
+    answered.phase = "collecting".into();
+    answered.outcome = Some("completed".into());
+    answered.output = Some(version.manifest.evaluator.known_good.clone());
+    answered.finished_at = Some(now());
+    answered
+}
+
+/// 2026-11-25 audit, X-3: the save that records a sealed answer's evidence
+/// hash failed, the try settled `storage_unavailable` with no hash on record,
+/// and resuming the run bought another turn. The answer is now kept once the
+/// store takes it, its try holding its seat meanwhile; from there a failure
+/// leaves it to be checked again, never bought again.
+#[tokio::test]
+async fn a_sealed_answer_the_store_refused_is_kept_once_it_takes_it() {
+    let (dir, service, backend) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let mut answered = answered_turn(&service, &run).await;
+    let id = answered.id.clone();
+    // For a while the store refuses every save that carries a sealed answer.
+    sqlx::query("CREATE TRIGGER refuse_sealed BEFORE UPDATE ON attempts WHEN json_extract(NEW.data_json,'$.evidenceHash') IS NOT NULL BEGIN SELECT RAISE(ABORT,'invented disk failure'); END")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    let keeping = tokio::spawn({
+        let service = service.clone();
+        async move {
+            keep_sealed(
+                &service.store,
+                &mut answered,
+                &json!({"provider": "invented-native"}),
+            )
+            .await
+            .map(|()| answered)
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !keeping.is_finished(),
+        "the try gave up on its paid answer: {:?}",
+        keeping.await.unwrap().map(|kept| kept.evidence_hash)
+    );
+    assert!(service
+        .store
+        .attempt(&id)
+        .await
+        .unwrap()
+        .evidence_hash
+        .is_none());
+
+    sqlx::query("DROP TRIGGER refuse_sealed")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    let kept = tokio::time::timeout(Duration::from_secs(20), keeping)
+        .await
+        .expect("the sealed answer was never kept")
+        .unwrap()
+        .expect("kept once the store takes it");
+    let stored = service.store.attempt(&id).await.unwrap();
+    assert!(stored.evidence_hash.is_some());
+    assert_eq!(stored.evidence_hash, kept.evidence_hash);
+    assert_eq!(stored.outcome.as_deref(), Some("completed"));
+
+    // A store failure after that is the check's, which resuming makes again.
+    let version = service.store.version(&stored.version_id).await.unwrap();
+    service
+        .try_failed(
+            &run,
+            &run.attempts[0],
+            &version,
+            BenchmarkError::new("storage_unavailable", "invented disk failure"),
+        )
+        .await
+        .unwrap();
+    service.control(&run.id, "resume").await.unwrap();
+    let resumed = settle(&service, &run.id).await;
+    assert_eq!(resumed.attempts.len(), 1, "the answer was measured again");
+    assert_eq!(resumed.attempts[0].outcome.as_deref(), Some("pass"));
+    assert_eq!(
+        backend.calls.load(Ordering::SeqCst),
+        0,
+        "resume paid for a second answer"
+    );
+    dir.close().await;
+}
+
+/// Control: a store that takes the save keeps the sealed answer at once.
+#[tokio::test]
+async fn a_sealed_answer_is_kept_at_once_by_a_store_that_takes_it() {
+    let (dir, service, _backend) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let mut answered = answered_turn(&service, &run).await;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        keep_sealed(
+            &service.store,
+            &mut answered,
+            &json!({"provider": "invented-native"}),
+        ),
+    )
+    .await
+    .expect("kept without waiting")
+    .unwrap();
+    let stored = service.store.attempt(&answered.id).await.unwrap();
+    assert_eq!(stored.evidence_hash, answered.evidence_hash);
+    assert!(stored.evidence_hash.is_some());
+    dir.close().await;
+}
+
+/// A run whose only cell ended unscored and stopped for the operator, and the
+/// family of its case, for a resume to measure it again.
+async fn stopped_unscored(service: &BenchmarkService) -> (BenchmarkRun, String) {
+    let run = service.start_run(one_cell(service).await).await.unwrap();
+    let mut failed = run.attempts[0].clone();
+    failed.phase = "terminal".into();
+    failed.outcome = Some("infrastructure_failure".into());
+    failed.reason = Some("The agent's bridge exited before this turn finished".into());
+    failed.finished_at = Some(now());
+    service.store.save_attempt(&failed).await.unwrap();
+    service
+        .store
+        .set_run_state(&run.id, "needs_attention")
+        .await
+        .unwrap();
+    let family = service
+        .store
+        .version(&failed.version_id)
+        .await
+        .unwrap()
+        .manifest
+        .task_family;
+    (run, family)
+}
+
+async fn reserve_for_campaign(service: &BenchmarkService, family: &str) {
+    sqlx::query("INSERT INTO evaluation_reservations(kind,value,owner_kind,owner_id) VALUES('family',?,'workflow_campaign','invented-frozen-campaign')")
+        .bind(family)
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+}
+
+/// 2026-11-25 audit, X-6: since supersede and insert share a transaction, a
+/// case a frozen workflow campaign reserved after its run started made every
+/// resume of the run fail at that cell. Before, the first resume failed and
+/// the next went on without the cell; now the resume goes on without it and
+/// the try it set aside says why.
+#[tokio::test]
+async fn a_resume_goes_on_without_a_cell_a_frozen_campaign_reserved() {
+    let (dir, service, backend) = setup().await;
+    let (run, family) = stopped_unscored(&service).await;
+    reserve_for_campaign(&service, &family).await;
+    let resumed = service
+        .control(&run.id, "resume")
+        .await
+        .expect("the resume goes on without the reserved cell");
+    assert_eq!(resumed.state, "running");
+    let after = service.store.run(&run.id).await.unwrap();
+    assert_eq!(after.attempts.len(), 1, "a reserved case was queued again");
+    assert_eq!(after.attempts[0].outcome.as_deref(), Some("superseded"));
+    let reason = after.attempts[0].reason.as_deref().unwrap_or_default();
+    assert!(reason.contains("frozen workflow campaign"), "{reason}");
+    let settled = settle(&service, &run.id).await;
+    assert_eq!(settled.state, "completed");
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    dir.close().await;
+}
+
+/// Control: a campaign that reserves another case leaves the resume as it
+/// was, the cell set aside and measured again in one step.
+#[tokio::test]
+async fn a_resume_measures_again_a_cell_no_campaign_reserved() {
+    let (dir, service, backend) = setup().await;
+    let (run, _family) = stopped_unscored(&service).await;
+    reserve_for_campaign(&service, "invented-other-family").await;
+    service.control(&run.id, "resume").await.unwrap();
+    let after = service.store.run(&run.id).await.unwrap();
+    assert_eq!(after.attempts.len(), 2);
+    assert_eq!(after.attempts[0].outcome.as_deref(), Some("superseded"));
+    assert!(after.attempts[0]
+        .reason
+        .as_deref()
+        .unwrap_or_default()
+        .starts_with("Measured again on resume"));
+    assert_eq!(after.attempts[1].phase, "pending");
+    let settled = settle(&service, &run.id).await;
+    assert_eq!(settled.state, "completed");
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    dir.close().await;
+}

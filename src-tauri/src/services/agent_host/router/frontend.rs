@@ -427,23 +427,33 @@ impl Inner {
                 // its predecessor's cancel has gone to the bridge.
                 let lock = self.attach_lock(&session_id).await;
                 let mut admission = Some(lock.lock().await);
-                let (dropped, cancelled_run, kimi) = self
+                let stopped = self
                     .sessions
                     .lock()
                     .await
                     .get_mut(&session_id)
-                    .map(|runtime| {
-                        let run = runtime.run.as_ref().map(|run| run.run_id.clone());
-                        let (dropped, closing) = runtime.stop(&session_id);
+                    .map(|runtime| Self::stop_runtime(runtime, &session_id, arrival));
+                let (dropped, cancelled_run, kimi) = match stopped {
+                    None => (0, None, false),
+                    // Pressed for a turn that has ended (see `stop_runtime`):
+                    // the turn now running is left alone, and no cancel goes
+                    // to the agent, which is running that turn's prompt.
+                    Some(None) => {
+                        log::info!(
+                            "[agent-host] a Stop of {session_id} came before the prompt of its running turn; that turn goes on"
+                        );
+                        return;
+                    }
+                    Some(Some((dropped, run, closing, kimi))) => {
                         if let Some(params) = closing {
                             let _ = self.events_tx.send(BridgeEvent::BackgroundFinished {
                                 session_id: session_id.clone(),
                                 params,
                             });
                         }
-                        (dropped, run, runtime.harness == "kimi-acp")
-                    })
-                    .unwrap_or((0, None, false));
+                        (dropped, run, kimi)
+                    }
+                };
                 // No turn to stop yet: a prompt sent before this Stop and
                 // still on its way to its claim is stopped when it gets there.
                 if cancelled_run.is_none() {
@@ -485,6 +495,37 @@ impl Inner {
                 }
             }
         }
+    }
+
+    /// What a Stop of chat `session_id` that reached the host at `arrival`
+    /// does to its runtime: the queued steers it dropped, the run it stops,
+    /// the closing update of a reply the agent continued on its own, and
+    /// whether the chat is a Kimi one.
+    ///
+    /// `None`, and the runtime untouched, when the prompt of the chat's
+    /// running turn reached the host after this Stop. The operator pressed
+    /// it for the turn before, which ended on its own meanwhile, and the
+    /// renderer sent its next queued message. Applied to the new turn, the
+    /// Stop withheld that message from the agent, or cancelled it, and
+    /// dropped its steers (2026-11-25 audit, X-5). A turn whose prompt came
+    /// from no renderer frame (a steered one, one the host sent) is stopped
+    /// as before.
+    pub(super) fn stop_runtime(
+        runtime: &mut SessionRuntime,
+        session_id: &str,
+        arrival: u64,
+    ) -> Option<(usize, Option<String>, Option<Value>, bool)> {
+        if runtime
+            .run
+            .as_ref()
+            .and_then(|run| run.arrival)
+            .is_some_and(|prompt| prompt > arrival)
+        {
+            return None;
+        }
+        let run = runtime.run.as_ref().map(|run| run.run_id.clone());
+        let (dropped, closing) = runtime.stop(session_id);
+        Some((dropped, run, closing, runtime.harness == "kimi-acp"))
     }
 
     /// Stop every ordinary chat a close would cut, for an operator who chose

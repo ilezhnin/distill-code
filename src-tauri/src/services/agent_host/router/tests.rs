@@ -3938,6 +3938,60 @@ fn a_stop_that_finds_no_turn_stops_only_a_prompt_sent_before_it() {
     assert!(Inner::stopped_after("h2-dormant-chat", arrival));
 }
 
+// 2026-11-25 audit, X-4: one failed `initialize` kept the operator's own model
+// lists (the benchmark screen's inventory, its refresh, a Resume) from trying
+// the CLI for 10 minutes.
+#[test]
+fn only_a_background_probe_waits_out_a_failed_initialize() {
+    let route = "x4-invented-acp";
+    let cli = json!({"path": "C:\\invented\\bin\\agent.exe", "len": 4200, "modified": 3});
+    Inner::remember_failed_start(
+        route,
+        cli.clone(),
+        "Invented Agent bridge failed to initialize: invented timeout",
+    );
+    let now = std::time::Instant::now();
+    // Control: a background probe is held back, as before.
+    assert!(Inner::probe_refusal(route, &cli, now, true).is_some());
+    // The operator's request tries the CLI.
+    assert_eq!(Inner::probe_refusal(route, &cli, now, false), None);
+    Inner::forget_failed_start(route);
+}
+
+// 2026-11-25 audit, X-5: a Stop pressed as a turn ended on its own was handled
+// after the next queued prompt had claimed the chat, and it withheld that
+// prompt (or cancelled its turn) instead of the turn it was pressed for.
+#[test]
+fn a_stop_that_arrived_before_the_running_prompt_leaves_its_turn_alone() {
+    let mut chat = runtime("claude-acp", "a", 1);
+    Inner::claim_turn(&mut chat, &ids()).expect("an idle chat takes the turn");
+    chat.run.as_mut().unwrap().arrival = Some(12);
+    chat.steer_queue.push_back(QueuedPrompt {
+        prompt: json!([{ "type": "text", "text": "also this" }]),
+        meta: json!({}),
+        ids: TurnIds::new(),
+    });
+    // The Stop reached the host at 11, before this turn's prompt (12): the
+    // operator pressed it for the turn before, which has ended.
+    assert_eq!(Inner::stop_runtime(&mut chat, "a", 11), None);
+    assert_eq!(chat.active_run_id(), Some("run-1"));
+    assert_eq!(chat.steer_queue.len(), 1, "its steers are kept");
+    // Control: a Stop that arrived after the prompt stops this turn.
+    assert_eq!(
+        Inner::stop_runtime(&mut chat, "a", 13),
+        Some((1, Some("run-1".to_string()), None, false))
+    );
+    assert!(chat.steer_queue.is_empty());
+    // As does any Stop of a turn whose prompt came from no renderer frame
+    // (a steered turn, one the host sent itself).
+    let mut steered = runtime("claude-acp", "b", 1);
+    Inner::claim_turn(&mut steered, &ids()).unwrap();
+    assert_eq!(
+        Inner::stop_runtime(&mut steered, "b", 1),
+        Some((0, Some("run-1".to_string()), None, false))
+    );
+}
+
 fn invented_store_session(id: &str, harness: &str) -> SessionRecord {
     serde_json::from_value(json!({
         "id": id, "harness": harness, "cwd": "/workspace", "user_set_name": false,

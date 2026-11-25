@@ -951,12 +951,41 @@ impl BenchmarkService {
                     attempt.repetition,
                 );
                 let mut superseded = attempt;
+                let was = superseded
+                    .outcome
+                    .clone()
+                    .unwrap_or_else(|| "unfinished".into());
                 superseded.reason = Some(format!(
-                    "Measured again on resume: {measured} of {planned} repetitions were measured when the run stopped (this one: {})",
-                    superseded.outcome.as_deref().unwrap_or("unfinished")
+                    "Measured again on resume: {measured} of {planned} repetitions were measured when the run stopped (this one: {was})"
                 ));
                 superseded.outcome = Some(analysis::SUPERSEDED.into());
-                self.store.supersede_and_insert(&superseded, &fresh).await?;
+                match self.store.supersede_and_insert(&superseded, &fresh).await {
+                    Ok(()) => {}
+                    // A frozen workflow campaign reserved the case after the
+                    // run started, and only that campaign may measure it now.
+                    // Since the set-aside and its replacement share one
+                    // transaction, the refused replacement kept the try
+                    // standing and every resume failed here (2026-11-25
+                    // audit, X-6). The try is set aside alone, as resumes
+                    // left it before, and says why; the resume goes on
+                    // without the cell.
+                    Err(error)
+                        if crate::services::benchmarks::workflow_campaign::reserved_elsewhere(
+                            &error,
+                        ) =>
+                    {
+                        superseded.reason = Some(format!(
+                            "Not measured again on resume: a frozen workflow campaign reserved this case after the run started, and only that campaign may measure it (this one: {was})"
+                        ));
+                        self.store.supersede_attempt(&superseded).await?;
+                        log::info!(
+                            "[benchmarks] run {} resumes without attempt {}: a frozen workflow campaign reserved its case",
+                            run.id,
+                            superseded.id
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
         Ok(unfinished)

@@ -894,7 +894,11 @@ never settled by such a refusal.
 A run stops for the operator in these cases only, and logs each as `run <id>
 waits for the operator: <why>`:
 
-- the store could not keep its results;
+- the store could not keep its results. A test whose answer is already
+  sealed, or whose failure is already decided, does not stop the run: it
+  keeps its seat and saves again (5 s after the first refusal, 5 s longer
+  after each, at most a minute apart) until the store takes it, so a pause
+  or a cancel finishes only after that save;
 - the provider refused its selection from the first test on;
 - its dispatch deadline passed;
 - tests in a row were lost to a failure that is not their own (an uncertain

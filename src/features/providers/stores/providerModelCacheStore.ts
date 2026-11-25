@@ -76,6 +76,14 @@ const lastRefreshAt = new Map<string, number>();
 const inFlightRefreshes = new Map<string, Promise<void>>();
 const queuedForceRefreshes = new Map<string, Promise<void>>();
 const providerRefreshVersions = new Map<string, number>();
+/**
+ * Providers whose next poll follows news from the operator (a sign-in, a
+ * finished setup, a reinstalled bridge). That poll asks the host to forget
+ * a CLI that failed to start earlier, which background polls (startup, the
+ * model picker) leave remembered for a while so they do not start it again
+ * and again.
+ */
+const retryFailedStartProviderIds = new Set<string>();
 
 /**
  * What the last poll of this provider's model list actually said.
@@ -273,7 +281,11 @@ async function fetchProviderSupportedModels(
   providerId: string,
 ): Promise<ProviderSupportedModelsResponse> {
   const client = await getClient();
-  return await client.host.providersSupportedModelsList({ providerId });
+  const retryFailedStart = retryFailedStartProviderIds.delete(providerId);
+  return await client.host.providersSupportedModelsList({
+    providerId,
+    ...(retryFailedStart ? { retryFailedStart: true } : {}),
+  });
 }
 
 /**
@@ -749,6 +761,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
      */
     invalidateProvider: (providerId, options = {}) => {
       bumpRefreshVersion(providerId);
+      retryFailedStartProviderIds.add(providerId);
       set((state) => {
         if (state.runtimeManagedProviderIds.has(providerId)) {
           const existing = state.providers.get(providerId);

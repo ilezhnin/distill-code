@@ -18,13 +18,54 @@ pub(in crate::services::benchmarks) const ACCOUNT_SLOTS: usize = 4;
 /// one at a time.
 pub const AS_ADMITTED: u32 = 0;
 
-/// How long a worker failure the store refused to record waits before it is
-/// recorded again, times the tries so far, up to a minute between tries.
+/// How long a worker failure the store refused to record (or a sealed answer
+/// it refused to keep, see [`keep_sealed`]) waits before it is written again,
+/// times the tries so far, up to a minute between tries.
 const RECORD_AGAIN: Duration = if cfg!(test) {
     Duration::from_millis(10)
 } else {
     Duration::from_secs(5)
 };
+
+/// Seals the evidence of a turn the provider answered and saves `attempt`
+/// with its hash, again and again while the store refuses either write. The
+/// answer is paid for: a try that gave up here settled `storage_unavailable`
+/// with no hash on record, so nothing showed a sealed answer, and resuming
+/// its run bought another turn (2026-11-25 audit, X-3). As with a worker
+/// failure the store refused (`finish_flight`), the try keeps its seat
+/// meanwhile. Sealing again writes the same bytes under the same digest. Any
+/// other failure returns at once, as before.
+pub(in super::super) async fn keep_sealed(
+    store: &Store,
+    attempt: &mut Attempt,
+    evidence: &Value,
+) -> Result<()> {
+    let mut tries: u32 = 0;
+    loop {
+        let refused =
+            match crate::services::benchmarks::fixtures::seal(&store.root, attempt, evidence).await
+            {
+                Ok(hash) => {
+                    attempt.evidence_hash = Some(hash);
+                    match store.save_attempt(attempt).await {
+                        Ok(()) => return Ok(()),
+                        Err(error) => error,
+                    }
+                }
+                Err(error) => error,
+            };
+        if refused.code != "storage_unavailable" {
+            return Err(refused);
+        }
+        tries += 1;
+        log::error!(
+            "[benchmarks] could not keep the sealed answer of {} (try {tries}); the attempt keeps its seat until the store takes it: {}",
+            attempt.id,
+            refused.message
+        );
+        tokio::time::sleep(RECORD_AGAIN * tries.min(12)).await;
+    }
+}
 
 /// An attempt or a judge panel in flight, keyed in `BenchmarkService::active`
 /// by the attempt (or, for a panel, its run's panel lane): its run, the lane

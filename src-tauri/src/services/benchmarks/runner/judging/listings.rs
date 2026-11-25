@@ -398,8 +398,10 @@ impl NativeBackend {
         provider: &str,
         account: &str,
     ) -> Result<Value> {
+        // Read for an admission or a judge's seat, nobody waiting on it: a
+        // CLI whose listing failed to start is left alone for a while.
         let inventory = host
-            .benchmark_inventory(provider, account, true)
+            .benchmark_inventory(provider, account, true, true)
             .await
             .map_err(host_error)?;
         self.inventories

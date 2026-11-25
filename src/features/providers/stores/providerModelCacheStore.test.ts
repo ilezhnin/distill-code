@@ -449,4 +449,27 @@ describe("providerModelCacheStore", () => {
 
     expect(mocks.supportedModelsList).toHaveBeenCalledTimes(2);
   });
+
+  // 2026-11-25 audit, X-4: background polls leave a CLI that failed to
+  // start remembered for ten minutes, so the poll after a sign-in or a
+  // finished setup must ask the host to start it again, once.
+  it("asks the host to retry a failed CLI start once after news from the operator", async () => {
+    mocks.supportedModelsList.mockResolvedValue({
+      models: [{ id: "model-1" }],
+    });
+    const store = useProviderModelCacheStore.getState();
+
+    await store.refreshProviderModels("retry-acp", { force: true });
+    store.invalidateProvider("retry-acp");
+    await store.refreshProviderModels("retry-acp", { force: true });
+    await store.refreshProviderModels("retry-acp", { force: true });
+
+    expect(mocks.supportedModelsList.mock.calls.map((call) => call[0])).toEqual(
+      [
+        { providerId: "retry-acp" },
+        { providerId: "retry-acp", retryFailedStart: true },
+        { providerId: "retry-acp" },
+      ],
+    );
+  });
 });

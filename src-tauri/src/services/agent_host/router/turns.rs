@@ -151,6 +151,11 @@ impl Inner {
                         .unwrap_or_else(|e| e.into_inner())
                         .record(&runtime.harness, runtime.account_id.as_deref());
                     let turn = OpenTurn::open(&ids.run_id);
+                    // A Stop that arrived before this prompt was not pressed
+                    // for its turn (see `Inner::stop_runtime`).
+                    if let Some(run) = runtime.run.as_mut() {
+                        run.arrival = arrival;
+                    }
                     // A Stop sent after this prompt, while it was on its way
                     // here, found no turn to stop: it stops this one.
                     if Self::stopped_after(&session_id, arrival) {

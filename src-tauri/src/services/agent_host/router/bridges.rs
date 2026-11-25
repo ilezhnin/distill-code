@@ -5,10 +5,10 @@ use super::*;
 /// failed `initialize`. A CLI that cannot speak ACP was started for every
 /// model list the renderer asked for: the VS Code Copilot shim on PATH, which
 /// says "GitHub Copilot CLI was not found" and exits, twice per renderer boot
-/// and 12 times in 41 h (2026-11-25 hunt, D-6). Probes do not start such a
-/// route again on that executable for [`FAILED_START_MEMORY`]; a chat the
-/// operator opens or sends to always starts it, and one that starts proves
-/// the CLI works again.
+/// and 12 times in 41 h (2026-11-25 hunt, D-6). Background probes do not
+/// start such a route again on that executable for [`FAILED_START_MEMORY`];
+/// a chat the operator opens or sends to, and a model list the operator asks
+/// for, always start it, and one that starts proves the CLI works again.
 static FAILED_STARTS: std::sync::LazyLock<StdMutex<HashMap<String, FailedStart>>> =
     std::sync::LazyLock::new(Default::default);
 
@@ -54,6 +54,24 @@ impl Inner {
                     FAILED_START_MEMORY.as_secs() / 60
                 )
             })
+    }
+
+    /// Why a model-list probe of `route_key` on `executable` is not started
+    /// at `now`; `unattended` for a background probe nobody waits on. Only
+    /// such a probe waits out [`FAILED_STARTS`]: one the operator asked for
+    /// (the benchmark screen's inventory or its refresh, a Resume, a run's
+    /// preview) always tries the CLI. One failed `initialize` refused those
+    /// for 10 minutes (2026-11-25 audit, X-4).
+    pub(super) fn probe_refusal(
+        route_key: &str,
+        executable: &Value,
+        now: std::time::Instant,
+        unattended: bool,
+    ) -> Option<String> {
+        if !unattended {
+            return None;
+        }
+        Self::refused_start(route_key, executable, now)
     }
 
     /// Remembers that a probe start of `route_key` failed `initialize` on
@@ -133,16 +151,18 @@ impl Inner {
             .await
     }
 
-    /// The bridge a background model-list probe uses: like
-    /// [`Self::ensure_account_bridge`], except that a route whose last probe
-    /// start failed `initialize` is not started again for a while (see
-    /// [`FAILED_STARTS`]).
+    /// The bridge a model-list probe uses: like
+    /// [`Self::ensure_account_bridge`], except that a failed `initialize` is
+    /// remembered and, for an `unattended` probe, a route whose last probe
+    /// start failed is not started again for a while (see [`FAILED_STARTS`]).
     pub(super) async fn ensure_probe_bridge(
         &self,
         harness_id: &str,
         account_id: Option<&str>,
+        unattended: bool,
     ) -> Result<Arc<Bridge>, Value> {
-        self.ensure_bridge(harness_id, account_id, None, true).await
+        self.ensure_bridge(harness_id, account_id, None, true, unattended)
+            .await
     }
 
     /// The bridge for `harness_id` and `account_id`, or with `profile` a
@@ -153,10 +173,12 @@ impl Inner {
         account_id: Option<&'a str>,
         profile: Option<OwnedBridge<'a>>,
     ) -> BoxFuture<'a, Result<Arc<Bridge>, Value>> {
-        self.ensure_bridge(harness_id, account_id, profile, false)
+        self.ensure_bridge(harness_id, account_id, profile, false, false)
     }
 
-    /// [`Self::ensure_execution_bridge`], for a background probe when `probe`.
+    /// [`Self::ensure_execution_bridge`], for a model-list probe when `probe`
+    /// (an `unattended` one waits out a failed start, see
+    /// [`Self::probe_refusal`]).
     ///
     /// Boxed: its sandbox admission and process start would otherwise sit
     /// inline in every awaiting future, and an unoptimized build gives each
@@ -168,6 +190,7 @@ impl Inner {
         account_id: Option<&'a str>,
         profile: Option<OwnedBridge<'a>>,
         probe: bool,
+        unattended: bool,
     ) -> BoxFuture<'a, Result<Arc<Bridge>, Value>> {
         Box::pin(async move {
             let spec: &HarnessSpec = harness::harness(harness_id)
@@ -415,15 +438,19 @@ impl Inner {
             };
             // Read after the managed install above, which may have replaced
             // the executable: a new one is always tried (see `FAILED_STARTS`).
-            // Only a probe consults or fills that memory; a chat the operator
-            // opens or sends to always tries the bridge.
+            // Only a probe fills that memory, and only an unattended one
+            // consults it; a chat the operator opens or sends to, and a model
+            // list the operator asked for, always try the bridge.
             let executable =
                 crate::services::agent_host::bridge::executable_fingerprint(spec, &env)
                     .unwrap_or(Value::Null);
             if probe {
-                if let Some(refusal) =
-                    Self::refused_start(&route_key, &executable, std::time::Instant::now())
-                {
+                if let Some(refusal) = Self::probe_refusal(
+                    &route_key,
+                    &executable,
+                    std::time::Instant::now(),
+                    unattended,
+                ) {
                     log::debug!("[agent-host] {route_key} not started: {refusal}");
                     return Err(protocol::internal(refusal));
                 }

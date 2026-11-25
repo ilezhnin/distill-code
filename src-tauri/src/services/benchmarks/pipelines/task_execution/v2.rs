@@ -587,7 +587,7 @@ impl BenchmarkService {
             for account in self.backend.accounts(provider, true).await? {
                 let rows = self
                     .backend
-                    .inventory(provider, Some(&account), false)
+                    .unattended_inventory(provider, Some(&account), false)
                     .await?;
                 for row in rows {
                     if row.configuration.execution_profile != consent.execution_profile

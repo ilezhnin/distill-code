@@ -468,6 +468,16 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 &provider_id,
                 params.get("accountId").and_then(Value::as_str),
             )?;
+            // The renderer's first list after news from the operator (a
+            // sign-in, a finished setup, a reinstalled bridge): a CLI that
+            // failed to start earlier in this run gets another start, which
+            // background lists leave remembered for a while.
+            if params.get("retryFailedStart").and_then(Value::as_bool) == Some(true) {
+                Inner::forget_failed_start(&super::router::account_route_key(
+                    &provider_id,
+                    account_id.as_deref(),
+                ));
+            }
             chat_model_inventory(host, &provider_id, account_id.as_deref(), false).await
         }
         "providers/inventory/refresh" => {
@@ -538,11 +548,14 @@ const SHAPE_REVISION: u32 = 13;
 
 /// One account catalogue for chats and benchmark candidates. Runtime probes
 /// validate this list; they do not own a second list of model identities.
+/// `unattended` for a read nobody waits on, whose probe waits out a CLI that
+/// failed to start (see `Inner::probe_refusal`).
 pub(super) async fn model_inventory(
     host: &Arc<Inner>,
     provider: &str,
     account: Option<&str>,
     refresh: bool,
+    unattended: bool,
 ) -> Result<Value, Value> {
     let lock = host
         .owned_lock(&format!(
@@ -562,7 +575,7 @@ pub(super) async fn model_inventory(
                 .iter()
                 .any(|row| row.get("contextLimit").is_none()))
     {
-        let (models, updated_at) = refresh_models(host, provider, account).await?;
+        let (models, updated_at) = refresh_models(host, provider, account, unattended).await?;
         (models, Some(updated_at))
     } else {
         (cached.models, cached.updated_at)
@@ -588,7 +601,11 @@ pub(super) async fn chat_model_inventory(
     account: Option<&str>,
     refresh: bool,
 ) -> Result<Value, Value> {
-    let mut response = model_inventory(host, provider, account, refresh).await?;
+    // Only `providers/inventory/refresh` asks again, the operator's request.
+    // A list the renderer reads (at boot, for a picker or Settings) cannot be
+    // told from one nobody waits on, so it waits out a CLI that failed to
+    // start, as before.
+    let mut response = model_inventory(host, provider, account, refresh, !refresh).await?;
     let Some(account) = account else {
         return Ok(response);
     };
@@ -608,7 +625,7 @@ pub(super) async fn chat_model_inventory(
             let (host, provider) = (Arc::clone(host), provider.to_string());
             let other = other.id.clone();
             tokio::spawn(async move {
-                if model_inventory(&host, &provider, Some(&other), false)
+                if model_inventory(&host, &provider, Some(&other), false, true)
                     .await
                     .is_err()
                 {
@@ -868,8 +885,11 @@ async fn refresh_models(
     host: &Arc<Inner>,
     harness_id: &str,
     account_id: Option<&str>,
+    unattended: bool,
 ) -> Result<(Vec<Value>, String), Value> {
-    let (mut models, probed_on) = host.probe_models(harness_id, account_id).await?;
+    let (mut models, probed_on) = host
+        .probe_models(harness_id, account_id, unattended)
+        .await?;
     add_granted_models(host, harness_id, account_id, &mut models).await;
     let updated_at = protocol::now_iso();
     let value = inventory_record(&models, &updated_at, &probed_on);

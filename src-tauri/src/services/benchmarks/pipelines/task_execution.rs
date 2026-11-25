@@ -539,7 +539,7 @@ impl BenchmarkService {
         }
         let rows = self
             .backend
-            .inventory(
+            .unattended_inventory(
                 &session.observed.provider_id,
                 session.observed.account_id.as_deref(),
                 false,
@@ -721,7 +721,7 @@ impl BenchmarkService {
             for account in accounts {
                 for row in self
                     .backend
-                    .inventory(provider, Some(&account), false)
+                    .unattended_inventory(provider, Some(&account), false)
                     .await?
                 {
                     if row.configuration.execution_profile != profile
@@ -1038,7 +1038,7 @@ impl BenchmarkService {
         }
         let inventory = self
             .backend
-            .inventory(
+            .unattended_inventory(
                 &session.observed.provider_id,
                 session.observed.account_id.as_deref(),
                 false,

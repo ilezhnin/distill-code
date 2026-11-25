@@ -447,6 +447,10 @@ struct RunState {
     saw_update: bool,
     configuration_changes: Vec<ReportedSelection>,
     changes_truncated: bool,
+    /// When the renderer's prompt of this turn reached the host (see
+    /// `frontend::ARRIVALS`); `None` for a turn the host started itself or a
+    /// steered one. A Stop that arrived earlier was not pressed for this turn.
+    arrival: Option<u64>,
 }
 
 impl RunState {
@@ -460,6 +464,7 @@ impl RunState {
             saw_update: false,
             configuration_changes: Vec::new(),
             changes_truncated: false,
+            arrival: None,
         }
     }
 }

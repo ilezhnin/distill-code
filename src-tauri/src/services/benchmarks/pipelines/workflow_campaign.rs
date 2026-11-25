@@ -875,6 +875,14 @@ pub(in crate::services::benchmarks) async fn check_admission(
     };
     check_reserved_versions(tx, &request.version_ids, owner.as_deref()).await
 }
+/// What [`check_reserved_versions`] refuses a version with that a frozen
+/// workflow campaign reserved for itself.
+const RESERVED_ELSEWHERE: &str = "Workflow campaign families can only run in their frozen campaign";
+/// Whether `error` is [`check_reserved_versions`]'s refusal of a version a
+/// frozen workflow campaign reserved, rather than a store failure.
+pub(in crate::services::benchmarks) fn reserved_elsewhere(error: &BenchmarkError) -> bool {
+    error.code == "invalid_workflow_campaign" && error.message == RESERVED_ELSEWHERE
+}
 pub(in crate::services::benchmarks) async fn check_reserved_versions(
     tx: &mut Transaction<'_, Sqlite>,
     ids: &[String],
@@ -902,9 +910,7 @@ pub(in crate::services::benchmarks) async fn check_reserved_versions(
             groups.contains(&value)
         };
         if belongs && Some(row.try_get::<String, _>("owner_id")?.as_str()) != owner {
-            return Err(invalid(
-                "Workflow campaign families can only run in their frozen campaign",
-            ));
+            return Err(invalid(RESERVED_ELSEWHERE));
         }
     }
     Ok(())

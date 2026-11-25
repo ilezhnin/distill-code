@@ -340,24 +340,47 @@ fn received_run(pending: &Pending, params: &Value) -> Option<String> {
 }
 
 /// Prompts the host stopped waiting for (see [`Bridge::abandon_turn`]) whose
-/// answer the agent still owes, by request id, with their bridge session and
-/// run.
-type Abandoned = Mutex<HashMap<u64, (String, String)>>;
+/// answer the agent still owes, by request id, with their bridge session, run
+/// and when the host ended them.
+type Abandoned = Mutex<HashMap<u64, (String, String, Instant)>>;
 
-/// The run an update read off the bridge now belongs to. An abandoned turn
-/// of its session comes first: the agent was told to stop and did not
+/// How long an abandoned prompt keeps its session's updates after the host
+/// ended it (see [`update_run`]). An agent answers a cancel in well under a
+/// second (claude-agent-acp settles every cancelled prompt at once), and the
+/// host already gave it 15 s (the router's `CANCEL_ANSWER_GRACE`) before
+/// abandoning the prompt; one still silent a minute after that has dropped
+/// the prompt rather than being slow to stop it. Without a bound such an
+/// agent had every later update of the chat credited to the dead run, and
+/// the router dropped them until the bridge exited (2026-11-25 audit, X-2);
+/// with it, it costs at most the first minute of the next turn.
+const ABANDONED_ANSWER_WAIT: Duration = Duration::from_secs(60);
+
+/// The run an update read off the bridge at `now` belongs to. An abandoned
+/// turn of its session comes first: the agent was told to stop and did not
 /// answer, so it is still at work on that turn, and what it says about the
-/// session until it answers belongs to that turn. A prompt sent after it is
-/// only started once the agent has answered the old one, yet its pending
-/// entry used to claim that output, and the old turn's reply was stored as
-/// the reply to the next message (2026-11-25 hunt, D-2). The router drops a
-/// turn update whose run is not the one running.
-fn update_run(pending: &Pending, abandoned: &Abandoned, params: &Value) -> Option<String> {
+/// session until it answers, or for [`ABANDONED_ANSWER_WAIT`] at most,
+/// belongs to that turn. A prompt sent after it is only started once the
+/// agent has answered the old one, yet its pending entry used to claim that
+/// output, and the old turn's reply was stored as the reply to the next
+/// message (2026-11-25 hunt, D-2). The router drops a turn update whose run
+/// is not the one running.
+fn update_run(
+    pending: &Pending,
+    abandoned: &Abandoned,
+    params: &Value,
+    now: Instant,
+) -> Option<String> {
     let session_id = protocol::session_id(params)?;
-    let owed = abandoned.lock().ok().and_then(|abandoned| {
+    let owed = abandoned.lock().ok().and_then(|mut abandoned| {
+        // Past `ABANDONED_ANSWER_WAIT` the agent has dropped the prompt: it
+        // is forgotten, claims nothing more, and a late answer to it is an
+        // unknown id.
+        abandoned.retain(|_, (_, _, since)| {
+            now.saturating_duration_since(*since) < ABANDONED_ANSWER_WAIT
+        });
         abandoned
             .values()
-            .find_map(|(session, run)| (session == &session_id).then(|| run.clone()))
+            .find_map(|(session, run, _)| (session == &session_id).then(|| run.clone()))
     });
     owed.or_else(|| received_run(pending, params))
 }
@@ -1206,7 +1229,7 @@ impl Bridge {
                             let event = BridgeEvent::Notification {
                                 harness: harness.clone(),
                                 generation,
-                                run_id: update_run(&pending, &abandoned, &params),
+                                run_id: update_run(&pending, &abandoned, &params, Instant::now()),
                                 method,
                                 params,
                             };
@@ -1710,10 +1733,13 @@ impl Bridge {
             })?;
             let request = pending.remove(&key)?;
             // The agent never ended the turn, so it is still at work on it:
-            // until it answers, what it says about the session is this
-            // turn's (see `update_run`), and its answer is expected.
-            if let (Some(turn), Ok(mut abandoned)) = (request.turn.clone(), self.abandoned.lock()) {
-                abandoned.insert(key, turn);
+            // until it answers, or for `ABANDONED_ANSWER_WAIT` at most, what
+            // it says about the session is this turn's (see `update_run`),
+            // and its answer is expected.
+            if let (Some((session, run)), Ok(mut abandoned)) =
+                (request.turn.clone(), self.abandoned.lock())
+            {
+                abandoned.insert(key, (session, run, Instant::now()));
             }
             Some(request)
         });
@@ -2400,22 +2426,57 @@ pub(super) mod tests {
         let (tx, _rx) = oneshot::channel();
         assert!(bridge.register_owned(2, tx, Some(("s".into(), "new".into())), None));
         assert_eq!(
-            update_run(&bridge.pending, &bridge.abandoned, &params).as_deref(),
+            update_run(&bridge.pending, &bridge.abandoned, &params, Instant::now()).as_deref(),
             Some("old")
         );
         assert!(update_run(
             &bridge.pending,
             &bridge.abandoned,
-            &json!({"sessionId": "t"})
+            &json!({"sessionId": "t"}),
+            Instant::now()
         )
         .is_none());
         // The agent answers the old prompt at last: what follows is the new turn's.
         assert!(!answered_abandoned(&bridge.abandoned, &json!(2)));
         assert!(answered_abandoned(&bridge.abandoned, &json!(1)));
         assert_eq!(
-            update_run(&bridge.pending, &bridge.abandoned, &params).as_deref(),
+            update_run(&bridge.pending, &bridge.abandoned, &params, Instant::now()).as_deref(),
             Some("new")
         );
+    }
+
+    // 2026-11-25 audit, X-2: an agent that never answered a prompt the host
+    // had abandoned kept every later update of its chat credited to that dead
+    // run, which the router dropped, until the bridge exited.
+    #[test]
+    fn an_abandoned_prompt_holds_its_chats_updates_for_a_bounded_time_only() {
+        let (bridge, _written) = silent_bridge();
+        let params = json!({"sessionId": "s"});
+        let (tx, _rx) = oneshot::channel();
+        assert!(bridge.register_owned(1, tx, Some(("s".into(), "x2-old".into())), None));
+        assert!(bridge.abandon_turn("x2-old"));
+        let abandoned = Instant::now();
+        let (tx, _rx) = oneshot::channel();
+        assert!(bridge.register_owned(2, tx, Some(("s".into(), "x2-next".into())), None));
+        // Within the bound the agent may still be winding the old turn down:
+        // what it says is that turn's, never the next message's reply.
+        let within = abandoned + ABANDONED_ANSWER_WAIT - Duration::from_secs(1);
+        assert_eq!(
+            update_run(&bridge.pending, &bridge.abandoned, &params, within).as_deref(),
+            Some("x2-old")
+        );
+        // Past it the agent has dropped the old prompt: the chat's next turn
+        // is credited to its own run.
+        let past = abandoned + ABANDONED_ANSWER_WAIT + Duration::from_secs(1);
+        assert_eq!(
+            update_run(&bridge.pending, &bridge.abandoned, &params, past).as_deref(),
+            Some("x2-next")
+        );
+        // And the dead run claims nothing any more, with no prompt waiting
+        // either; its answer is no longer expected.
+        bridge.forget(2);
+        assert!(update_run(&bridge.pending, &bridge.abandoned, &params, past).is_none());
+        assert!(!answered_abandoned(&bridge.abandoned, &json!(1)));
     }
 
     // 2026-11-25 hunt, D-5: a benchmark bridge the host stopped was logged as

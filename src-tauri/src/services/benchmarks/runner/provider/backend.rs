@@ -272,6 +272,19 @@ pub trait ExecutionBackend: Send + Sync {
         account: Option<&'a str>,
         refresh: bool,
     ) -> BoxFuture<'a, Result<Vec<InventoryModel>>>;
+    /// [`Self::inventory`] for a read nobody waits on: an admission, a task's
+    /// routing, a workflow step, a schedule. A CLI whose model listing failed
+    /// to start is not started again for it for a while, while `inventory`,
+    /// what the operator asks for (the benchmark screen and its refresh, a
+    /// Resume, a run's preview), always tries the CLI (2026-11-25 audit, X-4).
+    fn unattended_inventory<'a>(
+        &'a self,
+        provider: &'a str,
+        account: Option<&'a str>,
+        refresh: bool,
+    ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
+        self.inventory(provider, account, refresh)
+    }
     fn recover<'a>(
         &'a self,
         _store: &'a Store,

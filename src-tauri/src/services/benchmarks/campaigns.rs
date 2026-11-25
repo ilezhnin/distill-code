@@ -247,7 +247,7 @@ pub async fn tick(service: &BenchmarkService) -> Result<()> {
         let candidates = match &schedule.discovery {
             Some(rule) => match service
                 .backend
-                .inventory(&rule.provider_id, rule.account_id.as_deref(), true)
+                .unattended_inventory(&rule.provider_id, rule.account_id.as_deref(), true)
                 .await
             {
                 Ok(inventory) => {
