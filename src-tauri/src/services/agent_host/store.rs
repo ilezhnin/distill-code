@@ -3236,7 +3236,7 @@ mod tests {
             let message = format!("m{segment}");
             match random(8) {
                 0 => events.push(json!({"sessionId": session, "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Go on"}, "_meta": {"distill": {"messageId": message, "created": tick.to_string()}}}})),
-                1 | 2 | 3 => {
+                1..=3 => {
                     let kind = if random(4) == 0 { "agent_thought_chunk" } else { "agent_message_chunk" };
                     for _ in 0..1 + random(60) {
                         tick += 1;
