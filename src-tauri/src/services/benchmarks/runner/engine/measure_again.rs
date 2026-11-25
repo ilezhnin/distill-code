@@ -113,8 +113,7 @@ impl BenchmarkService {
         let mut superseded = failed;
         superseded.reason = Some(MEASURED_AGAIN.into());
         superseded.outcome = Some(crate::services::benchmarks::analysis::SUPERSEDED.into());
-        self.store.supersede_attempt(&superseded).await?;
-        self.store.insert_attempt(&fresh).await?;
+        self.store.supersede_and_insert(&superseded, &fresh).await?;
         self.wake.notify_one();
         Ok(())
     }

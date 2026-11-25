@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { type Query, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -40,6 +40,25 @@ export const THROTTLED_REFRESH_MS = 15_000;
 export const USAGE_LEDGER_REFRESH_MS = 300_000;
 /** Recover a missed terminal event without reloading the full usage ledger. */
 export const RUN_STATUS_REFRESH_MS = 15_000;
+
+const subscribeToVisibility = (onChange: () => void) => {
+  document.addEventListener("visibilitychange", onChange);
+  return () => document.removeEventListener("visibilitychange", onChange);
+};
+
+/**
+ * Whether the window shows anything. The run list is read only while a view
+ * that shows it is visible: a hidden window read it on every change notice
+ * and every 15 s of a run (2,432 times in 41 hours, 11-23..25). Hidden, its
+ * readers keep what they showed, and showing the window reads it once.
+ */
+function useWindowVisible() {
+  return useSyncExternalStore(
+    subscribeToVisibility,
+    () => document.visibilityState !== "hidden",
+    () => true,
+  );
+}
 const usageLedgerKey = [...benchmarkKeys, "usage-ledger"] as const;
 const OFF_EVENTS = new Set(["usage-ledger", "diagnostics"]);
 const onEvents = (query: { queryKey: readonly unknown[] }) =>
@@ -233,10 +252,11 @@ export function useBenchmarkRuntime() {
 function useBenchmarkRunNotifications(enabled: boolean) {
   const { t } = useTranslation("benchmarks");
   const client = useQueryClient();
+  const visible = useWindowVisible();
   const runs = useQuery({
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
-    enabled,
+    enabled: enabled && visible,
     refetchInterval: (query) =>
       !query.state.data ||
       query.state.data.some((run) =>
@@ -347,11 +367,14 @@ export function useFreshBenchmarkUsage() {
   }, [client]);
 }
 
-export const useBenchmarkRuns = () =>
-  useQuery({
+export const useBenchmarkRuns = () => {
+  const visible = useWindowVisible();
+  return useQuery({
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
+    enabled: visible,
   });
+};
 
 export const useWorkflowCampaigns = () =>
   useQuery({
@@ -369,10 +392,11 @@ export const useWorkflowCampaigns = () =>
 /** Progress for dispatching runs and unfinished campaigns, including a full pause. */
 export function useBenchmarkProgress() {
   const campaigns = useWorkflowCampaigns();
+  const visible = useWindowVisible();
   const runs = useQuery({
     queryKey: [...benchmarkKeys, "runs"],
     queryFn: benchmarkApi.listRuns,
-    enabled: isDesktopRuntime(),
+    enabled: isDesktopRuntime() && visible,
   });
   return useMemo(() => {
     return benchmarkProgress(runs.data ?? [], campaigns.data ?? []);

@@ -18,6 +18,14 @@ pub(in crate::services::benchmarks) const ACCOUNT_SLOTS: usize = 4;
 /// one at a time.
 pub const AS_ADMITTED: u32 = 0;
 
+/// How long a worker failure the store refused to record waits before it is
+/// recorded again, times the tries so far, up to a minute between tries.
+const RECORD_AGAIN: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(5)
+};
+
 /// An attempt or a judge panel in flight, keyed in `BenchmarkService::active`
 /// by the attempt (or, for a panel, its run's panel lane): its run, the lane
 /// it shares with its configuration's other attempts, its account and the
@@ -366,39 +374,68 @@ impl BenchmarkService {
         });
         if let Err(error) = result {
             log::error!("[benchmarks] worker {id} stopped: {}", error.message);
-            let recorded = async {
-                let mut attempt = self.store.attempt(id).await?;
-                if attempt.phase != "terminal" {
-                    attempt.phase = "terminal".into();
-                    // The last vote may already have landed before the worker
-                    // failed. A completed measurement remains a measurement.
-                    if crate::services::benchmarks::analysis::score(&attempt).is_none() {
-                        let judging = attempt.outcome.as_deref() == Some("pending_review");
-                        if !judging {
-                            attempt.outcome = Some("infrastructure_failure".into());
+            // A failure the store will not take yet keeps the seat: the
+            // attempt stays in flight, so no run completes, pauses or is
+            // cancelled around it, and the record is tried again until the
+            // store takes it. Released unrecorded, it would sit preparing,
+            // running or collecting with no flight, which dispatch, recovery
+            // and resume all pass over until the app restarts.
+            let mut tries: u32 = 0;
+            loop {
+                let recorded = async {
+                    let mut attempt = self.store.attempt(id).await?;
+                    if attempt.phase != "terminal" {
+                        attempt.phase = "terminal".into();
+                        // The last vote may already have landed before the worker
+                        // failed. A completed measurement remains a measurement.
+                        if crate::services::benchmarks::analysis::score(&attempt).is_none() {
+                            let judging = attempt.outcome.as_deref() == Some("pending_review");
+                            // A sealed answer whose verdict was not kept (the
+                            // store refused the save after its check) is paid
+                            // for: unscored, and checked again on resume.
+                            let unchecked = owes_its_check(&attempt);
+                            if unchecked {
+                                attempt.outcome = Some("evaluation_error".into());
+                            } else if !judging {
+                                attempt.outcome = Some("infrastructure_failure".into());
+                            }
+                            attempt.reason = Some(format!(
+                                "{}: {}",
+                                if judging {
+                                    "Judging failed"
+                                } else if unchecked {
+                                    CHECK_NOT_KEPT
+                                } else {
+                                    "Benchmark worker failed"
+                                },
+                                error.message
+                            ));
                         }
-                        attempt.reason = Some(format!(
-                            "{}: {}",
-                            if judging {
-                                "Judging failed"
-                            } else {
-                                "Benchmark worker failed"
-                            },
-                            error.message
-                        ));
+                        attempt.wait_until = None;
+                        attempt.finished_at.get_or_insert_with(now);
+                        self.store.save_attempt(&attempt).await?;
                     }
-                    attempt.wait_until = None;
-                    attempt.finished_at.get_or_insert_with(now);
-                    self.store.save_attempt(&attempt).await?;
+                    Ok::<_, BenchmarkError>(())
                 }
-                Ok::<_, BenchmarkError>(())
-            }
-            .await;
-            if let Err(error) = recorded {
+                .await;
+                let Err(failed) = recorded else {
+                    break;
+                };
+                tries += 1;
+                let again = failed.code == "storage_unavailable";
                 log::error!(
-                    "[benchmarks] could not record worker failure for {id}: {}",
-                    error.message
+                    "[benchmarks] could not record worker failure for {id} (try {tries}){}: {}",
+                    if again {
+                        "; the attempt keeps its seat until the store takes it"
+                    } else {
+                        ""
+                    },
+                    failed.message
                 );
+                if !again {
+                    break;
+                }
+                tokio::time::sleep(RECORD_AGAIN * tries.min(12)).await;
             }
         }
         self.release(seat).await;

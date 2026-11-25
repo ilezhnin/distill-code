@@ -649,11 +649,15 @@ impl SessionStore {
             // on the first commit after the log starts over, so no one has to
             // hold the write lock for a truncating checkpoint.
             .pragma("journal_size_limit", WAL_SIZE_LIMIT_BYTES.to_string());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(4)
-            .connect_with(options)
-            .await
-            .map_err(|error| db_error("failed to open agent host database", error))?;
+        // A connection whose transaction SQLite rolled back by itself never
+        // reaches the next writer (see `pool_guard`).
+        let pool = crate::services::benchmarks::store::pool_guard::guard_transactions(
+            SqlitePoolOptions::new().max_connections(4),
+            "agent host",
+        )
+        .connect_with(options)
+        .await
+        .map_err(|error| db_error("failed to open agent host database", error))?;
         sqlx::migrate!("./migrations_agent_host")
             .run(&pool)
             .await

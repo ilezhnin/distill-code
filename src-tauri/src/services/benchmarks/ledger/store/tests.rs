@@ -812,6 +812,14 @@ async fn run_warnings_do_not_mask_actionable_errors_or_change_attempt_history() 
     }
     let blocker = json!({"outcome":"infrastructure_failure","reason":"Sign-in required","finishedAt":100,"evaluations":[]});
     sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES('blocker','run',?,'c',2,'terminal',?)").bind(&version.id).bind(blocker.to_string()).execute(&store.pool).await.unwrap();
+    // As every write of an attempt through the store does: the listing reads
+    // a run it listed before again only once an event names it (`run_list`).
+    sqlx::query(
+        "INSERT INTO benchmark_events(entity_id,kind,created_at) VALUES('run','attempt_changed',0)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
     let summary = store.runs().await.unwrap().remove(0);
     assert_eq!(summary.attention.unwrap().reason, "Sign-in required");
     assert_eq!(summary.warning.unwrap().kind, "rate_limited");
@@ -849,6 +857,7 @@ async fn catalog_seed_sets_insert_new_vendors_once() {
             pool,
             root: directory.path().to_owned(),
             parsed: Arc::default(),
+            run_list: Arc::default(),
         };
         let (_, anthropic) = crate::services::benchmarks::model_catalog::seed_sets().remove(0);
         for entry in anthropic.iter().skip(1) {
@@ -1920,4 +1929,87 @@ async fn ledger_counts_native_children_once_and_recovery_preserves_sealed_cancel
     assert_eq!(waiting.phase, "awaiting_judges");
     assert_eq!(waiting.outcome.as_deref(), Some("pending_review"));
     dir.close().await;
+}
+
+/// 11-25: the listing read and parsed every attempt record of the 100 newest
+/// runs on each call (2.6 s median on a 5 GB store, polled every few
+/// seconds). It now reads again only the runs an event named since the
+/// listing before (`run_list`), which every write of an attempt through the
+/// store commits; the other runs keep the figures read before.
+#[tokio::test]
+async fn the_run_listing_reads_again_only_the_runs_an_event_named() {
+    let directory = crate::test_support::TempRoot::new();
+    let store = Store::open(directory.path()).await.unwrap();
+    directory.register(&store.pool);
+    let definition = store
+        .save_draft(
+            None,
+            None,
+            crate::services::benchmarks::seeds::definitions().remove(0),
+        )
+        .await
+        .unwrap();
+    let version = store.publish(&definition.id, 1).await.unwrap();
+    let config = json!({"id":"c","providerId":"provider","accountId":null,"modelId":"model","effort":null,"fastMode":null,"billingMode":"subscription","executionProfile":"native_text","inventoryRevision":"v1"});
+    let configuration: Configuration = serde_json::from_value(config.clone()).unwrap();
+    for (id, created) in [("one", 1_i64), ("two", 2)] {
+        let request = json!({"requestKey":id,"versionIds":[version.id],"configurations":[config],"repetitions":3,"timeoutSeconds":30,"maxExecutions":3});
+        sqlx::query("INSERT INTO run_plans(id,request_key,state,revision,created_at,updated_at,request_json) VALUES(?,?,'running',1,?,?,?)")
+            .bind(id).bind(id).bind(created).bind(created).bind(request.to_string())
+            .execute(&store.pool).await.unwrap();
+        store
+            .insert_attempt(&crate::services::benchmarks::pending_attempt(
+                id,
+                &version.id,
+                &configuration,
+                0,
+            ))
+            .await
+            .unwrap();
+    }
+    let counts = |summaries: Vec<RunSummary>| {
+        summaries
+            .into_iter()
+            .map(|summary| (summary.id, summary.attempt_count))
+            .collect::<Vec<_>>()
+    };
+    let listed = |two: u64, one: u64| vec![("two".to_string(), two), ("one".to_string(), one)];
+    assert_eq!(counts(store.runs().await.unwrap()), listed(1, 1));
+    // A second repetition for each run: run two's through the store, run
+    // one's written around it, without the event every store write commits.
+    store
+        .insert_attempt(&crate::services::benchmarks::pending_attempt(
+            "two",
+            &version.id,
+            &configuration,
+            1,
+        ))
+        .await
+        .unwrap();
+    let unnamed =
+        crate::services::benchmarks::pending_attempt("one", &version.id, &configuration, 1);
+    sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'one',?,'c',1,'pending',?)")
+        .bind(&unnamed.id).bind(&version.id).bind(serde_json::to_string(&unnamed).unwrap())
+        .execute(&store.pool).await.unwrap();
+    assert_eq!(counts(store.runs().await.unwrap()), listed(2, 1));
+    // An event naming run one: the next listing reads it again.
+    sqlx::query(
+        "INSERT INTO benchmark_events(entity_id,kind,created_at) VALUES('one','attempt_changed',0)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(counts(store.runs().await.unwrap()), listed(2, 2));
+    // So does a change of its state, which some figures depend on.
+    let unnamed =
+        crate::services::benchmarks::pending_attempt("one", &version.id, &configuration, 2);
+    sqlx::query("INSERT INTO attempts(id,run_id,version_id,configuration_id,repetition,phase,data_json) VALUES(?,'one',?,'c',2,'pending',?)")
+        .bind(&unnamed.id).bind(&version.id).bind(serde_json::to_string(&unnamed).unwrap())
+        .execute(&store.pool).await.unwrap();
+    sqlx::query("UPDATE run_plans SET state='paused' WHERE id='one'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(counts(store.runs().await.unwrap()), listed(2, 3));
+    directory.close().await;
 }

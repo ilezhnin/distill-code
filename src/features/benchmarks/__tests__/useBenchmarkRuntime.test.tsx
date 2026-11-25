@@ -578,4 +578,45 @@ describe("persistent benchmark runtime", () => {
     unsubscribe();
     client.clear();
   });
+
+  function showWindow(state: DocumentVisibilityState) {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => state,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  // 11-25: the app shell read the run list on every change notice and every
+  // 15 s of a run with its window hidden, and each read took seconds.
+  it("reads the run list only while the window shows it", async () => {
+    vi.mocked(benchmarkApi.listRuns).mockResolvedValue([
+      { ...runSummary, state: "running", attention: null },
+    ]);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let client: QueryClient | undefined;
+    try {
+      const shell = await mounted();
+      client = shell.client;
+      await waitFor(() => expect(benchmarkApi.listRuns).toHaveBeenCalledOnce());
+      act(() => showWindow("hidden"));
+      // Hidden, neither a change notice nor the running run's poll reads it.
+      shell.notice({ sequence: 1, entityIds: [runSummary.id] });
+      await act(() => vi.advanceTimersByTimeAsync(RUN_STATUS_REFRESH_MS * 3));
+      expect(benchmarkApi.listRuns).toHaveBeenCalledOnce();
+      // Shown again, it is read at once, then polled while the run goes on.
+      act(() => showWindow("visible"));
+      await waitFor(() =>
+        expect(benchmarkApi.listRuns).toHaveBeenCalledTimes(2),
+      );
+      await act(() => vi.advanceTimersByTimeAsync(RUN_STATUS_REFRESH_MS));
+      await waitFor(() =>
+        expect(benchmarkApi.listRuns).toHaveBeenCalledTimes(3),
+      );
+    } finally {
+      vi.useRealTimers();
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+    client?.clear();
+  });
 });

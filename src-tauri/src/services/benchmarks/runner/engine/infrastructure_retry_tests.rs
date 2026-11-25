@@ -337,3 +337,218 @@ async fn sealing_a_sitting_waits_for_a_concurrent_write_instead_of_failing() {
     assert_eq!(sealed.attempts[0].outcome.as_deref(), Some("superseded"));
     dir.close().await;
 }
+
+/// 11-24: the store refused the save that keeps a checked answer's verdict
+/// (one BEGIN IMMEDIATE in four failed), the worker's failure settled the paid
+/// answer as an infrastructure failure, and resuming bought another turn for
+/// it. It now settles unscored, and resuming checks the same sealed answer.
+#[tokio::test]
+async fn a_verdict_the_store_could_not_keep_is_checked_again_never_bought_again() {
+    let (dir, service, backend) = setup().await;
+    // The store refuses every save that carries a check's verdict.
+    sqlx::query("CREATE TRIGGER refuse_verdicts BEFORE UPDATE ON attempts WHEN json_array_length(NEW.data_json,'$.evaluations')>0 BEGIN SELECT RAISE(ABORT,'invented disk failure'); END")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let stopped = settle(&service, &run.id).await;
+    let unscored = stopped.attempts[0].clone();
+    assert_eq!(unscored.phase, "terminal");
+    assert_eq!(unscored.outcome.as_deref(), Some("evaluation_error"));
+    assert!(unscored
+        .reason
+        .as_deref()
+        .unwrap()
+        .starts_with(CHECK_NOT_KEPT));
+    assert!(unscored.evidence_hash.is_some());
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+
+    sqlx::query("DROP TRIGGER refuse_verdicts")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    service.control(&run.id, "resume").await.unwrap();
+    let resumed = settle(&service, &run.id).await;
+    assert_eq!(resumed.state, "completed");
+    assert_eq!(
+        resumed.attempts.len(),
+        1,
+        "the answer was set aside and measured again"
+    );
+    assert_eq!(resumed.attempts[0].id, unscored.id);
+    assert_eq!(resumed.attempts[0].outcome.as_deref(), Some("pass"));
+    assert_eq!(
+        backend.calls.load(Ordering::SeqCst),
+        1,
+        "resume paid for a second answer"
+    );
+    dir.close().await;
+}
+
+/// The same when the store fails while the sealed answer is being checked:
+/// the try failed with `storage_unavailable`, which settled the paid answer
+/// with that outcome, and resuming bought another turn. It now settles
+/// unscored; the run still stops for the operator, whose resume checks it.
+#[tokio::test]
+async fn a_store_failure_during_a_check_keeps_the_sealed_answer_for_its_check() {
+    let (dir, service, backend) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let dispatched = run.attempts[0].clone();
+    let version = service.store.version(&dispatched.version_id).await.unwrap();
+    // As the native backend saves a finished turn before its check.
+    let mut sealed = dispatched.clone();
+    sealed.phase = "collecting".into();
+    sealed.started_at = Some(now());
+    sealed.host_run_id = Some(format!("fake-{}", sealed.id));
+    sealed.observed = Some(sealed.configuration.clone());
+    sealed.outcome = Some("completed".into());
+    sealed.output = Some(version.manifest.evaluator.known_good.clone());
+    sealed.finished_at = Some(now());
+    sealed.evidence_hash = Some(
+        crate::services::benchmarks::fixtures::seal(
+            &service.store.root,
+            &sealed,
+            &json!({"provider":"isolated_e2e_fake"}),
+        )
+        .await
+        .unwrap(),
+    );
+    service.store.save_attempt(&sealed).await.unwrap();
+    service
+        .try_failed(
+            &run,
+            &dispatched,
+            &version,
+            BenchmarkError::new("storage_unavailable", "invented disk failure"),
+        )
+        .await
+        .unwrap();
+    let stopped = service.store.run(&run.id).await.unwrap();
+    assert_eq!(stopped.state, "needs_attention");
+    assert_eq!(stopped.attempts[0].phase, "terminal");
+    assert_eq!(
+        stopped.attempts[0].outcome.as_deref(),
+        Some("evaluation_error")
+    );
+
+    service.control(&run.id, "resume").await.unwrap();
+    let resumed = settle(&service, &run.id).await;
+    assert_eq!(
+        resumed.attempts.len(),
+        1,
+        "the answer was set aside and measured again"
+    );
+    assert_eq!(resumed.attempts[0].outcome.as_deref(), Some("pass"));
+    assert_eq!(
+        backend.calls.load(Ordering::SeqCst),
+        0,
+        "resume paid for an answer"
+    );
+    dir.close().await;
+}
+
+/// 11-24: "could not record worker failure" released the seat and left the
+/// attempt running with no flight, which only a restart picked up. Now the
+/// flight keeps its seat and records the failure once the store takes it.
+#[tokio::test]
+async fn a_worker_failure_the_store_refused_is_recorded_once_it_takes_it() {
+    let (dir, service, _backend) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let mut attempt = run.attempts[0].clone();
+    attempt.phase = "running".into();
+    attempt.started_at = Some(now());
+    service.store.save_attempt(&attempt).await.unwrap();
+    let seat = Seat {
+        id: &attempt.id,
+        lane: "invented-lane",
+        lane_slots: 1,
+        account: "",
+        account_slots: usize::MAX,
+        model: "",
+        model_slots: usize::MAX,
+    };
+    assert!(service.claim(&run.id, seat).await.is_some());
+    // For a while the store refuses to settle anything.
+    sqlx::query("CREATE TRIGGER refuse_settling BEFORE UPDATE ON attempts WHEN NEW.phase='terminal' BEGIN SELECT RAISE(ABORT,'invented disk failure'); END")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    let finishing = tokio::spawn({
+        let service = service.clone();
+        let id = attempt.id.clone();
+        async move {
+            service
+                .finish_flight(
+                    &id,
+                    &id,
+                    Ok(Err(BenchmarkError::new(
+                        "storage_unavailable",
+                        "invented store failure",
+                    ))),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Still in flight: no run completes, pauses or is cancelled around it.
+    assert!(!finishing.is_finished());
+    assert_eq!(service.flying(&run.id).await, 1);
+    assert_eq!(
+        service.store.attempt(&attempt.id).await.unwrap().phase,
+        "running"
+    );
+
+    sqlx::query("DROP TRIGGER refuse_settling")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), finishing)
+        .await
+        .expect("the failure was never recorded")
+        .unwrap();
+    let recorded = service.store.attempt(&attempt.id).await.unwrap();
+    assert_eq!(recorded.phase, "terminal");
+    assert_eq!(recorded.outcome.as_deref(), Some("infrastructure_failure"));
+    assert_eq!(service.flying(&run.id).await, 0);
+    dir.close().await;
+}
+
+/// measure_again superseded the failed try in one transaction and inserted
+/// its replacement in another: a replacement the store refused lost that
+/// repetition for good. Both now commit together or not at all.
+#[tokio::test]
+async fn a_replacement_the_store_refuses_leaves_the_failed_try_standing() {
+    let (dir, service, _backend) = setup().await;
+    let run = service.start_run(one_cell(&service).await).await.unwrap();
+    let mut failed = run.attempts[0].clone();
+    failed.phase = "terminal".into();
+    failed.outcome = Some("infrastructure_failure".into());
+    failed.reason = Some("The agent's bridge exited before this turn finished".into());
+    failed.finished_at = Some(now());
+    service.store.save_attempt(&failed).await.unwrap();
+    sqlx::query("CREATE TRIGGER refuse_inserts BEFORE INSERT ON attempts BEGIN SELECT RAISE(ABORT,'invented disk failure'); END")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    assert!(service.measure_again(&run, failed.clone()).await.is_err());
+    let after = service.store.run(&run.id).await.unwrap();
+    assert_eq!(after.attempts.len(), 1);
+    assert_eq!(
+        after.attempts[0].outcome.as_deref(),
+        Some("infrastructure_failure"),
+        "the try was set aside with no replacement"
+    );
+
+    // Once the store takes writes again, the try is measured again as before.
+    sqlx::query("DROP TRIGGER refuse_inserts")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    service.measure_again(&run, failed).await.unwrap();
+    let after = service.store.run(&run.id).await.unwrap();
+    assert_eq!(after.attempts.len(), 2);
+    assert_eq!(after.attempts[0].outcome.as_deref(), Some("superseded"));
+    assert_eq!(after.attempts[1].phase, "pending");
+    assert_eq!(after.attempts[1].repetition, after.attempts[0].repetition);
+    dir.close().await;
+}

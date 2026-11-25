@@ -280,7 +280,10 @@ async fn recovery_evaluation_panic_preserves_receipt_and_does_not_replay() {
     service.tick().await.unwrap();
     let saved = service.store.attempt(&run.attempts[0].id).await.unwrap();
     assert_eq!(saved.phase, "terminal");
-    assert_eq!(saved.outcome.as_deref(), Some("infrastructure_failure"));
+    // The answer is sealed and paid for, so a checker that panics leaves it
+    // unscored as an evaluation error, which resuming checks again on the
+    // same answer. As an infrastructure failure, resuming bought a new turn.
+    assert_eq!(saved.outcome.as_deref(), Some("evaluation_error"));
     assert_eq!(saved.output, run.attempts[0].output);
     assert_eq!(saved.evidence_hash, run.attempts[0].evidence_hash);
     assert!(saved.reason.unwrap().contains("panicked"));

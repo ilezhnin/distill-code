@@ -85,119 +85,46 @@ impl Store {
 
     /// Recent history needs plans and counts, never serialized attempt evidence.
     pub async fn runs(&self) -> Result<Vec<RunSummary>> {
+        // One listing at a time: each starts from the figures the one before
+        // kept (see `run_list`), and its snapshot is taken after it waited.
+        let mut kept = self.run_list.lock().await;
         // The count and live-child projections share one read snapshot. A step
         // completing between them must not make an older root look active.
         let mut tx = self.pool.begin().await?;
-        let rows = sqlx::query(
-            "WITH recent_runs AS MATERIALIZED (
-                SELECT * FROM run_plans ORDER BY created_at DESC,id LIMIT 100
-             ), recent_attempts AS MATERIALIZED (
-                SELECT a.id,a.run_id,a.configuration_id,a.version_id,a.phase,a.rowid,
-                    json_extract(a.data_json,'$.outcome') AS outcome,
-                    json_extract(a.data_json,'$.reason') AS reason,
-                    json_extract(a.data_json,'$.observed.effort') AS observed_effort,
-                    json_extract(a.data_json,'$.observed.fastMode') AS observed_fast,
-                    json_extract(a.data_json,'$.observed.modelId') AS observed_model,
-                    json_extract(a.data_json,'$.configuration.modelId') AS configured_model,
-                    json_extract(a.data_json,'$.finishedAt') AS finished_at,
-                    EXISTS(SELECT 1 FROM json_each(a.data_json,'$.evaluations') e
-                        WHERE e.type='object' AND json_extract(e.value,'$.provenance')='human'
-                            AND json_extract(e.value,'$.score') IS NOT NULL) AS has_human_score,
-                    CASE WHEN a.phase='terminal' AND json_extract(a.data_json,'$.outcome')='pending_review'
-                        THEN json_extract(a.data_json,'$.evaluations') END AS pending_evaluations
-                FROM attempts a JOIN recent_runs r ON r.id=a.run_id
-             ) SELECT r.id,r.state,r.revision,r.created_at,r.updated_at,r.request_json,
-                (SELECT COUNT(*) FROM recent_attempts a WHERE a.run_id=r.id
-                    AND COALESCE(a.outcome,'')<>'superseded'),
-                (SELECT COUNT(*) FROM recent_attempts a WHERE a.run_id=r.id AND a.phase='terminal'
-                    AND COALESCE(a.outcome,'')<>'superseded'),
-                CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
-                (SELECT json_group_array(json_array(o.configuration_id,
-                        o.observed_effort,o.observed_fast))
-                    FROM (SELECT a.configuration_id,a.observed_effort,a.observed_fast
-                        FROM recent_attempts a WHERE a.run_id=r.id AND a.phase<>'pending'
-                            AND a.observed_model=a.configured_model
-                            AND COALESCE(a.outcome,'')<>'selection_changed'
-                        ORDER BY a.phase,a.rowid) o)
-                END,
-                CASE WHEN r.state NOT IN ('completed','cancelled','cancelling') THEN
-                (SELECT json_group_array(json_array(o.configuration_id,o.version_id,o.running))
-                    FROM (SELECT a.configuration_id,a.version_id,MAX(a.phase<>'pending') AS running FROM recent_attempts a
-                        WHERE a.run_id=r.id AND a.phase<>'terminal'
-                        GROUP BY a.configuration_id,a.version_id ORDER BY MIN(a.rowid)) o)
-                END,
-                CASE WHEN r.state IN ('running','pausing','paused','needs_attention','completed') THEN
-                (SELECT json_group_array(json_array(issue.outcome,issue.reason,issue.id,issue.finished_at))
-                 FROM (SELECT a.outcome,a.reason,a.id,a.finished_at
-                    FROM recent_attempts a WHERE a.run_id=r.id
-                        AND COALESCE(a.reason,'')<>''
-                        AND ((a.phase='terminal' AND a.outcome='pending_review'
-                            AND a.has_human_score=0)
-                        OR (a.phase='pending' AND CASE WHEN json_valid(a.reason)
-                            THEN json_extract(a.reason,'$.data.kind')='account_quota_wait'
-                                OR json_extract(a.reason,'$.data.type')='account_quota_wait'
-                            ELSE 0 END)
-                        OR ((r.state='needs_attention' OR (a.phase='terminal' AND a.outcome IS NOT NULL)) AND COALESCE(a.outcome,'') NOT IN
-                            ('pass','fail','judged','pending_review','completed','budget_reached','budget_timeout',
-                             'excluded','selection_changed','unsupported','cancelled','superseded')))
-                    ORDER BY (a.reason LIKE 'Waiting for local resources%') ASC,
-                        (a.phase='pending') DESC,
-                        (a.reason LIKE 'No judge panel:%') DESC,
-                        COALESCE(a.finished_at,0) DESC, a.rowid DESC
-                    ) issue)
-                END,
-                r.baked_at,
-                CASE WHEN json_extract(r.request_json,'$.workflowPolicy') IS NOT NULL
-                    AND (SELECT COUNT(*) FROM recent_attempts a WHERE a.run_id=r.id
-                        AND COALESCE(a.outcome,'')<>'superseded')=1
-                THEN (SELECT json_object('outcome',a.outcome,
-                        'reason',a.reason)
-                    FROM recent_attempts a WHERE a.run_id=r.id AND a.phase='terminal'
-                        AND a.outcome IS NOT NULL
-                        AND a.outcome<>'superseded')
-                END,
-                r.paused_ms,r.paused_since,
-                (SELECT COUNT(*) FROM (SELECT 1 FROM recent_attempts a WHERE a.run_id=r.id
-                    AND COALESCE(a.outcome,'')<>'superseded'
-                    GROUP BY a.configuration_id,a.version_id)),
-                (SELECT json_group_array(json_array(a.configuration_id,a.version_id,a.phase,a.outcome,
-                    json(a.pending_evaluations))) FROM recent_attempts a WHERE a.run_id=r.id
-                    AND COALESCE(a.outcome,'')<>'superseded'
-                )
-             FROM recent_runs r ORDER BY r.created_at DESC,r.id LIMIT 100",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-        let run_ids: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+        let rows = super::run_list::newest(&mut tx, &mut kept).await?;
+        drop(kept);
+        let run_ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
         let mut workflow_activity = workflow_activity(&mut tx, &run_ids).await?;
         tx.commit().await?;
         rows.into_iter()
             .map(|r| {
-                let (attention, warning) = run_issues(r.get(10));
+                let figures = &r.figures;
+                let (attention, warning) = run_issues(figures.issues.clone());
                 Ok(RunSummary {
-                    id: r.get(0),
-                    state: r.get(1),
-                    revision: r.get(2),
-                    created_at: r.get(3),
-                    updated_at: r.get(4),
-                    baked_at: r.get(11),
-                    paused_ms: r.get(13),
-                    paused_since: r.get(14),
-                    request: serde_json::from_str(r.get(5))?,
-                    attempt_count: r.get::<i64, _>(6) as u64,
-                    settled_count: r.get::<i64, _>(7) as u64,
-                    cell_count: r.get::<i64, _>(15) as u64,
-                    settled_cell_count: settled_cells(r.get(16))?,
-                    observed_selections: observed_selections(r.get(8)),
-                    open_cells: open_cells(r.get(9)),
+                    request: serde_json::from_str(&r.request_json)?,
+                    attempt_count: figures.attempt_count as u64,
+                    settled_count: figures.settled_count as u64,
+                    cell_count: figures.cell_count as u64,
+                    settled_cell_count: settled_cells(&figures.settled_cells)?,
+                    observed_selections: observed_selections(
+                        figures.observed_selections.as_deref(),
+                    ),
+                    open_cells: open_cells(figures.open_cells.as_deref()),
                     attention,
                     warning,
-                    workflow_result: r
-                        .get::<Option<String>, _>(12)
-                        .and_then(|raw| serde_json::from_str(&raw).ok()),
-                    workflow_activity: workflow_activity
-                        .remove(r.get::<&str, _>(0))
-                        .unwrap_or_default(),
+                    workflow_result: figures
+                        .workflow_result
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str(raw).ok()),
+                    workflow_activity: workflow_activity.remove(&r.id).unwrap_or_default(),
+                    id: r.id,
+                    state: r.state,
+                    revision: r.revision,
+                    created_at: r.created_at,
+                    updated_at: r.updated_at,
+                    baked_at: r.baked_at,
+                    paused_ms: r.paused_ms,
+                    paused_since: r.paused_since,
                 })
             })
             .collect()

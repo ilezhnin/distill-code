@@ -52,13 +52,23 @@ pub(in super::super) fn lost_cells_limit(request: &RunRequest) -> u32 {
 }
 
 impl BenchmarkService {
-    /// The one place a run stops for its operator.
+    /// The one place a run stops for its operator. The log says it waits only
+    /// once its state says so: a stop the store refused leaves the run
+    /// running, and the log says that instead.
     pub(in super::super) async fn stop_for_operator(&self, run_id: &str, why: Stop) -> Result<()> {
-        log::warn!(
-            "[benchmarks] run {run_id} waits for the operator: {}",
-            why.words()
-        );
-        self.store.set_run_state(run_id, "needs_attention").await
+        let stopped = self.store.set_run_state(run_id, "needs_attention").await;
+        match &stopped {
+            Ok(()) => log::warn!(
+                "[benchmarks] run {run_id} waits for the operator: {}",
+                why.words()
+            ),
+            Err(error) => log::error!(
+                "[benchmarks] run {run_id} could not stop for the operator ({}): {}",
+                why.words(),
+                error.message
+            ),
+        }
+        stopped
     }
 
     /// A cell of `run` sent on `scope` (see [`quota_scope`]) settled lost:
@@ -94,6 +104,91 @@ mod tests {
             s.cell_lost(&run, &scope).await.unwrap();
         }
         assert_eq!(state().await, "needs_attention");
+        dir.close().await;
+    }
+
+    /// Every warning and error logged in this test process since the first
+    /// [`capture_log`].
+    static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    struct Capture;
+    impl log::Log for Capture {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                LOGGED.lock().unwrap().push(record.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static CAPTURE: Capture = Capture;
+
+    /// Installs the capturing logger once per process. No other test of the
+    /// crate installs a logger by default (the Windows probes that do are
+    /// ignored), and a test that reads the log must fail if one did.
+    fn capture_log() {
+        static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let ours = *INSTALLED.get_or_init(|| {
+            let ours = log::set_logger(&CAPTURE).is_ok();
+            if ours {
+                log::set_max_level(log::LevelFilter::Warn);
+            }
+            ours
+        });
+        assert!(ours, "another logger is installed; this test reads the log");
+    }
+
+    fn logged_about(run_id: &str) -> Vec<String> {
+        LOGGED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains(run_id))
+            .cloned()
+            .collect()
+    }
+
+    /// 11-24: "run waits for the operator" was logged before the state write,
+    /// so a stop the store refused (one BEGIN IMMEDIATE in four failed then)
+    /// read in the log as a stop that never happened.
+    #[tokio::test]
+    async fn a_stop_is_logged_only_once_its_run_waits_for_the_operator() {
+        capture_log();
+        let (dir, s, _) = setup().await;
+        let run = s.start_run(serial_request(&s).await).await.unwrap();
+        let before = s.store.run_state(&run.id).await.unwrap();
+        assert_ne!(before, "needs_attention");
+        sqlx::query("CREATE TRIGGER refuse_stops BEFORE UPDATE OF state ON run_plans WHEN NEW.state='needs_attention' BEGIN SELECT RAISE(ABORT,'invented disk failure'); END")
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        assert!(s.stop_for_operator(&run.id, Stop::Storage).await.is_err());
+        assert_eq!(s.store.run_state(&run.id).await.unwrap(), before);
+        let lines = logged_about(&run.id);
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("waits for the operator")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("could not stop for the operator")),
+            "{lines:?}"
+        );
+
+        sqlx::query("DROP TRIGGER refuse_stops")
+            .execute(&s.store.pool)
+            .await
+            .unwrap();
+        s.stop_for_operator(&run.id, Stop::Storage).await.unwrap();
+        assert_eq!(s.store.run_state(&run.id).await.unwrap(), "needs_attention");
+        assert!(logged_about(&run.id)
+            .iter()
+            .any(|line| line.contains("waits for the operator")));
         dir.close().await;
     }
 

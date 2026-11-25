@@ -14,6 +14,8 @@ pub struct Store {
     pub pool: SqlitePool,
     pub root: PathBuf,
     parsed: Arc<Parsed>,
+    /// What the run listing read last (see `run_list`).
+    run_list: Arc<tokio::sync::Mutex<run_list::Kept>>,
 }
 /// Parsed copies of what is read most and changes least: published versions
 /// by id and drafts by definition. A version's columns and a draft's revision
@@ -47,10 +49,12 @@ impl Store {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
             .busy_timeout(BUSY_TIMEOUT);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(4)
-            .connect_with(options)
-            .await?;
+        let pool = pool_guard::guard_transactions(
+            SqlitePoolOptions::new().max_connections(4),
+            "benchmark store",
+        )
+        .connect_with(options)
+        .await?;
         sqlx::migrate!("./migrations_benchmarks")
             .run(&pool)
             .await
@@ -59,6 +63,7 @@ impl Store {
             pool,
             root: root.to_owned(),
             parsed: Arc::default(),
+            run_list: Arc::default(),
         };
         store.reclassify_legacy_work_classes().await?;
         Ok(store)
@@ -147,6 +152,10 @@ impl Store {
     }
 }
 
+/// Records that `id` changed, in the transaction that changed it. Every write
+/// of an attempt names the attempt's run here: the app refreshes a run's views
+/// on it, and the run listing reads a run's attempts again only after it (see
+/// `run_list`).
 pub async fn event(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     id: &str,
@@ -167,7 +176,9 @@ mod workflow_activity_tests;
 mod attempts;
 mod definitions;
 mod designs;
+pub(crate) mod pool_guard;
 mod records;
+mod run_list;
 mod runs;
 
 use self::designs::*;

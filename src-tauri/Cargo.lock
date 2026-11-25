@@ -2850,6 +2850,7 @@ dependencies = [
  "hex",
  "ignore",
  "libc",
+ "libsqlite3-sys",
  "log",
  "mime_guess",
  "nucleo-matcher",

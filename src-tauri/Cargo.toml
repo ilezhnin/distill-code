@@ -60,6 +60,10 @@ serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 yaml_serde = "0.10.4"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "migrate", "macros"] }
+# The very libsqlite3-sys sqlx-sqlite links (0.39.1 in Cargo.lock), only for
+# `sqlite3_get_autocommit` on the handle sqlx lends out: the pool's release
+# check reads SQLite's own transaction state (see `pool_guard`).
+libsqlite3-sys = { version = "0.39", default-features = false }
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 tauri = { version = "2", features = ["protocol-asset"] }
 toml = "1.1.4"

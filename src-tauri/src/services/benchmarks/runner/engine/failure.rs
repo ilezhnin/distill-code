@@ -161,6 +161,23 @@ pub(in crate::services::benchmarks) fn settled_failure(
     }
 }
 
+/// What the reason of a sealed answer starts with when a failure ended its
+/// try before its check's verdict was kept; the failure's own words follow.
+pub(in super::super) const CHECK_NOT_KEPT: &str =
+    "The check of this sealed answer was not kept; resuming the run checks it again";
+
+/// Whether `attempt`, as saved, is a sealed answer still owed its verdict:
+/// its turn completed, its answer was sealed, and no check result was kept
+/// (a verdict replaces `completed`). The answer is paid for, so a failure
+/// from here on, the store's included, settles it unscored, as
+/// `evaluation_error`, which resuming its run checks again on the same
+/// sealed answer (`rechecked_on_resume`): never a turn to buy again.
+pub(in super::super) fn owes_its_check(attempt: &Attempt) -> bool {
+    attempt.outcome.as_deref() == Some("completed")
+        && attempt.evidence_hash.is_some()
+        && attempt.workflow_steps.is_empty()
+}
+
 /// Whether `code` holds its run until a time it already knows, rather than
 /// asking the operator.
 fn is_wait(code: &str) -> bool {
@@ -641,7 +658,14 @@ impl BenchmarkService {
         mut failed: Attempt,
         for_run: ForRun,
     ) -> Result<()> {
-        let (outcome, reason) = settled_failure(&failed, failure.error);
+        let (outcome, reason) = if owes_its_check(&failed) && !failure.workflow() {
+            (
+                "evaluation_error".into(),
+                format!("{CHECK_NOT_KEPT}: {}", failure.error.message),
+            )
+        } else {
+            settled_failure(&failed, failure.error)
+        };
         failed.phase = "terminal".into();
         failed.outcome = Some(outcome);
         failed.reason = Some(reason);

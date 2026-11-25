@@ -956,8 +956,7 @@ impl BenchmarkService {
                     superseded.outcome.as_deref().unwrap_or("unfinished")
                 ));
                 superseded.outcome = Some(analysis::SUPERSEDED.into());
-                self.store.supersede_attempt(&superseded).await?;
-                self.store.insert_attempt(&fresh).await?;
+                self.store.supersede_and_insert(&superseded, &fresh).await?;
             }
         }
         Ok(unfinished)
