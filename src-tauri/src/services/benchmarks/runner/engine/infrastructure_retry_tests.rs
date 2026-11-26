@@ -595,6 +595,7 @@ async fn a_sealed_answer_the_store_refused_is_kept_once_it_takes_it() {
                 &service.store,
                 &mut answered,
                 &json!({"provider": "invented-native"}),
+                None,
             )
             .await
             .map(|()| answered)
@@ -663,6 +664,7 @@ async fn a_sealed_answer_is_kept_at_once_by_a_store_that_takes_it() {
             &service.store,
             &mut answered,
             &json!({"provider": "invented-native"}),
+            None,
         ),
     )
     .await
@@ -753,5 +755,206 @@ async fn a_resume_measures_again_a_cell_no_campaign_reserved() {
     let settled = settle(&service, &run.id).await;
     assert_eq!(settled.state, "completed");
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    dir.close().await;
+}
+
+/// The fake backend's turns, sealed the way the native backend seals a turn:
+/// its native time measured, then its evidence sealed and saved by
+/// `keep_sealed`, which holds the try while the store refuses.
+struct NativeSealing(Arc<FakeBackend>);
+
+impl ExecutionBackend for NativeSealing {
+    fn unsupported(&self, configuration: &Configuration, draft: &BenchmarkDraft) -> Option<String> {
+        self.0.unsupported(configuration, draft)
+    }
+    fn inventory<'a>(
+        &'a self,
+        provider: &'a str,
+        account: Option<&'a str>,
+        refresh: bool,
+    ) -> BoxFuture<'a, Result<Vec<InventoryModel>>> {
+        self.0.inventory(provider, account, refresh)
+    }
+    fn execute<'a>(
+        &'a self,
+        store: &'a Store,
+        attempt: Attempt,
+        version: BenchmarkVersion,
+        timeout: u32,
+        cancel: watch::Receiver<bool>,
+    ) -> BoxFuture<'a, Result<Attempt>> {
+        Box::pin(async move {
+            let root = collection_budget(&version.manifest)?.map(|lease| lease.root_id);
+            let mut answered = self
+                .0
+                .execute(store, attempt, version, timeout, cancel)
+                .await?;
+            answered.native_execution_ms = answered.duration_ms;
+            keep_sealed(
+                store,
+                &mut answered,
+                &json!({"provider": "invented-native"}),
+                root.as_deref(),
+            )
+            .await?;
+            Ok(answered)
+        })
+    }
+}
+
+/// The wall budget, in seconds, of the workflow root below: its two steps
+/// together take well under a second.
+const ROOT_SECONDS: u32 = 5;
+
+/// How long the store refuses a step's sealed answer: longer than the root's
+/// whole wall budget.
+const STEP_OUTAGE: Duration = Duration::from_secs(8);
+
+/// A run of one two-step workflow root on the native wall clock, with
+/// [`ROOT_SECONDS`] for its steps together, on [`NativeSealing`].
+async fn wall_clock_workflow() -> (
+    crate::test_support::TempRoot,
+    Arc<BenchmarkService>,
+    Arc<FakeBackend>,
+    RunRequest,
+) {
+    let dir = crate::test_support::TempRoot::new();
+    let store = Store::open(dir.path()).await.unwrap();
+    dir.register(&store.pool);
+    let fake = Arc::new(FakeBackend::default());
+    let service = Arc::new(BenchmarkService {
+        store,
+        backend: Arc::new(NativeSealing(fake.clone())),
+        wake: Default::default(),
+        active: Default::default(),
+        queries: Default::default(),
+        app: None,
+    });
+    let mut draft = crate::services::benchmarks::seeds::definitions().remove(0);
+    draft.split = "train".into();
+    draft.environment["nativeBudgetRecipe"] =
+        json!(crate::services::benchmarks::artifact_context::CLOCK_RECIPE);
+    draft.workflow = Some(WorkflowSpec {
+        schema_version: 1,
+        driver_revision: "invented-wall-clock-v1".into(),
+        steps: vec![
+            WorkflowStep {
+                id: "plan".into(),
+                prompt: "Produce a plan.".into(),
+                include_previous_output: false,
+                scope: None,
+            },
+            WorkflowStep {
+                id: "answer".into(),
+                prompt: "Produce the final structured answer.".into(),
+                include_previous_output: true,
+                scope: None,
+            },
+        ],
+    });
+    let definition = service.store.save_draft(None, None, draft).await.unwrap();
+    let version = service.store.publish(&definition.id, 1).await.unwrap();
+    let request = RunRequest {
+        author_policy: None,
+        request_key: "invented-wall-clock-workflow".into(),
+        version_ids: vec![version.id],
+        configurations: vec![Configuration {
+            id: "fake-pass".into(),
+            provider_id: "fake".into(),
+            account_id: Some("isolated".into()),
+            model_id: "fake-pass".into(),
+            effort: None,
+            fast_mode: None,
+            billing_mode: "simulated".into(),
+            execution_profile: "native_text".into(),
+            inventory_revision: Some("fake-v1".into()),
+            model_name: None,
+        }],
+        repetitions: 1,
+        timeout_seconds: ROOT_SECONDS,
+        max_executions: 2,
+        preview: false,
+        parallelism: Some(1),
+        execution_limits: None,
+        workflow_policy: None,
+    };
+    (dir, service, fake, request)
+}
+
+/// The store refuses every save of a workflow step that carries a sealed
+/// answer, as a full disk or a held write lock would.
+const REFUSE_SEALED_STEPS: &str = "CREATE TRIGGER refuse_sealed_steps BEFORE UPDATE ON workflow_steps WHEN json_extract(NEW.data_json,'$.evidenceHash') IS NOT NULL BEGIN SELECT RAISE(ABORT,'invented disk failure'); END";
+
+/// 2026-11-25 audit 2, Y-1: while the store refused a step's sealed answer,
+/// the wait ran on its workflow root's wall clock, and a wait longer than the
+/// root had left ended the root `budget_timeout`, scored zero. The wait is
+/// now credited to the root, as the time an idle root sits in the queue is.
+#[tokio::test]
+async fn a_step_answer_the_store_refused_costs_its_root_no_wall_time() {
+    let (dir, service, fake, request) = wall_clock_workflow().await;
+    sqlx::query(REFUSE_SEALED_STEPS)
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    let run = service.start_run(request).await.unwrap();
+    let mends = tokio::spawn({
+        let pool = service.store.pool.clone();
+        async move {
+            tokio::time::sleep(STEP_OUTAGE).await;
+            sqlx::query("DROP TRIGGER refuse_sealed_steps")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    });
+    let settled = settle(&service, &run.id).await;
+    mends.await.unwrap();
+    let root = &settled.attempts[0];
+    // Both steps were answered once, and the root scored its answer.
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 2, "{:?}", root.reason);
+    assert_eq!(root.outcome.as_deref(), Some("pass"), "{:?}", root.reason);
+    assert_eq!(
+        crate::services::benchmarks::analysis::score(root),
+        Some(1.0)
+    );
+    // The wait outlasted the root's whole budget, and the root got it back.
+    let credited = service.store.root_credit_ms(&root.id).await.unwrap();
+    assert!(
+        credited > i64::from(ROOT_SECONDS) * 1000,
+        "credited {credited} ms"
+    );
+    dir.close().await;
+}
+
+/// Control: with a store that takes every save the same root scores the same
+/// and keeps its clock exactly as before: no credit, and its last step's
+/// deadline is the root's own.
+#[tokio::test]
+async fn a_root_whose_store_takes_every_save_keeps_its_clock() {
+    let (dir, service, fake, request) = wall_clock_workflow().await;
+    let run = service.start_run(request).await.unwrap();
+    let settled = settle(&service, &run.id).await;
+    let root = &settled.attempts[0];
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 2, "{:?}", root.reason);
+    assert_eq!(root.outcome.as_deref(), Some("pass"), "{:?}", root.reason);
+    assert_eq!(
+        crate::services::benchmarks::analysis::score(root),
+        Some(1.0)
+    );
+    let credits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM budget_credits")
+        .fetch_one(&service.store.pool)
+        .await
+        .unwrap();
+    assert_eq!(credits, 0);
+    let last = service
+        .store
+        .native_budget(&format!("workflow:{}:1", root.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        last.deadline_at_ms().unwrap(),
+        last.root_started_at_ms + i64::from(ROOT_SECONDS) * 1000
+    );
     dir.close().await;
 }

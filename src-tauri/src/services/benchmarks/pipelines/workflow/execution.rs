@@ -240,7 +240,10 @@ pub fn execute(
                 root.reason = Some(reason.into());
                 break;
             }
-            if trajectory.wall_exhausted(&steps, native_elapsed.is_none())? {
+            if trajectory
+                .wall_exhausted(&root, &steps, native_elapsed.is_none())
+                .await?
+            {
                 root.outcome = Some("budget_timeout".into());
                 root.reason = Some("Workflow exceeded its shared duration budget".into());
                 break;
@@ -460,10 +463,20 @@ impl Trajectory<'_> {
     /// Whether the steps so far used up the root's wall budget. Native
     /// execution totals exclude earlier worker-slot waits, and an opt-in
     /// concurrent trajectory keeps its original whole wall cap.
-    fn wall_exhausted(&self, steps: &[SavedStep], unmeasured: bool) -> Result<bool> {
+    async fn wall_exhausted(
+        &self,
+        root: &Attempt,
+        steps: &[SavedStep],
+        unmeasured: bool,
+    ) -> Result<bool> {
         if self.concurrent {
+            // The root's credits run off its clock, as in `remaining`. A
+            // campaign root has one only for a step's sealed answer that
+            // waited for the store (`keep_sealed`).
+            let waited =
+                excluded_waits_ms(steps) + self.service.store.root_credit_ms(&root.id).await?;
             return match artifact_context::remaining_seconds(
-                self.wall_origin + excluded_waits_ms(steps),
+                self.wall_origin + waited,
                 now(),
                 self.timeout,
             ) {

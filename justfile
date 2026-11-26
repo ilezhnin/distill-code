@@ -2,7 +2,7 @@
 app_features := "flockctl,app-test-driver"
 
 # This wall-clock comparison must not compete with the rest of the test suite.
-turn_seat_perf_test := "services::benchmarks::runner::turn_seat_tests::handing_the_seat_on_takes_the_checks_off_a_lanes_path"
+turn_seat_perf_test := "services::benchmarks::runner::engine::turn_seat_tests::handing_the_seat_on_takes_the_checks_off_a_lanes_path"
 
 # Every hook- and CI-facing check reaches its tool through this launcher
 # instead of by bare name. A GUI git client (Sourcetree, an IDE) starts hooks

@@ -490,7 +490,10 @@ pub(super) async fn prepare_step_admitted(
             root,
             version,
             spec,
-            origin + i64::from(root_cap) * 1000,
+            // The root's credits move its deadline, as its lease's: a
+            // campaign root has one only for an earlier step's sealed answer
+            // that waited for the store (`keep_sealed`).
+            origin + i64::from(root_cap) * 1000 + store.root_credit_ms(&root.id).await?,
         )
         .await?
     } else {

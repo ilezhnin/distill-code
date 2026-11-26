@@ -61,11 +61,16 @@ impl BudgetLease {
                 "Native root budget authority is malformed",
             ));
         }
+        // Every credit of the root starts after its clock did
+        // (`close_root_credit`), but a step-admitted root's step lease starts
+        // that clock later by the slot waits before the step
+        // (`prepare_step_admitted`): a credit counts whole, even one that
+        // ended before that later start.
         let root = allowance_ms(
             self.root_started_at_ms,
             at,
             self.root_cap_seconds,
-            self.credited(self.root_started_at_ms, at),
+            self.credited(i64::MIN, at),
         )?;
         let step = allowance_ms(
             self.step_started_at_ms,
@@ -85,7 +90,7 @@ impl BudgetLease {
         let root = self
             .root_started_at_ms
             .checked_add(i64::from(self.root_cap_seconds) * 1000)
-            .and_then(|end| end.checked_add(self.credited(self.root_started_at_ms, i64::MAX)));
+            .and_then(|end| end.checked_add(self.credited(i64::MIN, i64::MAX)));
         let step = self
             .step_started_at_ms
             .checked_add(i64::from(self.step_cap_seconds) * 1000)
@@ -600,6 +605,17 @@ mod tests {
         assert!(body.get("credits").is_none());
         let parsed: BudgetLease = serde_json::from_value(body).unwrap();
         assert!(parsed.credits.is_empty());
+    }
+    #[test]
+    fn a_step_admitted_lease_counts_a_credit_from_before_its_clock_start_whole() {
+        // A step-admitted root was admitted at 0; the store kept its first
+        // step's sealed answer waiting from 5 s to 16 s, then its second step
+        // waited 20 s for a worker slot, so that step's lease starts the root
+        // clock at 20 s (admission plus the slot waits) and the step at 36 s.
+        let shifted = lease(20_000, 36_000, vec![(5_000, 16_000)]);
+        // 36 s since admission, less 20 s of slot waits and 11 s of credit.
+        assert_eq!(shifted.remaining_ms(36_000).unwrap(), 5_000);
+        assert_eq!(shifted.deadline_at_ms().unwrap(), 41_000);
     }
     #[tokio::test]
     async fn an_idle_credit_closes_once_bound_by_its_hash_and_never_covers_flight() {

@@ -514,7 +514,13 @@ left mid-trajectory, gets that time back: it is credited to its wall budget
 from when it left flight, or from the service's last heartbeat, until its next
 flight starts, in a hash-bound record that never changes once closed. Time in
 flight is never credited, and campaign roots, which never continue
-mid-trajectory, get no credit. Evaluator admission waits on the
+mid-trajectory, get no such credit, with one exception for every root on the
+wall clock, campaign roots included: a step whose sealed answer the store
+refused keeps its seat until the store takes it (see
+[Freeze and run](#4-freeze-and-run-the-measurement-matrix)), and once the
+store takes it that wait is credited to its root the same way, so it does not
+shorten the steps after it. A wait the app stopped during is not credited,
+and a campaign report's wall time still includes it. Evaluator admission waits on the
 captured answer; a runtime resource failure is inconclusive infrastructure
 evidence, not a model score, and its check runs again on the same answer (see
 [Freeze and run](#4-freeze-and-run-the-measurement-matrix)). The application does not change global

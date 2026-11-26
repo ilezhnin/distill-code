@@ -20,6 +20,9 @@ struct GatedWorkers {
     preparing: AtomicU64,
     active: AtomicU64,
     peak: AtomicU64,
+    /// Each answer is sealed and saved by `keep_sealed`, as the native
+    /// backend keeps it.
+    keeps_sealed: AtomicBool,
 }
 
 struct ActiveCall<'a>(&'a AtomicU64);
@@ -99,9 +102,26 @@ impl ExecutionBackend for GatedWorkers {
                     },
                 }
             }
-            self.workers
+            let keeps_sealed = self.keeps_sealed.load(Ordering::SeqCst);
+            let root = if keeps_sealed {
+                collection_budget(&version.manifest)?.map(|lease| lease.root_id)
+            } else {
+                None
+            };
+            let mut answered = self
+                .workers
                 .execute(store, attempt, version, timeout, cancel)
-                .await
+                .await?;
+            if keeps_sealed {
+                keep_sealed(
+                    store,
+                    &mut answered,
+                    &json!({"provider": "invented-native"}),
+                    root.as_deref(),
+                )
+                .await?;
+            }
+            Ok(answered)
         })
     }
 }
@@ -668,6 +688,55 @@ async fn concurrent_campaign_slot_wait_remains_in_the_next_step_wall_budget() {
         serde_json::to_value(service.store.run(&timed.id).await.unwrap().attempts).unwrap(),
         before
     );
+    dir.close().await;
+}
+
+/// 2026-11-25 audit 2, Y-1, for campaign roots: a step whose sealed answer
+/// the store refused held its root's wall clock running, so a refusal longer
+/// than the root's budget ended it `budget_timeout`, scored zero. The wait is
+/// now credited to the root, which measures its steps as without it.
+#[tokio::test]
+async fn concurrent_campaign_root_keeps_its_wall_budget_while_the_store_refuses_a_step() {
+    let (dir, service, backend, frozen) = setup_with_timeout(2, 10).await;
+    backend.gated.store(false, Ordering::SeqCst);
+    backend.keeps_sealed.store(true, Ordering::SeqCst);
+    // For longer than a root's whole 10 s budget, the store refuses every
+    // save of a workflow step that carries a sealed answer.
+    sqlx::query("CREATE TRIGGER refuse_sealed_steps BEFORE UPDATE ON workflow_steps WHEN json_extract(NEW.data_json,'$.evidenceHash') IS NOT NULL BEGIN SELECT RAISE(ABORT,'invented disk failure'); END")
+        .execute(&service.store.pool)
+        .await
+        .unwrap();
+    service
+        .control_workflow_campaign(&frozen.plan.id, "start")
+        .await
+        .unwrap();
+    let mends = tokio::spawn({
+        let pool = service.store.pool.clone();
+        async move {
+            tokio::time::sleep(Duration::from_secs(13)).await;
+            sqlx::query("DROP TRIGGER refuse_sealed_steps")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    });
+    complete(&service, &frozen.plan.id).await;
+    mends.await.unwrap();
+    let mut waited = 0;
+    for run in children(&service, &frozen).await {
+        let root = &run.attempts[0];
+        assert_ne!(
+            root.outcome.as_deref(),
+            Some("budget_timeout"),
+            "{:?}",
+            root.reason
+        );
+        assert_eq!(root.workflow_steps.len(), 2, "{:?}", root.reason);
+        if service.store.root_credit_ms(&root.id).await.unwrap() > 10_000 {
+            waited += 1;
+        }
+    }
+    assert!(waited > 0, "no root waited out the store");
     dir.close().await;
 }
 

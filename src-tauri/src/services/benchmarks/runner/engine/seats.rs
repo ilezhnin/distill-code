@@ -35,20 +35,42 @@ const RECORD_AGAIN: Duration = if cfg!(test) {
 /// failure the store refused (`finish_flight`), the try keeps its seat
 /// meanwhile. Sealing again writes the same bytes under the same digest. Any
 /// other failure returns at once, as before.
+///
+/// The store's refusals are no time of the candidate's: once the save lands,
+/// the time from the first refused try is credited to `root`, the workflow
+/// root whose wall clock the turn ran on, as an idle root's time in the queue
+/// is (`Store::open_root_credit`, which gives nothing to a root without a
+/// native root clock). A store that refused nothing credits nothing
+/// (2026-11-25 audit 2, Y-1).
 pub(in super::super) async fn keep_sealed(
     store: &Store,
     attempt: &mut Attempt,
     evidence: &Value,
+    root: Option<&str>,
 ) -> Result<()> {
     let mut tries: u32 = 0;
+    // When the first try the store refused began.
+    let mut refused_since: Option<i64> = None;
     loop {
+        let began = now();
         let refused =
             match crate::services::benchmarks::fixtures::seal(&store.root, attempt, evidence).await
             {
                 Ok(hash) => {
                     attempt.evidence_hash = Some(hash);
                     match store.save_attempt(attempt).await {
-                        Ok(()) => return Ok(()),
+                        Ok(()) => match root.zip(refused_since) {
+                            None => return Ok(()),
+                            // A refused credit is asked again with the save:
+                            // saving the same sealed answer again changes
+                            // nothing, and the credit runs until it lands.
+                            Some((root, from)) => {
+                                match credit_store_wait(store, root, &attempt.run_id, from).await {
+                                    Ok(()) => return Ok(()),
+                                    Err(error) => error,
+                                }
+                            }
+                        },
                         Err(error) => error,
                     }
                 }
@@ -57,6 +79,7 @@ pub(in super::super) async fn keep_sealed(
         if refused.code != "storage_unavailable" {
             return Err(refused);
         }
+        refused_since.get_or_insert(began);
         tries += 1;
         log::error!(
             "[benchmarks] could not keep the sealed answer of {} (try {tries}); the attempt keeps its seat until the store takes it: {}",
@@ -65,6 +88,14 @@ pub(in super::super) async fn keep_sealed(
         );
         tokio::time::sleep(RECORD_AGAIN * tries.min(12)).await;
     }
+}
+
+/// Credits `root`'s wall budget with the time from `from` until now, in one
+/// closed credit: the root is still in flight, and its turn ended before
+/// `from`, so the credit covers no time a step of it flew.
+async fn credit_store_wait(store: &Store, root: &str, run_id: &str, from: i64) -> Result<()> {
+    store.open_root_credit(root, run_id, from, "idle").await?;
+    store.close_root_credit(root, now()).await
 }
 
 /// An attempt or a judge panel in flight, keyed in `BenchmarkService::active`

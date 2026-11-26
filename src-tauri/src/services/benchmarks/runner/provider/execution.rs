@@ -1111,6 +1111,7 @@ impl ExecutionBackend for NativeBackend {
                 terminal,
                 &mut cleanup,
                 credit,
+                budget.as_ref().map(|lease| lease.root_id.as_str()),
             )
             .await?;
             Ok(attempt)
@@ -1334,7 +1335,11 @@ impl ExecutionBackend for NativeBackend {
             mark_phase(&mut attempt, "collected");
             // Persist the patch before removing its only working copy. Recovery
             // can repeat cleanup if the process exits between these operations.
-            keep_sealed(store, &mut attempt, &evidence).await?;
+            // No root is credited: recovery runs while its root is out of
+            // flight, where the credit `Store::recover` opened for the stop
+            // runs until the root's next flight, and a campaign root never
+            // continues after a stop.
+            keep_sealed(store, &mut attempt, &evidence, None).await?;
             clean_sealed(&mut cleanup, |id| async move { sandbox::clean(&id).await }).await;
             Ok(Some(attempt))
         })
@@ -1530,7 +1535,9 @@ impl NativeBackend {
 
     /// Collects and seals a finished turn: the sandbox stops, a repository
     /// case's artifact is taken out, the events and the native receipt
-    /// become the attempt's evidence, and the sandbox job is cleaned.
+    /// become the attempt's evidence, and the sandbox job is cleaned. `root`
+    /// is the root its native lease names, credited for a store that
+    /// refuses the seal (see `keep_sealed`).
     #[allow(clippy::too_many_arguments)]
     async fn seal_turn(
         &self,
@@ -1546,6 +1553,7 @@ impl NativeBackend {
         terminal: Value,
         cleanup: &mut sandbox::Cleanup,
         mut credit: CreditTurn,
+        root: Option<&str>,
     ) -> Result<()> {
         let mut artifact_error = None;
         let mut session_limit = None;
@@ -1588,7 +1596,7 @@ impl NativeBackend {
         drop(credit);
         record_sandbox_admission(attempt, &mut evidence, cleanup.0.as_deref());
         mark_phase(attempt, "collected");
-        keep_sealed(store, attempt, &evidence).await?;
+        keep_sealed(store, attempt, &evidence, root).await?;
         clean_sealed(cleanup, |id| async move { sandbox::clean(&id).await }).await;
         Ok(())
     }

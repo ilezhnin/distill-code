@@ -28,12 +28,17 @@ impl BenchmarkService {
             concurrency.account_slots,
         );
         let budget = if concurrent {
-            Some(collection_budget(&version.manifest)?.ok_or_else(|| {
+            let mut budget = collection_budget(&version.manifest)?.ok_or_else(|| {
                 BenchmarkError::new(
                     "budget_clock_conflict",
                     "Concurrent workflow step has no root wall deadline",
                 )
-            })?)
+            })?;
+            // With the root's credits, as the step's own turn reads its
+            // lease: a campaign root has one only for an earlier step's
+            // sealed answer that waited for the store (`keep_sealed`).
+            self.store.credit(&mut budget).await?;
+            Some(budget)
         } else {
             None
         };
