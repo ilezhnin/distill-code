@@ -69,6 +69,5 @@ pub fn limit_window(
         window_minutes: Some(window_minutes),
         model_id: None,
         covered_by_credits: false,
-        coding: false,
     })
 }

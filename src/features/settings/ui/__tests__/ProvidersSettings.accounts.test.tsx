@@ -137,14 +137,13 @@ it("renders every harness as one card of the same structure", () => {
             modelId: null,
           },
           {
-            id: "kimi:monthCode",
-            label: "Monthly coding",
+            id: "kimi:monthTotal",
+            label: "Monthly",
             usedPercent: 87,
             remaining: null,
             resetsAt: null,
             windowMinutes: 43_200,
             modelId: null,
-            coding: true,
           },
         ],
         credits: [
@@ -209,7 +208,7 @@ it("renders every harness as one card of the same structure", () => {
   const kimi = within(
     within(panel).getByRole("region", { name: "Kimi Code" }),
   ).getByRole("article");
-  expect(within(kimi).getByText("Monthly coding")).toBeInTheDocument();
+  expect(within(kimi).getByText("Monthly")).toBeInTheDocument();
   expect(within(kimi).getByText("87% used")).toBeInTheDocument();
   expect(
     screen.getByText("Extra usage: $7.50 of $20.00 left"),

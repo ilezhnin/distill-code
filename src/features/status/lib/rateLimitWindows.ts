@@ -16,7 +16,6 @@ export function hasUsageData(provider: ProviderRateLimits): boolean {
       provider.weekly ||
       provider.fableWeekly ||
       provider.monthly ||
-      provider.codingMonthly ||
       provider.modelWindows?.length,
   );
 }
@@ -99,14 +98,6 @@ export function getUsageSections(provider: ProviderRateLimits): UsageSection[] {
       label: "monthly",
       shortLabel: formatWindowLength(provider.monthly.windowMinutes),
       window: provider.monthly,
-    });
-  }
-  if (provider.codingMonthly) {
-    sections.push({
-      key: "codingMonthly",
-      label: "codingMonthly",
-      shortLabel: "mo (code)",
-      window: provider.codingMonthly,
     });
   }
   for (const { modelId, period, window } of provider.modelWindows ?? []) {

@@ -85,7 +85,7 @@ describe("catalog provider participation", () => {
     ).toBe(false);
   });
 
-  it("uses monthly coding constraints alongside shorter Kimi quota windows", () => {
+  it("uses the monthly window alongside shorter Kimi quota windows", () => {
     const window = {
       usedPercent: 20,
       windowMinutes: 300,
@@ -99,8 +99,7 @@ describe("catalog provider participation", () => {
           provider: future.id,
           session: window,
           weekly: window,
-          monthly: { ...window, usedPercent: 80, windowMinutes: 43200 },
-          codingMonthly: { ...window, usedPercent: 100, windowMinutes: 43200 },
+          monthly: { ...window, usedPercent: 100, windowMinutes: 43200 },
           status: "ok",
           configured: true,
           error: null,
@@ -113,7 +112,6 @@ describe("catalog provider participation", () => {
       "session",
       "weekly",
       "monthly",
-      "codingMonthly",
     ]);
     expect(platformLimitState([usage], future.id)).toBe("at-limit");
     const [signedOut] = buildProviderStatuses(

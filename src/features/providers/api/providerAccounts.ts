@@ -57,8 +57,6 @@ export interface ProviderAccountLimit {
   modelId: string | null;
   /** The account's credits keep it usable once this plan window is spent. */
   coveredByCredits?: boolean;
-  /** A monthly window that meters coding use alone (Kimi Code). */
-  coding?: boolean;
 }
 
 /** What a reset refills, named once for every provider. */

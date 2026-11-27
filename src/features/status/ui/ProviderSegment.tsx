@@ -145,11 +145,9 @@ export function ProviderSegment({
                   })
                 : section.key === "fableWeekly"
                   ? t("roster.usedFable", { percent })
-                  : section.key === "codingMonthly"
-                    ? t("roster.usedCodingMonthly", { percent })
-                    : remaining === "now"
-                      ? t("roster.usedNow", { percent })
-                      : t("roster.usedWindow", { percent, window: remaining });
+                  : remaining === "now"
+                    ? t("roster.usedNow", { percent })
+                    : t("roster.usedWindow", { percent, window: remaining });
               return (
                 <span
                   key={section.key}

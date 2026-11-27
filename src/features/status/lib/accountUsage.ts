@@ -36,7 +36,6 @@ export function accountUsageFor(
     weekly: null,
     fableWeekly: null,
     monthly: null,
-    codingMonthly: null,
     accountLabel: status?.accountLabel ?? account.label,
     planType: status?.subscription ?? null,
     credits: status?.credits ?? null,
@@ -90,11 +89,7 @@ export function accountUsageFor(
         prior.window = window;
       continue;
     }
-    const key = modelId
-      ? "fableWeekly"
-      : limit.coding && period === "monthly"
-        ? "codingMonthly"
-        : period;
+    const key = modelId ? "fableWeekly" : period;
     if (!usage[key] || window.usedPercent > usage[key].usedPercent)
       usage[key] = window;
   }

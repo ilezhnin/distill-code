@@ -53,10 +53,6 @@ pub struct AccountLimitWindow {
     /// as the provider's own app does. A spending allowance never is.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub covered_by_credits: bool,
-    /// A monthly window that meters coding use alone, beside the account's
-    /// whole monthly window (Kimi Code).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub coding: bool,
 }
 
 /// What a reset refills, named once for every provider. Each adapter maps its

@@ -46,10 +46,9 @@ fn quota_window(
     id: &str,
     label: &str,
     minutes: u32,
-    coding: bool,
 ) -> Option<AccountLimitWindow> {
     let value = value?;
-    let mut window = limit_window(
+    limit_window(
         id,
         label,
         value
@@ -58,9 +57,7 @@ fn quota_window(
             .map(|ratio| ratio * 100.0),
         minutes,
         value.get("resetAt").and_then(parse_reset_timestamp),
-    )?;
-    window.coding = coding;
-    Some(window)
+    )
 }
 
 /// The account status Kimi's usage reply maps to.
@@ -122,34 +119,26 @@ pub(super) fn map_usage(
     }
     let usages = data.get("quota").and_then(|quota| quota.get("usages"));
     let usage = |key: &str| usages.and_then(|value| value.get(key));
+    // `monthCode` is the Code share of `monthTotal`, not a limit of its own:
+    // Kimi's site and CLI show it inside the one monthly bar.
     status.limits = [
         quota_window(
             usage("limit5h"),
             "kimi:limit5h",
             "5 hours",
             SESSION_WINDOW_MINUTES,
-            false,
         ),
         quota_window(
             usage("limit7d"),
             "kimi:limit7d",
             "Weekly",
             WEEKLY_WINDOW_MINUTES,
-            false,
         ),
         quota_window(
             usage("monthTotal"),
             "kimi:monthTotal",
             "Monthly",
             MONTHLY_WINDOW_MINUTES,
-            false,
-        ),
-        quota_window(
-            usage("monthCode"),
-            "kimi:monthCode",
-            "Monthly coding",
-            MONTHLY_WINDOW_MINUTES,
-            true,
         ),
     ]
     .into_iter()
@@ -260,7 +249,7 @@ mod tests {
             "limit5h": {"usedRatio": 0.25, "resetAt": "2026-09-24T00:00:00Z"},
             "limit7d": {"usedRatio": 0.7},
             "monthTotal": {"usedRatio": 0.9},
-            "monthCode": {"usedRatio": 1.2}
+            "monthCode": {"usedRatio": 0.9}
         }}}));
         let window = |id: &str| status.limits.iter().find(|w| w.id == id).unwrap().clone();
         assert_eq!(window("kimi:limit5h").used_percent, Some(25.0));
@@ -268,11 +257,15 @@ mod tests {
         assert!(window("kimi:limit5h").resets_at.is_some());
         assert_eq!(window("kimi:limit7d").used_percent, Some(70.0));
         assert_eq!(window("kimi:monthTotal").used_percent, Some(90.0));
-        assert!(!window("kimi:monthTotal").coding);
-        assert_eq!(window("kimi:monthCode").used_percent, Some(100.0));
-        assert!(window("kimi:monthCode").coding);
-        // A spent coding window counts as a limit, as before.
-        assert_eq!(status.state, AccountState::Limited);
+        // The Code share is part of the monthly window, not a second bar.
+        let ids: Vec<_> = status.limits.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["kimi:limit5h", "kimi:limit7d", "kimi:monthTotal"]);
+        assert_eq!(status.state, AccountState::Ready);
+        let spent = usage(json!({"kind":"ok", "quota":{"usages": {
+            "monthTotal": {"usedRatio": 1.2}, "monthCode": {"usedRatio": 1.2}
+        }}}));
+        assert_eq!(spent.limits[0].used_percent, Some(100.0));
+        assert_eq!(spent.state, AccountState::Limited);
         let unknown =
             usage(json!({"kind":"ok", "quota":{"usages": {"limit5h": {"usedRatio": "bad"}}}}));
         assert!(unknown.limits.is_empty());

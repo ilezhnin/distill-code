@@ -46,7 +46,6 @@ export interface ProviderRateLimits {
   weekly: RateLimitWindow | null;
   fableWeekly?: RateLimitWindow | null;
   monthly?: RateLimitWindow | null;
-  codingMonthly?: RateLimitWindow | null;
   modelWindows?: {
     modelId: string;
     period: UsagePeriod;
@@ -67,11 +66,7 @@ export interface ProviderRateLimitSnapshot {
 }
 
 export interface UsageSection {
-  key:
-    | UsagePeriod
-    | "fableWeekly"
-    | "codingMonthly"
-    | `model:${string}:${UsagePeriod}`;
+  key: UsagePeriod | "fableWeekly" | `model:${string}:${UsagePeriod}`;
   modelId?: string;
   label: string;
   shortLabel: string;
