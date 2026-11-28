@@ -150,6 +150,7 @@ fn judge_provider_label(provider: NativeProvider) -> &'static str {
         NativeProvider::Grok => "Grok",
         NativeProvider::Kimi => "Kimi",
         NativeProvider::Zai => "Z.ai",
+        NativeProvider::Antigravity => "Google Antigravity",
     }
 }
 

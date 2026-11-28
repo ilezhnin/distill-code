@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 pub(super) const PROMPT: &str = "Complete the supplied repository task in /workspace. Use tools to inspect and change files. Do not delegate to other agents. Finish when the requested change is ready.";
 const CODEX: &str = include_str!("../../../resources/benchmark-repository-codex.mjs");
+const ANTIGRAVITY: &str = include_str!("../../../resources/benchmark-antigravity-acp.mjs");
 const KIMI: &str = include_str!("../../../resources/benchmark-repository-kimi.mjs");
 
 pub(crate) fn attempt_id(owner: &str) -> String {
@@ -52,6 +53,7 @@ fn adapter(provider: NativeProvider) -> Option<&'static str> {
         NativeProvider::Codex => Some(CODEX),
         NativeProvider::Kimi => Some(KIMI),
         NativeProvider::Zai => NativeProvider::Zai.adapter(),
+        NativeProvider::Antigravity => Some(ANTIGRAVITY),
         NativeProvider::Grok => None,
     }
 }
@@ -123,6 +125,16 @@ fn environment(provider: NativeProvider) -> Vec<(String, String)> {
             env.push(("KIMI_CODE_HOME".into(), "/home/candidate/.kimi-code".into()));
             env.push(("KIMI_CODE_NO_AUTO_UPDATE".into(), "1".into()));
         }
+        NativeProvider::Antigravity => {
+            env.extend([
+                ("AGY_CLI_FORCE_FILE_TOKEN_STORAGE".into(), "1".into()),
+                ("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "1".into()),
+                (
+                    "DISTILL_BENCH_ANTIGRAVITY_ADAPTER".into(),
+                    ANTIGRAVITY.into(),
+                ),
+            ]);
+        }
         NativeProvider::Zai => {
             env.extend(provider.policy_env());
             let config = super::zai::repository_config(
@@ -144,7 +156,7 @@ pub(super) fn permission_mode(provider: NativeProvider) -> Option<&'static str> 
         NativeProvider::Codex => Some("agent-full-access"),
         NativeProvider::Kimi => Some("auto"),
         NativeProvider::Zai => Some(super::zai::REPOSITORY_AGENT),
-        NativeProvider::Grok => None,
+        NativeProvider::Grok | NativeProvider::Antigravity => None,
     }
 }
 
@@ -179,7 +191,10 @@ pub(super) fn session_meta(provider: NativeProvider, model: &str) -> Value {
             profile.as_object_mut().unwrap().remove("maxTurns");
             meta
         }
-        NativeProvider::Codex | NativeProvider::Kimi | NativeProvider::Zai => json!({}),
+        NativeProvider::Codex
+        | NativeProvider::Kimi
+        | NativeProvider::Zai
+        | NativeProvider::Antigravity => json!({}),
     }
 }
 
@@ -228,7 +243,20 @@ pub(super) fn launch(
     args.push("--".into());
     // No shell interprets the host's environment or arguments. OpenCode and
     // Grok are native executables; the others are Node bridges.
-    if provider == NativeProvider::Zai {
+    if provider == NativeProvider::Antigravity {
+        args.extend(
+            [
+                "/usr/local/bin/node",
+                "/tmp/benchmark-antigravity-acp.mjs",
+                "--model",
+            ]
+            .map(str::to_owned),
+        );
+        args.push(request.model_id.clone());
+        if let Some(effort) = request.reasoning_effort.as_ref() {
+            args.extend(["--effort".into(), effort.clone()]);
+        }
+    } else if provider == NativeProvider::Zai {
         args.extend(["/opt/distill-tools/bin/opencode", "acp"].map(str::to_owned));
     } else if let Some(adapter) = adapter(provider) {
         args.extend([
@@ -243,7 +271,7 @@ pub(super) fn launch(
             NativeProvider::Claude => "/opt/distill-tools/claude-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
             NativeProvider::Codex => "/opt/distill-tools/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
             NativeProvider::Kimi => "/opt/distill-tools/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
-            NativeProvider::Grok | NativeProvider::Zai => unreachable!(),
+            NativeProvider::Grok | NativeProvider::Zai | NativeProvider::Antigravity => unreachable!(),
         };
         args.push(entrypoint.into());
         if provider == NativeProvider::Kimi {
@@ -452,5 +480,43 @@ mod tests {
             "acp".into()
         ]));
         assert_eq!(launch.sandbox.unwrap().0, attempt_id("invented-owner"));
+    }
+
+    #[test]
+    fn antigravity_uses_the_signed_in_repository_agent_and_exact_selection() {
+        let provider = NativeProvider::Antigravity;
+        let request = OwnedSessionRequest {
+            owner_id: "invented-owner".into(),
+            provider_id: provider.harness_id().into(),
+            account_id: "cli-login-antigravity-acp".into(),
+            model_id: "invented-model".into(),
+            reasoning_effort: Some("high".into()),
+            fast_mode: None,
+            cwd: "/workspace".into(),
+            title: "Synthetic repository task".into(),
+            profile: ExecutionProfile::ProtectedRepositoryV1,
+        };
+        let launch = launch(&request, provider, "revision".into());
+        assert_eq!(launch.sandbox.unwrap().0, attempt_id(&request.owner_id));
+        assert!(launch.args.ends_with(
+            &[
+                "--",
+                "/usr/local/bin/node",
+                "/tmp/benchmark-antigravity-acp.mjs",
+                "--model",
+                "invented-model",
+                "--effort",
+                "high"
+            ]
+            .map(str::to_owned)
+        ));
+        assert!(launch.args.contains(&"DISTILL_BENCH_ACCOUNT_HOME=/home/candidate/accounts/cli-login-antigravity-acp/antigravity".into()));
+        assert_eq!(adapter(provider), Some(ANTIGRAVITY));
+        let env: std::collections::BTreeMap<_, _> = environment(provider).into_iter().collect();
+        assert_eq!(env["DISTILL_BENCH_ANTIGRAVITY_ADAPTER"], ANTIGRAVITY);
+        assert_eq!(env["DISTILL_BENCH_INSTRUCTIONS"], PROMPT);
+        assert_eq!(env["AGY_CLI_FORCE_FILE_TOKEN_STORAGE"], "1");
+        assert_eq!(env["AGY_CLI_DISABLE_AUTO_UPDATE"], "1");
+        assert_eq!(permission_mode(provider), None);
     }
 }

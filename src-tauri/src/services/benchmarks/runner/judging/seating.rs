@@ -124,7 +124,19 @@ pub(in super::super) fn candidate_vendors(
 ) -> Option<std::collections::BTreeSet<&'static str>> {
     candidates
         .iter()
-        .map(|candidate| crate::services::benchmarks::judge_pool::vendor(&candidate.provider_id))
+        .map(|candidate| {
+            // Antigravity's live account catalog can include other labs. An
+            // unrecognized model has no lab evidence for an ordinary panel.
+            if candidate.provider_id == "antigravity-acp"
+                && !candidate
+                    .model_id
+                    .to_ascii_lowercase()
+                    .starts_with("gemini-")
+            {
+                return None;
+            }
+            crate::services::benchmarks::judge_pool::vendor(&candidate.provider_id)
+        })
         .collect()
 }
 
@@ -250,6 +262,15 @@ mod tests {
     use super::*;
     use crate::services::benchmarks::runner::tests::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn antigravity_does_not_attribute_an_unrecognized_model_to_google() {
+        let mut candidate = judge_row("gemini-invented");
+        candidate.provider_id = "antigravity-acp".into();
+        assert_eq!(candidate_vendors(&[&candidate]), Some(["Google"].into()));
+        candidate.model_id = "unidentified-provider-model".into();
+        assert!(candidate_vendors(&[&candidate]).is_none());
+    }
 
     #[test]
     fn frozen_seats_keep_the_candidates_own_model_and_the_models_of_the_cases_authors() {

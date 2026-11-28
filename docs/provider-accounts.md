@@ -14,6 +14,7 @@ screens:
 | Claude Code, Codex | browser sign-in of the CLI, or an API key | any number, stored by Flock | yes | yes |
 | Z.ai | an API key (Coding Plan or Standard) | any number, stored by Flock | yes | yes |
 | Grok, Kimi Code | the CLI's own sign-in | one, named by Flock | yes | yes |
+| Google Antigravity | personal Google browser sign-in through Antigravity CLI | one Flock-scoped CLI profile | Gemini five-hour and weekly limits when Google reports them | yes |
 | Copilot, Amp | the CLI's own sign-in | one, named by Flock | not reported | no sign-out flow |
 
 Claude Code, Codex and Z.ai accounts are stored by Flock. Add each
@@ -21,6 +22,16 @@ subscription account in Flock and complete its initial browser authorization
 once. API accounts accept a separate key. Switching uses that account's saved
 credentials; it does not sign out another account. The provider CLI refreshes
 OAuth credentials. Revoked authorization still requires a new sign-in.
+
+For Google Antigravity, install the CLI from its provider card and choose
+Sign in. The CLI opens Google's personal-account authorization and keeps
+that sign-in under the Flock root. Chats and conductor roles use the models
+and options the CLI advertises for the subscription. A model that Google
+removes from the account is no longer available for new selections.
+For benchmarks, Antigravity can run protected repository tasks as a candidate.
+Its CLI adds agent tools and instructions, so Flock disables text-only runs
+and judging for this provider. Each repository attempt receives a short-lived
+access token. The refresh token stays in the app's account profile.
 
 Grok, Kimi Code, Copilot and Amp keep one sign-in in their own CLI. Flock
 names that sign-in as the provider's one account (`cli-login-<provider>`),

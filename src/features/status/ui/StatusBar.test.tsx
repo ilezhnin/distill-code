@@ -4,6 +4,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
 import { CURATED_PROVIDER_CATALOG } from "@/features/providers/curatedProviders";
 import { recordReadyProviders } from "@/features/providers/lib/providerConnections";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
+import { providerModelState, providerModels } from "@/test/providerModels";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { useAgentSetupStore } from "@/features/providers/stores/agentSetupStore";
 import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
@@ -29,6 +31,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
   readiness.clear();
+  useProviderAccountsStore.setState(
+    providerModelState(providerModels(["antigravity-acp", "amp-acp"], [])),
+  );
   for (const provider of CURATED_PROVIDER_CATALOG) {
     readiness.set(provider.id, "not_installed");
   }
@@ -54,6 +59,44 @@ it("does not offer sign-in for a CLI installed by an abandoned setup", () => {
   expect(screen.queryByText("Sign in")).not.toBeInTheDocument();
 });
 
+it("shows Antigravity's connection without inventing usage for its CLI account", async () => {
+  const id = "antigravity-acp";
+  readiness.set(id, "ready");
+  readiness.set("amp-acp", "ready");
+  recordReadyProviders(new Set([id, "amp-acp"]), 1);
+  useProviderRateLimitsStore.setState({
+    snapshot: {
+      updatedAt: 1,
+      providers: [
+        {
+          provider: id,
+          accountId: `cli-login-${id}`,
+          session: null,
+          weekly: null,
+          updatedAt: 0,
+          error: null,
+          status: "ok",
+          configured: true,
+        },
+      ],
+    },
+  });
+  const { rerender } = render(<StatusBar />);
+  expect(screen.getByTitle("Google Antigravity")).toHaveTextContent(
+    "Connected",
+  );
+  expect(screen.queryByText(/\d+%/)).toBeNull();
+  expect(screen.queryByTitle("Amp")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Usage" }));
+  expect(screen.getByText("Google Antigravity")).toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  readiness.set(id, "not_ready");
+  // The real hook supplies a new map after a fresh doctor report.
+  useProviderRateLimitsStore.setState({ snapshot: null });
+  rerender(<StatusBar />);
+  expect(screen.getByText("Sign in")).toBeVisible();
+});
+
 it("offers sign-in for a provider that signed in before and signed out", () => {
   recordReadyProviders(new Set(["grok-acp"]), 1);
   recordReadyProviders(new Set(), 2);
@@ -61,6 +104,47 @@ it("offers sign-in for a provider that signed in before and signed out", () => {
   render(<StatusBar />);
   expect(screen.getByRole("button", { name: "Usage" })).toBeInTheDocument();
   expect(screen.getByText("Sign in")).toBeInTheDocument();
+});
+
+it("shows the Gemini subscription windows only while Antigravity is installed and signed in", () => {
+  const id = "antigravity-acp";
+  const snapshot = {
+    updatedAt: 1,
+    providers: [
+      {
+        provider: id,
+        accountId: `cli-login-${id}`,
+        session: null,
+        weekly: null,
+        updatedAt: 1,
+        error: null,
+        status: "ok" as const,
+        configured: true,
+        modelWindows: (["session", "weekly"] as const).map((period) => ({
+          modelId: "Gemini",
+          period,
+          window: {
+            usedPercent: period === "session" ? 15 : 31,
+            windowMinutes: period === "session" ? 300 : 10080,
+            resetsAt: null,
+            resetDescription: null,
+          },
+        })),
+      },
+    ],
+  };
+  readiness.set(id, "ready");
+  useProviderRateLimitsStore.setState({ snapshot, usageMode: "verbose" });
+  const { unmount } = render(<StatusBar />);
+  expect(screen.getByText(/Gemini.*15%/)).toBeVisible();
+  expect(screen.getByText(/Gemini.*31%/)).toBeVisible();
+  unmount();
+  readiness.set(id, "not_installed");
+  render(<StatusBar />);
+  expect(screen.queryByText(/Gemini.*%/)).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Configure usage tracking" }),
+  ).toBeVisible();
 });
 
 it("opens provider settings from the empty bar without starting any setup", async () => {

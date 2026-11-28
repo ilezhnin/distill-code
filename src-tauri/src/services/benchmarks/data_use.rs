@@ -153,7 +153,7 @@ mod tests {
             assert!(!defaults.trains(provider), "{provider}");
             assert!(defaults.judge_refusal(provider).is_none());
         }
-        for provider in ["zai-acp", "kimi-acp"] {
+        for provider in ["zai-acp", "kimi-acp", "antigravity-acp"] {
             assert!(defaults.trains(provider), "{provider}");
             assert!(defaults
                 .judge_refusal(provider)

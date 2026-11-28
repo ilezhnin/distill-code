@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { getClient } from "@/shared/api/acpConnection";
 import type { ModelOption } from "@/features/chat/types";
-import { providerModelOptionsFromInventory } from "../stores/providerModelCacheStore";
+import { subscribeProviderModelInventoryInvalidated } from "../lib/providerModelInventoryEvents";
+import {
+  providerModelOptionsFromInventory,
+  providerModelRefreshVersion,
+} from "../stores/providerModelCacheStore";
 
 interface AccountModels {
   models: ModelOption[];
@@ -18,8 +22,12 @@ export function useAccountModels(
   accountRevision: number | undefined,
   open: boolean,
 ) {
+  const generation = useSyncExternalStore(
+    subscribeProviderModelInventoryInvalidated,
+    () => providerModelRefreshVersion(providerId),
+  );
   const key = accountId
-    ? `${providerId}\0${accountId}\0${accountRevision ?? 0}`
+    ? `${providerId}\0${accountId}\0${accountRevision ?? 0}\0${generation}`
     : null;
   const [answer, setAnswer] = useState<{
     key: string;
@@ -57,8 +65,9 @@ export function useAccountModels(
         }));
       requests.set(key, request);
       void request.then((value) => {
-        cache.set(key, value);
         requests.delete(key);
+        if (providerModelRefreshVersion(providerId) !== generation) return;
+        cache.set(key, value);
         if (cache.size > 64) {
           const first = cache.keys().next().value;
           if (first) cache.delete(first);
@@ -74,7 +83,7 @@ export function useAccountModels(
     return () => {
       cancelled = true;
     };
-  }, [key, accountId, providerId, open]);
+  }, [key, accountId, providerId, generation, open]);
   const value = key
     ? answer?.key === key
       ? answer.value

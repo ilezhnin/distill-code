@@ -90,6 +90,18 @@ describe("resolveExplicitWaveStepModel", () => {
     }
   });
 
+  it("resolves an advertised Antigravity model and rejects it after the CLI removes it", () => {
+    const id = "model-from-cli";
+    installModels({ "antigravity-acp": [id] });
+    const result = resolveExplicitWaveStepModel(id);
+    expect(result.ok && result.target).toMatchObject({
+      harnessId: "antigravity-acp",
+      modelId: id,
+    });
+    installModels({ "antigravity-acp": [] });
+    expect(resolveExplicitWaveStepModel(id).ok).toBe(false);
+  });
+
   it("never splits a context-lane id like opus[1m]", () => {
     installModels({ "claude-acp": ["opus", "opus[1m]"] });
     const exact = resolveExplicitWaveStepModel("opus[1m]");

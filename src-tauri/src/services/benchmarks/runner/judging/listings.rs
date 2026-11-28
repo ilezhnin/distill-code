@@ -283,9 +283,7 @@ impl NativeBackend {
                     .and_then(Value::as_str)?;
                 let efforts = offered_efforts(row, excluded);
                 let name = row["name"].as_str().unwrap_or(id);
-                let reason = unavailable
-                    .clone()
-                    .or_else(|| row["unavailable"].as_str().map(str::to_owned));
+                let reason = row["unavailable"].as_str().map(str::to_owned);
                 Some(InventoryModel {
                     configuration: Configuration {
                         id: format!("{provider}:{account}:{id}"),
@@ -318,6 +316,12 @@ impl NativeBackend {
                 ),
                 Err(error) => (None, Some(host_error(error).message)),
             };
+            // Other native providers use their text readiness gate for both profiles.
+            // Antigravity's explicit tool-free refusal applies only to text.
+            let shared_issue = unavailable
+                .as_ref()
+                .filter(|_| provider.text_refusal().is_none());
+            let repository_issue = reason.or_else(|| shared_issue.cloned());
             let repository_rows = rows
                 .iter()
                 .cloned()
@@ -327,12 +331,28 @@ impl NativeBackend {
                     row.configuration.inventory_revision = revision.as_ref().map(|runtime| {
                         repository_inventory_revision(runtime, result, &row.configuration.model_id)
                     });
-                    row.reason = reason.clone().or(row.reason);
+                    row.reason = repository_issue
+                        .clone()
+                        .or_else(|| {
+                            provider
+                                .model_refusal(&row.configuration.model_id)
+                                .map(str::to_owned)
+                        })
+                        .or(row.reason);
                     row.available = row.reason.is_none();
                     row
                 })
                 .collect::<Vec<_>>();
             rows.extend(repository_rows);
+        }
+        if let Some(issue) = unavailable {
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.configuration.execution_profile == "native_text")
+            {
+                row.available = false;
+                row.reason = Some(issue.clone());
+            }
         }
         Ok(rows)
     }

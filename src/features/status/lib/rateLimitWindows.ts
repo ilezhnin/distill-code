@@ -55,6 +55,14 @@ export function isListedUsageProvider(
   // CLI keeps the sign-in and the limits) has no row here, whatever the
   // host's status read for it returned.
   if (!reportsUsage) return false;
+  // A CLI account is listed even when it has never signed in. In the
+  // absence of a readiness or usage result it cannot establish a connection.
+  if (
+    !readiness &&
+    provider.status === "unavailable" &&
+    !hasUsageData(provider)
+  )
+    return false;
   // A ready harness with nothing signed in has no usage to show: the bar
   // lists a provider only once an account exists or was connected before.
   if (readiness === "ready") {
@@ -219,6 +227,7 @@ export function platformLimitState(
   providers: readonly ProviderRateLimits[],
   platform: string,
   options: {
+    modelId?: string;
     scopedWindow?: UsageSection["key"];
     nearLimitPercent?: number;
   } = {},
@@ -245,14 +254,16 @@ export function platformLimitState(
 export function platformUsedPercent(
   providers: readonly ProviderRateLimits[],
   platform: string,
-  options: { scopedWindow?: UsageSection["key"] } = {},
+  options: { modelId?: string; scopedWindow?: UsageSection["key"] } = {},
 ): number | undefined {
   const entry = providers.find((provider) => provider.provider === platform);
   if (!entry) return undefined;
+  const modelId = options.modelId?.toLowerCase();
   const applicable = getUsageSections(entry).filter(
     (section) =>
       (!section.modelId && !MODEL_SCOPED_WINDOW_KEYS.includes(section.key)) ||
-      section.key === options.scopedWindow,
+      section.key === options.scopedWindow ||
+      (section.modelId && modelId?.includes(section.modelId.toLowerCase())),
   );
   if (applicable.length === 0) return undefined;
   return applicable.reduce(

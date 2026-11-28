@@ -1,6 +1,7 @@
 //! Account-scoped quota snapshots and routing. Reset credits are never consumed
 //! by selection, polling, or dispatch; only the operator's explicit IPC can do so.
 
+mod antigravity;
 mod claude;
 mod claude_resets;
 mod codex;
@@ -295,6 +296,13 @@ pub(crate) async fn signed_in(app: &AppHandle, account: &ProviderAccount) -> boo
     };
     account.enabled
         && signed_in_by(known, || {
+            if account.provider_id == crate::services::agent_host::antigravity::ID {
+                return crate::services::flock_root::app_root(app)
+                    .and_then(|root| {
+                        crate::services::agent_host::antigravity::require_personal_grant(&root)
+                    })
+                    .is_ok();
+            }
             // A sign-in its CLI keeps is known from its status alone, and
             // one that cannot be inspected is not called missing.
             provider_accounts::spec(&account.provider_id)
@@ -667,6 +675,7 @@ async fn fetch_account(app: &AppHandle, account: &ProviderAccount) -> ProviderAc
         return empty;
     }
     let result = match spec.telemetry {
+        Telemetry::Antigravity => antigravity::fetch(app, account).await,
         Telemetry::Codex if api_key => openai_key::fetch(app, account).await,
         Telemetry::Codex => codex::fetch(app, account).await,
         Telemetry::Claude => claude::fetch(app, account).await,

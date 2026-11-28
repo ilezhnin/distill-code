@@ -442,7 +442,8 @@ impl Inner {
     ) -> Result<SessionRecord, Value> {
         if record.account_id.is_some()
             || record.archived_at.is_some()
-            || !provider_accounts::supports_managed_accounts(&record.harness)
+            || (!provider_accounts::supports_managed_accounts(&record.harness)
+                && record.harness != super::super::antigravity::ID)
         {
             return Ok(record);
         }

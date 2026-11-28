@@ -98,6 +98,8 @@ function withAccount(
 }
 
 function acceptAuthState(auth: api.ProviderAccountAuthState) {
+  const previous =
+    useProviderAccountsStore.getState().authStates[auth.accountId];
   useProviderAccountsStore.setState((state) => {
     const current = state.authStates[auth.accountId];
     // A cancelled attempt can finish delivering its IPC response after retry.
@@ -109,6 +111,18 @@ function acceptAuthState(auth: api.ProviderAccountAuthState) {
       return state;
     return { authStates: { ...state.authStates, [auth.accountId]: auth } };
   });
+  const state = useProviderAccountsStore.getState();
+  if (
+    auth.status === "authenticated" &&
+    state.authStates[auth.accountId] === auth &&
+    (previous?.status !== auth.status || previous.attemptId !== auth.attemptId)
+  ) {
+    const account = state.accounts.find((entry) => entry.id === auth.accountId);
+    if (account)
+      useProviderModelCacheStore
+        .getState()
+        .invalidateProvider(account.providerId, { forget: true });
+  }
 }
 
 // This store mirrors backend metadata. Credentials never enter a persisted store.

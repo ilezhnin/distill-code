@@ -256,6 +256,9 @@ pub(crate) async fn renew(provider: NativeProvider) -> Result<(), String> {
 
 /// Runs the offline check under `CHECK`, which the caller holds.
 async fn check(provider: NativeProvider, status: sandbox::Status) -> Result<(), String> {
+    if let Some(reason) = provider.text_refusal() {
+        return Err(reason.to_owned());
+    }
     let artifacts = decode(&attest(&["inspect", provider.key()], None).await?)?;
     let id = format!("policy-{}-{}", provider.key(), uuid::Uuid::new_v4());
     let mut cleanup = sandbox::Cleanup(Some(id.clone()));
@@ -278,6 +281,7 @@ async fn check(provider: NativeProvider, status: sandbox::Status) -> Result<(), 
             NativeProvider::Grok => artifacts["grokNative"]["path"]
                 .as_str()
                 .ok_or("Missing Grok runtime")?,
+            NativeProvider::Antigravity => unreachable!("repository-only provider"),
             NativeProvider::Zai => artifacts["entrypoint"]["path"]
                 .as_str()
                 .ok_or("Missing Z.ai runtime")?,

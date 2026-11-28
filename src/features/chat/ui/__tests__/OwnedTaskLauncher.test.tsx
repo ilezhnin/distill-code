@@ -814,7 +814,7 @@ async function inspectNative(
     );
   await user.selectOptions(screen.getByLabelText("Role source 1"), rolePath);
   await user.selectOptions(screen.getByLabelText("Work class 1"), "debug");
-  await user.click(screen.getByRole("checkbox", { name: "claude-acp" }));
+  await user.click(screen.getByRole("checkbox", { name: "Claude Code" }));
   await user.click(
     screen.getByRole("button", { name: "Inspect native contract" }),
   );
@@ -1285,7 +1285,25 @@ it("discloses protected repository permissions and sends only exact source refs 
     "protected_repository",
   );
   await user.selectOptions(screen.getByLabelText("Role source 1"), rolePath);
-  await user.click(screen.getByRole("checkbox", { name: "codex-acp" }));
+  const agy = screen.getByRole("checkbox", { name: "Google Antigravity" });
+  await user.click(agy);
+  await user.selectOptions(
+    screen.getByLabelText("Supported native profile"),
+    "native_text",
+  );
+  expect(
+    screen.queryByRole("checkbox", { name: "Google Antigravity" }),
+  ).toBeNull();
+  await user.selectOptions(
+    screen.getByLabelText("Supported native profile"),
+    "protected_repository",
+  );
+  expect(
+    screen.getByRole("checkbox", { name: "Google Antigravity" }),
+  ).not.toBeChecked();
+  await user.click(
+    screen.getByRole("checkbox", { name: "Google Antigravity" }),
+  );
   expect(
     screen.getByRole("button", { name: "Inspect native contract" }),
   ).toBeDisabled();
@@ -1312,7 +1330,7 @@ it("discloses protected repository permissions and sends only exact source refs 
       commit: "fictional-commit",
       tree: "fictional-tree",
     },
-    providerIds: ["codex-acp"],
+    providerIds: ["antigravity-acp"],
   });
   expect(io.setMode).not.toHaveBeenCalled();
   expect(io.prepare).not.toHaveBeenCalled();

@@ -16,6 +16,8 @@ export interface ProviderCatalogEntry {
   supportsInstall?: boolean;
   supportsAuth?: boolean;
   supportsAuthStatus?: boolean;
+  /** The CLI must positively verify the sign-in before it can run a session. */
+  requiresVerifiedAuth?: boolean;
   /** Known non-interactive logout command; the card offers Sign out. */
   supportsLogout?: boolean;
   /** The bridge vendors the full harness CLI, so it is the only binary. */

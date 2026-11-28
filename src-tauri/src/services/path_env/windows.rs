@@ -20,6 +20,7 @@ pub(super) fn push_tool_manager_dirs(paths: &mut Vec<PathBuf>) {
     }
     if let Some(local_appdata) = dirs::data_local_dir() {
         paths.push(local_appdata.join("Volta").join("bin"));
+        paths.push(local_appdata.join("agy").join("bin"));
     }
 }
 

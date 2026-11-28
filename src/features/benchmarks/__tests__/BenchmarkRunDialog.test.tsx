@@ -689,7 +689,10 @@ it("does not offer an account that is signed out", async () => {
   useProviderAccountsStore.setState({ statuses: {} });
 });
 
-it("selects the CLI sign-in whenever the capabilities naming it arrive", async () => {
+it.each([
+  ["grok-acp", /Grok/],
+  ["antigravity-acp", /Google Antigravity/],
+] as const)("selects the %s CLI sign-in whenever the capabilities naming it arrive", async (providerId, name) => {
   const user = userEvent.setup();
   let arrive: (capabilities: Capability[]) => void = () => {};
   vi.mocked(benchmarkApi.getCapabilities).mockReturnValue(
@@ -711,22 +714,25 @@ it("selects the CLI sign-in whenever the capabilities naming it arrive", async (
       />
     </QueryClientProvider>,
   );
-  // Grok is chosen before the capabilities are known.
+  // The provider is chosen before the capabilities are known.
   await user.click(screen.getByRole("combobox", { name: "Provider" }));
-  await user.click(await screen.findByRole("option", { name: /Grok/ }));
+  await user.click(await screen.findByRole("option", { name }));
   arrive([
     {
-      providerId: "grok-acp",
-      executionProfile: "native_text",
+      providerId,
+      executionProfile:
+        providerId === "antigravity-acp"
+          ? "protected_repository"
+          : "native_text",
       supported: true,
       reason: "Verified",
-      cliAccountId: "cli-login-grok-acp",
+      cliAccountId: `cli-login-${providerId}`,
     },
   ]);
   await waitFor(() =>
     expect(benchmarkApi.getInventory).toHaveBeenCalledWith(
-      "grok-acp",
-      "cli-login-grok-acp",
+      providerId,
+      `cli-login-${providerId}`,
     ),
   );
   // No inventory was asked for without the sign-in.

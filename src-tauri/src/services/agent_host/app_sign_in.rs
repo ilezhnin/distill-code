@@ -153,6 +153,15 @@ pub(super) async fn ensure(
         ));
     }
     let natural = io.now() >= expiry.saturating_sub(credential_lease::natural_window_ms(provider));
+    // agy refreshes an expired Google grant when its account is read.
+    // It has no command to rotate a still-valid grant ahead of schedule.
+    if provider == NativeProvider::Antigravity && !natural {
+        return if lasts {
+            Ok(Some(expiry))
+        } else {
+            Err("sign_in_wait: Waiting for Antigravity CLI to renew its Google sign-in before this test starts".into())
+        };
+    }
     // A forced renewal rotates the refresh token; a chat or CLI of the
     // account that still holds the old one could replay it. Whether each CLI
     // reads its store again before it refreshes is not verified, so a forced
@@ -346,6 +355,41 @@ mod tests {
         fn now(&self) -> i64 {
             self.now
         }
+    }
+
+    #[tokio::test]
+    async fn antigravity_waits_for_a_due_grant_then_checks_the_refreshed_expiry() {
+        let renewals = SignInRenewals::default();
+        let renewed = NOW + HOUR + 60_000;
+        let mut io = Scripted::new(Some(NOW + 60_000), Some(renewed));
+        let needed = NOW + 600_000;
+        let provider = NativeProvider::Antigravity;
+        let short = ensure(
+            &renewals,
+            "antigravity",
+            provider,
+            needed,
+            Asker::Test,
+            &mut io,
+        )
+        .await
+        .unwrap_err();
+        assert!(short.starts_with("sign_in_wait:"));
+        assert!(io.renewals.is_empty());
+        io.now += 60_000;
+        assert_eq!(
+            ensure(
+                &renewals,
+                "antigravity",
+                provider,
+                needed,
+                Asker::Test,
+                &mut io
+            )
+            .await,
+            Ok(Some(renewed))
+        );
+        assert_eq!(io.renewals, [true]);
     }
 
     #[tokio::test]

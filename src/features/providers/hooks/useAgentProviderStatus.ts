@@ -72,6 +72,12 @@ export function readinessFromReport(
     // bridge-missing, genuine no-auth), so leaning on it would flip
     // supportsAuth-without-a-probe agents to "ready" pre-sign-in.
     if (provider?.supportsAuthStatus) {
+      if (
+        provider.requiresVerifiedAuth &&
+        check.authStatus !== "authenticated" &&
+        check.authStatus !== "notAuthenticated"
+      )
+        continue;
       // Case 1: real CLI probe — trust the crate's authStatus. Only a probe
       // that actually reported "signed out" blocks the agent: `unknown` means
       // the probe could not run (a PATH-shadowed CLI), which the crate says to
@@ -134,6 +140,12 @@ export function applyAccountReadiness(
   for (const model of Object.values(providers)) {
     const installed = readiness.get(model.providerId);
     if (!installed || installed === "not_installed") continue;
+    // Quota can outlive the CLI session which supplied it.
+    if (
+      installed === "not_ready" &&
+      getCatalogEntry(model.providerId)?.requiresVerifiedAuth
+    )
+      continue;
     const reported = model.accounts.some((account) => {
       const state = statuses[account.id]?.state;
       return state !== undefined && state !== "unknown";

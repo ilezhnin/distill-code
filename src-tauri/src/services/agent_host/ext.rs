@@ -526,7 +526,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
 /// own updater, `npm install -g`, the doctor — serves new models the moment it
 /// restarts, and without that stamp the list it replaced would have stayed
 /// the inventory for as long as the install lived.
-const MODELS_KV_SCOPE: &str = "harness_models_v2";
+pub(super) const MODELS_KV_SCOPE: &str = "harness_models_v2";
 
 /// Shape of an inventory row. The renderer caches rows under this number and
 /// drops anything else on load, so a build whose rows mean something new is

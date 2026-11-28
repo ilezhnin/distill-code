@@ -819,7 +819,12 @@ fn missing_bridge(spec: &HarnessSpec) -> String {
 /// the launcher-identity scrub is skipped: it removes by name, after
 /// everything below, and would also take away what the host set under such a
 /// name (a provider home that Orca redirects for Flock itself, say).
-fn apply_env(command: &mut std::process::Command, spec: &HarnessSpec, env: &SpawnEnv, owned: bool) {
+pub(super) fn apply_env(
+    command: &mut std::process::Command,
+    spec: &HarnessSpec,
+    env: &SpawnEnv,
+    owned: bool,
+) {
     if owned {
         command.env_clear();
     }

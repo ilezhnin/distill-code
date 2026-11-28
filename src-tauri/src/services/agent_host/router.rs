@@ -1022,6 +1022,20 @@ impl AgentHost {
         };
         let account = provider_accounts::account(&inner.app, account_id)?;
         let key = account_route_key(&account.provider_id, Some(account_id));
+        // A fixed Google identity may now name another subscription. Finish
+        // its outstanding catalogue write and grant renewal before retiring
+        // the old bridge and cached models. New requests see the change guard.
+        let _changing_google = if account.provider_id == super::antigravity::ID {
+            let catalog = inner
+                .owned_lock(&format!("model-catalog:{key}"))
+                .await
+                .lock_owned()
+                .await;
+            let renewal = inner.sign_in_renewals.gate(&key).write_owned().await;
+            Some((catalog, renewal))
+        } else {
+            None
+        };
         let spawn_lock = Arc::clone(
             inner
                 .spawn_locks
@@ -1056,6 +1070,10 @@ impl AgentHost {
                 true
             }
         });
+        if account.provider_id == super::antigravity::ID {
+            // This fixed identity can sign in to a different Google plan.
+            inner.store.kv_delete(ext::MODELS_KV_SCOPE, &key).await?;
+        }
         Ok(())
     }
 
@@ -1131,6 +1149,15 @@ impl app_sign_in::RenewalIo for AppRenewal<'_> {
 
     fn renew(&mut self, natural: bool) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
+            if self.native == NativeProvider::Antigravity {
+                let env = crate::services::managed_acp_tools::provider_env(&self.host.app).await;
+                if super::antigravity::auth_status(&self.host.app, env).await
+                    == doctor::types::AuthStatus::Authenticated
+                {
+                    return Ok(());
+                }
+                return Err("Antigravity CLI could not renew its Google sign-in".into());
+            }
             if self.native == NativeProvider::Grok {
                 let expiry = self.expiry()?.unwrap_or_default();
                 return self.host.windows_grok_renewal(expiry).await;

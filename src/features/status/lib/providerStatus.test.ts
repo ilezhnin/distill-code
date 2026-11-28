@@ -57,6 +57,17 @@ describe("catalog provider participation", () => {
       new Map([[future.id, "not_ready"]]),
     );
     expect(isListedUsageProvider(abandoned, "not_ready", false)).toBe(false);
+    expect(
+      isListedUsageProvider(
+        {
+          ...abandoned,
+          configured: true,
+          accountId: "cli-login-future-acp",
+        },
+        undefined,
+        false,
+      ),
+    ).toBe(false);
     const [connected] = buildProviderStatuses(
       [future],
       [],

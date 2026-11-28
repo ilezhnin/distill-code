@@ -145,6 +145,7 @@ pub(crate) fn vendor(provider_id: &str) -> Option<&'static str> {
         NativeProvider::Grok => "xAI",
         NativeProvider::Kimi => "Moonshot AI",
         NativeProvider::Zai => "Z.ai",
+        NativeProvider::Antigravity => "Google",
     })
 }
 
@@ -321,8 +322,11 @@ fn latest<'a>(all: &'a [Calibration], entry: &Entry) -> Option<&'a Calibration> 
 /// reads private rubrics and the conditions a right answer meets, so a
 /// provider that may train on submitted data never judges.
 fn refusal(entry: &Entry, calibration: Option<&Calibration>, data_use: &DataUse) -> Option<String> {
-    if vendor(&entry.provider_id).is_none() {
+    let Some(provider) = NativeProvider::for_harness(&entry.provider_id) else {
         return Some("Its provider has no native judge profile".into());
+    };
+    if let Some(reason) = provider.text_refusal() {
+        return Some(reason.into());
     }
     if let Some(reason) = data_use.judge_refusal(&entry.provider_id) {
         return Some(reason);

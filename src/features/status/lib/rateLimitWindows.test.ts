@@ -26,6 +26,24 @@ function provider(overrides: Partial<ProviderRateLimits>): ProviderRateLimits {
 }
 
 describe("platformUsedPercent", () => {
+  it("uses both Gemini windows for a matching Antigravity model and neither for another family", () => {
+    const id = "antigravity-acp";
+    const providers = [
+      provider({
+        provider: id,
+        modelWindows: [
+          { modelId: "Gemini", period: "session", window: window(25) },
+          { modelId: "Gemini", period: "weekly", window: window(100) },
+        ],
+      }),
+    ];
+    expect(
+      platformLimitState(providers, id, { modelId: "gemini-example" }),
+    ).toBe("at-limit");
+    expect(
+      platformLimitState(providers, id, { modelId: "example-other" }),
+    ).toBe("clear");
+  });
   it("is the fullest window the candidate spends, never one scoped to another model", () => {
     const providers = [
       provider({

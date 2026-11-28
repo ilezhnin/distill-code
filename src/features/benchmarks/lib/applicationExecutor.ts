@@ -32,6 +32,7 @@ export function automaticExecutorOptions(
       const label = model.displayName ?? model.name ?? model.id;
       if (
         platformLimitState(context.rateLimits, provider.id, {
+          modelId: model.id,
           nearLimitPercent: context.nearLimitPercent,
           scopedWindow: scopedWindowForModel(provider.id, model.id, label),
         }) === "at-limit"

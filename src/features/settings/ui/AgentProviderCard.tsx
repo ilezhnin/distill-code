@@ -200,7 +200,11 @@ export function AgentProviderCard({
     ? "not_installed"
     : isBuiltIn || !hasBinary
       ? "ready"
-      : (readiness ?? (statusUnavailable ? "unknown" : "not_installed"));
+      : (readiness ??
+        (statusUnavailable ||
+        (provider.requiresVerifiedAuth && versionCheck?.path)
+          ? "unknown"
+          : "not_installed"));
 
   // Version / update / partial-install readout from the shared report. Derived
   // here (above the setup handlers) so the handlers and rendered actions share

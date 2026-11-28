@@ -63,7 +63,10 @@ pub(crate) fn natural_window_ms(provider: NativeProvider) -> i64 {
     match provider {
         NativeProvider::Claude => CLAUDE_RENEWAL_WINDOW_MS,
         NativeProvider::Grok => grok::cli_renewal_window_ms(),
-        NativeProvider::Codex | NativeProvider::Kimi | NativeProvider::Zai => 0,
+        NativeProvider::Antigravity
+        | NativeProvider::Codex
+        | NativeProvider::Kimi
+        | NativeProvider::Zai => 0,
     }
 }
 
@@ -93,6 +96,7 @@ pub(crate) fn fresh_lifetime_ms(provider: NativeProvider) -> Option<i64> {
         NativeProvider::Claude => 8 * 60 * 60 * 1000,
         NativeProvider::Grok => 6 * 60 * 60 * 1000,
         NativeProvider::Codex => CODEX_REFRESH_AGE_MS,
+        NativeProvider::Antigravity => 60 * 60 * 1000,
         NativeProvider::Kimi | NativeProvider::Zai => return None,
     };
     Some(
@@ -456,6 +460,37 @@ pub(crate) fn grok(raw: &[u8]) -> Result<Lease, String> {
     })
 }
 
+/// agy accepts a Google consumer profile containing only this access token
+/// and its expiry. Rebuild it rather than staging the private source file.
+fn antigravity(raw: &[u8]) -> Result<Lease, String> {
+    let doc = parse_document("Antigravity", raw)?;
+    let token = &doc["token"];
+    if doc["auth_method"] != "consumer" || token["token_type"] != "Bearer" {
+        return Err("Antigravity benchmarks require a personal Google sign-in".into());
+    }
+    let access = token["access_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| invalid("Antigravity"))?;
+    let expiry = token["expiry"]
+        .as_str()
+        .ok_or_else(|| invalid("Antigravity"))?;
+    let expires_at_ms = chrono::DateTime::parse_from_rfc3339(expiry)
+        .map_err(|_| invalid("Antigravity"))?
+        .timestamp_millis();
+    Ok(Lease {
+        provider: NativeProvider::Antigravity,
+        files: BTreeMap::from([(
+            "antigravity-oauth-token",
+            serialize(&json!({
+                "auth_method": "consumer",
+                "token": {"access_token": access, "token_type":"Bearer", "expiry":expiry}
+            }))?,
+        )]),
+        expires_at_ms: Some(expires_at_ms),
+    })
+}
+
 /// A Z.ai lease: the account's saved Coding Plan key, as one printable line.
 /// It does not expire.
 pub(crate) fn zai(key: &str) -> Result<Lease, String> {
@@ -485,6 +520,20 @@ pub(crate) fn read(
 ) -> Result<Lease, String> {
     match provider {
         NativeProvider::Kimi => Err("Kimi keeps its own sandbox sign-in".into()),
+        NativeProvider::Antigravity => {
+            if !provider_accounts::is_cli_login_account(provider.harness_id(), account_id) {
+                return Err("Antigravity benchmarks require the Flock Google sign-in".into());
+            }
+            if provider_accounts::account_change_in_progress(account_id) {
+                return Err(provider_accounts::AUTHORIZATION_CHANGING.into());
+            }
+            let root = flock_root::app_root(app)?;
+            let mut raw = crate::services::agent_host::antigravity::read_grant(&root)?
+                .ok_or("Sign in to Google Antigravity in Flock before running benchmarks")?;
+            let lease = antigravity(&raw);
+            wipe(&mut raw);
+            lease
+        }
         NativeProvider::Grok => {
             if !provider_accounts::is_cli_login_account(provider.harness_id(), account_id) {
                 return Err("Grok benchmarks run on the Grok CLI sign-in".into());
@@ -576,6 +625,23 @@ mod tests {
 
     fn text(lease: &Lease, name: &str) -> String {
         String::from_utf8(lease.files[name].clone()).unwrap()
+    }
+
+    #[test]
+    fn antigravity_lease_only_stages_a_personal_access_token() {
+        let mut grant = json!({"auth_method":"consumer", "token":{
+            "access_token":"fixture-access", "refresh_token":"fixture-refresh",
+            "token_type":"Bearer", "expiry":"2026-01-10T02:00:00Z"}, "nested":{"id_token":"private"}});
+        let lease = antigravity(grant.to_string().as_bytes()).unwrap();
+        let value: Value = serde_json::from_slice(&lease.files["antigravity-oauth-token"]).unwrap();
+        assert_eq!(
+            value,
+            json!({"auth_method":"consumer","token":{"access_token":"fixture-access",
+            "token_type":"Bearer","expiry":"2026-01-10T02:00:00Z"}})
+        );
+        assert_eq!(lease.expires_at_ms(), Some(1768010400000));
+        grant["auth_method"] = json!("business");
+        assert!(antigravity(grant.to_string().as_bytes()).is_err());
     }
 
     fn jwt(exp: i64) -> String {

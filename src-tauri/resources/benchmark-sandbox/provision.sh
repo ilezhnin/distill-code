@@ -135,7 +135,14 @@ for dir in "$src"/tools/*/; do
   target=$tools/$id
   rm -rf "$target.new"
   install -d -m 755 "$target.new"
-  if [[ -f $dir/package-lock.json ]]; then
+  if [[ $id == antigravity ]]; then
+    archive=$(fetch_pinned "$(source_value antigravity.url)" "$(source_value antigravity.sha256)" .tar.gz)
+    tar -xOzf "$archive" antigravity >"$target.new/agy"
+    chmod 755 "$target.new/agy"
+    printf '%s version %s\n' "$id" "$(cat "$dir/spec")" >"$target.new/manifest"
+    printf '%s file agy %s\n' "$id" "$(sha256sum "$target.new/agy" | cut -d' ' -f1)" >>"$target.new/manifest"
+    rm -f "$archive"
+  elif [[ -f $dir/package-lock.json ]]; then
     cp "$dir/package.json" "$dir/package-lock.json" "$target.new/"
     (cd "$target.new" && npm ci --omit=dev --no-audit --no-fund --loglevel=error)
   else
@@ -164,6 +171,7 @@ launcher() {
   chmod 755 "$tools/bin/.$1.new"
   mv -f "$tools/bin/.$1.new" "$tools/bin/$1"
 }
+[[ -x $tools/antigravity/agy ]] && launcher agy "$tools/antigravity/agy"
 nm=$tools/claude-acp/node_modules
 [[ -d $nm ]] && launcher claude-agent-acp \
   "/usr/local/bin/node $nm/@agentclientprotocol/claude-agent-acp/dist/index.js"

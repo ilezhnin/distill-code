@@ -360,7 +360,15 @@ pub(in crate::services::benchmarks) fn profile_refusal(c: &Configuration) -> Opt
     if c.account_id.as_deref().is_none_or(str::is_empty) {
         return Some(account_refusal(&c.provider_id).into());
     }
-    provider.effort_refusal(c.effort.as_deref())
+    if c.execution_profile == "native_text" {
+        if let Some(reason) = provider.text_refusal() {
+            return Some(reason.into());
+        }
+    }
+    provider
+        .model_refusal(&c.model_id)
+        .map(str::to_owned)
+        .or_else(|| provider.effort_refusal(c.effort.as_deref()))
 }
 
 /// Static policy restrictions. Linux proof and account readiness are checked
@@ -802,6 +810,28 @@ mod tests {
         assert_eq!(account_refusal("grok-acp"), "Choose the CLI sign-in");
         assert_eq!(account_refusal("kimi-acp"), "Choose the CLI sign-in");
         assert_eq!(account_refusal("codex-acp"), "Choose a managed account");
+    }
+
+    #[test]
+    fn antigravity_admits_single_model_repository_work_only() {
+        let mut candidate: Configuration = serde_json::from_value(json!({"id":"invented",
+            "providerId":"antigravity-acp","accountId":"cli-login-antigravity-acp","modelId":"gemini-invented",
+            "effort":"high","billingMode":"subscription","executionProfile":"protected_repository"})).unwrap();
+        assert_eq!(profile_refusal(&candidate), None);
+        candidate.execution_profile = "native_text".into();
+        assert_eq!(
+            profile_refusal(&candidate).as_deref(),
+            NativeProvider::Antigravity.text_refusal()
+        );
+        candidate.execution_profile = "protected_repository".into();
+        candidate.model_id = "orchestrator".into();
+        assert!(profile_refusal(&candidate).unwrap().contains("delegates"));
+        candidate.model_id = "gemini-invented".into();
+        candidate.account_id = None;
+        assert_eq!(
+            profile_refusal(&candidate).as_deref(),
+            Some("Choose the CLI sign-in")
+        );
     }
 
     #[tokio::test]

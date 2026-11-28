@@ -508,6 +508,7 @@ export function resolveExplicitWaveStepModel(
     const { harnessId, model } = matched;
     const label = modelDisplayName(model);
     const limit = platformLimitState(io.rateLimits(), harnessId, {
+      modelId: model.id,
       // Fable's own weekly allowance meters Fable alone; without the scope a
       // spent window on ONE model would refuse every model on the platform.
       scopedWindow: scopedWindowForModel(

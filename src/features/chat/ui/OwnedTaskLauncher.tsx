@@ -33,6 +33,7 @@ import {
 import { listPersonas } from "@/shared/api/agents";
 import type { Persona } from "@/shared/types/agents";
 import { modelPreferenceClassIds } from "@/features/agents/lib/modelRanking";
+import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { startInitialOwnedChatTask } from "../lib/ownedTaskDispatch";
 import { PreCommitSendRejectedError } from "../lib/preCommitSendRejection";
 import {
@@ -48,6 +49,9 @@ import {
   type PendingOwnedTaskIntentV1,
   type PendingOwnedTaskIntentV2,
 } from "../lib/ownedTaskIntent";
+
+const TEXT_PROVIDERS = ["claude-acp", "codex-acp", "grok-acp", "kimi-acp"];
+const REPOSITORY_PROVIDERS = [...TEXT_PROVIDERS, "antigravity-acp"];
 
 function modeMatches(
   mode: OwnedTaskModeEnvelope | null,
@@ -619,7 +623,13 @@ function NativeOwnedTaskLauncher({
                 disabled={frozenInputs}
                 value={profile}
                 onChange={(event) => {
-                  setProfile(event.target.value as typeof profile);
+                  const next = event.target.value as typeof profile;
+                  setProfile(next);
+                  if (next === "native_text") {
+                    setProviders((ids) =>
+                      ids.filter((id) => TEXT_PROVIDERS.includes(id)),
+                    );
+                  }
                   resetInspection();
                 }}
               >
@@ -722,25 +732,26 @@ function NativeOwnedTaskLauncher({
               )}
               <fieldset disabled={frozenInputs} className="space-y-2">
                 <legend>{t("ownedTask.providers")}</legend>
-                {["claude-acp", "codex-acp", "grok-acp", "kimi-acp"].map(
-                  (id) => (
-                    <label key={id} className="flex gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={providers.includes(id)}
-                        onChange={(event) => {
-                          setProviders(
-                            event.target.checked
-                              ? [...providers, id]
-                              : providers.filter((current) => current !== id),
-                          );
-                          resetInspection();
-                        }}
-                      />
-                      {id}
-                    </label>
-                  ),
-                )}
+                {(profile === "protected_repository"
+                  ? REPOSITORY_PROVIDERS
+                  : TEXT_PROVIDERS
+                ).map((id) => (
+                  <label key={id} className="flex gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={providers.includes(id)}
+                      onChange={(event) => {
+                        setProviders(
+                          event.target.checked
+                            ? [...providers, id]
+                            : providers.filter((current) => current !== id),
+                        );
+                        resetInspection();
+                      }}
+                    />
+                    {providerDisplayName(id)}
+                  </label>
+                ))}
               </fieldset>
               <Label htmlFor={`${prefix}-seconds`}>
                 {t("ownedTask.budgetSeconds")}

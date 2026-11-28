@@ -128,6 +128,15 @@ impl Inner {
         harness_id: &str,
         explicit: Option<&str>,
     ) -> Result<Option<String>, Value> {
+        if harness_id == super::super::antigravity::ID {
+            let id = super::super::antigravity::ACCOUNT_ID;
+            if explicit.is_some_and(|named| named != id) {
+                return Err(invalid_params("Choose the Google Antigravity sign-in"));
+            }
+            provider_accounts::resolve_account(&self.app, harness_id, Some(id))
+                .map_err(invalid_params)?;
+            return Ok(Some(id.into()));
+        }
         if !provider_accounts::supports_managed_accounts(harness_id) {
             return if explicit.is_some() {
                 Err(invalid_params(
@@ -193,6 +202,11 @@ impl Inner {
         unattended: bool,
     ) -> BoxFuture<'a, Result<Arc<Bridge>, Value>> {
         Box::pin(async move {
+            let account_id = if harness_id == super::super::antigravity::ID {
+                Some(account_id.unwrap_or(super::super::antigravity::ACCOUNT_ID))
+            } else {
+                account_id
+            };
             let spec: &HarnessSpec = harness::harness(harness_id)
                 .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
             let base_key = account_route_key(harness_id, account_id);
@@ -400,6 +414,13 @@ impl Inner {
                 return Ok(bridge);
             }
             let mut env = (*self.spawn_env().await).clone();
+            if harness_id == super::super::antigravity::ID {
+                let root =
+                    crate::services::flock_root::app_root(&self.app).map_err(protocol::internal)?;
+                super::super::antigravity::require_personal_grant(&root)
+                    .map_err(protocol::internal)?;
+                super::super::antigravity::scope(&root, &mut env).map_err(protocol::internal)?;
+            }
             if harness_id == NativeProvider::Grok.harness_id() {
                 env.extra_env.push(grok::chat_bridge_renewal_env());
             }

@@ -117,6 +117,9 @@ pub(crate) async fn readiness(
     provider: NativeProvider,
     account: &str,
 ) -> Result<sandbox::Status, String> {
+    if let Some(reason) = provider.text_refusal() {
+        return Err(admission_error(reason));
+    }
     let status = sandbox::ready().await.map_err(admission_error)?;
     if requires_sandbox_sign_in(provider) {
         status
@@ -147,6 +150,9 @@ pub(crate) async fn require_proof(
     provider: NativeProvider,
     status: &sandbox::Status,
 ) -> Result<Value, String> {
+    if let Some(reason) = provider.text_refusal() {
+        return Err(admission_error(reason));
+    }
     PROOFS
         .get((provider.key(), status.revision.clone()), false, || {
             verify_proof(provider, status)
@@ -260,6 +266,7 @@ fn environment(provider: NativeProvider) -> Vec<(String, String)> {
         NativeProvider::Kimi => {
             env.push(("KIMI_CODE_HOME".into(), "/home/candidate/.kimi-code".into()));
         }
+        NativeProvider::Antigravity => unreachable!("repository-only provider"),
         NativeProvider::Zai => env.extend(super::zai::sandbox_env(
             &provider.policy_config().expect("Z.ai configuration"),
             adapter(provider).expect("Z.ai policy plugin"),
@@ -320,7 +327,7 @@ pub(super) fn launch(
             NativeProvider::Claude => "/opt/distill-tools/claude-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
             NativeProvider::Codex => "/opt/distill-tools/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
             NativeProvider::Kimi => "/opt/distill-tools/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
-            NativeProvider::Grok | NativeProvider::Zai => unreachable!(),
+            NativeProvider::Grok | NativeProvider::Zai | NativeProvider::Antigravity => unreachable!(),
         }.into());
         if provider == NativeProvider::Kimi {
             args.push("acp".into());
@@ -374,7 +381,10 @@ mod tests {
 
     #[test]
     fn every_text_provider_uses_a_private_linux_launch_without_repository_tools() {
-        for &provider in NativeProvider::ALL {
+        for &provider in NativeProvider::ALL
+            .iter()
+            .filter(|p| p.text_refusal().is_none())
+        {
             let request = OwnedSessionRequest {
                 owner_id: "invented-owner".into(),
                 provider_id: provider.harness_id().into(),
@@ -418,7 +428,10 @@ mod tests {
             None,
         )
         .unwrap();
-        for &provider in NativeProvider::ALL {
+        for &provider in NativeProvider::ALL
+            .iter()
+            .filter(|p| p.text_refusal().is_none())
+        {
             let request = OwnedSessionRequest {
                 owner_id: "invented-owner".into(),
                 provider_id: provider.harness_id().into(),

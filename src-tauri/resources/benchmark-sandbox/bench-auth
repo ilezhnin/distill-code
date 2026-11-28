@@ -2,7 +2,7 @@
 """Stage credential leases and private CLI homes; retain only changed Kimi
 OAuth files after a stop.
 
-Claude, Codex, Grok and Z.ai sessions run on a lease: the host builds it
+Antigravity, Claude, Codex, Grok and Z.ai sessions run on a lease: the host builds it
 from the Distill app's own sign-in (a Z.ai account's saved key), with no
 refresh token, and pipes it to `bench-auth stage ATTEMPT PROVIDER` on
 standard input before the session starts. Nothing a leased session writes
@@ -43,6 +43,7 @@ CONFLICT_EVIDENCE = 20
 # Providers whose sessions run on a lease the host stages, and the files a
 # lease of each may hold: its first one is required.
 LEASED = {
+    "antigravity": ("antigravity-oauth-token",),
     "claude": (".credentials.json", ".claude.json"),
     "codex": ("auth.json",),
     "grok": ("auth.json",),
@@ -138,6 +139,13 @@ def lease_document(provider, name, data):
                   and set(tokens) <= {"id_token", "access_token", "refresh_token", "account_id"}
                   and tokens.get("refresh_token", "") == ""
                   and isinstance(tokens.get("access_token"), str) and tokens["access_token"] != "")
+    elif provider == "antigravity":
+        token = value.get("token")
+        shaped = (set(value) == {"auth_method", "token"} and value["auth_method"] == "consumer"
+                  and isinstance(token, dict) and set(token) == {"access_token", "token_type", "expiry"}
+                  and isinstance(token["access_token"], str) and bool(token["access_token"])
+                  and token["token_type"] == "Bearer" and isinstance(token["expiry"], str)
+                  and bool(token["expiry"]))
     elif provider == "grok":
         shaped = bool(value) and all(
             isinstance(entry, dict) and set(entry) <= GROK_ENTRY

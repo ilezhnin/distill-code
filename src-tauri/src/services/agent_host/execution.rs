@@ -205,6 +205,7 @@ pub enum NativeProvider {
     Grok,
     Kimi,
     Zai,
+    Antigravity,
 }
 
 impl NativeProvider {
@@ -216,7 +217,20 @@ impl NativeProvider {
         NativeProvider::Grok,
         NativeProvider::Kimi,
         NativeProvider::Zai,
+        NativeProvider::Antigravity,
     ];
+
+    /// agy adds its own system instructions and tools to every ACP turn.
+    pub(crate) fn text_refusal(self) -> Option<&'static str> {
+        (self == Self::Antigravity).then_some("Antigravity runs repository tasks with tools. Its CLI cannot provide the tool-free text profile required for text tasks and judging.")
+    }
+
+    pub(crate) fn model_refusal(self, model: &str) -> Option<&'static str> {
+        (self == Self::Antigravity && model.to_ascii_lowercase().contains("orchestrator"))
+            .then_some(
+                "Choose a single model. Antigravity Orchestrator delegates tasks to other models.",
+            )
+    }
 
     pub fn for_harness(harness_id: &str) -> Option<Self> {
         Self::ALL
@@ -232,6 +246,7 @@ impl NativeProvider {
             Self::Grok => "grok-acp",
             Self::Kimi => "kimi-acp",
             Self::Zai => "zai-acp",
+            Self::Antigravity => "antigravity-acp",
         }
     }
 
@@ -243,13 +258,14 @@ impl NativeProvider {
             Self::Grok => "grok",
             Self::Kimi => "kimi",
             Self::Zai => "zai",
+            Self::Antigravity => "antigravity",
         }
     }
 
     /// The provider's entry in the policy resource; Claude's policy is inline.
     fn policy(self) -> Option<&'static ProviderPolicy> {
         match self {
-            Self::Claude => None,
+            Self::Claude | Self::Antigravity => None,
             Self::Codex => Some(&POLICIES.codex),
             Self::Grok => Some(&POLICIES.grok),
             Self::Kimi => Some(&POLICIES.kimi),
@@ -270,7 +286,7 @@ impl NativeProvider {
             Self::Codex => Some(CODEX_ADAPTER),
             Self::Kimi => Some(KIMI_ADAPTER),
             Self::Zai => Some(ZAI_ADAPTER),
-            Self::Grok => None,
+            Self::Grok | Self::Antigravity => None,
         }
     }
 
@@ -288,6 +304,9 @@ impl NativeProvider {
     /// Claude, whose inline policy has its own probe
     /// (`scripts/benchmark-native-policy-probe.mjs`).
     pub fn admission_issue(self) -> Option<String> {
+        if let Some(reason) = self.text_refusal() {
+            return Some(reason.into());
+        }
         let policy = self.policy()?;
         probe_record_issue(
             self.harness_label(),
@@ -368,7 +387,7 @@ impl NativeProvider {
                 "kimi-code/kimi-for-coding",
                 "kimi-code/kimi-for-coding-highspeed",
             ],
-            Self::Claude | Self::Codex | Self::Grok | Self::Zai => &[],
+            Self::Claude | Self::Codex | Self::Grok | Self::Zai | Self::Antigravity => &[],
         }
     }
 
@@ -378,7 +397,7 @@ impl NativeProvider {
     pub fn judges_images(self) -> bool {
         match self {
             Self::Claude => true,
-            Self::Codex | Self::Grok | Self::Kimi | Self::Zai => false,
+            Self::Codex | Self::Grok | Self::Kimi | Self::Zai | Self::Antigravity => false,
         }
     }
 
@@ -424,6 +443,7 @@ impl NativeProvider {
             Self::Grok => "Grok",
             Self::Kimi => "Kimi Code",
             Self::Zai => "Z.ai Coding Plan",
+            Self::Antigravity => "Google Antigravity",
         }
     }
 
@@ -679,6 +699,14 @@ pub(super) fn validate_request(request: &OwnedSessionRequest) -> Result<NativePr
     let provider = NativeProvider::for_harness(&request.provider_id).ok_or(
         "capability_missing: this provider has no verified native no-tool execution profile",
     )?;
+    if request.profile == ExecutionProfile::NativeTextV1 {
+        if let Some(reason) = provider.text_refusal() {
+            return Err(format!("capability_missing: {reason}"));
+        }
+    }
+    if let Some(reason) = provider.model_refusal(&request.model_id) {
+        return Err(format!("capability_missing: {reason}"));
+    }
     if let Some(reason) = provider.effort_refusal(request.reasoning_effort.as_deref()) {
         return Err(format!("capability_missing: {reason}"));
     }
@@ -818,7 +846,7 @@ mod tests {
         .unwrap();
         for provider in NativeProvider::ALL {
             let Some(policy) = provider.policy() else {
-                assert_eq!(*provider, NativeProvider::Claude);
+                assert!(*provider == NativeProvider::Claude || provider.text_refusal().is_some());
                 continue;
             };
             assert!(resource.get(provider.key()).is_some(), "{provider:?}");
@@ -1081,6 +1109,10 @@ mod tests {
     fn owned_text_never_accepts_a_host_workspace_or_unsafe_account_path() {
         for &provider in NativeProvider::ALL {
             let mut owned = request(provider.harness_id());
+            if provider.text_refusal().is_some() {
+                assert!(validate_request(&owned).is_err());
+                owned.profile = ExecutionProfile::ProtectedRepositoryV1;
+            }
             assert_eq!(validate_request(&owned), Ok(provider));
             owned.cwd = "C:/Users/invented/private".into();
             assert!(validate_request(&owned)

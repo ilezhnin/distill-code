@@ -5,6 +5,7 @@
 
 mod app_sign_in;
 pub(crate) use self::app_sign_in::Asker as SignInAsker;
+pub(crate) mod antigravity;
 mod background;
 pub mod bridge;
 mod context_meter;

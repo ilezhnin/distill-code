@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { harnessModelLabel } from "../lib/humanizeModelId";
-import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
+import { providerDisplayName } from "../providerCatalog";
 import { claudeModelSortOrder } from "@/features/chat/lib/modelGenerations";
 import type { ModelOption } from "@/features/chat/types";
 import type {
@@ -219,7 +219,7 @@ function readPersistedModels(): Map<string, CachedProviderModels> {
                     ...model,
                     name: label,
                     displayName: label,
-                    providerName: formatProviderLabel(entry.providerId),
+                    providerName: providerDisplayName(entry.providerId),
                   };
                 }),
               }
@@ -351,7 +351,7 @@ export function providerModelOptionsFromInventory(
   providerId: string,
   inventory: ProviderInventoryModel[],
 ): ModelOption[] {
-  const providerName = formatProviderLabel(providerId);
+  const providerName = providerDisplayName(providerId);
   return inventory.map((entry) => {
     const displayName = harnessModelLabel(entry);
     const model: ModelOption = {
@@ -416,12 +416,15 @@ function isStale(entry: CachedProviderModels | undefined): boolean {
   );
 }
 
-function refreshVersion(providerId: string): number {
+export function providerModelRefreshVersion(providerId: string): number {
   return providerRefreshVersions.get(providerId) ?? 0;
 }
 
 function bumpRefreshVersion(providerId: string): void {
-  providerRefreshVersions.set(providerId, refreshVersion(providerId) + 1);
+  providerRefreshVersions.set(
+    providerId,
+    providerModelRefreshVersion(providerId) + 1,
+  );
   // The caller knows something changed for this provider (new credentials, new
   // runtime config), so the previous poll -- failed or not -- says nothing
   // about the next one.
@@ -563,7 +566,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
         return;
       }
 
-      const versionAtStart = refreshVersion(providerId);
+      const versionAtStart = providerModelRefreshVersion(providerId);
       lastRefreshAt.set(providerId, Date.now());
       const refresh = (async () => {
         set((state) => {
@@ -587,7 +590,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             response.models,
           );
           if (discoveredModels.length === 0) {
-            if (versionAtStart !== refreshVersion(providerId)) {
+            if (versionAtStart !== providerModelRefreshVersion(providerId)) {
               return;
             }
             // Already recorded as a non-answer: nothing to write, exactly as
@@ -677,7 +680,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             ...(configuredModels.length > 0 ? { configuredModels } : {}),
             outcome: "models",
           };
-          if (versionAtStart !== refreshVersion(providerId)) {
+          if (versionAtStart !== providerModelRefreshVersion(providerId)) {
             return;
           }
           notifyProviderModelInventoryInvalidated(providerId);
@@ -688,7 +691,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             return { providers };
           });
         } catch (error) {
-          if (versionAtStart !== refreshVersion(providerId)) {
+          if (versionAtStart !== providerModelRefreshVersion(providerId)) {
             return;
           }
           lastFailedRefreshAt.set(providerId, Date.now());

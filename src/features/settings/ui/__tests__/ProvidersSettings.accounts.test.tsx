@@ -20,6 +20,7 @@ const readiness = vi.hoisted(
       ["claude-acp", "ready"],
       ["grok-acp", "ready"],
       ["kimi-acp", "ready"],
+      ["antigravity-acp", "ready"],
       ["zai-acp", "ready"],
       ["copilot-acp", "not_ready"],
       ["amp-acp", "ready"],
@@ -236,6 +237,15 @@ it("renders every harness as one card of the same structure", () => {
   );
   expect(copilot.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
   expect(copilot.queryByText("Usage limits not reported")).toBeNull();
+  const antigravity = within(
+    within(panel).getByRole("region", { name: "Google Antigravity" }),
+  );
+  expect(antigravity.getByRole("article")).toBeInTheDocument();
+  expect(antigravity.getByRole("button", { name: "Sign out" })).toBeEnabled();
+  expect(
+    antigravity.getByRole("button", { name: "Add account" }),
+  ).toBeDisabled();
+  expect(antigravity.getByText("Usage limits not reported")).toBeVisible();
   expect(screen.queryByText("Other providers")).toBeNull();
   expect(screen.getAllByText(/^Last checked/)).toHaveLength(1);
   expect(screen.getByText(/^Last checked/)).toHaveAttribute(
@@ -264,4 +274,22 @@ it("shows each provider once with setup inside its card and one refresh", () => 
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   expect(mocks.refresh).toHaveBeenCalledWith(true);
   expect(mocks.rerun).toHaveBeenCalled();
+});
+
+it("offers a new Antigravity sign-in when the CLI signed out after the last usage update", () => {
+  const id = "antigravity-acp";
+  readiness.set(id, "not_ready");
+  useProviderAccountsStore.setState({
+    statuses: { [`cli-login-${id}`]: cliStatus(id, {}) },
+  });
+  try {
+    renderPage();
+    const card = within(
+      screen.getByRole("region", { name: "Google Antigravity" }),
+    );
+    expect(card.getByRole("button", { name: "Sign in" })).toBeVisible();
+    expect(card.queryByRole("button", { name: "Sign out" })).toBeNull();
+  } finally {
+    readiness.set(id, "ready");
+  }
 });

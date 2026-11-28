@@ -4222,3 +4222,24 @@ fn a_bridge_that_failed_to_initialize_is_not_probed_again_for_a_while() {
     Inner::forget_failed_start(route);
     assert!(Inner::refused_start(route, &shim, std::time::Instant::now()).is_none());
 }
+
+#[test]
+fn antigravity_inventory_keeps_the_model_family_and_its_own_thinking_levels() {
+    let snapshot = json!({
+        "models":{"availableModels":[{"modelId":"example-low"},{"modelId":"example-high"}],"currentModelId":"example-low"},
+        "configOptions":[
+            {"id":"model","category":"model","type":"select","currentValue":"example","options":[{"value":"example","name":"Example"}]},
+            {"id":"thought_level","category":"thought_level","type":"select","currentValue":"low","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}
+        ]
+    });
+    let mut rows = Inner::probe_rows(&snapshot);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "example");
+    Inner::record_capabilities(&mut rows[0], &snapshot);
+    assert_eq!(rows[0]["efforts"][1]["value"], "high");
+    assert_eq!(Inner::current_model(&snapshot).as_deref(), Some("example"));
+    let (id, current, offered) = Inner::effort_state(&snapshot, "high").unwrap();
+    assert_eq!(id, "thought_level");
+    assert_eq!(current.as_deref(), Some("low"));
+    assert!(offered);
+}

@@ -14,7 +14,7 @@ use tokio::sync::watch;
 
 mod codex_login;
 
-async fn prepare_change(app: &AppHandle, account_id: &str) -> Result<(), String> {
+pub(super) async fn prepare_change(app: &AppHandle, account_id: &str) -> Result<(), String> {
     crate::services::provider_account_status::prepare_account_change(app, account_id).await;
     if let Some(host) = app.try_state::<crate::services::agent_host::AgentHost>() {
         host.prepare_account_change(account_id).await?;

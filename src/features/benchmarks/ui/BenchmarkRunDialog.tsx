@@ -158,8 +158,7 @@ export function BenchmarkRunDialog({
     ) ?? [];
   const cliAccount = (id: string) =>
     capabilities.data?.find(
-      (entry) =>
-        entry.providerId === id && entry.executionProfile === "native_text",
+      (entry) => entry.providerId === id && entry.cliAccountId,
     )?.cliAccountId ?? null;
   const providerCliAccount = cliAccount(providerId);
   // A provider whose only sign-in is its CLI's has nothing else to choose,

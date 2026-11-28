@@ -169,6 +169,19 @@ describe("account readiness for a CLI sign-in", () => {
       }).get("kimi-acp"),
     ).toBe("ready");
   });
+
+  it("keeps a signed-out Antigravity CLI unavailable even if its last quota read succeeded", () => {
+    const id = "antigravity-acp";
+    const accountId = `cli-login-${id}`;
+    const next = applyAccountReadiness(
+      readiness([[id, "not_ready"]]),
+      models([id]),
+      {
+        [accountId]: status(accountId, id),
+      },
+    );
+    expect(next.get(id)).toBe("not_ready");
+  });
 });
 
 function check(overrides: Partial<DoctorCheck> = {}): DoctorCheck {
@@ -228,5 +241,23 @@ describe("readinessFromReport auth handling", () => {
       report([check({ authStatus: "unknown" })]),
     );
     expect(readiness.get("claude-acp")).toBe("ready");
+  });
+
+  it.each([
+    ["pass", "authenticated", "ready"],
+    ["warn", "notAuthenticated", "not_ready"],
+    ["warn", "unknown", undefined],
+  ] as const)("maps the Antigravity sign-in result %s/%s", (status, authStatus, expected) => {
+    const readiness = readinessFromReport(
+      report([
+        check({
+          id: "ai-agent-antigravity",
+          path: "C:/tools/agy.exe",
+          status,
+          authStatus,
+        }),
+      ]),
+    );
+    expect(readiness.get("antigravity-acp")).toBe(expected);
   });
 });

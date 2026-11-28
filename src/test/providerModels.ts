@@ -10,12 +10,14 @@ export const PROVIDER_CONNECTIONS: Record<string, ProviderConnectionFlow> = {
   "codex-acp": "browser_or_api_key",
   "zai-acp": "api_key",
   "grok-acp": "cli",
+  "antigravity-acp": "cli",
   "kimi-acp": "cli",
   "copilot-acp": "cli",
   "amp-acp": "cli",
 };
 
 const REPORTS_USAGE = new Set([
+  "antigravity-acp",
   "claude-acp",
   "codex-acp",
   "zai-acp",
@@ -23,6 +25,7 @@ const REPORTS_USAGE = new Set([
   "kimi-acp",
 ]);
 const SIGNS_OUT = new Set([
+  "antigravity-acp",
   "claude-acp",
   "codex-acp",
   "zai-acp",

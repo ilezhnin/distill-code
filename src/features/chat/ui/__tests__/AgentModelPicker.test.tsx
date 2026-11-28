@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
+import { getCuratedAgentProviders } from "@/features/providers/curatedProviders";
+import { providerModelOptionsFromInventory } from "@/features/providers/stores/providerModelCacheStore";
 import type {
   AgentPickerOption,
   ChatInputFastMode,
@@ -84,6 +86,44 @@ function moreColumnHidden() {
 }
 
 describe("AgentModelPicker", () => {
+  it("selects the model id advertised by the Antigravity CLI account", async () => {
+    const user = userEvent.setup();
+    const providerId = "antigravity-acp";
+    const accountId = "cli-login-antigravity-acp";
+    const [model] = providerModelOptionsFromInventory(providerId, [
+      {
+        id: "example-from-cli",
+        name: "Example from CLI",
+        accountId,
+        efforts: [{ value: "high", name: "High" }],
+        capabilitySource: "probed",
+      },
+    ]);
+    const change = vi.fn();
+    render(
+      <AgentModelPicker
+        agents={getCuratedAgentProviders()}
+        selectedAgentId={providerId}
+        currentModelProviderId={providerId}
+        currentModelId={null}
+        availableModels={[model]}
+        onAgentChange={vi.fn()}
+        onModelChange={change}
+      />,
+    );
+    await openPicker(user);
+    await user.click(modelRow("model", "Example from CLI"));
+    expect(change).toHaveBeenCalledWith(
+      "example-from-cli",
+      expect.objectContaining({
+        providerId,
+        providerName: "Google Antigravity",
+        accountId,
+        efforts: [{ id: "high", name: "High" }],
+      }),
+    );
+  });
+
   it("shows a read-only preference hint through the existing picker", async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();

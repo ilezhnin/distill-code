@@ -97,7 +97,7 @@ fn judge_diagnostics_bound_deduplicate_and_redact_discovery_failures() {
         .collect::<Vec<_>>();
     let panel = DiscoveredJudgePanel::discovered(vec![judge("grok-acp")], issues, &pool);
     let reason = panel.issue(true).unwrap();
-    assert_eq!(panel.diagnostics.len(), 5);
+    assert_eq!(panel.diagnostics.len(), NativeProvider::ALL.len());
     assert!(reason.starts_with("No judge panel: 1 eligible judge(s), at least 2 are required. A judge rejected this request; recovery needs another calibrated judge from the pool. Judge availability: Claude: local text policy verification required; Codex: model inventory unavailable"));
     assert!(reason.len() < 800);
     for hidden in [

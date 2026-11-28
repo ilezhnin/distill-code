@@ -12,7 +12,8 @@ export function buildProviderStatuses(
   return catalog.map(({ id }) => {
     const metrics = byId.get(id);
     const state = readiness.get(id);
-    if (metrics && state !== "not_ready") return metrics;
+    if (metrics && state !== "not_ready" && state !== "not_installed")
+      return metrics;
     return {
       provider: id,
       session: null,

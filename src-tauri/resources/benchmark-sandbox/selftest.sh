@@ -426,6 +426,9 @@ class LeaseTests(unittest.TestCase):
 
     def test_a_refresh_token_is_refused_in_every_lease(self):
         cases = [
+            ("antigravity", {"antigravity-oauth-token": {"auth_method": "consumer",
+                "token": {"access_token": "a", "token_type": "Bearer", "expiry": "2099-01-01T00:00:00Z",
+                          "refresh_token": "invented-refresh"}}}),
             ("claude", {".credentials.json": {"claudeAiOauth": {
                 "accessToken": "a", "refreshToken": "invented-refresh"}}}),
             ("claude", {".credentials.json": self.grant(),
@@ -444,6 +447,9 @@ class LeaseTests(unittest.TestCase):
 
     def test_a_lease_holds_its_providers_shape_alone(self):
         cases = [
+            ("antigravity", {"antigravity-oauth-token": {"auth_method": "api_key", "token": {}}}),
+            ("antigravity", {"antigravity-oauth-token": {"auth_method": "consumer",
+                "token": {"access_token": "a", "token_type": "Bearer"}}}),
             ("claude", {"auth.json": self.grant()}),
             ("claude", {".claude.json": {}}),
             ("claude", {".credentials.json": {"claudeAiOauth": {"accessToken": "a", "other": 1}}}),
@@ -466,6 +472,9 @@ class LeaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scope["stage"]("codex")
         # Valid leases of every provider pass.
+        self.stage("antigravity", "antigravity", {"antigravity-oauth-token": {"auth_method": "consumer",
+            "token": {"access_token": "a", "token_type": "Bearer", "expiry": "2099-01-01T00:00:00Z"}}})
+        scope["prepare"](str(scope["ACCOUNTS"] / "synthetic-google-account" / "antigravity"))
         self.stage("codex", "codex", {"auth.json": {"OPENAI_API_KEY": None, "tokens": {
             "id_token": "i", "access_token": "a", "refresh_token": ""}, "last_refresh": "x"}})
         self.stage("grok", "grok", {"auth.json": {"https://auth.x.ai": {

@@ -57,7 +57,10 @@ import {
 } from "./ProviderAdminKeyDialog";
 import { resetTokenText } from "./ResetTokenList";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
-import { providerDisplayName as providerLabel } from "../providerCatalog";
+import {
+  getCatalogEntry,
+  providerDisplayName as providerLabel,
+} from "../providerCatalog";
 
 /**
  * The model of a provider the host has not listed: the shape every card
@@ -317,6 +320,12 @@ function rowState(
   state: ProviderAccountState | undefined,
   harnessReadiness: AgentProviderReadiness | undefined,
 ): ProviderAccountState | undefined {
+  if (
+    harnessReadiness === "not_ready" &&
+    getCatalogEntry(model.providerId)?.requiresVerifiedAuth
+  ) {
+    return "needs_auth";
+  }
   if (state !== undefined && state !== "unknown") return state;
   if (model.connection !== "cli") return state;
   if (harnessReadiness === "ready") return "ready";

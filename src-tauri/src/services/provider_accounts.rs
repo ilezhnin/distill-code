@@ -187,6 +187,7 @@ pub enum ConnectionFlow {
 /// Where the status adapter reads an account's sign-in state and usage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Telemetry {
+    Antigravity,
     Claude,
     Codex,
     Zai,
@@ -204,8 +205,8 @@ pub enum CliSignOut {
     None,
     /// A shell command run through agent setup.
     Command(&'static str),
-    /// Kimi's ACP logout method.
-    KimiAcp,
+    /// The harness supports the ACP logout method.
+    Acp,
 }
 
 /// One provider's place in the account model: the same fields for every
@@ -272,7 +273,7 @@ pub const PROVIDERS: &[ProviderSpec] = &[
         reports_usage: true,
         telemetry: Telemetry::Kimi,
         cli_label: "Kimi Code sign-in",
-        cli_sign_out: CliSignOut::KimiAcp,
+        cli_sign_out: CliSignOut::Acp,
     },
     ProviderSpec {
         id: "zai-acp",
@@ -291,6 +292,15 @@ pub const PROVIDERS: &[ProviderSpec] = &[
         telemetry: Telemetry::None,
         cli_label: "Copilot CLI sign-in",
         cli_sign_out: CliSignOut::None,
+    },
+    ProviderSpec {
+        id: "antigravity-acp",
+        connection: ConnectionFlow::Cli,
+        account_limit: Some(1),
+        reports_usage: true,
+        telemetry: Telemetry::Antigravity,
+        cli_label: "Google Antigravity sign-in",
+        cli_sign_out: CliSignOut::Acp,
     },
     ProviderSpec {
         id: "amp-acp",
@@ -690,6 +700,9 @@ pub fn resolve_account(
     explicit_id: Option<&str>,
 ) -> Result<ProviderAccount, String> {
     if let Some(identity) = explicit_id.and_then(cli_login_account) {
+        if account_change_in_progress(&identity.id) {
+            return Err(AUTHORIZATION_CHANGING.into());
+        }
         return cli_login_for(identity, provider_id);
     }
     let account = resolve_from(&snapshot(app)?, provider_id, explicit_id)?;
@@ -1981,6 +1994,7 @@ mod tests {
         for (id, label) in [
             ("cli-login-copilot-acp", "Copilot CLI sign-in"),
             ("cli-login-amp-acp", "Amp CLI sign-in"),
+            ("cli-login-antigravity-acp", "Google Antigravity sign-in"),
         ] {
             let identity = cli_login_account(id).unwrap();
             assert_eq!(identity.label, label);
@@ -2053,7 +2067,13 @@ mod tests {
     #[test]
     fn the_store_never_holds_a_cli_sign_in() {
         let root = tempfile::tempdir().unwrap();
-        for provider in ["grok-acp", "kimi-acp", "copilot-acp", "amp-acp"] {
+        for provider in [
+            "grok-acp",
+            "kimi-acp",
+            "copilot-acp",
+            "antigravity-acp",
+            "amp-acp",
+        ] {
             assert!(!supports_managed_accounts(provider));
             assert!(uses_cli_login(provider));
             assert!(add_account_at(
@@ -2090,6 +2110,7 @@ mod tests {
                 "kimi-acp",
                 "zai-acp",
                 "copilot-acp",
+                "antigravity-acp",
                 "amp-acp"
             ]
         );
@@ -2163,7 +2184,14 @@ mod tests {
         assert!(!amp_model.supports_sign_out && !amp_model.reports_usage);
         assert_eq!(amp_model.accounts[0].auth_method, AuthMethod::OAuth);
         // The flat lists carry the same accounts and defaults.
-        assert_eq!(view.accounts.len(), 5);
+        let antigravity = model("antigravity-acp");
+        assert_eq!(
+            antigravity.default_account_id.as_deref(),
+            Some("cli-login-antigravity-acp")
+        );
+        assert!(antigravity.supports_sign_out && antigravity.reports_usage);
+        assert_eq!(billing_mode(&antigravity.accounts[0]), "subscription");
+        assert_eq!(view.accounts.len(), 6);
         assert_eq!(view.defaults["codex-acp"], codex.id);
         assert_eq!(view.defaults["kimi-acp"], "cli-login-kimi-acp");
         assert!(!view.defaults.contains_key("claude-acp"));

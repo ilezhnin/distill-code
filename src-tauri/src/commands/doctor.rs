@@ -140,13 +140,14 @@ struct LocalPathCheck {
 struct LocalAuthProbe {
     status: LocalAuthStatusProbe,
     /// Run by agent setup's sign-in action; never taken from the renderer.
-    login_command: &'static str,
+    login_command: Option<&'static str>,
     signed_out_message: &'static str,
 }
 
 enum LocalAuthStatusProbe {
     Environment(fn(&HashMap<String, String>) -> AuthStatus),
     KimiAcp,
+    Antigravity,
 }
 
 struct LocalCommandCheck {
@@ -169,6 +170,13 @@ struct LocalDoctorRegistry<'a> {
 }
 
 const LOCAL_COMMAND_CHECKS: &[LocalCommandCheck] = &[];
+
+// The vendor installer verifies the release checksum. Keep the PowerShell
+// expression a single argument: cmd /c otherwise quotes it as literal text.
+#[cfg(windows)]
+const INSTALL_ANTIGRAVITY: &str = "powershell.exe -NoProfile -NonInteractive -Command Invoke-Expression(Invoke-RestMethod('https://antigravity.google/cli/install.ps1'))";
+#[cfg(not(windows))]
+const INSTALL_ANTIGRAVITY: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
 
 const LOCAL_PATH_CHECKS: &[LocalPathCheck] = &[LocalPathCheck {
     meta: LocalCheckMeta {
@@ -207,7 +215,7 @@ const LOCAL_PATH_CHECKS: &[LocalPathCheck] = &[LocalPathCheck {
         status: LocalAuthStatusProbe::Environment(grok_auth_status),
         // A bare name: agent setup runs it through cmd.exe on the same
         // extended PATH this check resolves `grok` on.
-        login_command: "grok login --oauth",
+        login_command: Some("grok login --oauth"),
         signed_out_message: "Grok CLI is installed but not signed in; sign in or set XAI_API_KEY",
     }),
 }, LocalPathCheck {
@@ -228,8 +236,26 @@ const LOCAL_PATH_CHECKS: &[LocalPathCheck] = &[LocalPathCheck {
     fail_message: "Kimi Code is not on PATH; install Kimi Code, then sign in",
     auth: Some(LocalAuthProbe {
         status: LocalAuthStatusProbe::KimiAcp,
-        login_command: "kimi login",
+        login_command: Some("kimi login"),
         signed_out_message: "Kimi Code is installed but not signed in; sign in to load your models",
+    }),
+}, LocalPathCheck {
+    meta: LocalCheckMeta {
+        id: "ai-agent-antigravity",
+        label: "Google Antigravity",
+        category: AGENTS_CATEGORY,
+        category_label: AGENTS_CATEGORY_LABEL,
+        fix: Some(LocalDoctorFix { fix_type: FixType::Command, command: INSTALL_ANTIGRAVITY }),
+        fix_url: Some("https://antigravity.google/docs/getting-started"),
+        debug_output: None,
+    },
+    binary_name: "agy",
+    pass_message: "Antigravity CLI is signed in with a personal Google account",
+    fail_message: "Install Antigravity CLI to sign in with your Google account",
+    auth: Some(LocalAuthProbe {
+        status: LocalAuthStatusProbe::Antigravity,
+        login_command: None,
+        signed_out_message: "Sign in with your personal Google account to load your Antigravity models",
     }),
 }];
 
@@ -355,6 +381,7 @@ fn upstream_category(check_id: &str) -> (&'static str, &'static str) {
 }
 
 async fn run_local_checks(
+    app: &AppHandle,
     registry: &LocalDoctorRegistry<'_>,
     captured_shell_env: &HashMap<String, String>,
 ) -> Vec<DoctorCheck> {
@@ -368,7 +395,7 @@ async fn run_local_checks(
     let mut results = Vec::with_capacity(check_count);
 
     for check in registry.path_checks {
-        results.push(run_local_path_check(check, extended_path, captured_shell_env).await);
+        results.push(run_local_path_check(app, check, extended_path, captured_shell_env).await);
     }
     for check in registry.command_checks {
         results.push(run_local_command_check(check, extended_path).await);
@@ -381,6 +408,7 @@ async fn run_local_checks(
 }
 
 async fn run_local_path_check(
+    app: &AppHandle,
     check: &LocalPathCheck,
     extended_path: &str,
     captured_shell_env: &HashMap<String, String>,
@@ -389,6 +417,13 @@ async fn run_local_path_check(
     let auth_status = match (&path, &check.auth) {
         (Some(_), Some(probe)) => Some(match probe.status {
             LocalAuthStatusProbe::Environment(status) => status(captured_shell_env),
+            LocalAuthStatusProbe::Antigravity => {
+                crate::services::agent_host::antigravity::auth_status(
+                    app,
+                    captured_shell_env.clone(),
+                )
+                .await
+            }
             LocalAuthStatusProbe::KimiAcp => {
                 crate::services::agent_host::kimi::auth_status(captured_shell_env.clone()).await
             }
@@ -426,7 +461,12 @@ fn local_path_check_result(
             result.status = CheckStatus::Warn;
             result.message = probe.signed_out_message.to_string();
             result.fix_type = Some(FixType::Auth);
-            result.fix_command = Some(probe.login_command.to_string());
+            result.fix_command = probe.login_command.map(str::to_string);
+        } else if auth_status == AuthStatus::Unknown
+            && matches!(probe.status, LocalAuthStatusProbe::Antigravity)
+        {
+            result.status = CheckStatus::Warn;
+            result.message = "Antigravity CLI could not verify your Google sign-in".into();
         }
         result.auth_status = Some(auth_status);
     }
@@ -437,25 +477,39 @@ fn local_path_check_result(
 /// authorizes and verifies it like a crate agent. It is probed with the same
 /// captured env and extended PATH the report's local checks use.
 pub(crate) async fn run_local_agent_check(
+    app: &AppHandle,
     check_id: &str,
     env: &HashMap<String, String>,
 ) -> Option<doctor::DoctorCheck> {
     let check = LOCAL_PATH_CHECKS
         .iter()
         .find(|check| check.meta.id == check_id && check.meta.category == AGENTS_CATEGORY)?;
-    let result =
-        run_local_path_check(check, env_key::get(env, "PATH").unwrap_or_default(), env).await;
+    let result = run_local_path_check(
+        app,
+        check,
+        env_key::get(env, "PATH").unwrap_or_default(),
+        env,
+    )
+    .await;
     Some(result.into())
 }
 
 /// The backend-owned sign-in command of a local agent check with a sign-in
 /// probe, or `None` when the check has no sign-in flow.
 pub(crate) fn local_agent_login_command(check_id: &str) -> Option<&'static str> {
+    local_auth_probe(check_id)?.login_command
+}
+
+fn local_auth_probe(check_id: &str) -> Option<&'static LocalAuthProbe> {
     LOCAL_PATH_CHECKS
         .iter()
-        .find(|check| check.meta.id == check_id)
-        .and_then(|check| check.auth.as_ref())
-        .map(|probe| probe.login_command)
+        .find(|check| check.meta.id == check_id)?
+        .auth
+        .as_ref()
+}
+
+pub(crate) fn local_agent_has_auth(check_id: &str) -> bool {
+    local_auth_probe(check_id).is_some()
 }
 
 pub(crate) fn local_agent_fix_command(check_id: &str, fix_type: &FixType) -> Option<&'static str> {
@@ -479,7 +533,7 @@ pub(crate) fn provider_logout_command(provider_id: &str) -> Option<&'static str>
     use crate::services::provider_accounts::{spec, CliSignOut};
     match spec(provider_id)?.cli_sign_out {
         CliSignOut::Command(command) => Some(command),
-        CliSignOut::None | CliSignOut::KimiAcp => None,
+        CliSignOut::None | CliSignOut::Acp => None,
     }
 }
 
@@ -1148,7 +1202,8 @@ async fn run_doctor_impl(
         report.checks
     };
     if doctor_internal_tooling_checks_enabled(runtime_config) {
-        let local_checks = run_local_checks(registry, &doctor_env_vars.into_iter().collect()).await;
+        let local_checks =
+            run_local_checks(app, registry, &doctor_env_vars.into_iter().collect()).await;
         checks.extend(local_checks.into_iter().map(doctor::DoctorCheck::from));
     }
     apply_managed_account_checks(app, &mut checks);
@@ -1406,6 +1461,16 @@ pub async fn run_doctor_fix(
     match plan_doctor_fix(&check_id, &fix_type, offered)? {
         // The node-runtime fix is native — (re)install the pinned managed
         // runtime — not a shell command.
+        DoctorFixDispatch::AntigravityLogin => {
+            crate::commands::agent_setup::run_setup_now(
+                &app_handle,
+                crate::services::agent_host::antigravity::ID,
+                crate::commands::agent_setup::SetupAction::Auth,
+                crate::commands::agent_setup::SetupPlan::account_action(),
+            )
+            .await
+        }
+        // The Node.js runtime is installed by the native managed installer.
         DoctorFixDispatch::NodeRuntime => ensure_managed_node_runtime_logged(&app_handle).await,
         // Managed bridge installs (claude, codex) go through the managed
         // installer so the floating `<pkg>@latest` install lands in
@@ -1468,6 +1533,7 @@ pub async fn run_doctor_fix(
 /// unit test without a Tauri runtime.
 #[derive(Debug, PartialEq, Eq)]
 enum DoctorFixDispatch {
+    AntigravityLogin,
     /// Native (re)install of the managed Node.js runtime.
     NodeRuntime,
     /// Managed bridge install through the managed installer (provider id).
@@ -1492,6 +1558,9 @@ fn plan_doctor_fix(
 ) -> Result<DoctorFixDispatch, String> {
     ensure_offered_fix(check_id, fix_type, offered)?;
 
+    if check_id == "ai-agent-antigravity" && *fix_type == FixType::Auth {
+        return Ok(DoctorFixDispatch::AntigravityLogin);
+    }
     if check_id == NODE_RUNTIME_CHECK.id {
         return Ok(DoctorFixDispatch::NodeRuntime);
     }
@@ -1556,8 +1625,13 @@ async fn offered_local_fix_for_check(app_handle: &AppHandle, check_id: &str) -> 
         .path_checks
         .iter()
         .find(|check| check.meta.id == check_id)?;
-    let fix = check.meta.fix.as_ref()?;
     let env = managed_acp_tools::provider_env(app_handle).await;
+    if check_id == "ai-agent-antigravity" {
+        return run_local_agent_check(app_handle, check_id, &env)
+            .await?
+            .fix_type;
+    }
+    let fix = check.meta.fix.as_ref()?;
     match resolve_binary_path(
         check.binary_name,
         env_key::get(&env, "PATH").unwrap_or_default(),
@@ -2025,6 +2099,35 @@ mod tests {
             Some("kimi login")
         );
         assert_eq!(local_agent_login_command("node-runtime"), None);
+    }
+
+    #[test]
+    fn antigravity_setup_offers_the_installer_and_personal_oauth_only_when_needed() {
+        let spec = LOCAL_PATH_CHECKS
+            .iter()
+            .find(|c| c.meta.id == "ai-agent-antigravity")
+            .unwrap();
+        let missing = local_path_check_result(spec, None, None);
+        assert_eq!(missing.fix_command.as_deref(), Some(INSTALL_ANTIGRAVITY));
+        let signed_out = local_path_check_result(
+            spec,
+            Some("agy.exe".into()),
+            Some(AuthStatus::NotAuthenticated),
+        );
+        assert_eq!(signed_out.fix_type, Some(FixType::Auth));
+        assert_eq!(signed_out.fix_command, None);
+        assert_eq!(
+            plan_doctor_fix(spec.meta.id, &FixType::Auth, signed_out.fix_type).unwrap(),
+            DoctorFixDispatch::AntigravityLogin
+        );
+        let ready = local_path_check_result(
+            spec,
+            Some("agy.exe".into()),
+            Some(AuthStatus::Authenticated),
+        );
+        assert_eq!(ready.status, CheckStatus::Pass);
+        assert!(plan_doctor_fix(spec.meta.id, &FixType::Auth, ready.fix_type).is_err());
+        assert!(provider_supports_logout("antigravity-acp"));
     }
 
     #[test]

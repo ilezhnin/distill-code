@@ -9,6 +9,8 @@ dir=$2
 shift 2
 vars=()
 account_home=
+antigravity=
+antigravity_adapter=
 login_home=
 instructions=
 grok_config=
@@ -22,6 +24,8 @@ while [[ $1 != -- ]]; do
     instructions=${1#*=}
   elif [[ $1 == DISTILL_BENCH_GROK_CONFIG=* ]]; then
     grok_config=${1#*=}
+  elif [[ $1 == DISTILL_BENCH_ANTIGRAVITY_ADAPTER=* ]]; then
+    antigravity_adapter=${1#*=}
   elif [[ $1 == DISTILL_BENCH_OPENCODE_PLUGIN=* ]]; then
     opencode_plugin=${1#*=}
   else
@@ -63,7 +67,8 @@ mount -t tmpfs -o mode=755,size=1M,nr_inodes=256 none /run
 # CLI state or other accounts. A Kimi sign-in (no workspace) sees the one
 # persistent account home it names, at its own path, and nothing else of /home.
 if [[ -n $dir && -n $account_home ]]; then
-  [[ $user == candidate && $account_home =~ ^/home/candidate/accounts/[A-Za-z0-9_-]{1,80}/(claude|codex|grok|kimi|zai)$ ]] || exit 64
+  [[ $user == candidate && $account_home =~ ^/home/candidate/accounts/[A-Za-z0-9_-]{1,80}/(claude|codex|grok|kimi|zai|antigravity)$ ]] || exit 64
+  [[ $account_home != */antigravity ]] || antigravity=1
   account_home=/srv/bench/auth/$(basename "$dir")/home
   [[ $(realpath -e "$account_home") == "$account_home" ]] || exit 64
   install -d -m 700 -o candidate -g candidate /tmp/provider
@@ -101,10 +106,59 @@ if [[ -n $opencode_plugin ]]; then
   printf '%s\n' "$opencode_plugin" >/tmp/opencode-config/distill-benchmark-policy.mjs
   chmod 644 /tmp/opencode-config/distill-benchmark-policy.mjs
 fi
+if [[ -n $antigravity ]]; then
+  # agy gets this attempt's access-only consumer grant and a fresh CLI home.
+  # Keep plan overages off even if a process in the workspace edits settings.
+  [[ -n $antigravity_adapter && -n $instructions ]] || exit 64
+  printf '%s\n' "$antigravity_adapter" >/tmp/benchmark-antigravity-acp.mjs
+  # A mounted, root-owned policy tree cannot be renamed by a candidate.
+  gemini=/home/candidate/.gemini
+  mkdir "$gemini"
+  mount -t tmpfs -o mode=755,size=96M,nr_inodes=4096 none "$gemini"
+  cli=$gemini/antigravity-cli
+  agents=/home/candidate/.gemini/config/agents
+  install -d -o candidate -g candidate -m 700 "$cli" "$gemini/antigravity"
+  install -d -m 755 "$agents"
+  install -d -o candidate -g candidate -m 700 "$gemini/config/projects"
+  ln -s /tmp/provider/antigravity-oauth-token "$cli/antigravity-oauth-token"
+  printf '{"useG1Credits":false}\n' >"$cli/settings.json"
+  mount --bind "$cli/settings.json" "$cli/settings.json"
+  mount -o remount,bind,ro "$cli/settings.json"
+  cat >"$agents/flock-benchmark.md" <<'AGENT'
+---
+name: flock-benchmark
+description: Complete the supplied repository task.
+mainAgent: true
+subagent: false
+inheritMcp: false
+inheritCustomizations: false
+excludeDefaultComponents: true
+model: inherit
+tools: [view_file, list_dir, grep_search, find_by_name, write_to_file, replace_file_content, run_command]
+---
+# System Prompt
+AGENT
+  printf '%s\n' "$instructions" >>"$agents/flock-benchmark.md"
+fi
 cwd=/home/$user
 if [[ -n $dir ]]; then
   mount --bind "$dir" /workspace
   cwd=/workspace
+fi
+if [[ -n $antigravity ]]; then
+  # A later headless turn must discover the same agent and settings even
+  # after repository tools have written files. Empty mountpoints have no
+  # tracked Git contents and never enter the candidate patch.
+  for customization in .agent .agents .gemini .antigravity; do
+    target=/workspace/$customization
+    if [[ ! -e $target && ! -L $target ]]; then
+      install -d -o root -g root -m 555 "$target"
+    elif [[ -L $target || ! -d $target || $(stat -c '%u:%a' "$target") != 0:555 || -n $(find "$target" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+      echo 'capability_missing: repository contains Antigravity configuration' >&2
+      exit 65
+    fi
+    mount -t tmpfs -o mode=555,ro,size=4k none "$target"
+  done
 fi
 if [[ $user == checker && -n $dir && -d /srv/bench/submissions/$(basename "$dir") ]]; then
   mkdir -p /submission
@@ -113,7 +167,7 @@ if [[ $user == checker && -n $dir && -d /srv/bench/submissions/$(basename "$dir"
 elif [[ -d /submission ]]; then
   mount -t tmpfs -o mode=000 none /submission
 fi
-if [[ $user == candidate && -n $dir && ( -e /workspace/.codex || -e /workspace/.agents ) ]]; then
+if [[ $user == candidate && -n $dir && ( -e /workspace/.codex || ( -z $antigravity && -e /workspace/.agents ) ) ]]; then
   echo 'capability_missing: repository contains native Codex configuration or skills' >&2
   exit 65
 fi

@@ -421,6 +421,7 @@ async fn find_check_with_options(
     }
     // Agents the crate doesn't know are Flock's own local checks.
     crate::commands::doctor::run_local_agent_check(
+        app,
         &target,
         &managed_acp_tools::provider_env(app).await,
     )
@@ -660,7 +661,7 @@ fn auth_capability(check_id: &str) -> AuthCapability {
             (true, false) => AuthCapability::Unprobeable,
         };
     }
-    if crate::commands::doctor::local_agent_login_command(check_id).is_some() {
+    if crate::commands::doctor::local_agent_has_auth(check_id) {
         AuthCapability::Probeable
     } else {
         AuthCapability::None
@@ -673,6 +674,8 @@ fn auth_capability(check_id: &str) -> AuthCapability {
 /// re-login path; a missing logout command cannot take it.
 fn can_reauth(provider_id: &str, check: &doctor::DoctorCheck) -> bool {
     crate::commands::doctor::provider_supports_logout(provider_id)
+        && (provider_id != crate::services::agent_host::antigravity::ID
+            || check.auth_status == Some(doctor::types::AuthStatus::Authenticated))
         && matches!(auth_capability(&check.id), AuthCapability::Probeable)
         && (check.path.is_some() || check.bridge_path.is_some())
         && check.fix_type.is_none()
@@ -950,6 +953,19 @@ async fn run_install(
     verify_installed(Some(app), provider_id, plan).await
 }
 
+async fn guard_cli_change(
+    app: &AppHandle,
+    provider_id: &str,
+) -> Result<Option<crate::services::provider_accounts::AccountChangeGuard>, String> {
+    if provider_id != crate::services::agent_host::antigravity::ID {
+        return Ok(None);
+    }
+    let id = crate::services::agent_host::antigravity::ACCOUNT_ID;
+    let guard = crate::services::provider_accounts::begin_account_change(id)?;
+    super::provider_accounts::prepare_change(app, id).await?;
+    Ok(Some(guard))
+}
+
 async fn run_logout(
     app: &AppHandle,
     registry: &AgentSetupRegistry,
@@ -957,6 +973,7 @@ async fn run_logout(
 ) -> Result<(), String> {
     let check = find_check(app, provider_id).await?;
     authorize_logout(provider_id, &check)?;
+    let _guard = guard_cli_change(app, provider_id).await?;
     run_logout_command(app, registry, provider_id).await
 }
 
@@ -966,9 +983,12 @@ async fn run_logout_command(
     provider_id: &str,
 ) -> Result<(), String> {
     if crate::services::provider_accounts::spec(provider_id).is_some_and(|spec| {
-        spec.cli_sign_out == crate::services::provider_accounts::CliSignOut::KimiAcp
+        spec.cli_sign_out == crate::services::provider_accounts::CliSignOut::Acp
     }) {
         set_phase(app, registry, provider_id, SetupPhase::SigningOut);
+        if provider_id == crate::services::agent_host::antigravity::ID {
+            return crate::services::agent_host::antigravity::logout(app).await;
+        }
         return crate::services::agent_host::kimi::logout(
             managed_acp_tools::provider_env(app).await,
         )
@@ -1003,10 +1023,13 @@ async fn run_auth(
     // static `<agent> login` command on demand. `find_check` also fails closed
     // on an unknown provider.
     let check = find_check(app, provider_id).await?;
-    if let Err(error) = authorize_auth(provider_id, &check) {
-        if !can_reauth(provider_id, &check) {
-            return Err(error);
-        }
+    let reauth = match authorize_auth(provider_id, &check) {
+        Ok(()) => false,
+        Err(_) if can_reauth(provider_id, &check) => true,
+        Err(error) => return Err(error),
+    };
+    let _guard = guard_cli_change(app, provider_id).await?;
+    if reauth {
         // Doctor still reports signed in (CLI login status looks at files on
         // disk) while usage 401 says the tokens are dead. Clear them, then
         // run login so a different account can sign in. Do not re-authorize
@@ -1014,6 +1037,9 @@ async fn run_auth(
         run_logout_command(app, registry, provider_id).await?;
     }
     set_phase(app, registry, provider_id, SetupPhase::Authenticating);
+    if provider_id == crate::services::agent_host::antigravity::ID {
+        return crate::services::agent_host::antigravity::login(app).await;
+    }
     // Crate agents resolve their login from the crate table; a local agent
     // (Grok) has none there, so its backend-owned login command is supplied.
     let login_command =

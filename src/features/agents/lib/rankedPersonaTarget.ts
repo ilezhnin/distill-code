@@ -137,15 +137,19 @@ export function rankedPersonaExecutionTargets(
           .getModelsForHarness(provider.id)
           .map((model) => ({ harnessId: provider.id, model })),
       ),
-    platformLimitState: (platform, scopedWindow) =>
+    platformLimitState: (platform, scopedWindow, modelId) =>
       platformLimitState(context.rateLimits, platform, {
+        modelId,
         scopedWindow,
         ...(typeof context.nearLimitPercent === "number"
           ? { nearLimitPercent: context.nearLimitPercent }
           : {}),
       }),
-    platformUsedPercent: (platform, scopedWindow) =>
-      platformUsedPercent(context.rateLimits, platform, { scopedWindow }),
+    platformUsedPercent: (platform, scopedWindow, modelId) =>
+      platformUsedPercent(context.rateLimits, platform, {
+        scopedWindow,
+        modelId,
+      }),
   };
   const targets: RankedPersonaTarget[] = [];
   const seen = new Set<string>();

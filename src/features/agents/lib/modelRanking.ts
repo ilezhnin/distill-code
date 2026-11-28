@@ -319,6 +319,7 @@ export interface RankedModelResolutionInput {
   platformLimitState: (
     platform: AgentPlatformId,
     scopedWindow: UsageSection["key"] | undefined,
+    modelId?: string,
   ) => PlatformLimitState;
   /**
    * The same window's fullness in percent, so a skip can say how full it
@@ -328,6 +329,7 @@ export interface RankedModelResolutionInput {
   platformUsedPercent?: (
     platform: AgentPlatformId,
     scopedWindow: UsageSection["key"] | undefined,
+    modelId?: string,
   ) => number | undefined;
 }
 
@@ -560,9 +562,15 @@ function attemptRanking(
 
   for (const [rankIndex, candidate] of ranking.entries()) {
     if (candidate.platform) {
+      const model = pickCandidateMatch(
+        candidate,
+        input.modelsForPlatform(candidate.platform),
+        (entry) => entry,
+      );
       const limit = input.platformLimitState(
         candidate.platform,
         candidate.scopedWindow,
+        model?.id,
       );
       if (
         limit === "at-limit" ||
@@ -571,6 +579,7 @@ function attemptRanking(
         const usedPercent = input.platformUsedPercent?.(
           candidate.platform,
           candidate.scopedWindow,
+          model?.id,
         );
         skipped.push({
           label: candidate.label,
@@ -579,11 +588,6 @@ function attemptRanking(
         });
         continue;
       }
-      const model = pickCandidateMatch(
-        candidate,
-        input.modelsForPlatform(candidate.platform),
-        (entry) => entry,
-      );
       if (model) {
         return {
           choice: rankedChoice(candidate, candidate.platform, model, rankIndex),

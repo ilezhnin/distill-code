@@ -740,6 +740,7 @@ pub async fn benchmark_get_candidate_observations(
 /// What a provider's verified native text profile guarantees.
 fn native_text_reason(provider: NativeProvider) -> &'static str {
     match provider {
+        NativeProvider::Antigravity => "Repository tasks only",
         NativeProvider::Claude => "Fresh owned sessions with tools, personal context, hooks and MCP disabled; exact selection required",
         NativeProvider::Codex => "Fresh owned sessions with Codex tools, code mode, subagents, skills, AGENTS.md, apps and web search disabled; exact selection required; 'ultra' effort excluded",
         NativeProvider::Grok => "Fresh owned sessions on a private Grok home with tools, rules, hooks, skills and web search disabled; uses the Grok CLI sign-in",
@@ -782,7 +783,10 @@ pub async fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
             provider_id: provider.harness_id().into(),
             execution_profile: "protected_repository".into(),
             supported: sandbox_issue.is_none(),
-            reason: sandbox_issue.clone().unwrap_or_else(|| "Repository tasks run with tools in an isolated WSL copy; choose an account signed in inside distill-bench".into()),
+            reason: sandbox_issue.clone().unwrap_or_else(|| match provider {
+                NativeProvider::Antigravity => "Repository tasks run in an isolated WSL copy using the personal Google CLI sign-in and local file and shell tools.".into(),
+                _ => "Repository tasks run with tools in an isolated WSL copy; choose an account signed in inside distill-bench".into(),
+            }),
             cli_account_id: provider_accounts::cli_login_account_id(provider.harness_id()),
         });
     }
