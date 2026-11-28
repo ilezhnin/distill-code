@@ -3,19 +3,17 @@
 Flock runs GLM models through OpenCode's native ACP interface. In Settings >
 AI providers, install the Z.ai Coding Plan runtime, choose Add account on the
 Z.ai card, and paste a key from the
-[Z.ai API console](https://z.ai/manage-apikey/apikey-list). An active GLM
-Coding Plan is required. A login at chat.z.ai alone does not provide this
-subscription. The Z.ai card is the same card every provider has (see
-[provider accounts](provider-accounts.md)); what sets it apart is data in the
-account model: its connection flow is an API key only, so the Add account
-dialog offers no browser sign-in, and the key is the Coding Plan key, so the
-billing chip reads API key while benchmark configurations record the plan
-as a subscription.
+[Z.ai API console](https://z.ai/manage-apikey/apikey-list). A login at chat.z.ai
+alone does not provide API access. The Z.ai card is the same card every provider
+has (see [provider accounts](provider-accounts.md)); its connection flow is an
+API key only, so the Add account dialog offers no browser sign-in. Z.ai bills by
+the key: a key from the Personal Coding Plan tab spends the GLM Coding Plan, and
+a key from the Standard tab spends the account's pay-as-you-go balance.
 
-The account uses `https://api.z.ai/api/coding/paas/v4`, the subscription endpoint
+The account uses `https://api.z.ai/api/coding/paas/v4`, the endpoint
 documented in [Z.ai's OpenCode guide](https://docs.z.ai/devpack/tool/opencode).
-Only the `zai-coding-plan` provider is enabled. There is no automatic fallback
-to the separately billed general API. Model availability still depends on the
+Only the `zai-coding-plan` provider is enabled in OpenCode so Flock never
+switches providers automatically. Model availability still depends on the
 account's plan. The model and effort pickers use OpenCode's live ACP inventory.
 The newest GLM generation appears first; earlier generations are in More models.
 When the inventory offers both a model and its Highspeed variant, Fast mode

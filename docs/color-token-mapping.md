@@ -95,16 +95,18 @@ This follows the shadcn theming model: core tokens describe component anatomy an
 
 ## Button State Mapping
 
-| Button intent | Default | Hover | Disabled |
-| --- | --- | --- | --- |
-| `default` | `bg-primary text-primary-foreground` | `bg-primary/90` | shadcn disabled behavior. |
-| `secondary` | `bg-secondary text-secondary-foreground` | `bg-secondary/80` | shadcn disabled behavior. |
-| `outline` | `border-input bg-background text-foreground` | `bg-accent text-accent-foreground` | shadcn disabled behavior. |
-| `ghost` | `bg-transparent text-foreground` | `bg-accent text-accent-foreground` | shadcn disabled behavior. |
-| `quiet` | `bg-transparent text-muted-foreground` | `bg-transparent text-foreground` | shadcn disabled behavior. |
-| `destructive` | `bg-destructive text-destructive-foreground` | `bg-destructive/90` | shadcn disabled behavior. |
+The live `<Button>` variant menu is defined in `src/shared/ui/AGENTS.md`:
 
-Use `quiet` for icon-only chrome buttons that should be gray by default and black on hover without a hover fill. Use `ghost` when the hover should show the shared gray fill.
+| Button variant | Role / surface |
+| --- | --- |
+| `primary` | Primary filled action (`bg-primary text-primary-foreground`, hover `bg-primary/90`). |
+| `outline` | Bordered secondary action (`border-input bg-background text-foreground`, hover `bg-accent`). |
+| `subtle` | Soft filled control (`bg-secondary text-secondary-foreground`, hover `bg-secondary/80`). |
+| `ghost` | Transparent control with hover fill (`bg-transparent`, hover `bg-accent`); add `flush` for icon-only chrome with no hover fill. |
+| `alert` | High-attention status action. |
+| `link` | Inline text action. |
+
+Use the `destructive` prop (not a separate variant) when a `primary`, `outline`, `subtle`, or `ghost` action is destructive.
 
 ## Tokens Consumed In Raw CSS
 

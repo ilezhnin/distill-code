@@ -32,4 +32,4 @@ Existing agents and avatars stay in the Flock folder's `agents/`.
 
 Keep account data, credentials, session history, preferences, personal prompts,
 roles, working skills, evaluation tasks and development plans outside the source
-checkout. See [the repository publication rules](../AGENTS.md).
+checkout. See the repository's `AGENTS.md` publication rules.

@@ -70,15 +70,15 @@ tinted raised surfaces like the chat user bubble; the `sidebar*` surfaces dim to
 `muted-foreground/75`, which is only legible against the page background. Do not
 use a `sidebar*` surface on a tinted surface.
 
-### The rule (audited in CI)
+### The rule (checked with `pnpm design-system:audit`)
 
 Feature code never puts color or interactive-state classes (`bg-*`,
 `text-foreground`/`text-muted-foreground`/..., `hover:*`, `active:*`,
 `shadow-*`, `opacity-*`) on a `<Button>`. Layout-only classes (`ml-auto`,
 `w-full`, `justify-start`, `shrink-0`, truncation) are fine. If no variant,
-flag, or wrapper fits, that is a design-system conversation — extend the
-menu, don't restyle locally. `pnpm design-system:audit` enforces this and
-fails on new violations.
+flag, or wrapper fits, extend the menu rather than restyling locally. Run
+`pnpm design-system:audit` (an explicit development check, not a mandatory
+every-commit CI gate) to verify no violations were introduced.
 
 ### General guidance
 

@@ -1,12 +1,12 @@
 # Design System Explorer
 
-This folder contains the in-app Goose Design System Explorer. Treat it as a real
+This folder contains the in-app Flock Design System Explorer. Treat it as a real
 product surface, not a docs dump.
 
 ## Repeatable Component Page Contract
 
-Every component page should use the same structure unless Morgan explicitly asks
-for a different treatment:
+Every component page should use the same structure unless product/design
+explicitly asks for a different treatment:
 
 1. `PageIntro` with a short human-readable purpose.
 2. `ComponentSpec` using the component name. This pulls source, variants, and
@@ -89,7 +89,7 @@ Component source should use the shadcn semantic token contract first:
 `text-muted-foreground`, `bg-accent`, `bg-primary`, `bg-destructive`,
 `border-border`, `border-input`, and `ring-ring`.
 
-Use Goose extension tokens only for product-specific surfaces and identities,
+Use Flock extension tokens only for product-specific surfaces and identities,
 such as `bg-surface-composer`, `bg-canvas-base`, chip colors, status colors,
 and composer placeholder color. Use `bg-card-glass` for floating chrome glass
 (nav panes, right rail, the global composer pill).

@@ -107,8 +107,10 @@ unit tests, benchmark campaigns and Playwright are explicit development tools,
 not mandatory gates on every change. Use `just regression` only when the task
 actually calls for full regression coverage.
 
-Git hooks protect staged content, outgoing history and private material. They
-must not be bypassed with `--no-verify`, `LEFTHOOK=0` or local overrides. The
+Git hooks protect staged content, outgoing history and private material. Do not
+bypass them with `--no-verify`, `LEFTHOOK=0` or local overrides unless the
+operator explicitly instructs a bypass (for example during a scanner download
+outage or confirmed false positive). The
 pinned Gitleaks archive is downloaded from its official release on first use,
 verified with SHA-256, and cached in the OS temporary directory. Scanning is
 local and reports never print matched secret values. Allow only reviewed,

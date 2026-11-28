@@ -381,11 +381,10 @@ reshapes, and product judgment for no-auth command eligibility.
 
 `session/steer` does not acknowledge an in-memory next-turn queue. The host
 uses `_session/steering` only with an advertised capability and a supported
-idle-race contract. Claude's `promptRequired` opt-in lets the renderer retain
-input in its durable queue if the active turn finishes before injection. The
-installed Codex bridge can instead start a detached turn without an awaited
-completion response, so its input uses the durable queue until that lifecycle
-is supported. Other providers use the same queue fallback.
+idle-race contract. Bridges with `promptRequired` opt-in (Claude, Codex 2.5+,
+and Kimi via `kimi-acp-steering.mjs`) let the renderer retain input in its
+durable queue if the active turn finishes before injection. Bridges without an
+advertised steering capability fall back to the durable queue.
 
 Native input is saved before dispatch. Provider echoes update its delivery
 receipt instead of appending duplicate text. Transport uncertainty keeps the

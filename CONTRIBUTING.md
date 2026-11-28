@@ -40,13 +40,16 @@ running the scripts without `just`, troubleshooting, and building an installer.
 
 ## Before you open a pull request
 
-- Run the full local gate, `just ci`, on the final tree. The commit and push
-  hooks installed by `just setup-windows` run the same gate; they reject
-  unstaged changes and do not rewrite or stage files for you.
+- Run focused local checks for what you changed (for example `git diff --check`
+  for docs, `just ci-frontend` for frontend, `just tauri-check` for Rust), then
+  push and verify CI passes. Run `just ci` locally only when changing packaging,
+  CI, or publication hooks. The Git hooks installed by `just setup-windows` run
+  only fast privacy and secret checks (never compilation, tests, stashing, or
+  rewriting files).
 - Write an imperative subject line that says what the change does.
 - Do not add AI attribution trailers, generated-by footers, or agent session
-  links to commits, code, or documentation. The commit-message hook rejects
-  them. Commits carry the human author's name and email.
+  links to commits, code, or documentation. Commits carry the human author's
+  name and email.
 - Keep private material out of the tree: profiles, memory, conversations,
   roles, working skills, credentials, account exports, benchmark tasks, and
   internal plans belong under the app's data root, never in Git. Use

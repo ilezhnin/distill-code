@@ -9,7 +9,7 @@ own agents under `distro/`. Start from the audience that fits you.
 | Guide | What it answers |
 | --- | --- |
 | [Windows setup](windows-onboarding.md) | Prerequisites, first bootstrap, running the dev app, building an installer, troubleshooting. |
-| [Provider accounts](provider-accounts.md) | Connecting Claude Code, Codex, Grok, Kimi Code, Z.ai, Copilot and Amp; usage limits and automatic account switching. |
+| [Provider accounts](provider-accounts.md) | Connecting Claude Code, Codex, Grok, Kimi Code, Z.ai, Google Antigravity, Copilot and Amp; usage limits and automatic account switching. |
 | [Z.ai Coding Plan](zai.md) | Running GLM models through the OpenCode harness, and how they take part in benchmarks. |
 | [Data storage](flock-root-layout.md) | What lives in the Flock folder (`~/.flock` on new installs, `~/.distill` on installs upgraded from Distill) and in a project's `.distill/` folder, and how migrations keep older data. |
 

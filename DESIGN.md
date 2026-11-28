@@ -292,7 +292,7 @@ Use [Badge](src/shared/ui/badge.tsx), composer chips, or a shared variant.
 
 - **Shape:** `rounded-full`. Badges and status chips deliberately differ from buttons in shape because they differ in semantic purpose — buttons are interactive controls and use the 8px corner to read as "press me"; badges are labels conveying state and use the pill so they read as "tag" rather than "control." This affordance separation reduces the chance of users attempting to click a static status indicator.
 - **Type:** `font-mono` at 11px, as the site sets its tags and pills.
-- **Color:** `bg-muted`, `text-foreground`, `text-muted`, and state tokens when the chip communicates state. A chip that can be opened (an agent under a message) is paper with the stronger hairline, and takes the ink on hover.
+- **Color:** `bg-muted`, `text-foreground`, `text-muted-foreground`, and state tokens when the chip communicates state. A chip that can be opened (an agent under a message) is paper with the stronger hairline, and takes the ink on hover.
 - **Status dots:** a run in flight is a dot in the lead bird's red that breathes (`ActiveChatPulseDot`); a step not started is a hollow dot; finished states keep their state color.
 - **State:** Removable context chips should stay compact and should not compete with the composer text field.
 
@@ -310,7 +310,7 @@ Use [Card](src/shared/ui/card.tsx) only when a meaningful object boundary exists
 
 Use [Input](src/shared/ui/input.tsx), shared textareas, or shared selector components.
 
-- **Shape:** `rounded-input` for default inputs.
+- **Shape:** `rounded-sm` for default inputs.
 - **Color:** `border-input`, `hover:border-foreground/20`, `text-foreground`, and `placeholder:text-placeholder`.
 - **Focus:** `focus-visible:border-ring` and `focus-visible:ring-ring`, using semantic focus tokens.
 - **Error / Disabled:** `aria-invalid:border-destructive`; disabled controls reduce opacity and preserve layout.
@@ -319,7 +319,7 @@ Use [Input](src/shared/ui/input.tsx), shared textareas, or shared selector compo
 
 Use the shared sidebar and nav item patterns as the baseline.
 
-- **Sidebar items:** `bg-sidebar-nav-bg-hover` for hover/focus, `bg-sidebar-nav-bg-selected` for active/menu-open, stable nav foreground text, compact padding, `rounded-md`, and regular-weight labels via `--sidebar-nav-font-weight` / `SIDEBAR_NAV_TEXT_CLASS` (`text-sm font-normal`).
+- **Sidebar items:** `bg-sidebar-accent` / `text-sidebar-accent-foreground` for hover, focus, and active/menu-open states, `text-sidebar-foreground` for default labels, compact padding, `rounded-md`, and regular-weight labels via `--sidebar-nav-font-weight` / `SIDEBAR_NAV_TEXT_CLASS` (`text-sm font-normal`).
 - **Top bar:** compact icon-only actions using `Button` ghost icon variants.
 - **State:** Active state should be visible without relying on color alone.
 - **Behavior:** Collapsed labels may fade and width-collapse, but navigation must remain keyboard and screen-reader legible.
@@ -329,15 +329,15 @@ Use the shared sidebar and nav item patterns as the baseline.
 The composer is the signature component and should receive the most craft.
 
 - **Surface:** `bg-surface-chat-composer` — paper, a touch translucent for the `--backdrop-composer-glass` blur — outlined with the stronger hairline (`ring-input`, darkening to `ring-ring` while focus is inside), and `rounded-composer`, in the current implementation.
-- **Layout:** Max width `max-w-3xl`, centered, with internal structure for attachments, selected persona/skills, text entry, toolbar controls, voice, send, stop, and context usage.
+- **Layout:** Max width `max-w-3xl`, centered, with internal structure for attachments, selected persona/skills, text entry, toolbar controls, send, stop, and context usage.
 - **Behavior:** File drop state uses tokenized muted surfaces and dashed border. Queued messages stay inline above the text area.
-- **Rule:** The composer should show active agent, model, project, skills, attachments, voice state, send state, and context usage without feeling like a control panel.
+- **Rule:** The composer should show active agent, model, project, skills, attachments, send state, and context usage without feeling like a control panel.
 
 ### Overlays
 
 Use Radix-backed shared primitives for dialogs, sheets, drawers, dropdowns, popovers, and tooltips.
 
-- **Shape:** `rounded-overlay` for popovers and dropdowns, `rounded-modal` for dialogs.
+- **Shape:** `rounded-md` for popovers and dropdowns, `rounded-lg` for dialogs.
 - **Color:** `bg-popover text-popover-foreground`.
 - **Motion:** Use existing open/close animations and durations (`--duration-fast`, `--duration-normal`, `--duration-slow`).
 - **Modal Use:** Dialogs are for blocking decisions, destructive confirmation, or workflows that cannot remain inline.
@@ -359,7 +359,7 @@ All of it stands still under `prefers-reduced-motion`, and the sidebar's working
 ### Do:
 
 - **Do** use `src/shared/styles/globals.css` semantic tokens and `src/shared/ui/` primitives before writing feature-level visual classes.
-- **Do** use existing authored token and utility names exactly: `text-foreground`, `text-muted-foreground`, `bg-background`, `border-border`, `font-sans`, `font-display`, `font-mono`, `rounded-card`, `rounded-input`, `rounded-full`, `shadow-card`, and the shared component props that wrap them.
+- **Do** use existing authored token and utility names exactly: `text-foreground`, `text-muted-foreground`, `bg-background`, `border-border`, `font-sans`, `font-display`, `font-mono`, `rounded-sm`, `rounded-md`, `rounded-lg`, `rounded-full`, `shadow-card`, and the shared component props that wrap them.
 - **Do** preserve context legibility: project, files, agent, model, provider, session state, and loading state should stay visible where they affect the user's next action.
 - **Do** keep color restrained. Use semantic state color only when it communicates state.
 - **Do** treat settings, providers, extensions, skills, agents, projects, and onboarding as first-class workflow surfaces.

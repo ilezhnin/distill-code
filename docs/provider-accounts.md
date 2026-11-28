@@ -267,11 +267,10 @@ session spends the same allowance under the same sign-in, and dispatch reads
 the same account status for it as for chats: a quota rejection in the sandbox
 blocks the account in Settings too. Owned sessions retain their frozen account.
 
-Benchmarks run Codex on the same account home, and Codex loads that home into
-every thread. A Codex account is benchmarked only while its home holds no
-`AGENTS.md`, `AGENTS.override.md`, `hooks.json` or `hooks/` and its
-`config.toml` sets nothing but the `cli_auth_credentials_store` Flock writes;
-otherwise its benchmark rows say why they are unavailable. Chats are unaffected.
+Benchmarks run Codex inside the isolated sandbox with a staged `CODEX_HOME`
+(`/tmp/provider`) and generated `CODEX_CONFIG` (`cli_auth_credentials_store =
+"file"`), independent of user instruction files in the account's chat home.
+Chats keep loading their account home as usual.
 
 There is no system CLI account or fallback to credentials from another app.
 Every stored provider uses the same account flow and isolated storage.

@@ -44,7 +44,7 @@ more than one if the question spans topics.
 
 This skill is about Flock the app — not about any one harness running inside
 a session (`claude-acp`, `codex-acp`, `grok-acp`, `kimi-acp`, `zai-acp`,
-`copilot-acp`, `amp-acp`). A question about the app around the harness (where a
+`antigravity-acp`, `copilot-acp`, `amp-acp`). A question about the app around the harness (where a
 setting lives, how a session started, how to export a chat, how to file a
 Flock bug) is in scope. A question about a specific harness's own behavior,
 output, or errors is not — treat that as harness-specific and say so rather

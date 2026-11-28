@@ -31,7 +31,7 @@ it.
 
 - **Many harnesses, one host.** Agent harnesses from different providers run
   side by side in one desktop app: Claude Code, Codex, Grok, Kimi Code, Z.ai
-  (GLM through OpenCode), Copilot, and Amp. Choose one per chat, or let the
+  (GLM through OpenCode), Google Antigravity, Copilot, and Amp. Choose one per chat, or let the
   conductor mix them inside a single task.
 - **Work in waves.** Steps that can run in parallel fly together. The flock
   regroups before the next wave, so results build on each other.

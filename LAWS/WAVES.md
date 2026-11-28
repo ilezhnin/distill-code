@@ -27,8 +27,8 @@ expectations all have to agree on the same words.
   part of the contract.
 - A step MAY carry a `label`, which names it for the operator, and a `model`,
   which pins it to a model by name.
-- A step that names a `model` the harness does not serve MUST cause the whole
-  plan to be refused rather than the step to be run on something else.
+- A step that explicitly pins a `model` the harness does not serve MUST cause the whole
+  plan to be refused rather than the step to be run on something else (unpinned role-ranked resolution may fall back to the next eligible inventory row with a visible fallback notice).
 - A wave step MUST NOT be spawned on a model its harness does not advertise.
 
 ## The report
@@ -88,8 +88,9 @@ expectations all have to agree on the same words.
 - The app MUST NOT hand a step to an executor whose every account has
   used up its allowance when it knows so.
 - A step whose executor the app itself ended — a restart under a running
-  session — is not a failed step: the app MUST resume it once in a new
-  session, MUST hand that session what the ended one last said, and MUST say
+  session — is not a failed step: the app MUST resume it in a new session
+  (up to the engine's resume limit, currently `MAX_WAVE_STEP_RESUMES = 3`),
+  MUST hand that session what the ended one last said, and MUST say
   in the step's brief and to the operator that it was resumed.
 - Wherever an agent is shown as stopped or cancelled, the app MUST say who
   stopped it and why when it knows.

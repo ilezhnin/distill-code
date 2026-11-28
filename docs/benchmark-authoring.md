@@ -675,13 +675,13 @@ unused held-out families, every policy, repetitions, budgets, execution order
 and report recipe. Learned, training-aggregate, persona and every fixed-worker
 policy run as separate complete trajectories in the same campaign. Omitted
 `parallelism` keeps legacy serial behavior and serialized identities. An explicit
-bound from 1 to 12 is immutable; concurrent campaigns admit in frozen order,
+bound (any integer from 1) is immutable; concurrent campaigns admit in frozen order,
 refill collected slots and retain the shared provider/account limits. Steps
 within each trajectory remain sequential. Reports collect in frozen order,
 regardless of completion order. New v4 campaigns take each step's decided
 worker when the step starts and give it back when it ends; waiting for that
 slot is recorded and excluded from the whole-workflow clock. `accountSlots`
-freezes the calls one account runs at once (1–8, default four). Saved v3
+freezes the calls one account runs at once (any integer from 1; default four). Saved v3
 campaigns keep reserving every selectable worker account before the clock, and
 saved v2 campaigns retain their original queue-inclusive timing. A campaign may
 reuse the families of a cancelled campaign only; its plan then lists those

@@ -144,8 +144,9 @@ show locations and rule names, never matched values. Reviewed historical
 fixture exceptions are exact fingerprints in `.gitleaksignore`.
 
 Hooks never compile, run functional suites, stash, rewrite or stage files.
-Missing scanners and failed checks block publication. Do not bypass them with
-local overrides or `--no-verify`. For manual Playwright runs, install its
+Missing scanners and failed checks block publication; do not bypass them with
+local overrides or `--no-verify` unless the operator explicitly instructs a
+bypass (for example during a scanner outage or confirmed false positive). For manual Playwright runs, install its
 browser once with `pnpm exec playwright install chromium`.
 
 ## Where Build State Lives
